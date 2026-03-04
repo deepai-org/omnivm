@@ -772,6 +772,855 @@ def _t11_unpin(hid):
 		return nil
 	})
 
+	// Test 12: Interleaved multiple live generators
+	// Three generators alive simultaneously, advanced in non-sequential order
+	// from different runtimes. Tests that each generator's suspended frame is
+	// independent — no shared mutable state in the Eval path.
+	run("Interleaved multiple live generators", func() error {
+		setupResult := pyRuntime.Execute(`
+def _t12_powers_of_2():
+    x = 1
+    while True:
+        yield x
+        x *= 2
+
+def _t12_powers_of_3():
+    x = 1
+    while True:
+        yield x
+        x *= 3
+
+def _t12_fib():
+    a, b = 0, 1
+    while True:
+        yield a
+        a, b = b, a + b
+
+_t12_gen_a = _t12_powers_of_2()
+_t12_gen_b = _t12_powers_of_3()
+_t12_gen_c = _t12_fib()
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Expected sequences:
+		// powers of 2: 1, 2, 4, 8, 16, 32, ...
+		// powers of 3: 1, 3, 9, 27, 81, 243, ...
+		// fibonacci:   0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...
+
+		// Interleaved advancement from different runtimes in non-sequential order:
+		// gen_b via Ruby, gen_a via JS, gen_c via Ruby, gen_a via JS, gen_b via Go
+
+		// gen_b[0] via Ruby = 1
+		r := rbRuntime.Eval(`OmniVM.call("python", "next(_t12_gen_b)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "1" {
+			return fmt.Errorf("gen_b[0] via Ruby: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// gen_a[0] via JS = 1
+		r = jsRuntime.Eval(`omnivm.call("python", "next(_t12_gen_a)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "1" {
+			return fmt.Errorf("gen_a[0] via JS: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// gen_c[0] via Ruby = 0 (fib starts at 0)
+		r = rbRuntime.Eval(`OmniVM.call("python", "next(_t12_gen_c)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "0" {
+			return fmt.Errorf("gen_c[0] via Ruby: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// gen_a[1] via JS = 2
+		r = jsRuntime.Eval(`omnivm.call("python", "next(_t12_gen_a)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "2" {
+			return fmt.Errorf("gen_a[1] via JS: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// gen_b[1] via Go directly = 3
+		r2 := pyRuntime.Eval("next(_t12_gen_b)")
+		if r2.Err != nil || fmt.Sprintf("%v", r2.Value) != "3" {
+			return fmt.Errorf("gen_b[1] via Go: err=%v val=%v", r2.Err, r2.Value)
+		}
+
+		// Continue interleaving to verify independence over more iterations
+		// gen_c[1] via JS = 1, gen_c[2] via Ruby = 1, gen_a[2] via Go = 4
+		r = jsRuntime.Eval(`omnivm.call("python", "next(_t12_gen_c)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "1" {
+			return fmt.Errorf("gen_c[1] via JS: err=%v val=%v", r.Err, r.Value)
+		}
+
+		r = rbRuntime.Eval(`OmniVM.call("python", "next(_t12_gen_c)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "1" {
+			return fmt.Errorf("gen_c[2] via Ruby: err=%v val=%v", r.Err, r.Value)
+		}
+
+		r2 = pyRuntime.Eval("next(_t12_gen_a)")
+		if r2.Err != nil || fmt.Sprintf("%v", r2.Value) != "4" {
+			return fmt.Errorf("gen_a[2] via Go: err=%v val=%v", r2.Err, r2.Value)
+		}
+
+		// gen_b[2] via Ruby = 9, gen_c[3] via Go = 2
+		r = rbRuntime.Eval(`OmniVM.call("python", "next(_t12_gen_b)")`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "9" {
+			return fmt.Errorf("gen_b[2] via Ruby: err=%v val=%v", r.Err, r.Value)
+		}
+
+		r2 = pyRuntime.Eval("next(_t12_gen_c)")
+		if r2.Err != nil || fmt.Sprintf("%v", r2.Value) != "2" {
+			return fmt.Errorf("gen_c[3] via Go: err=%v val=%v", r2.Err, r2.Value)
+		}
+
+		// Cleanup all generators
+		pyRuntime.Execute("_t12_gen_a.close(); _t12_gen_b.close(); _t12_gen_c.close()")
+
+		return nil
+	})
+
+	// Test 13: GC finalizer triggers cross-runtime call
+	// A Python object's __del__ calls omnivm.call("javascript",...) during
+	// gc.collect(). This is adversarial: __del__ runs at an unpredictable
+	// point during GC traversal. Run 50 times to catch intermittent failures.
+	run("GC finalizer triggers cross-runtime call (50x)", func() error {
+		setupResult := pyRuntime.Execute(`
+import gc
+
+_t13_del_results = []
+
+class _T13Poisoned:
+    def __init__(self, val):
+        self.val = val
+    def __del__(self):
+        try:
+            result = omnivm.call("javascript", str(self.val) + " + 1")
+            _t13_del_results.append(int(result))
+        except Exception as e:
+            _t13_del_results.append("ERR:" + str(e))
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		for i := 0; i < 50; i++ {
+			// Create object, drop reference, force GC
+			execResult := pyRuntime.Execute(fmt.Sprintf(`
+_t13_obj = _T13Poisoned(%d)
+del _t13_obj
+gc.collect()
+gc.collect()
+`, i))
+			if execResult.Err != nil {
+				return fmt.Errorf("iteration %d: %v", i, execResult.Err)
+			}
+		}
+
+		// Verify all 50 finalizer calls produced correct results
+		countResult := pyRuntime.Eval("len(_t13_del_results)")
+		if countResult.Err != nil {
+			return fmt.Errorf("count: %v", countResult.Err)
+		}
+		count := fmt.Sprintf("%v", countResult.Value)
+		if count != "50" {
+			return fmt.Errorf("expected 50 finalizer results, got %s", count)
+		}
+
+		// Verify each result is i + 1
+		for i := 0; i < 50; i++ {
+			r := pyRuntime.Eval(fmt.Sprintf("_t13_del_results[%d]", i))
+			if r.Err != nil {
+				return fmt.Errorf("verify %d: %v", i, r.Err)
+			}
+			expected := fmt.Sprintf("%d", i+1)
+			if fmt.Sprintf("%v", r.Value) != expected {
+				return fmt.Errorf("iteration %d: expected %s, got %v", i, expected, r.Value)
+			}
+		}
+
+		// Verify both runtimes still healthy
+		pyHealth := pyRuntime.Eval("1 + 1")
+		if pyHealth.Err != nil || fmt.Sprintf("%v", pyHealth.Value) != "2" {
+			return fmt.Errorf("python unhealthy after finalizer test")
+		}
+		jsHealth := jsRuntime.Eval("1 + 1")
+		if jsHealth.Err != nil || fmt.Sprintf("%v", jsHealth.Value) != "2" {
+			return fmt.Errorf("javascript unhealthy after finalizer test")
+		}
+
+		return nil
+	})
+
+	// Test 14: String encoding gauntlet
+	// Edge-case strings through a full round-trip chain. Tests C string handling,
+	// ERR: prefix false positives, empty strings, unicode, and large allocations.
+	run("String encoding gauntlet", func() error {
+		// Set up test strings in Python
+		setupResult := pyRuntime.Execute(`
+_t14_strings = {
+    "empty": "",
+    "unicode": "héllo wörld \u4f60\u597d \U0001f389",
+    "err_prefix": "ERR: this is not an error",
+    "large": "A" * 102400,
+    "escapes": 'line1\nline2\\"quoted\\"',
+}
+
+def _t14_get(name):
+    return _t14_strings[name]
+
+def _t14_check(name, val):
+    expected = _t14_strings[name]
+    if val == expected:
+        return "match"
+    return "MISMATCH: len=" + str(len(val)) + " expected_len=" + str(len(expected))
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		testCases := []struct {
+			name string
+			desc string
+		}{
+			{"empty", "empty string"},
+			{"unicode", "unicode with emoji"},
+			{"large", "100KB string"},
+			{"escapes", "backslashes and newlines"},
+		}
+
+		for _, tc := range testCases {
+			// Round trip: Python → JS → Ruby → Python verify
+			// Python returns string, JS passes to Ruby, Ruby passes back to Python for verification
+			result := pyRuntime.Eval(fmt.Sprintf(`
+_t14_val = _t14_get("%s")
+_t14_via_js = omnivm.call("javascript", 'omnivm.call("python", "_t14_get(\\"%s\\")")')
+_t14_check("%s", _t14_via_js)
+`, tc.name, tc.name, tc.name))
+			if result.Err != nil {
+				return fmt.Errorf("%s: %v", tc.desc, result.Err)
+			}
+			val := fmt.Sprintf("%v", result.Value)
+			if val != "match" {
+				return fmt.Errorf("%s: %s", tc.desc, val)
+			}
+		}
+
+		// Special test for ERR: prefix — must NOT be treated as an error
+		// Direct Python→JS round trip since ERR: prefix would trigger error handling
+		errPrefixResult := pyRuntime.Eval(`_t14_get("err_prefix")`)
+		if errPrefixResult.Err != nil {
+			return fmt.Errorf("ERR: prefix test: %v", errPrefixResult.Err)
+		}
+		errVal := fmt.Sprintf("%v", errPrefixResult.Value)
+		if errVal != "ERR: this is not an error" {
+			return fmt.Errorf("ERR: prefix test: expected 'ERR: this is not an error', got %q", errVal)
+		}
+
+		// Verify the large string length survived a round-trip through the bridge
+		lenResult := pyRuntime.Eval(`len(omnivm.call("javascript", 'omnivm.call("python", "_t14_get(\\"large\\")")'))`)
+		if lenResult.Err != nil {
+			return fmt.Errorf("large string length check: %v", lenResult.Err)
+		}
+		lenVal := fmt.Sprintf("%v", lenResult.Value)
+		if lenVal != "102400" {
+			return fmt.Errorf("large string length: expected 102400, got %s", lenVal)
+		}
+
+		return nil
+	})
+
+	// Test 15: Sustained mixed workload over 1000 dispatcher cycles
+	// 4 goroutines continuously submit mixed work. Tests for state drift:
+	// reference leaks, Duktape stack growth, Python global corruption.
+	run("Sustained mixed workload (1000 cycles)", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Register pump callback
+		disp.RegisterPumpCallback("python_pump", pyRuntime.Pump)
+		defer disp.UnregisterPumpCallback("python_pump")
+
+		// Setup generator and Ruby accumulator on main thread
+		setupDone := make(chan error, 1)
+		go func() {
+			setupDone <- disp.RunOnMain(func() error {
+				r := pyRuntime.Execute(`
+def _t15_gen():
+    i = 0
+    while True:
+        i += 1
+        yield i
+_t15_g = _t15_gen()
+`)
+				if r.Err != nil {
+					return r.Err
+				}
+				r2 := rbRuntime.Eval("$_t15_sum = 0")
+				return r2.Err
+			})
+		}()
+
+		var testErr error
+		totalCycles := 1000
+
+		go func() {
+			if err := <-setupDone; err != nil {
+				testErr = fmt.Errorf("setup: %v", err)
+				cancel()
+				return
+			}
+
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			errored := false
+
+			setErr := func(err error) {
+				mu.Lock()
+				if !errored {
+					errored = true
+					testErr = err
+				}
+				mu.Unlock()
+			}
+
+			// Goroutine A: advance Python generator, send to JS (1000 cycles)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < totalCycles; i++ {
+					err := disp.RunOnMain(func() error {
+						r := pyRuntime.Eval("next(_t15_g)")
+						if r.Err != nil {
+							return r.Err
+						}
+						pyVal := fmt.Sprintf("%v", r.Value)
+						jr := jsRuntime.Eval(pyVal + " * 2")
+						if jr.Err != nil {
+							return jr.Err
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine A cycle %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine B: Ruby arithmetic (1000 cycles)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < totalCycles; i++ {
+					err := disp.RunOnMain(func() error {
+						expr := fmt.Sprintf("%d * %d + %d", i+1, i+2, i+3)
+						expected := (i+1)*(i+2) + (i + 3)
+						r := rbRuntime.Eval(expr)
+						if r.Err != nil {
+							return r.Err
+						}
+						val := fmt.Sprintf("%v", r.Value)
+						exp := fmt.Sprintf("%d", expected)
+						if val != exp {
+							return fmt.Errorf("ruby %s: expected %s got %s", expr, exp, val)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine B cycle %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine C: periodic gc.collect() every 10 cycles
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < totalCycles/10; i++ {
+					err := disp.RunOnMain(func() error {
+						r := pyRuntime.Execute("import gc; gc.collect()")
+						return r.Err
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine C cycle %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine D: periodic deep chain every 50 cycles
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < totalCycles/50; i++ {
+					err := disp.RunOnMain(func() error {
+						r := pyRuntime.Eval(fmt.Sprintf(
+							`int(omnivm.call("javascript", "parseInt(omnivm.call('ruby', '%d + 1')) + 10"))`,
+							i))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", i+1+10)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("deep chain: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine D cycle %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			wg.Wait()
+			cancel()
+		}()
+
+		disp.Run(ctx)
+
+		if testErr != nil {
+			return testErr
+		}
+
+		// Verify generator advanced to exactly 1000
+		genResult := pyRuntime.Eval("next(_t15_g)")
+		if genResult.Err != nil {
+			return fmt.Errorf("final generator check: %v", genResult.Err)
+		}
+		if fmt.Sprintf("%v", genResult.Value) != "1001" {
+			return fmt.Errorf("generator drift: expected 1001, got %v", genResult.Value)
+		}
+
+		// Cleanup
+		pyRuntime.Execute("_t15_g.close()")
+
+		return nil
+	})
+
+	// Test 16: Re-entrant exception during generator during async pump
+	// Combines async pump (test 9), generator protocol (test 10), and error
+	// propagation (test 6). An async task advances a generator whose body calls
+	// omnivm.call("javascript",...). JS throws an error. The error propagates
+	// back through the bridge into the generator's except block, which yields
+	// a recovery value. The async task collects this. 8+ mixed frames.
+	run("Re-entrant exception during generator during async pump", func() error {
+		setupResult := pyRuntime.Execute(`
+import asyncio
+
+def _t16_gen():
+    """Generator that calls JS and handles bridge errors."""
+    while True:
+        try:
+            # This call will succeed or fail depending on the JS code
+            code = yield "ready"
+            result = omnivm.call("javascript", code)
+            yield "ok:" + result
+        except RuntimeError as e:
+            yield "caught:" + str(e)
+        except GeneratorExit:
+            return
+
+_t16_gen_inst = _t16_gen()
+next(_t16_gen_inst)  # advance to first yield "ready"
+
+_t16_async_result = None
+
+async def _t16_async_task():
+    global _t16_async_result
+    # Send JS code that throws — the generator should catch the error
+    # via the bridge and yield a recovery value
+    val = _t16_gen_inst.send("(function() { throw new Error('async bridge error'); })()")
+    _t16_async_result = val
+
+_t16_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_t16_loop)
+_t16_loop.create_task(_t16_async_task())
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Drive the event loop — this triggers the full call chain:
+		// Execute → PyRun_SimpleString → loop.run_forever → async task
+		// → gen.send() → generator body → omnivm.call("javascript", ...)
+		// → OmniCall → jsRuntime.Eval → Duktape throws → returns "ERR:..."
+		// → Python omnivm.call raises RuntimeError → generator except catches
+		// → yield "caught:..." → async task stores result
+		driveResult := pyRuntime.Execute(`
+_t16_loop.stop()
+_t16_loop.run_forever()
+`)
+		if driveResult.Err != nil {
+			return fmt.Errorf("drive: %v", driveResult.Err)
+		}
+
+		// Verify the recovery value propagated correctly through all layers
+		verifyResult := pyRuntime.Eval("_t16_async_result")
+		if verifyResult.Err != nil {
+			return fmt.Errorf("verify: %v", verifyResult.Err)
+		}
+		val := fmt.Sprintf("%v", verifyResult.Value)
+		if !strings.Contains(val, "caught:") || !strings.Contains(val, "async bridge error") {
+			return fmt.Errorf("expected 'caught:...async bridge error...', got %q", val)
+		}
+
+		// Verify generator is still alive and can handle a successful call
+		successResult := pyRuntime.Execute(`
+_t16_success_result = None
+
+async def _t16_success_task():
+    global _t16_success_result
+    next(_t16_gen_inst)  # advance past the caught yield back to "ready"
+    val = _t16_gen_inst.send("40 + 2")
+    _t16_success_result = val
+
+_t16_loop.create_task(_t16_success_task())
+_t16_loop.stop()
+_t16_loop.run_forever()
+`)
+		if successResult.Err != nil {
+			return fmt.Errorf("success task: %v", successResult.Err)
+		}
+
+		successVerify := pyRuntime.Eval("_t16_success_result")
+		if successVerify.Err != nil {
+			return fmt.Errorf("success verify: %v", successVerify.Err)
+		}
+		successVal := fmt.Sprintf("%v", successVerify.Value)
+		if successVal != "ok:42" {
+			return fmt.Errorf("expected 'ok:42', got %q", successVal)
+		}
+
+		// Cleanup
+		pyRuntime.Execute("_t16_gen_inst.close()")
+		pyRuntime.Execute("_t16_loop.close()")
+
+		return nil
+	})
+
+	// Test 17: Allocation Storm — Memory Fragmentation
+	// Allocate 10MB strings in Python, JS, Ruby. Then loop 100x passing the string
+	// Py → JS → Ruby → Py, with each runtime modifying one character per iteration
+	// (Copy-on-Write check). This fragments the C-heap and forces allocators to coexist.
+	run("Allocation storm (10MB × 3 runtimes × 100 round-trips)", func() error {
+		// Create 10MB strings in each runtime
+		setupResult := pyRuntime.Execute(`_t17_big = "A" * (10 * 1024 * 1024)`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("python alloc: %v", setupResult.Err)
+		}
+
+		// Build 10MB string via doubling (Duktape strings are immutable, += is O(n²))
+		jsSetup := jsRuntime.Execute(`var _t17_big = "B"; while (_t17_big.length < 10 * 1024 * 1024) _t17_big = _t17_big + _t17_big; _t17_big = _t17_big.substring(0, 10 * 1024 * 1024);`)
+		if jsSetup.Err != nil {
+			return fmt.Errorf("js alloc: %v", jsSetup.Err)
+		}
+
+		rbSetup := rbRuntime.Eval(`$_t17_big = "C" * (10 * 1024 * 1024)`)
+		if rbSetup.Err != nil {
+			return fmt.Errorf("ruby alloc: %v", rbSetup.Err)
+		}
+
+		// Verify initial sizes
+		for _, check := range []struct {
+			name string
+			r    pkg.Runtime
+			code string
+		}{
+			{"python", pyRuntime, `len(_t17_big)`},
+			{"javascript", jsRuntime, `_t17_big.length`},
+			{"ruby", rbRuntime, `$_t17_big.length`},
+		} {
+			result := check.r.Eval(check.code)
+			if result.Err != nil {
+				return fmt.Errorf("%s length check: %v", check.name, result.Err)
+			}
+			if fmt.Sprintf("%v", result.Value) != "10485760" {
+				return fmt.Errorf("%s initial size: expected 10485760, got %v", check.name, result.Value)
+			}
+		}
+
+		// Loop 100x: pass digest through Py → JS → Ruby → Py
+		// Each runtime modifies character at position [iteration] in its 10MB string,
+		// then computes a digest (length + char at position) that gets passed through
+		// the bridge. Python and Ruby have mutable strings. JS (Duktape) has immutable
+		// strings, so we track modifications in a separate array to avoid O(n) copies.
+		jsRuntime.Execute(`var _t17_mods = {};`)
+
+		for i := 0; i < 100; i++ {
+			// Python: modify char at position i, compute digest
+			pyResult := pyRuntime.Eval(fmt.Sprintf(`
+_t17_big = _t17_big[:%d] + "P" + _t17_big[%d:]
+str(len(_t17_big)) + ":" + _t17_big[%d]
+`, i, i+1, i))
+			if pyResult.Err != nil {
+				return fmt.Errorf("iter %d python: %v", i, pyResult.Err)
+			}
+			pyDigest := fmt.Sprintf("%v", pyResult.Value)
+
+			// JS: record modification at position i, verify Python's digest
+			jsResult := jsRuntime.Eval(fmt.Sprintf(`
+_t17_mods[%d] = "J";
+var _t17_pd = "%s";
+_t17_pd + "|" + _t17_big.length + ":" + (_t17_mods[%d] || _t17_big[%d])
+`, i, pyDigest, i, i))
+			if jsResult.Err != nil {
+				return fmt.Errorf("iter %d js: %v", i, jsResult.Err)
+			}
+			jsOut := fmt.Sprintf("%v", jsResult.Value)
+
+			// Ruby: modify char at position i, verify chain so far
+			rbResult := rbRuntime.Eval(fmt.Sprintf(`
+$_t17_big[%d] = "R"
+$_t17_chain = "%s"
+$_t17_chain + "|" + $_t17_big.length.to_s + ":" + $_t17_big[%d]
+`, i, jsOut, i))
+			if rbResult.Err != nil {
+				return fmt.Errorf("iter %d ruby: %v", i, rbResult.Err)
+			}
+			rbOut := fmt.Sprintf("%v", rbResult.Value)
+
+			// Verify the full chain: pyDigest|jsDigest|rbDigest
+			parts := strings.Split(rbOut, "|")
+			if len(parts) != 3 {
+				return fmt.Errorf("iter %d: expected 3 parts, got %d: %q", i, len(parts), rbOut)
+			}
+			if parts[0] != "10485760:P" {
+				return fmt.Errorf("iter %d: python digest wrong: %q", i, parts[0])
+			}
+			if parts[1] != "10485760:J" {
+				return fmt.Errorf("iter %d: js digest wrong: %q", i, parts[1])
+			}
+			if parts[2] != "10485760:R" {
+				return fmt.Errorf("iter %d: ruby digest wrong: %q", i, parts[2])
+			}
+		}
+
+		// Final verification: check that modifications persisted
+		pyCheck := pyRuntime.Eval(`_t17_big[0] + _t17_big[50] + _t17_big[99] + ":" + str(len(_t17_big))`)
+		if pyCheck.Err != nil {
+			return fmt.Errorf("final python check: %v", pyCheck.Err)
+		}
+		if fmt.Sprintf("%v", pyCheck.Value) != "PPP:10485760" {
+			return fmt.Errorf("final python: expected 'PPP:10485760', got %q", pyCheck.Value)
+		}
+
+		// JS: check via mods array (Duktape immutable strings — originals unchanged)
+		jsCheck := jsRuntime.Eval(`(_t17_mods[0] || "?") + (_t17_mods[50] || "?") + (_t17_mods[99] || "?") + ":" + _t17_big.length`)
+		if jsCheck.Err != nil {
+			return fmt.Errorf("final js check: %v", jsCheck.Err)
+		}
+		if fmt.Sprintf("%v", jsCheck.Value) != "JJJ:10485760" {
+			return fmt.Errorf("final js: expected 'JJJ:10485760', got %q", jsCheck.Value)
+		}
+
+		rbCheck := rbRuntime.Eval(`$_t17_big[0] + $_t17_big[50] + $_t17_big[99] + ":" + $_t17_big.length.to_s`)
+		if rbCheck.Err != nil {
+			return fmt.Errorf("final ruby check: %v", rbCheck.Err)
+		}
+		if fmt.Sprintf("%v", rbCheck.Value) != "RRR:10485760" {
+			return fmt.Errorf("final ruby: expected 'RRR:10485760', got %q", rbCheck.Value)
+		}
+
+		// Cleanup — release the 10MB strings
+		pyRuntime.Execute("del _t17_big")
+		jsRuntime.Execute("_t17_big = undefined; _t17_mods = undefined;")
+		rbRuntime.Eval("$_t17_big = nil")
+
+		return nil
+	})
+
+	// Test 18: Sleep-Wake Concurrency Torture
+	// Verify that Go time.Sleep (which parks the Goroutine) doesn't deschedule
+	// the Golden Thread in a way that breaks CPython/Duktape thread-local storage.
+	// Between RunOnMain calls, the Go scheduler might run other Goroutines on the
+	// main OS thread — if LockOSThread isn't tight enough, TLS would be lost.
+	run("Sleep-wake concurrency torture", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Register pump callback
+		disp.RegisterPumpCallback("python_pump", pyRuntime.Pump)
+		defer disp.UnregisterPumpCallback("python_pump")
+
+		var testErr error
+		var mu sync.Mutex
+		setErr := func(err error) {
+			mu.Lock()
+			if testErr == nil {
+				testErr = err
+			}
+			mu.Unlock()
+		}
+
+		go func() {
+			defer cancel()
+
+			// Step 1: Set up state in Python, JS, and Ruby on the main thread
+			err := disp.RunOnMain(func() error {
+				r := pyRuntime.Execute("import time; _t18_x = 42; _t18_marker = 'ALIVE'")
+				if r.Err != nil {
+					return fmt.Errorf("python setup: %v", r.Err)
+				}
+				r2 := jsRuntime.Execute("var _t18_x = 42; var _t18_marker = 'ALIVE';")
+				if r2.Err != nil {
+					return fmt.Errorf("js setup: %v", r2.Err)
+				}
+				r3 := rbRuntime.Eval("$_t18_x = 42; $_t18_marker = 'ALIVE'")
+				if r3.Err != nil {
+					return fmt.Errorf("ruby setup: %v", r3.Err)
+				}
+				return nil
+			})
+			if err != nil {
+				setErr(err)
+				return
+			}
+
+			// Step 2: Sleep-wake cycles with increasing sleep durations
+			// Each cycle: sleep → RunOnMain → verify TLS survived
+			// We mutate x each cycle and verify the mutation persists across sleep.
+			sleepDurations := []time.Duration{
+				1 * time.Millisecond,
+				10 * time.Millisecond,
+				50 * time.Millisecond,
+				100 * time.Millisecond,
+				200 * time.Millisecond,
+			}
+
+			expectedX := 42 // tracks the current expected value
+			for cycle, dur := range sleepDurations {
+				// Park this goroutine — Go scheduler free to do whatever
+				time.Sleep(dur)
+
+				capturedExpected := expectedX
+				capturedCycle := cycle
+
+				// Wake up and verify all runtimes still have their TLS state
+				err := disp.RunOnMain(func() error {
+					expectedStr := fmt.Sprintf("%d", capturedExpected)
+
+					// Python: verify variable survived the sleep
+					pyR := pyRuntime.Eval("_t18_x")
+					if pyR.Err != nil {
+						return fmt.Errorf("cycle %d python eval: %v", capturedCycle, pyR.Err)
+					}
+					if fmt.Sprintf("%v", pyR.Value) != expectedStr {
+						return fmt.Errorf("cycle %d python TLS lost: expected %s, got %v", capturedCycle, expectedStr, pyR.Value)
+					}
+
+					// JS: verify variable survived
+					jsR := jsRuntime.Eval("_t18_x")
+					if jsR.Err != nil {
+						return fmt.Errorf("cycle %d js eval: %v", capturedCycle, jsR.Err)
+					}
+					if fmt.Sprintf("%v", jsR.Value) != expectedStr {
+						return fmt.Errorf("cycle %d js TLS lost: expected %s, got %v", capturedCycle, expectedStr, jsR.Value)
+					}
+
+					// Ruby: verify variable survived
+					rbR := rbRuntime.Eval("$_t18_x")
+					if rbR.Err != nil {
+						return fmt.Errorf("cycle %d ruby eval: %v", capturedCycle, rbR.Err)
+					}
+					if fmt.Sprintf("%v", rbR.Value) != expectedStr {
+						return fmt.Errorf("cycle %d ruby TLS lost: expected %s, got %v", capturedCycle, expectedStr, rbR.Value)
+					}
+
+					// Mutate state — next cycle will verify this mutation survived the sleep
+					newVal := capturedExpected + 1
+					pyRuntime.Execute(fmt.Sprintf("_t18_x = %d", newVal))
+					jsRuntime.Execute(fmt.Sprintf("_t18_x = %d;", newVal))
+					rbRuntime.Eval(fmt.Sprintf("$_t18_x = %d", newVal))
+
+					return nil
+				})
+				if err != nil {
+					setErr(err)
+					return
+				}
+				expectedX++ // track the mutation for next cycle
+			}
+
+			// Step 3: Final verification with all 3 runtimes checking at once
+			finalExpected := fmt.Sprintf("%d", expectedX)
+			err = disp.RunOnMain(func() error {
+				for _, check := range []struct {
+					name string
+					r    pkg.Runtime
+					code string
+				}{
+					{"python", pyRuntime, "_t18_x"},
+					{"javascript", jsRuntime, "_t18_x"},
+					{"ruby", rbRuntime, "$_t18_x"},
+				} {
+					result := check.r.Eval(check.code)
+					if result.Err != nil {
+						return fmt.Errorf("final %s: %v", check.name, result.Err)
+					}
+					if fmt.Sprintf("%v", result.Value) != finalExpected {
+						return fmt.Errorf("final %s: expected %s, got %v", check.name, finalExpected, result.Value)
+					}
+				}
+
+				// Verify marker strings survived all the sleep-wake cycles
+				pyM := pyRuntime.Eval("_t18_marker")
+				if pyM.Err != nil || fmt.Sprintf("%v", pyM.Value) != "ALIVE" {
+					return fmt.Errorf("python marker lost")
+				}
+				jsM := jsRuntime.Eval("_t18_marker")
+				if jsM.Err != nil || fmt.Sprintf("%v", jsM.Value) != "ALIVE" {
+					return fmt.Errorf("js marker lost")
+				}
+				rbM := rbRuntime.Eval("$_t18_marker")
+				if rbM.Err != nil || fmt.Sprintf("%v", rbM.Value) != "ALIVE" {
+					return fmt.Errorf("ruby marker lost")
+				}
+
+				return nil
+			})
+			if err != nil {
+				setErr(err)
+				return
+			}
+
+			// Step 4: Concurrent pressure — launch multiple goroutines that
+			// all sleep and then try to RunOnMain, stressing the scheduler
+			var wg sync.WaitGroup
+			for g := 0; g < 8; g++ {
+				wg.Add(1)
+				go func(gid int) {
+					defer wg.Done()
+					for rep := 0; rep < 10; rep++ {
+						time.Sleep(time.Duration(gid*5+rep) * time.Millisecond)
+						err := disp.RunOnMain(func() error {
+							r := pyRuntime.Eval(fmt.Sprintf("42 + %d + %d", gid, rep))
+							if r.Err != nil {
+								return fmt.Errorf("goroutine %d rep %d: %v", gid, rep, r.Err)
+							}
+							expected := fmt.Sprintf("%d", 42+gid+rep)
+							if fmt.Sprintf("%v", r.Value) != expected {
+								return fmt.Errorf("goroutine %d rep %d: expected %s, got %v",
+									gid, rep, expected, r.Value)
+							}
+							return nil
+						})
+						if err != nil {
+							setErr(err)
+							return
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+		}()
+
+		disp.Run(ctx)
+
+		if testErr != nil {
+			return testErr
+		}
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)
