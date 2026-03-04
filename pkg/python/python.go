@@ -131,10 +131,12 @@ static char* omnivm_py_eval(const char* code) {
     size_t tail_len = end - last_start;
 
     char* head = (char*)malloc(head_len + 1);
+    if (!head) return NULL;
     memcpy(head, code, head_len);
     head[head_len] = '\0';
 
     char* tail = (char*)malloc(tail_len + 1);
+    if (!tail) { free(head); return NULL; }
     memcpy(tail, last_start, tail_len);
     tail[tail_len] = '\0';
 
@@ -167,7 +169,11 @@ static char* omnivm_py_eval(const char* code) {
 static char* omnivm_py_fetch_error() {
     PyObject *type, *value, *traceback;
     PyErr_Fetch(&type, &value, &traceback);
-    if (!value) return NULL;
+    if (!value) {
+        Py_XDECREF(type);
+        Py_XDECREF(traceback);
+        return NULL;
+    }
 
     PyObject* str = PyObject_Str(value);
     char* result = NULL;

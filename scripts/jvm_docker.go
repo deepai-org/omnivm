@@ -29,6 +29,7 @@ static jstring JNICALL Java_omnivm_OmniVM_nativeCall(JNIEnv* env, jclass cls,
     if (!g_bridge_call) {
         jclass exc_class = (*env)->FindClass(env, "java/lang/RuntimeException");
         (*env)->ThrowNew(env, exc_class, "omnivm bridge not initialized");
+        (*env)->DeleteLocalRef(env, exc_class);
         return NULL;
     }
 
@@ -126,7 +127,8 @@ static int omnivm_jvm_init(const char* classpath) {
              (void*)Java_omnivm_OmniVM_nativeCall}
         };
         (*env_ptr)->RegisterNatives(env_ptr, omnivm_class, methods, 1);
-        (*env_ptr)->ExceptionClear(env_ptr); // OK if OmniVM class not yet compiled
+        (*env_ptr)->ExceptionClear(env_ptr);
+        (*env_ptr)->DeleteLocalRef(env_ptr, omnivm_class);
     } else {
         (*env_ptr)->ExceptionClear(env_ptr);
         fprintf(stderr, "[jvm] NOTE: omnivm/OmniVM class not found (bridge available after compilation)\n");
@@ -168,13 +170,21 @@ static char* omnivm_jvm_exec(const char* code) {
             const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, msg, NULL);
             size_t len = strlen(utf) + 20;
             char* err = (char*)malloc(len);
-            snprintf(err, len, "JavaError: %s", utf);
+            if (err) {
+                snprintf(err, len, "JavaError: %s", utf);
+            } else {
+                err = strdup("JavaError: out of memory");
+            }
             (*env_ptr)->ReleaseStringUTFChars(env_ptr, msg, utf);
             (*env_ptr)->DeleteLocalRef(env_ptr, msg);
             (*env_ptr)->DeleteLocalRef(env_ptr, exc);
+            (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
+            (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
             return err;
         }
         (*env_ptr)->DeleteLocalRef(env_ptr, exc);
+        (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
+        (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
         return strdup("JavaError: Unknown JNI exception");
     }
 
@@ -220,13 +230,21 @@ static char* omnivm_jvm_eval(const char* code) {
                 const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, msg, NULL);
                 size_t len = strlen(utf) + 20;
                 char* err = (char*)malloc(len);
-                snprintf(err, len, "JavaError: %s", utf);
+                if (err) {
+                    snprintf(err, len, "JavaError: %s", utf);
+                } else {
+                    err = strdup("JavaError: out of memory");
+                }
                 (*env_ptr)->ReleaseStringUTFChars(env_ptr, msg, utf);
                 (*env_ptr)->DeleteLocalRef(env_ptr, msg);
                 (*env_ptr)->DeleteLocalRef(env_ptr, exc);
+                (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
+                (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
                 return err;
             }
             (*env_ptr)->DeleteLocalRef(env_ptr, exc);
+            (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
+            (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
             return strdup("JavaError: Unknown JNI exception");
         }
 

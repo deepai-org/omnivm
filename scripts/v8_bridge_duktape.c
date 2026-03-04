@@ -125,6 +125,11 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
         } else {
             size_t total = 0;
             char** parts = (char**)malloc(sizeof(char*) * len);
+            if (!parts) {
+                duk_pop(ctx);
+                result.error = strdup("out of memory");
+                return result;
+            }
             duk_size_t i;
             for (i = 0; i < len; i++) {
                 duk_get_prop_index(ctx, -1, (duk_uarridx_t)i);
@@ -133,6 +138,13 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
                 duk_pop(ctx);
             }
             char* output = (char*)malloc(total + 1);
+            if (!output) {
+                for (i = 0; i < len; i++) free(parts[i]);
+                free(parts);
+                duk_pop(ctx);
+                result.error = strdup("out of memory");
+                return result;
+            }
             output[0] = '\0';
             for (i = 0; i < len; i++) {
                 strcat(output, parts[i]);
