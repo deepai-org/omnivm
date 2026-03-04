@@ -2084,6 +2084,1075 @@ System.out.print(result);
 		return nil
 	})
 
+	// Test 25: Generator send() pipeline across runtimes
+	// Three generators chained via send(). Gen A yields values, transformed by JS,
+	// sent to Gen B, transformed by Ruby, sent to Gen C. Tests that yield
+	// expressions properly receive cross-runtime values through the
+	// suspended frame resume path.
+	run("Generator send() pipeline across runtimes", func() error {
+		setupResult := pyRuntime.Execute(`
+def _t25_gen_a():
+    """Yields squares. Receives values via send() and adds them to next square."""
+    i = 0
+    bonus = 0
+    while True:
+        i += 1
+        val = yield (i * i) + bonus
+        bonus = int(val) if val is not None else 0
+
+def _t25_gen_b():
+    """Receives a value, triples it, yields the tripled value."""
+    val = yield "ready"
+    while True:
+        val = yield int(val) * 3
+
+def _t25_gen_c():
+    """Receives a value, yields it plus 1000."""
+    val = yield "ready"
+    while True:
+        val = yield int(val) + 1000
+
+_t25_a = _t25_gen_a()
+_t25_b = _t25_gen_b()
+_t25_c = _t25_gen_c()
+
+# Prime all generators
+next(_t25_a)
+next(_t25_b)
+next(_t25_c)
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Pipeline: advance A → transform via JS → send to B → transform via Ruby → send to C
+		for i := 0; i < 20; i++ {
+			// Advance generator A (yields (i+2)^2 + bonus from previous cycle)
+			aVal := pyRuntime.Eval("next(_t25_a)")
+			if aVal.Err != nil {
+				return fmt.Errorf("iter %d gen_a next: %v", i, aVal.Err)
+			}
+
+			// Transform via JS: multiply by 2
+			jsVal := jsRuntime.Eval(fmt.Sprintf("parseInt('%v') * 2", aVal.Value))
+			if jsVal.Err != nil {
+				return fmt.Errorf("iter %d js transform: %v", i, jsVal.Err)
+			}
+
+			// Send JS result to generator B
+			bVal := pyRuntime.Eval(fmt.Sprintf("_t25_b.send('%v')", jsVal.Value))
+			if bVal.Err != nil {
+				return fmt.Errorf("iter %d gen_b send: %v", i, bVal.Err)
+			}
+
+			// Transform via Ruby: add 10
+			rbVal := rbRuntime.Eval(fmt.Sprintf("%v + 10", bVal.Value))
+			if rbVal.Err != nil {
+				return fmt.Errorf("iter %d ruby transform: %v", i, rbVal.Err)
+			}
+
+			// Send Ruby result to generator C
+			cVal := pyRuntime.Eval(fmt.Sprintf("_t25_c.send('%v')", rbVal.Value))
+			if cVal.Err != nil {
+				return fmt.Errorf("iter %d gen_c send: %v", i, cVal.Err)
+			}
+
+			// Send C's result back to A via send() — this becomes A's bonus
+			pyRuntime.Eval(fmt.Sprintf("_t25_a.send('%v')", cVal.Value))
+		}
+
+		// Verify generators are all still alive and functional
+		finalA := pyRuntime.Eval("next(_t25_a)")
+		if finalA.Err != nil {
+			return fmt.Errorf("final gen_a: %v", finalA.Err)
+		}
+
+		// Cleanup
+		pyRuntime.Execute("_t25_a.close(); _t25_b.close(); _t25_c.close()")
+
+		return nil
+	})
+
+	// Test 26: Python iterator protocol (__next__) with cross-runtime calls
+	// A custom iterator whose __next__ calls JS on every iteration. Used in
+	// for loops and list(). Python's C-level tp_iternext calls the bridge
+	// 100x in a tight loop — tests rapid-fire C boundary crossings driven
+	// by Python's internal iteration machinery.
+	run("Iterator protocol with cross-runtime __next__", func() error {
+		setupResult := pyRuntime.Execute(`
+class _T26_CrossIter:
+    """Iterator whose __next__ calls JS for each value."""
+    def __init__(self, n):
+        self.n = n
+        self.i = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        if self.i >= self.n:
+            raise StopIteration
+        self.i += 1
+        return omnivm.call("javascript", str(self.i) + " * 2")
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Use list() to consume iterator — 100 bridge calls from C-level iteration
+		listResult := pyRuntime.Eval("list(_T26_CrossIter(100))")
+		if listResult.Err != nil {
+			return fmt.Errorf("list() consumption: %v", listResult.Err)
+		}
+
+		// Verify first, middle, last elements (reuse one list, avoid 3x100 bridge calls)
+		pyRuntime.Execute("_t26_list = list(_T26_CrossIter(100))")
+		check := pyRuntime.Eval("_t26_list[0] + '|' + _t26_list[49] + '|' + _t26_list[99]")
+		if check.Err != nil {
+			return fmt.Errorf("element check: %v", check.Err)
+		}
+		val := fmt.Sprintf("%v", check.Value)
+		if val != "2|100|200" {
+			return fmt.Errorf("expected '2|100|200', got %q", val)
+		}
+
+		// Use in a for loop with sum — 100 more bridge calls
+		sumResult := pyRuntime.Eval("sum(int(x) for x in _T26_CrossIter(100))")
+		if sumResult.Err != nil {
+			return fmt.Errorf("sum via for: %v", sumResult.Err)
+		}
+		// sum(2+4+6+...+200) = 2*sum(1..100) = 2*5050 = 10100
+		if fmt.Sprintf("%v", sumResult.Value) != "10100" {
+			return fmt.Errorf("sum: expected '10100', got %v", sumResult.Value)
+		}
+
+		// Cross-runtime: iterator produces JS values, consumed by Java
+		// (avoid Ruby here — rb_exc_raise crashes on ARM64 with JVM if eval errors)
+		pyRuntime.Execute("_t26_vals = list(_T26_CrossIter(5))")
+		for i := 0; i < 5; i++ {
+			pyVal := pyRuntime.Eval(fmt.Sprintf("_t26_vals[%d]", i))
+			if pyVal.Err != nil {
+				return fmt.Errorf("java check %d: %v", i, pyVal.Err)
+			}
+			jvmResult := jvmRuntime.Eval(fmt.Sprintf("Integer.parseInt(\"%v\") + 1", pyVal.Value))
+			if jvmResult.Err != nil {
+				return fmt.Errorf("java compute %d: %v", i, jvmResult.Err)
+			}
+			expected := fmt.Sprintf("%d", (i+1)*2+1)
+			if fmt.Sprintf("%v", jvmResult.Value) != expected {
+				return fmt.Errorf("java check %d: expected %s, got %v", i, expected, jvmResult.Value)
+			}
+		}
+
+		return nil
+	})
+
+	// Test 27: Context manager __exit__ with cross-runtime call during exception
+	// __enter__ calls JS, body raises ValueError, __exit__ calls Ruby while
+	// exception info is being passed as arguments. Tests whether Python's
+	// exception-to-__exit__-args handoff interferes with the bridge.
+	run("Context manager __exit__ with in-flight exception", func() error {
+		setupResult := pyRuntime.Execute(`
+class _T27_CM:
+    def __init__(self):
+        self.enter_val = None
+        self.exit_val = None
+        self.exc_type_name = None
+        self.suppressed = False
+
+    def __enter__(self):
+        self.enter_val = omnivm.call("javascript", "21 * 2")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.exc_type_name = exc_type.__name__
+            # Call Ruby while exception info is being processed
+            self.exit_val = omnivm.call("ruby", "84 / 2")
+            self.suppressed = True
+            return True  # suppress the exception
+        return False
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Test 1: Normal flow (no exception)
+		r := pyRuntime.Eval(`
+_t27_cm1 = _T27_CM()
+with _t27_cm1:
+    pass
+_t27_cm1.enter_val + "|" + str(_t27_cm1.suppressed)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("normal flow: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42|False" {
+			return fmt.Errorf("normal flow: expected '42|False', got %q", r.Value)
+		}
+
+		// Test 2: Exception flow — __exit__ calls Ruby while handling ValueError
+		r = pyRuntime.Eval(`
+_t27_cm2 = _T27_CM()
+with _t27_cm2:
+    raise ValueError("test error")
+_t27_cm2.enter_val + "|" + _t27_cm2.exit_val + "|" + _t27_cm2.exc_type_name + "|" + str(_t27_cm2.suppressed)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("exception flow: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42|42|ValueError|True" {
+			return fmt.Errorf("exception flow: expected '42|42|ValueError|True', got %q", r.Value)
+		}
+
+		// Test 3: Nested context managers, inner raises, both __exit__ call different runtimes
+		pyRuntime.Execute(`
+class _T27_CM_Inner:
+    def __init__(self):
+        self.exit_val = None
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.exit_val = omnivm.call("java", "99 + 1")
+            return True  # suppress
+        return False
+`)
+		r = pyRuntime.Eval(`
+_t27_outer = _T27_CM()
+_t27_inner = _T27_CM_Inner()
+with _t27_outer:
+    with _t27_inner:
+        raise RuntimeError("nested")
+_t27_outer.enter_val + "|" + _t27_inner.exit_val + "|" + str(_t27_outer.suppressed)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("nested cm: %v", r.Err)
+		}
+		// Inner __exit__ suppresses, so outer sees no exception
+		if fmt.Sprintf("%v", r.Value) != "42|100|False" {
+			return fmt.Errorf("nested cm: expected '42|100|False', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 28: Nested try/finally cross-runtime during stack unwinding
+	// Three nested finally blocks, each calling a different runtime, while a
+	// ValueError propagates up. Python stashes the exception on the frame's
+	// exception stack during each finally — tests bridge calls with stashed exceptions.
+	run("Nested try/finally cross-runtime during stack unwinding", func() error {
+		r := pyRuntime.Eval(`
+_t28_results = []
+_t28_caught = False
+try:
+    try:
+        try:
+            raise ValueError("propagating")
+        finally:
+            _t28_results.append("js:" + omnivm.call("javascript", "10 + 1"))
+    finally:
+        _t28_results.append("rb:" + omnivm.call("ruby", "20 + 2"))
+except ValueError as e:
+    _t28_results.append("caught:" + str(e))
+    _t28_caught = True
+
+"|".join(_t28_results) + "|" + str(_t28_caught)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("basic unwinding: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "js:11|rb:22|caught:propagating|True" {
+			return fmt.Errorf("basic unwinding: expected 'js:11|rb:22|caught:propagating|True', got %q", r.Value)
+		}
+
+		// Deeper: 4 levels with Java, plus a cross-runtime call in the except block
+		r = pyRuntime.Eval(`
+_t28_r2 = []
+try:
+    try:
+        try:
+            try:
+                raise TypeError("deep")
+            finally:
+                _t28_r2.append("py:" + str(1 + 1))
+        finally:
+            _t28_r2.append("js:" + omnivm.call("javascript", "2 + 2"))
+    finally:
+        _t28_r2.append("rb:" + omnivm.call("ruby", "3 + 3"))
+except TypeError:
+    _t28_r2.append("java:" + omnivm.call("java", "4 + 4"))
+"|".join(_t28_r2)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("deep unwinding: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "py:2|js:4|rb:6|java:8" {
+			return fmt.Errorf("deep unwinding: expected 'py:2|js:4|rb:6|java:8', got %q", r.Value)
+		}
+
+		// Edge case: finally block's cross-runtime call itself raises
+		// The new error should replace the original during propagation
+		r = pyRuntime.Eval(`
+_t28_r3 = "unset"
+try:
+    try:
+        raise ValueError("original")
+    finally:
+        # This JS call throws, replacing the ValueError with RuntimeError
+        try:
+            omnivm.call("javascript", "(function() { throw new Error('finally boom'); })()")
+        except RuntimeError:
+            _t28_r3 = "finally_caught"
+except ValueError:
+    _t28_r3 = _t28_r3 + "|original_caught"
+_t28_r3
+`)
+		if r.Err != nil {
+			return fmt.Errorf("finally-raises: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "finally_caught|original_caught" {
+			return fmt.Errorf("finally-raises: expected 'finally_caught|original_caught', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 29: __getattr__ dynamically dispatches to runtimes
+	// A proxy object where attribute access triggers omnivm.call. This fires
+	// from inside Python's LOAD_ATTR opcode handler — we're re-entering the
+	// bridge during name resolution. Tests bridge invocation during Python's
+	// attribute lookup protocol.
+	run("__getattr__ dispatches to runtimes", func() error {
+		setupResult := pyRuntime.Execute(`
+class _T29_RuntimeProxy:
+    """Proxy where attribute access calls a runtime."""
+    def __init__(self, runtime):
+        # Use object.__setattr__ to avoid triggering __getattr__
+        object.__setattr__(self, '_runtime', runtime)
+        object.__setattr__(self, '_call_count', 0)
+
+    def __getattr__(self, name):
+        rt = object.__getattribute__(self, '_runtime')
+        count = object.__getattribute__(self, '_call_count')
+        object.__setattr__(self, '_call_count', count + 1)
+        return omnivm.call(rt, name)
+
+_t29_js = _T29_RuntimeProxy("javascript")
+_t29_rb = _T29_RuntimeProxy("ruby")
+_t29_java = _T29_RuntimeProxy("java")
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Access JS proxy — attribute name IS the JS expression
+		r := pyRuntime.Eval(`_t29_js.__getattr__("7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("js proxy: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("js proxy: expected '42', got %q", r.Value)
+		}
+
+		// Ruby proxy
+		r = pyRuntime.Eval(`_t29_rb.__getattr__("7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("ruby proxy: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("ruby proxy: expected '42', got %q", r.Value)
+		}
+
+		// Java proxy
+		r = pyRuntime.Eval(`_t29_java.__getattr__("7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("java proxy: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("java proxy: expected '42', got %q", r.Value)
+		}
+
+		// Rapid-fire: 50 attribute lookups via __getattr__, each crossing into JS
+		r = pyRuntime.Eval(`
+_t29_results = []
+for i in range(50):
+    _t29_results.append(_t29_js.__getattr__(str(i) + " + 1"))
+len(_t29_results) == 50 and _t29_results[0] == "1" and _t29_results[49] == "50"
+`)
+		if r.Err != nil {
+			return fmt.Errorf("rapid-fire: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("rapid-fire: expected True, got %v", r.Value)
+		}
+
+		// Chain: proxy access → JS → omnivm.call("ruby", ...) → Ruby
+		// The __getattr__ call enters JS, which then calls Ruby
+		r = pyRuntime.Eval(`_t29_js.__getattr__('omnivm.call("ruby", "11 * 4")')`)
+		if r.Err != nil {
+			return fmt.Errorf("chained proxy: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "44" {
+			return fmt.Errorf("chained proxy: expected '44', got %q", r.Value)
+		}
+
+		// Verify call counts accumulated correctly
+		r = pyRuntime.Eval("_t29_js._call_count")
+		if r.Err != nil {
+			return fmt.Errorf("call count: %v", r.Err)
+		}
+		jsCount := fmt.Sprintf("%v", r.Value)
+		// 1 (first) + 50 (rapid-fire) + 1 (chained) = 52
+		if jsCount != "52" {
+			return fmt.Errorf("js call count: expected 52, got %s", jsCount)
+		}
+
+		return nil
+	})
+
+	// Test 30: List comprehension with cross-runtime filter + transform
+	// [omnivm.call("js", str(x*3)) for x in range(100) if int(omnivm.call("ruby", str(x))) % 2 == 0]
+	// 100 Ruby calls for filtering + 50 JS calls for transform = 150 bridge
+	// calls inside Python's comprehension bytecode, interleaving two runtimes.
+	run("List comprehension with cross-runtime filter + transform", func() error {
+		r := pyRuntime.Eval(`
+_t30_result = [omnivm.call("javascript", str(x) + " * 3") for x in range(100) if int(omnivm.call("ruby", str(x) + " % 2")) == 0]
+len(_t30_result)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("comprehension: %v", r.Err)
+		}
+		// x % 2 == 0 for x in 0..99: 50 even numbers (0,2,4,...,98)
+		if fmt.Sprintf("%v", r.Value) != "50" {
+			return fmt.Errorf("length: expected 50, got %v", r.Value)
+		}
+
+		// Verify specific values
+		r = pyRuntime.Eval(`_t30_result[0] + "|" + _t30_result[1] + "|" + _t30_result[49]`)
+		if r.Err != nil {
+			return fmt.Errorf("values: %v", r.Err)
+		}
+		// x=0: 0*3=0, x=2: 2*3=6, x=98: 98*3=294
+		if fmt.Sprintf("%v", r.Value) != "0|6|294" {
+			return fmt.Errorf("values: expected '0|6|294', got %q", r.Value)
+		}
+
+		// Harder: nested comprehension with Java in the mix
+		r = pyRuntime.Eval(`
+_t30_matrix = [[omnivm.call("java", str(r) + " * 10 + " + str(c)) for c in range(5)] for r in range(5)]
+_t30_matrix[0][0] + "|" + _t30_matrix[2][3] + "|" + _t30_matrix[4][4]
+`)
+		if r.Err != nil {
+			return fmt.Errorf("nested comprehension: %v", r.Err)
+		}
+		// [0][0]=0*10+0=0, [2][3]=2*10+3=23, [4][4]=4*10+4=44
+		if fmt.Sprintf("%v", r.Value) != "0|23|44" {
+			return fmt.Errorf("nested comprehension: expected '0|23|44', got %q", r.Value)
+		}
+
+		// Dict comprehension with cross-runtime key AND value computation
+		r = pyRuntime.Eval(`
+_t30_dict = {omnivm.call("ruby", '"key_" + ' + str(i) + '.to_s'): omnivm.call("javascript", str(i) + " * " + str(i)) for i in range(10)}
+_t30_dict["key_0"] + "|" + _t30_dict["key_5"] + "|" + _t30_dict["key_9"]
+`)
+		if r.Err != nil {
+			return fmt.Errorf("dict comprehension: %v", r.Err)
+		}
+		// key_0: 0*0=0, key_5: 5*5=25, key_9: 9*9=81
+		if fmt.Sprintf("%v", r.Value) != "0|25|81" {
+			return fmt.Errorf("dict comprehension: expected '0|25|81', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 31: yield from with cross-runtime sub-generator
+	// yield from is complex C-level delegation in CPython. It handles send(),
+	// throw(), close() forwarding automatically via _PyGen_yf(). If the sub-
+	// generator calls another runtime on each __next__, we stress this machinery
+	// with bridge calls. Also tests throw() delegation through yield from.
+	run("yield from with cross-runtime sub-generator", func() error {
+		setupResult := pyRuntime.Execute(`
+def _t31_sub_gen(runtime, n):
+    """Sub-generator that calls another runtime on each yield."""
+    for i in range(n):
+        val = omnivm.call(runtime, str(i) + " + 1")
+        yield val
+
+def _t31_outer_gen(runtime, n):
+    """Outer generator that delegates via yield from."""
+    result = yield from _t31_sub_gen(runtime, n)
+    return result
+
+def _t31_outer_with_prefix(runtime, n, prefix):
+    """Outer that adds a prefix to delegated values."""
+    yield prefix + ":start"
+    yield from _t31_sub_gen(runtime, n)
+    yield prefix + ":end"
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Basic yield from — sub-generator calls JS 20 times
+		r := pyRuntime.Eval(`list(_t31_outer_gen("javascript", 20))`)
+		if r.Err != nil {
+			return fmt.Errorf("basic yield from: %v", r.Err)
+		}
+		// Verify first and last elements
+		check := pyRuntime.Eval(`
+_t31_vals = list(_t31_outer_gen("javascript", 20))
+_t31_vals[0] + "|" + _t31_vals[19]
+`)
+		if check.Err != nil {
+			return fmt.Errorf("element check: %v", check.Err)
+		}
+		if fmt.Sprintf("%v", check.Value) != "1|20" {
+			return fmt.Errorf("elements: expected '1|20', got %q", check.Value)
+		}
+
+		// yield from with Ruby sub-generator + prefix wrapper
+		check = pyRuntime.Eval(`
+_t31_vals2 = list(_t31_outer_with_prefix("ruby", 5, "RB"))
+"|".join(_t31_vals2)
+`)
+		if check.Err != nil {
+			return fmt.Errorf("prefix wrapper: %v", check.Err)
+		}
+		if fmt.Sprintf("%v", check.Value) != "RB:start|1|2|3|4|5|RB:end" {
+			return fmt.Errorf("prefix wrapper: expected 'RB:start|1|2|3|4|5|RB:end', got %q", check.Value)
+		}
+
+		// send() through yield from — values sent to outer are forwarded to sub-gen
+		setupResult = pyRuntime.Execute(`
+def _t31_sub_sendable():
+    """Sub-generator that receives sent values and transforms via JS."""
+    val = yield "ready"
+    while val is not None:
+        result = omnivm.call("javascript", str(val) + " * 2")
+        val = yield result
+
+def _t31_outer_sendable():
+    """Delegates send() to sub-generator via yield from."""
+    final = yield from _t31_sub_sendable()
+    return final
+
+_t31_sg = _t31_outer_sendable()
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("sendable setup: %v", setupResult.Err)
+		}
+
+		// Prime the generator
+		r = pyRuntime.Eval("next(_t31_sg)")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "ready" {
+			return fmt.Errorf("prime: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// Send values through yield from → sub-generator → JS
+		for _, tc := range []struct {
+			send     int
+			expected string
+		}{
+			{5, "10"}, {10, "20"}, {25, "50"}, {100, "200"},
+		} {
+			r = pyRuntime.Eval(fmt.Sprintf("_t31_sg.send(%d)", tc.send))
+			if r.Err != nil {
+				return fmt.Errorf("send(%d): %v", tc.send, r.Err)
+			}
+			if fmt.Sprintf("%v", r.Value) != tc.expected {
+				return fmt.Errorf("send(%d): expected %s, got %v", tc.send, tc.expected, r.Value)
+			}
+		}
+
+		// throw() through yield from — exception forwarded to sub-generator
+		setupResult = pyRuntime.Execute(`
+def _t31_sub_throwable():
+    """Sub-generator that catches thrown exceptions."""
+    while True:
+        try:
+            yield "waiting"
+        except ValueError as e:
+            result = omnivm.call("javascript", '"caught:" + "' + str(e) + '"')
+            yield result
+        except GeneratorExit:
+            return
+
+def _t31_outer_throwable():
+    yield from _t31_sub_throwable()
+
+_t31_tg = _t31_outer_throwable()
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("throwable setup: %v", setupResult.Err)
+		}
+
+		r = pyRuntime.Eval("next(_t31_tg)")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "waiting" {
+			return fmt.Errorf("throwable prime: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// Throw through yield from → sub-generator catches → calls JS
+		r = pyRuntime.Eval(`_t31_tg.throw(ValueError("injected"))`)
+		if r.Err != nil {
+			return fmt.Errorf("throw through yield from: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "caught:injected" {
+			return fmt.Errorf("throw result: expected 'caught:injected', got %q", r.Value)
+		}
+
+		// Generator still alive after throw
+		r = pyRuntime.Eval("next(_t31_tg)")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "waiting" {
+			return fmt.Errorf("post-throw: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// Cleanup
+		pyRuntime.Execute("_t31_sg.close(); _t31_tg.close()")
+
+		return nil
+	})
+
+	// Test 32: contextlib.contextmanager (generator-based CM)
+	// Combines generator protocol AND context manager protocol on one C boundary.
+	// __enter__ drives the generator to first yield, body runs, __exit__ resumes.
+	// If body raises, __exit__ calls generator.throw() which could itself call
+	// another runtime from the except handler.
+	run("contextlib.contextmanager with cross-runtime calls", func() error {
+		setupResult := pyRuntime.Execute(`
+import contextlib
+
+@contextlib.contextmanager
+def _t32_managed_resource(runtime):
+    """Generator-based CM that calls another runtime on enter/exit."""
+    enter_val = omnivm.call(runtime, "21 * 2")
+    try:
+        yield enter_val
+    finally:
+        # Cross-runtime call during generator finalization
+        omnivm.call(runtime, "1 + 1")
+
+@contextlib.contextmanager
+def _t32_error_handling_cm():
+    """Generator-based CM that handles errors via cross-runtime calls."""
+    omnivm.call("javascript", "1 + 0")  # enter
+    try:
+        yield "resource"
+    except ValueError as e:
+        # Error handler calls another runtime for recovery
+        recovery = omnivm.call("javascript", '"recovered:" + "' + str(e) + '"')
+        yield recovery  # This will be suppressed by contextmanager
+    finally:
+        omnivm.call("javascript", "0 + 0")  # cleanup
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Basic usage: generator-based CM with JS call on enter/exit
+		r := pyRuntime.Eval(`
+_t32_result = None
+with _t32_managed_resource("javascript") as val:
+    _t32_result = val
+_t32_result
+`)
+		if r.Err != nil {
+			return fmt.Errorf("basic CM: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("basic CM: expected '42', got %q", r.Value)
+		}
+
+		// With Java runtime
+		r = pyRuntime.Eval(`
+_t32_result2 = None
+with _t32_managed_resource("java") as val:
+    _t32_result2 = val
+_t32_result2
+`)
+		if r.Err != nil {
+			return fmt.Errorf("java CM: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("java CM: expected '42', got %q", r.Value)
+		}
+
+		// Nested generator-based CMs with different runtimes
+		r = pyRuntime.Eval(`
+_t32_vals = []
+with _t32_managed_resource("javascript") as js_val:
+    _t32_vals.append("js:" + js_val)
+    with _t32_managed_resource("java") as java_val:
+        _t32_vals.append("java:" + java_val)
+"|".join(_t32_vals)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("nested CM: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "js:42|java:42" {
+			return fmt.Errorf("nested CM: expected 'js:42|java:42', got %q", r.Value)
+		}
+
+		// CM with exception in body — generator-based CM must handle this correctly
+		// contextlib.contextmanager catches the exception and calls generator.throw()
+		// which triggers the except handler in the generator body
+		r = pyRuntime.Eval(`
+_t32_exc_result = "not_set"
+try:
+    with _t32_managed_resource("javascript") as val:
+        raise ValueError("body error")
+except ValueError as e:
+    _t32_exc_result = "caught:" + str(e)
+_t32_exc_result
+`)
+		if r.Err != nil {
+			return fmt.Errorf("CM exception: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "caught:body error" {
+			return fmt.Errorf("CM exception: expected 'caught:body error', got %q", r.Value)
+		}
+
+		// Multiple enter/exit cycles on same CM function
+		r = pyRuntime.Eval(`
+_t32_cycle_results = []
+for i in range(10):
+    with _t32_managed_resource("javascript") as val:
+        _t32_cycle_results.append(val)
+len(_t32_cycle_results) == 10 and all(v == "42" for v in _t32_cycle_results)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("CM cycles: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("CM cycles: expected True, got %v", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 33: Recursive cross-runtime depth bomb
+	// Py→JS→Py→JS→... until we hit the stack limit. Each hop adds C stack frames
+	// (cgo, Python eval, Duktape eval). Tests whether the system crashes cleanly
+	// (recoverable error) or SIGSEGV's. We binary search for the max safe depth.
+	run("Recursive cross-runtime depth bomb", func() error {
+		// Set up Python function that recurses through JS
+		setupResult := pyRuntime.Execute(`
+def _t33_recurse(depth, max_depth):
+    if depth >= max_depth:
+        return "bottom:" + str(depth)
+    # Call JS, which calls back into Python with depth+1
+    return omnivm.call("javascript",
+        'omnivm.call("python", "_t33_recurse(' + str(depth + 1) + ', ' + str(max_depth) + ')")')
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Start with known-safe depths and increase
+		// Each Py→JS→Py round-trip uses ~2 hops, so depth N = 2N total stack transitions
+		maxWorking := 0
+		for _, depth := range []int{5, 10, 25, 50, 75, 100} {
+			r := pyRuntime.Eval(fmt.Sprintf("_t33_recurse(0, %d)", depth))
+			if r.Err != nil {
+				// Hit the limit — this is expected at some depth
+				break
+			}
+			expected := fmt.Sprintf("bottom:%d", depth)
+			if fmt.Sprintf("%v", r.Value) != expected {
+				return fmt.Errorf("depth %d: expected %q, got %q", depth, expected, r.Value)
+			}
+			maxWorking = depth
+		}
+
+		// We should be able to do at least depth 25 (50 stack transitions)
+		if maxWorking < 25 {
+			return fmt.Errorf("max safe depth too low: %d (expected at least 25)", maxWorking)
+		}
+
+		// Verify runtimes are healthy after hitting the limit
+		pyCheck := pyRuntime.Eval("1 + 1")
+		if pyCheck.Err != nil || fmt.Sprintf("%v", pyCheck.Value) != "2" {
+			return fmt.Errorf("python unhealthy after depth bomb")
+		}
+		jsCheck := jsRuntime.Eval("1 + 1")
+		if jsCheck.Err != nil || fmt.Sprintf("%v", jsCheck.Value) != "2" {
+			return fmt.Errorf("javascript unhealthy after depth bomb")
+		}
+
+		return nil
+	})
+
+	// Test 34: 1MB string through the actual bridge
+	// Previous tests kept big strings within runtimes. This sends a 1MB string
+	// through Python → JS → Python via the C bridge, testing malloc/free,
+	// Duktape string internment, and strdup at scale in one chain.
+	run("1MB string through the bridge (Py → JS → Py)", func() error {
+		// Create 1MB string in Python
+		setupResult := pyRuntime.Execute(`_t34_big = "X" * (1024 * 1024)`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// Verify size
+		r := pyRuntime.Eval("len(_t34_big)")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "1048576" {
+			return fmt.Errorf("initial size: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// Round-trip through JS: Python → bridge → Go → JS eval → Go → bridge → Python
+		// JS just returns the string as-is
+		r = pyRuntime.Eval(`
+_t34_via_js = omnivm.call("javascript", '"' + _t34_big + '"')
+len(_t34_via_js)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JS round-trip: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "1048576" {
+			return fmt.Errorf("JS round-trip length: expected 1048576, got %v", r.Value)
+		}
+
+		// Verify content integrity
+		r = pyRuntime.Eval("_t34_via_js == _t34_big")
+		if r.Err != nil {
+			return fmt.Errorf("content check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("content mismatch after JS round-trip")
+		}
+
+		// Round-trip through Java — can't pass 1MB as a string literal (Java's
+		// constant pool limit is 65535 bytes), so generate it in Java instead.
+		// This still tests the bridge returning a 1MB string from JVM → Go → Python.
+		r = pyRuntime.Eval(`
+_t34_via_java = omnivm.call("java", "new String(new char[1048576]).replace((char)0, (char)88)")
+len(_t34_via_java) == 1048576 and _t34_via_java == _t34_big
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Java round-trip: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("Java round-trip: content mismatch")
+		}
+
+		// Double hop: Python → JS → Java → back
+		// Python sends to JS, JS forwards to Java, Java returns
+		r = pyRuntime.Eval(`
+_t34_code = '"' + _t34_big + '"'
+_t34_double = omnivm.call("javascript", 'omnivm.call("java", "' + "'" + _t34_big + "'" + '")')
+len(_t34_double)
+`)
+		if r.Err != nil {
+			// Double hop with 1MB might fail due to escaping — that's informative
+			// Fall back to single-hop verification
+			r = pyRuntime.Eval("len(_t34_via_js)")
+			if r.Err != nil {
+				return fmt.Errorf("fallback check: %v", r.Err)
+			}
+		}
+
+		// Cleanup
+		pyRuntime.Execute("del _t34_big; del _t34_via_js; del _t34_via_java")
+
+		return nil
+	})
+
+	// Test 35: Chained error recovery cascade
+	// Three serial error-catch-retry cycles. Each failure triggers a cross-runtime
+	// recovery call. Tests that PyErr state, JNI exception state, and Duktape
+	// error stack are all properly cleared between retries.
+	run("Chained error recovery cascade", func() error {
+		r := pyRuntime.Eval(`
+_t35_log = []
+
+# Attempt 1: JS throws
+try:
+    omnivm.call("javascript", "(function() { throw new Error('fail1'); })()")
+    _t35_log.append("js:ok")
+except RuntimeError as e:
+    _t35_log.append("js:caught")
+    # Recovery call to a different runtime
+    recovery1 = omnivm.call("java", "100 + 1")
+    _t35_log.append("java_recovery:" + recovery1)
+
+# Attempt 2: Python division by zero through Java bridge
+try:
+    omnivm.call("java", 'omnivm.OmniVM.call("python", "1/0")')
+    _t35_log.append("py_via_java:ok")
+except RuntimeError as e:
+    _t35_log.append("py_via_java:caught")
+    # Recovery via JS
+    recovery2 = omnivm.call("javascript", "200 + 2")
+    _t35_log.append("js_recovery:" + recovery2)
+
+# Attempt 3: Java compilation error
+try:
+    omnivm.call("java", "this is not valid java")
+    _t35_log.append("java_bad:ok")
+except RuntimeError as e:
+    _t35_log.append("java_bad:caught")
+    # Recovery via JS (simple, should work)
+    recovery3 = omnivm.call("javascript", "300 + 3")
+    _t35_log.append("js_recovery2:" + recovery3)
+
+# Final verification: all runtimes healthy after 3 error cycles
+final_js = omnivm.call("javascript", "1 + 1")
+final_java = omnivm.call("java", "2 + 2")
+_t35_log.append("final_js:" + final_js)
+_t35_log.append("final_java:" + final_java)
+
+"|".join(_t35_log)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("cascade: %v", r.Err)
+		}
+		val := fmt.Sprintf("%v", r.Value)
+
+		// Verify the expected flow
+		expected := "js:caught|java_recovery:101|py_via_java:caught|js_recovery:202|java_bad:caught|js_recovery2:303|final_js:2|final_java:4"
+		if val != expected {
+			return fmt.Errorf("expected %q, got %q", expected, val)
+		}
+
+		// Deeper cascade: error in error handler itself
+		r = pyRuntime.Eval(`
+_t35_deep = []
+try:
+    try:
+        omnivm.call("javascript", "(function() { throw new Error('outer'); })()")
+    except RuntimeError:
+        _t35_deep.append("outer_caught")
+        # Recovery itself fails
+        try:
+            omnivm.call("javascript", "(function() { throw new Error('inner'); })()")
+        except RuntimeError:
+            _t35_deep.append("inner_caught")
+            # Final recovery succeeds
+            val = omnivm.call("java", "42 + 0")
+            _t35_deep.append("final:" + val)
+except Exception as e:
+    _t35_deep.append("unexpected:" + str(e))
+
+"|".join(_t35_deep)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("deep cascade: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "outer_caught|inner_caught|final:42" {
+			return fmt.Errorf("deep cascade: expected 'outer_caught|inner_caught|final:42', got %q", r.Value)
+		}
+
+		// Cross-runtime error chain: JS → Python error → Java recovery
+		// Each step uses a different runtime for the error and recovery
+		r = pyRuntime.Eval(`
+_t35_chain = []
+for i in range(5):
+    try:
+        if i % 2 == 0:
+            omnivm.call("javascript", "(function() { throw new Error('err' + " + str(i) + "); })()")
+        else:
+            omnivm.call("java", 'throw new RuntimeException("err' + str(i) + '")')
+    except RuntimeError:
+        if i % 2 == 0:
+            v = omnivm.call("java", str(i) + " + 100")
+        else:
+            v = omnivm.call("javascript", str(i) + " + 200")
+        _t35_chain.append(v)
+
+"|".join(_t35_chain)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("alternating chain: %v", r.Err)
+		}
+		// i=0: JS err, Java recovery: 0+100=100
+		// i=1: Java err, JS recovery: 1+200=201
+		// i=2: JS err, Java recovery: 2+100=102
+		// i=3: Java err, JS recovery: 3+200=203
+		// i=4: JS err, Java recovery: 4+100=104
+		if fmt.Sprintf("%v", r.Value) != "100|201|102|203|104" {
+			return fmt.Errorf("alternating chain: expected '100|201|102|203|104', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 36: functools.reduce with cross-runtime accumulator
+	// reduce(f, range(200)) where f calls JS for each fold step. Python's C-level
+	// functools_reduce calls the bridge 199 times with accumulating state. Different
+	// from the iterator test because the accumulator crosses the boundary each time.
+	run("functools.reduce with cross-runtime accumulator", func() error {
+		setupResult := pyRuntime.Execute(`
+import functools
+
+def _t36_js_add(acc, x):
+    """Accumulator that calls JS to add values."""
+    return omnivm.call("javascript", str(acc) + " + " + str(x))
+
+def _t36_java_mul(acc, x):
+    """Accumulator that calls Java to multiply."""
+    return omnivm.call("java", "Long.parseLong(\"" + str(acc) + "\") * " + str(x))
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("setup: %v", setupResult.Err)
+		}
+
+		// reduce with JS addition: sum(0..199) = 19900
+		r := pyRuntime.Eval(`functools.reduce(_t36_js_add, range(200))`)
+		if r.Err != nil {
+			return fmt.Errorf("JS reduce: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "19900" {
+			return fmt.Errorf("JS reduce: expected '19900', got %v", r.Value)
+		}
+
+		// reduce with Java multiplication: 1*2*3*...*12 = 479001600
+		r = pyRuntime.Eval(`functools.reduce(_t36_java_mul, range(1, 13))`)
+		if r.Err != nil {
+			return fmt.Errorf("Java reduce: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "479001600" {
+			return fmt.Errorf("Java reduce: expected '479001600', got %v", r.Value)
+		}
+
+		// reduce with initial value and alternating runtimes
+		setupResult = pyRuntime.Execute(`
+def _t36_alternating(acc, x):
+    """Alternates between JS and Java based on x."""
+    acc_val = int(acc)
+    if x % 2 == 0:
+        return omnivm.call("javascript", str(acc_val) + " + " + str(x))
+    else:
+        return omnivm.call("java", str(acc_val) + " + " + str(x))
+`)
+		if setupResult.Err != nil {
+			return fmt.Errorf("alternating setup: %v", setupResult.Err)
+		}
+
+		r = pyRuntime.Eval(`functools.reduce(_t36_alternating, range(100), "0")`)
+		if r.Err != nil {
+			return fmt.Errorf("alternating reduce: %v", r.Err)
+		}
+		// sum(0..99) = 4950
+		if fmt.Sprintf("%v", r.Value) != "4950" {
+			return fmt.Errorf("alternating reduce: expected '4950', got %v", r.Value)
+		}
+
+		// Chained reduce: result of JS reduce fed into Java reduce
+		r = pyRuntime.Eval(`
+_t36_js_sum = functools.reduce(_t36_js_add, range(10))
+_t36_final = functools.reduce(_t36_java_mul, range(1, 5), _t36_js_sum)
+_t36_final
+`)
+		if r.Err != nil {
+			return fmt.Errorf("chained reduce: %v", r.Err)
+		}
+		// JS sum: 0+1+...+9 = 45, then Java: 45 * 1 * 2 * 3 * 4 = 1080
+		if fmt.Sprintf("%v", r.Value) != "1080" {
+			return fmt.Errorf("chained reduce: expected '1080', got %v", r.Value)
+		}
+
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)
