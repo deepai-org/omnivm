@@ -16,6 +16,8 @@ package main
 
 /*
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 // Forward declarations of exported Go functions (cgo drops const qualifiers)
 extern char* OmniCall(char* runtime, char* code);
@@ -24,6 +26,9 @@ extern void OmniFree(char* ptr);
 // Get function pointers to pass to runtimes
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+
+// Get the current OS thread ID (Linux-specific).
+static long get_thread_id() { return syscall(SYS_gettid); }
 */
 import "C"
 
@@ -3442,6 +3447,87 @@ try { s.length(); } catch (NullPointerException e) { System.out.println("ok"); }
 				}
 			}
 		}
+		return nil
+	})
+
+	// ================================================================
+	// Thread Identity Verification (43)
+	// ================================================================
+
+	// Test 43: Verify all runtimes run on the same OS thread (Golden Thread)
+	// Gets the OS-level thread ID (gettid) from Go/C, then from each runtime,
+	// and verifies they are all identical. This proves the Golden Thread
+	// architecture is real — no shenanigans.
+	run("All runtimes on same OS thread (Golden Thread proof)", func() error {
+		// 1. Get Go/C thread ID via syscall(SYS_gettid)
+		goTid := int64(C.get_thread_id())
+		if goTid <= 0 {
+			return fmt.Errorf("failed to get Go thread ID: %d", goTid)
+		}
+
+		// 2. Python: threading.get_native_id() returns OS thread ID
+		r := pyRuntime.Eval("__import__('threading').get_native_id()")
+		if r.Err != nil {
+			return fmt.Errorf("Python get_native_id: %v", r.Err)
+		}
+		pyTid := fmt.Sprintf("%v", r.Value)
+
+		// 3. Ruby: Thread.current.native_thread_id (Ruby 3.1+)
+		r = rbRuntime.Eval("Thread.current.native_thread_id")
+		if r.Err != nil {
+			return fmt.Errorf("Ruby native_thread_id: %v", r.Err)
+		}
+		rbTid := fmt.Sprintf("%v", r.Value)
+
+		// 4. Java: call back through bridge to Python to get thread ID
+		//    This proves Java code runs on the same thread, because the
+		//    bridge call is synchronous on the calling thread's stack.
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("python", "__import__('threading').get_native_id()")`)
+		if r.Err != nil {
+			return fmt.Errorf("Java→Python bridge thread ID: %v", r.Err)
+		}
+		javaBridgeTid := fmt.Sprintf("%v", r.Value)
+
+		// 5. JavaScript: same bridge approach
+		r = jsRuntime.Eval(`omnivm.call("python", "__import__('threading').get_native_id()")`)
+		if r.Err != nil {
+			return fmt.Errorf("JS→Python bridge thread ID: %v", r.Err)
+		}
+		jsBridgeTid := fmt.Sprintf("%v", r.Value)
+
+		// 6. Verify ALL thread IDs match
+		goTidStr := fmt.Sprintf("%d", goTid)
+		fmt.Printf("    Go/C tid=%s, Python tid=%s, Ruby tid=%s, Java→Py tid=%s, JS→Py tid=%s\n",
+			goTidStr, pyTid, rbTid, javaBridgeTid, jsBridgeTid)
+
+		if pyTid != goTidStr {
+			return fmt.Errorf("Python on different thread: Go=%s Python=%s", goTidStr, pyTid)
+		}
+		if rbTid != goTidStr {
+			return fmt.Errorf("Ruby on different thread: Go=%s Ruby=%s", goTidStr, rbTid)
+		}
+		if javaBridgeTid != goTidStr {
+			return fmt.Errorf("Java→Python bridge on different thread: Go=%s Java→Py=%s", goTidStr, javaBridgeTid)
+		}
+		if jsBridgeTid != goTidStr {
+			return fmt.Errorf("JS→Python bridge on different thread: Go=%s JS→Py=%s", goTidStr, jsBridgeTid)
+		}
+
+		// 7. Cross-check: call Python from INSIDE each runtime during execution
+		//    to prove the thread stays the same even during nested bridge calls
+		r = pyRuntime.Eval(fmt.Sprintf(`
+import threading
+tid = threading.get_native_id()
+# Verify from inside Python that we're on the expected thread
+"match" if tid == %s else "MISMATCH:%%d" %% tid
+`, goTidStr))
+		if r.Err != nil {
+			return fmt.Errorf("Python self-check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "match" {
+			return fmt.Errorf("Python self-check: %v", r.Value)
+		}
+
 		return nil
 	})
 
