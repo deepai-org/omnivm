@@ -3153,6 +3153,298 @@ _t36_final
 		return nil
 	})
 
+	// ================================================================
+	// Signal Handling Stress Tests (37-42)
+	// ================================================================
+
+	// Test 37: Python interrupt stops infinite loop
+	// Verifies the pipe-based interrupt can break a tight Python loop.
+	// This is the core mechanism behind task timeouts.
+	run("Python interrupt stops infinite loop", func() error {
+		pyRuntime.ClearInterrupt() // drain any stale state
+
+		// Test A: interrupt from Go goroutine (via pipe mechanism)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			pyRuntime.Interrupt()
+		}()
+		start := time.Now()
+		r := pyRuntime.Execute(`
+_t37_started = True
+_t37_interrupted = False
+_t37_i = 0
+try:
+    while True:
+        _t37_i += 1
+except KeyboardInterrupt:
+    _t37_interrupted = True
+`)
+		elapsed := time.Since(start)
+		if r.Err != nil {
+			return fmt.Errorf("execute error: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t37_started")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("loop didn't start: %v", r.Value)
+		}
+		r = pyRuntime.Eval("_t37_interrupted")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("loop wasn't interrupted: %v", r.Value)
+		}
+		if elapsed > 5*time.Second {
+			return fmt.Errorf("took too long: %v", elapsed)
+		}
+
+		// Test B: interrupt from Python Timer thread (self-contained)
+		pyRuntime.ClearInterrupt()
+		r = pyRuntime.Execute(`
+import threading, _thread
+_t37b_ok = False
+_t37b_i = 0
+threading.Timer(0.05, _thread.interrupt_main).start()
+try:
+    while True:
+        _t37b_i += 1
+except KeyboardInterrupt:
+    _t37b_ok = True
+`)
+		if r.Err != nil {
+			return fmt.Errorf("timer interrupt error: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t37b_ok")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("timer interrupt not caught: %v", r.Value)
+		}
+
+		// Verify Python is still healthy after interrupts
+		r = pyRuntime.Eval("42 + 1")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "43" {
+			return fmt.Errorf("Python unhealthy after interrupt: err=%v val=%v", r.Err, r.Value)
+		}
+		return nil
+	})
+
+	// Test 38: JVM NullPointerException triggers SIGSEGV — Ruby survives
+	// JVM uses SIGSEGV internally for NullPointerException safepoint traps.
+	// With libjsig.so, this should chain properly and not crash Ruby.
+	run("JVM NPE (SIGSEGV) does not crash Ruby", func() error {
+		// First, verify Ruby works
+		r := rbRuntime.Eval("100 + 1")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "101" {
+			return fmt.Errorf("Ruby pre-check: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// Trigger a NullPointerException in Java — this fires SIGSEGV internally
+		r = jvmRuntime.Execute(`
+String s = null;
+try {
+    int len = s.length();
+    System.out.println("should not reach");
+} catch (NullPointerException e) {
+    System.out.println("caught:" + e.getClass().getSimpleName());
+}
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM NPE: %v", r.Err)
+		}
+		if !strings.Contains(r.Output, "caught:NullPointerException") {
+			return fmt.Errorf("JVM NPE: expected 'caught:NullPointerException', got %q", r.Output)
+		}
+
+		// Critical: verify Ruby still works after JVM SIGSEGV
+		r = rbRuntime.Eval("200 + 2")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "202" {
+			return fmt.Errorf("Ruby post-NPE: err=%v val=%v", r.Err, r.Value)
+		}
+
+		// And Python
+		r = pyRuntime.Eval("300 + 3")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "303" {
+			return fmt.Errorf("Python post-NPE: err=%v val=%v", r.Err, r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 39: Rapid JVM NPE + Ruby interleave (100 cycles)
+	// Stress tests libjsig.so signal chaining under rapid SIGSEGV fire.
+	run("Rapid JVM NPE + Ruby interleave (100 cycles)", func() error {
+		for i := 0; i < 100; i++ {
+			// JVM: trigger NPE (SIGSEGV internally)
+			r := jvmRuntime.Execute(`
+String s = null;
+try { s.length(); } catch (NullPointerException e) {}
+System.out.println("ok");
+`)
+			if r.Err != nil {
+				return fmt.Errorf("cycle %d JVM NPE: %v", i, r.Err)
+			}
+
+			// Ruby: immediately after JVM's SIGSEGV handler ran
+			r = rbRuntime.Eval(fmt.Sprintf("%d + 1", i))
+			if r.Err != nil {
+				return fmt.Errorf("cycle %d Ruby: %v", i, r.Err)
+			}
+			expected := fmt.Sprintf("%d", i+1)
+			if fmt.Sprintf("%v", r.Value) != expected {
+				return fmt.Errorf("cycle %d Ruby: expected %s, got %v", i, expected, r.Value)
+			}
+		}
+		return nil
+	})
+
+	// Test 40: Python interrupt recovery during bridge call
+	// Uses Python Timer to send interrupt while in a loop doing cross-runtime calls.
+	// The interrupt fires between bytecode checks and is caught by try/except.
+	run("Python interrupt recovery during bridge call", func() error {
+		pyRuntime.ClearInterrupt() // drain any stale state
+
+		// Python Timer fires interrupt while bridge call loop runs
+		r := pyRuntime.Execute(`
+import threading, _thread
+_t40_result = None
+_t40_caught = False
+threading.Timer(0.03, _thread.interrupt_main).start()
+try:
+    for _t40_i in range(10000):
+        _t40_result = omnivm.call("javascript", "1 + 1")
+except KeyboardInterrupt:
+    _t40_caught = True
+`)
+		if r.Err != nil {
+			return fmt.Errorf("execute: %v", r.Err)
+		}
+
+		// Either the loop completed or was interrupted — both are valid
+		r = pyRuntime.Eval("_t40_caught or _t40_result == '2'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("neither completed nor caught interrupt: %v", r.Value)
+		}
+
+		// Verify Python is healthy
+		r = pyRuntime.Eval("'healthy'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "healthy" {
+			return fmt.Errorf("Python unhealthy: err=%v val=%v", r.Err, r.Value)
+		}
+		return nil
+	})
+
+	// Test 41: JVM exception + Ruby error + Python interrupt — all in sequence
+	// Triple signal stress: JVM SIGSEGV (NPE), Ruby error handling (rb_protect),
+	// Python interrupt — verify all three signal-adjacent mechanisms work
+	// back-to-back without corrupting each other's handler state.
+	run("Triple signal stress: JVM NPE + Ruby error + Python interrupt", func() error {
+		pyRuntime.ClearInterrupt() // drain any stale state from test 40
+		// 1. JVM NPE (SIGSEGV internally)
+		r := jvmRuntime.Execute(`
+String s = null;
+try { s.length(); } catch (NullPointerException e) { System.out.println("npe_ok"); }
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM NPE: %v", r.Err)
+		}
+		if !strings.Contains(r.Output, "npe_ok") {
+			return fmt.Errorf("JVM NPE: got %q", r.Output)
+		}
+
+		// 2. Ruby error (exercises rb_protect error handler)
+		r = rbRuntime.Eval("raise 'test_error' rescue $!.message")
+		if r.Err != nil {
+			return fmt.Errorf("Ruby error: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "test_error" {
+			return fmt.Errorf("Ruby error: expected 'test_error', got %v", r.Value)
+		}
+
+		// 3. Python interrupt (self-contained via Python Timer)
+		pyRuntime.ClearInterrupt()
+		r = pyRuntime.Execute(`
+import threading, _thread
+_t41_ok = False
+_t41_i = 0
+threading.Timer(0.02, _thread.interrupt_main).start()
+try:
+    while True:
+        _t41_i += 1
+except KeyboardInterrupt:
+    _t41_ok = True
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Python interrupt: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t41_ok")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "True" {
+			return fmt.Errorf("Python interrupt failed: %v", r.Value)
+		}
+
+		// 4. Verify ALL runtimes still work after the triple stress
+		r = jvmRuntime.Eval("1 + 2 + 3")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "6" {
+			return fmt.Errorf("JVM post-stress: err=%v val=%v", r.Err, r.Value)
+		}
+		r = rbRuntime.Eval("4 + 5 + 6")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "15" {
+			return fmt.Errorf("Ruby post-stress: err=%v val=%v", r.Err, r.Value)
+		}
+		r = pyRuntime.Eval("7 + 8 + 9")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "24" {
+			return fmt.Errorf("Python post-stress: err=%v val=%v", r.Err, r.Value)
+		}
+		r = jsRuntime.Eval("10 + 11 + 12")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "33" {
+			return fmt.Errorf("JS post-stress: err=%v val=%v", r.Err, r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 42: Sustained JVM NPE storm with cross-runtime verification
+	// 500 NPEs interleaved with calls to all four runtimes, testing that
+	// signal handler chaining holds up under sustained SIGSEGV fire.
+	run("Sustained JVM NPE storm (500 cycles, all runtimes)", func() error {
+		for i := 0; i < 500; i++ {
+			// JVM NPE
+			r := jvmRuntime.Execute(`
+String s = null;
+try { s.length(); } catch (NullPointerException e) { System.out.println("ok"); }
+`)
+			if r.Err != nil {
+				return fmt.Errorf("cycle %d JVM: %v", i, r.Err)
+			}
+
+			// Every 50th cycle, verify all runtimes
+			if i%50 == 49 {
+				r = pyRuntime.Eval(fmt.Sprintf("%d * 2", i))
+				if r.Err != nil {
+					return fmt.Errorf("cycle %d Python: %v", i, r.Err)
+				}
+				expected := fmt.Sprintf("%d", i*2)
+				if fmt.Sprintf("%v", r.Value) != expected {
+					return fmt.Errorf("cycle %d Python: expected %s, got %v", i, expected, r.Value)
+				}
+
+				r = rbRuntime.Eval(fmt.Sprintf("%d + 10", i))
+				if r.Err != nil {
+					return fmt.Errorf("cycle %d Ruby: %v", i, r.Err)
+				}
+				expected = fmt.Sprintf("%d", i+10)
+				if fmt.Sprintf("%v", r.Value) != expected {
+					return fmt.Errorf("cycle %d Ruby: expected %s, got %v", i, expected, r.Value)
+				}
+
+				r = jsRuntime.Eval(fmt.Sprintf("%d + 100", i))
+				if r.Err != nil {
+					return fmt.Errorf("cycle %d JS: %v", i, r.Err)
+				}
+				expected = fmt.Sprintf("%d", i+100)
+				if fmt.Sprintf("%v", r.Value) != expected {
+					return fmt.Errorf("cycle %d JS: expected %s, got %v", i, expected, r.Value)
+				}
+			}
+		}
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)

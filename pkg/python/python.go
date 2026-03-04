@@ -8,6 +8,8 @@ package python
 #cgo pkg-config: python3-embed
 #include <Python.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 // Bridge callback pointer — set via omnivm_py_set_bridge_callback().
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -252,6 +254,61 @@ static void omnivm_py_set_bridge_callback(omni_call_fn call_fn, omni_free_fn fre
     g_bridge_call = call_fn;
     g_bridge_free = free_fn;
 }
+
+// Pipe-based interrupt mechanism.
+// PyErr_SetInterrupt() from a non-Python thread (cgo) fails because
+// _PyRuntimeState_GetThreadState() returns NULL, so eval_breaker is
+// never set. Instead, we use a pipe: Go writes a byte, a Python daemon
+// thread reads it and calls _thread.interrupt_main() which has a proper
+// thread state and correctly triggers eval_breaker.
+static int interrupt_pipe[2] = {-1, -1};
+
+// Create the interrupt pipe and start a Python daemon thread that waits
+// for bytes and calls _thread.interrupt_main(). Must be called after
+// Py_InitializeEx and signal handler setup.
+static void omnivm_py_setup_interrupt(void) {
+    if (pipe(interrupt_pipe) != 0) return;
+    char code[512];
+    snprintf(code, sizeof(code),
+        "import threading, os, _thread\n"
+        "def _omnivm_interrupt_watcher():\n"
+        "    while True:\n"
+        "        os.read(%d, 1)\n"
+        "        _thread.interrupt_main()\n"
+        "_t = threading.Thread(target=_omnivm_interrupt_watcher, daemon=True)\n"
+        "_t.start()\n",
+        interrupt_pipe[0]);
+    PyRun_SimpleString(code);
+}
+
+// Signal the Python interrupt watcher thread. Safe from any thread,
+// no GIL or thread state required — just a write() to a pipe fd.
+static void omnivm_py_interrupt(void) {
+    if (interrupt_pipe[1] >= 0) {
+        char c = 1;
+        (void)write(interrupt_pipe[1], &c, 1);
+    }
+}
+
+// Drain any stale interrupt: empty the pipe, wait for the watcher thread
+// to finish processing any byte it already read, then absorb any pending
+// KeyboardInterrupt. Call this before code that must not be interrupted
+// by a prior test's leftover interrupt.
+static void omnivm_py_clear_interrupt(void) {
+    // Drain unread bytes from the pipe (non-blocking)
+    if (interrupt_pipe[0] >= 0) {
+        char buf[16];
+        int flags = fcntl(interrupt_pipe[0], F_GETFL, 0);
+        fcntl(interrupt_pipe[0], F_SETFL, flags | O_NONBLOCK);
+        while (read(interrupt_pipe[0], buf, sizeof(buf)) > 0) {}
+        fcntl(interrupt_pipe[0], F_SETFL, flags);
+    }
+    // Wait for watcher thread to process any byte it already read
+    usleep(10000); // 10ms
+    // Absorb any KeyboardInterrupt already queued by the watcher thread
+    PyRun_SimpleString("try:\n pass\nexcept KeyboardInterrupt:\n pass");
+    PyErr_Clear();
+}
 */
 import "C"
 import (
@@ -264,12 +321,17 @@ import (
 // Pre-allocated C strings to avoid repeated malloc in hot paths.
 // These are allocated once and never freed (process-lifetime).
 var (
-	cImportOmnivm *C.char
-	cPumpCode     *C.char
+	cImportOmnivm   *C.char
+	cSetupInterrupt *C.char
+	cPumpCode       *C.char
 )
 
 func init() {
 	cImportOmnivm = C.CString("import omnivm")
+	// Install Python's default SIGINT handler so _thread.interrupt_main() works.
+	// Py_InitializeEx(0) skips signal handler setup, leaving the handler table
+	// empty. Without this, _thread.interrupt_main() has no handler to invoke.
+	cSetupInterrupt = C.CString("import signal; signal.signal(signal.SIGINT, signal.default_int_handler)")
 	cPumpCode = C.CString(`
 import asyncio
 try:
@@ -317,6 +379,14 @@ func (r *Runtime) Initialize() error {
 	// Register the omnivm Python module and import it into __main__
 	C.omnivm_py_register_bridge()
 	C.PyRun_SimpleString(cImportOmnivm)
+
+	// Install Python's default SIGINT handler so _thread.interrupt_main() works.
+	C.PyRun_SimpleString(cSetupInterrupt)
+
+	// Set up pipe-based interrupt: a daemon thread reads from a pipe and
+	// calls _thread.interrupt_main(). This lets Go's Interrupt() work from
+	// any goroutine without needing the GIL or a Python thread state.
+	C.omnivm_py_setup_interrupt()
 
 	r.initialized = true
 	return nil
@@ -410,10 +480,20 @@ func (r *Runtime) Pump() {
 }
 
 // Interrupt raises a KeyboardInterrupt in Python at the next bytecode check.
-// Safe to call from any goroutine (PyErr_SetInterrupt is async-signal-safe).
+// Writes a byte to the interrupt pipe; a Python daemon thread reads it and
+// calls _thread.interrupt_main(). Safe from any goroutine — no GIL needed.
 func (r *Runtime) Interrupt() {
 	if r.initialized {
-		C.PyErr_SetInterrupt()
+		C.omnivm_py_interrupt()
+	}
+}
+
+// ClearInterrupt drains any stale interrupt from the pipe and absorbs any
+// pending KeyboardInterrupt. Use between tests or after timed interrupts
+// where the interrupt goroutine may fire after the target code returns.
+func (r *Runtime) ClearInterrupt() {
+	if r.initialized {
+		C.omnivm_py_clear_interrupt()
 	}
 }
 
