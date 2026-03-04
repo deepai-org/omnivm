@@ -43,7 +43,20 @@ type Dispatcher struct {
 	// OnWatchdogAlert is called when a task exceeds WatchdogTimeout.
 	OnWatchdogAlert func(duration time.Duration)
 
+	// TaskTimeout is the maximum time a single task may run before
+	// OnTaskTimeout is called. Zero means no timeout.
+	TaskTimeout time.Duration
+
+	// OnTaskTimeout is called from a background goroutine when a task
+	// exceeds TaskTimeout. The callback should attempt to interrupt the
+	// running code (e.g. PyErr_SetInterrupt for Python). It may be called
+	// multiple times (once per TaskTimeout interval) if the task doesn't stop.
+	OnTaskTimeout func()
+
 	shutdownOnce sync.Once
+
+	// stopped is closed when Run() returns, signaling all pumping has ceased.
+	stopped chan struct{}
 }
 
 // New creates a new Dispatcher.
@@ -51,6 +64,7 @@ func New() *Dispatcher {
 	return &Dispatcher{
 		taskChan:  make(chan task, 256),
 		pumpFuncs: make(map[string]PumpFunc),
+		stopped:   make(chan struct{}),
 	}
 }
 
@@ -77,6 +91,8 @@ func (d *Dispatcher) UnregisterPumpCallback(name string) {
 // Run blocks until ctx is cancelled. On cancellation it drains remaining
 // tasks from the channel before returning.
 func (d *Dispatcher) Run(ctx context.Context) {
+	defer close(d.stopped)
+
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -92,6 +108,13 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		}
 		d.pumpAll()
 	}
+}
+
+// WaitForStop blocks until Run() has fully returned. Call this after
+// cancelling the context to ensure no pump callbacks are in flight
+// before shutting down runtimes.
+func (d *Dispatcher) WaitForStop() {
+	<-d.stopped
 }
 
 // RunOnMain dispatches fn to the Golden Thread and blocks until it completes.
@@ -119,19 +142,19 @@ func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult
 
 // executeTask runs a single task with panic recovery and watchdog monitoring.
 func (d *Dispatcher) executeTask(t task) {
-	var watchdogDone chan struct{}
+	done := make(chan struct{})
 
 	if d.WatchdogTimeout > 0 && d.OnWatchdogAlert != nil {
-		watchdogDone = make(chan struct{})
-		go d.watchdog(watchdogDone)
+		go d.watchdog(done)
+	}
+
+	if d.TaskTimeout > 0 && d.OnTaskTimeout != nil {
+		go d.taskTimeoutLoop(done)
 	}
 
 	err := d.safeExec(t.fn)
 
-	if watchdogDone != nil {
-		close(watchdogDone)
-	}
-
+	close(done)
 	t.done <- err
 }
 
@@ -156,6 +179,27 @@ func (d *Dispatcher) watchdog(done chan struct{}) {
 	case <-timer.C:
 		if d.OnWatchdogAlert != nil {
 			d.OnWatchdogAlert(d.WatchdogTimeout)
+		}
+	}
+}
+
+// taskTimeoutLoop fires OnTaskTimeout repeatedly until the task completes.
+// This allows the callback to inject interrupts that the runtime may need
+// multiple attempts to process (e.g. Python checks pending calls periodically).
+func (d *Dispatcher) taskTimeoutLoop(done chan struct{}) {
+	timer := time.NewTimer(d.TaskTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			if d.OnTaskTimeout != nil {
+				d.OnTaskTimeout()
+			}
+			// Reset to fire again if task is still stuck
+			timer.Reset(d.TaskTimeout)
 		}
 	}
 }

@@ -255,6 +255,27 @@ import (
 	"github.com/omnivm/omnivm/pkg"
 )
 
+// Pre-allocated C strings to avoid repeated malloc in hot paths.
+// These are allocated once and never freed (process-lifetime).
+var (
+	cImportOmnivm *C.char
+	cPumpCode     *C.char
+)
+
+func init() {
+	cImportOmnivm = C.CString("import omnivm")
+	cPumpCode = C.CString(`
+import asyncio
+try:
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+except RuntimeError:
+    pass
+`)
+}
+
 // Runtime implements pkg.Runtime for CPython.
 type Runtime struct {
 	initialized bool
@@ -289,7 +310,7 @@ func (r *Runtime) Initialize() error {
 
 	// Register the omnivm Python module and import it into __main__
 	C.omnivm_py_register_bridge()
-	C.PyRun_SimpleString(C.CString("import omnivm"))
+	C.PyRun_SimpleString(cImportOmnivm)
 
 	r.initialized = true
 	return nil
@@ -379,16 +400,15 @@ func (r *Runtime) Pump() {
 		return
 	}
 	// Run one iteration of the asyncio event loop if one is running
-	C.PyRun_SimpleString(C.CString(`
-import asyncio
-try:
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop.call_soon(loop.stop)
-        loop.run_forever()
-except RuntimeError:
-    pass
-`))
+	C.PyRun_SimpleString(cPumpCode)
+}
+
+// Interrupt raises a KeyboardInterrupt in Python at the next bytecode check.
+// Safe to call from any goroutine (PyErr_SetInterrupt is async-signal-safe).
+func (r *Runtime) Interrupt() {
+	if r.initialized {
+		C.PyErr_SetInterrupt()
+	}
 }
 
 // Shutdown finalizes CPython.

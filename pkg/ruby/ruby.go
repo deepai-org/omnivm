@@ -18,6 +18,49 @@ static omni_free_fn g_bridge_free = NULL;
 
 static int ruby_initialized = 0;
 
+// rb_protect callback: calls exception.message
+static VALUE call_exception_message(VALUE exception) {
+    return rb_funcall(exception, rb_intern("message"), 0);
+}
+
+// rb_protect callback: calls exception.class.to_s
+static VALUE call_exception_class_name(VALUE exception) {
+    return rb_funcall(rb_funcall(exception, rb_intern("class"), 0),
+                      rb_intern("to_s"), 0);
+}
+
+// Safe helper to extract exception message using rb_protect.
+// Catches any secondary exceptions during message extraction (e.g., rb_exc_raise
+// in rb_funcall which crashes on ARM64 when JVM is active).
+// Returns a malloc'd string like "RubyError: ClassName: message" (caller must free).
+static char* omnivm_ruby_safe_error_msg(VALUE exception) {
+    int inner_state = 0;
+    const char* klass_cstr = "UnknownError";
+    const char* msg_cstr = "unknown error";
+
+    // Try to get class name safely
+    VALUE klass = rb_protect(call_exception_class_name, exception, &inner_state);
+    if (!inner_state && klass != Qnil) {
+        klass_cstr = StringValueCStr(klass);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
+    // Try to get message safely
+    inner_state = 0;
+    VALUE msg = rb_protect(call_exception_message, exception, &inner_state);
+    if (!inner_state && msg != Qnil) {
+        msg_cstr = StringValueCStr(msg);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
+    size_t len = strlen(klass_cstr) + strlen(msg_cstr) + 20;
+    char* err = (char*)malloc(len);
+    snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
+    return err;
+}
+
 static int omnivm_ruby_init(void) {
     if (ruby_initialized) return -1;
 
@@ -61,21 +104,10 @@ static char* omnivm_ruby_exec(const char* code) {
     rb_eval_string_protect("$stdout = $__omnivm_old_stdout", &state);
 
     if (state) {
-        // Fetch the exception message
         VALUE exception = rb_errinfo();
-        rb_set_errinfo(Qnil); // Clear the error
-
+        rb_set_errinfo(Qnil);
         if (exception != Qnil) {
-            VALUE msg = rb_funcall(exception, rb_intern("message"), 0);
-            VALUE klass = rb_funcall(rb_funcall(exception, rb_intern("class"), 0),
-                                     rb_intern("to_s"), 0);
-            const char* klass_str = StringValueCStr(klass);
-            const char* msg_str = StringValueCStr(msg);
-
-            size_t len = strlen(klass_str) + strlen(msg_str) + 20;
-            char* err = (char*)malloc(len);
-            snprintf(err, len, "RubyError: %s: %s", klass_str, msg_str);
-            return err;
+            return omnivm_ruby_safe_error_msg(exception);
         }
         return strdup("RubyError: unknown error");
     }
@@ -105,18 +137,8 @@ static char* omnivm_ruby_eval(const char* code) {
     if (state) {
         VALUE exception = rb_errinfo();
         rb_set_errinfo(Qnil);
-
         if (exception != Qnil) {
-            VALUE msg = rb_funcall(exception, rb_intern("message"), 0);
-            VALUE klass = rb_funcall(rb_funcall(exception, rb_intern("class"), 0),
-                                     rb_intern("to_s"), 0);
-            const char* klass_str = StringValueCStr(klass);
-            const char* msg_str = StringValueCStr(msg);
-
-            size_t len = strlen(klass_str) + strlen(msg_str) + 20;
-            char* err = (char*)malloc(len);
-            snprintf(err, len, "RubyError: %s: %s", klass_str, msg_str);
-            return err;
+            return omnivm_ruby_safe_error_msg(exception);
         }
         return NULL;
     }
