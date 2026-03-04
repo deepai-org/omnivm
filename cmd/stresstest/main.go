@@ -1621,6 +1621,469 @@ $_t17_chain + "|" + $_t17_big.length.to_s + ":" + $_t17_big[%d]
 		return nil
 	})
 
+	// Test 19: Java enters the arena
+	// Java has been initialized but barely tested. Verify basic Java eval and
+	// bidirectional bridge calls between Java and every other runtime.
+	run("Java enters the arena", func() error {
+		// Basic Java eval (compiles a fresh class each time)
+		r := jvmRuntime.Eval("1 + 1")
+		if r.Err != nil {
+			return fmt.Errorf("basic eval: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "2" {
+			return fmt.Errorf("basic eval: expected '2', got %q", r.Value)
+		}
+
+		// Java → Python (via fully-qualified OmniVM.call in eval context)
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("python", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("java→python: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("java→python: expected '42', got %q", r.Value)
+		}
+
+		// Java → JavaScript
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("javascript", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("java→javascript: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("java→javascript: expected '42', got %q", r.Value)
+		}
+
+		// Java → Ruby
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("ruby", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("java→ruby: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("java→ruby: expected '42', got %q", r.Value)
+		}
+
+		// Python → Java
+		r = pyRuntime.Eval(`omnivm.call("java", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("python→java: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("python→java: expected '42', got %q", r.Value)
+		}
+
+		// JavaScript → Java
+		r = jsRuntime.Eval(`omnivm.call("java", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("js→java: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("js→java: expected '42', got %q", r.Value)
+		}
+
+		// Ruby → Java
+		r = rbRuntime.Eval(`OmniVM.call("java", "7 * 6")`)
+		if r.Err != nil {
+			return fmt.Errorf("ruby→java: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "42" {
+			return fmt.Errorf("ruby→java: expected '42', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 20: Full quadrilateral chain (Py → JS → Java → Ruby)
+	// First test that exercises ALL 4 guest runtimes in a single nested call stack.
+	// Uses relay functions in Py/JS/Ruby to avoid escaping hell. Java is reached
+	// via the bridge and calls Ruby as the terminal hop.
+	run("Full quadrilateral chain (Py → JS → Java → Ruby)", func() error {
+		// Set up relay functions in each runtime
+		r := pyRuntime.Execute(`
+def _t20_py_relay(x):
+    """Adds 5, calls JS relay."""
+    return omnivm.call("javascript", "_t20_js_relay(" + str(int(x) + 5) + ")")
+`)
+		if r.Err != nil {
+			return fmt.Errorf("python relay setup: %v", r.Err)
+		}
+
+		r = jsRuntime.Execute(`
+function _t20_js_relay(x) {
+    // Multiplies by 2, calls Java which calls Ruby
+    var val = x * 2;
+    return omnivm.call("java", 'omnivm.OmniVM.call("ruby", "' + val + ' * 3")');
+}
+`)
+		if r.Err != nil {
+			return fmt.Errorf("js relay setup: %v", r.Err)
+		}
+
+		// Chain: _t20_py_relay(10)
+		//   → Python: 10 + 5 = 15, calls _t20_js_relay(15)
+		//   → JS: 15 * 2 = 30, calls Java with OmniVM.call("ruby", "30 * 3")
+		//   → Java: calls Ruby with "30 * 3"
+		//   → Ruby: 30 * 3 = 90
+		//   → returns "90" all the way back
+		result := pyRuntime.Eval("_t20_py_relay(10)")
+		if result.Err != nil {
+			return fmt.Errorf("quadrilateral chain: %v", result.Err)
+		}
+		if fmt.Sprintf("%v", result.Value) != "90" {
+			return fmt.Errorf("quadrilateral chain: expected '90', got %q", result.Value)
+		}
+
+		// Reverse direction: Java → Python → JS → Ruby
+		// Java calls Python which calls JS which calls Ruby
+		r2 := jvmRuntime.Eval(`omnivm.OmniVM.call("python", "omnivm.call('javascript', 'omnivm.call(\"ruby\", \"7 * 8\")')")`)
+		if r2.Err != nil {
+			return fmt.Errorf("reverse quad (Java→Py→JS→Ruby): %v", r2.Err)
+		}
+		if fmt.Sprintf("%v", r2.Value) != "56" {
+			return fmt.Errorf("reverse quad: expected '56', got %q", r2.Value)
+		}
+
+		// Yet another permutation: Ruby → Java → Python → JS
+		r3 := rbRuntime.Eval(`OmniVM.call("java", 'omnivm.OmniVM.call("python", "omnivm.call(\'javascript\', \'3 + 4\')")')`)
+		if r3.Err != nil {
+			return fmt.Errorf("Ruby→Java→Py→JS: %v", r3.Err)
+		}
+		if fmt.Sprintf("%v", r3.Value) != "7" {
+			return fmt.Errorf("Ruby→Java→Py→JS: expected '7', got %q", r3.Value)
+		}
+
+		return nil
+	})
+
+	// Test 21: Java re-entrant call (Java → Python → Java)
+	// Tests JNI re-entry: Java calls Python via bridge, Python calls back into
+	// Java via bridge. The JVM handles nested JNI calls on the same thread.
+	// Then tests deeper: Java → Python → JS → Java (Java appears twice).
+	run("Java re-entrant call (Java → Py → Java)", func() error {
+		// Simple re-entry: Java → Python → Java
+		r := jvmRuntime.Eval(`omnivm.OmniVM.call("python", "omnivm.call('java', '100 + 23')")`)
+		if r.Err != nil {
+			return fmt.Errorf("Java→Py→Java: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "123" {
+			return fmt.Errorf("Java→Py→Java: expected '123', got %q", r.Value)
+		}
+
+		// Deeper: Java → Python → JS → Java
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("python", "omnivm.call('javascript', 'omnivm.call(\"java\", \"200 + 34\")')")`)
+		if r.Err != nil {
+			return fmt.Errorf("Java→Py→JS→Java: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "234" {
+			return fmt.Errorf("Java→Py→JS→Java: expected '234', got %q", r.Value)
+		}
+
+		// Triple Java: Java → Ruby → Java → Python → Java
+		r = jvmRuntime.Eval(`omnivm.OmniVM.call("ruby", "OmniVM.call(\"java\", 'omnivm.OmniVM.call(\"python\", \"omnivm.call(\\\'java\\\', \\\'300 + 45\\\')\")')")`)
+		if r.Err != nil {
+			// This is an extremely deep chain with complex escaping.
+			// If it fails due to escaping, try a relay approach instead.
+			// Try relay approach: set up Python helper
+			pyRuntime.Execute(`
+def _t21_inner():
+    return omnivm.call("java", "300 + 45")
+`)
+			rbRuntime.Eval(`
+def _t21_rb_relay
+  OmniVM.call("java", 'omnivm.OmniVM.call("python", "_t21_inner()")')
+end
+`)
+			r = jvmRuntime.Eval(`omnivm.OmniVM.call("ruby", "_t21_rb_relay")`)
+			if r.Err != nil {
+				return fmt.Errorf("triple Java (relay): %v", r.Err)
+			}
+		}
+		if fmt.Sprintf("%v", r.Value) != "345" {
+			return fmt.Errorf("triple Java: expected '345', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 22: Java exception handling through bridge
+	// Java try/catch around failing cross-runtime calls. Verifies the JNI
+	// exception path (ERR: prefix → ThrowNew → RuntimeException → catch).
+	run("Java exception handling through bridge", func() error {
+		// Java catches an error from JS throw, recovers, then succeeds
+		r := jvmRuntime.Execute(`
+import omnivm.OmniVM;
+String result;
+try {
+    result = OmniVM.call("javascript", "(function() { throw new Error('bridge error'); })()");
+} catch (RuntimeException e) {
+    result = "caught:" + e.getMessage();
+}
+// Prove bridge still works after catching error
+String check = OmniVM.call("python", "1 + 1");
+System.out.print(result + "|ok:" + check);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("java exception handling: %v", r.Err)
+		}
+		output := strings.TrimSpace(r.Output)
+		if !strings.Contains(output, "caught:") || !strings.Contains(output, "bridge error") {
+			return fmt.Errorf("expected caught error, got %q", output)
+		}
+		if !strings.Contains(output, "|ok:2") {
+			return fmt.Errorf("bridge unhealthy after catch, got %q", output)
+		}
+
+		// Java catches Python exception
+		r = jvmRuntime.Execute(`
+import omnivm.OmniVM;
+String result;
+try {
+    result = OmniVM.call("python", "1/0");
+} catch (RuntimeException e) {
+    result = "py_caught:" + e.getMessage();
+}
+System.out.print(result);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("java catch python error: %v", r.Err)
+		}
+		output = strings.TrimSpace(r.Output)
+		if !strings.Contains(output, "py_caught:") || !strings.Contains(output, "division by zero") {
+			return fmt.Errorf("expected python division error, got %q", output)
+		}
+
+		// Java catches error, retries with different runtime
+		r = jvmRuntime.Execute(`
+import omnivm.OmniVM;
+String result = "unset";
+for (int attempt = 0; attempt < 3; attempt++) {
+    try {
+        if (attempt < 2) {
+            OmniVM.call("javascript", "(function() { throw new Error('attempt ' + " + attempt + "); })()");
+        } else {
+            result = "success:" + OmniVM.call("ruby", "42 * 2");
+        }
+    } catch (RuntimeException e) {
+        // Retry on next iteration
+    }
+}
+System.out.print(result);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("java retry loop: %v", r.Err)
+		}
+		output = strings.TrimSpace(r.Output)
+		if output != "success:84" {
+			return fmt.Errorf("java retry: expected 'success:84', got %q", output)
+		}
+
+		return nil
+	})
+
+	// Test 23: Java compilation storm (50 unique classes with bridge calls)
+	// Each iteration compiles a fresh Java class via javax.tools.JavaCompiler,
+	// each calling a different runtime. Stresses the in-memory compiler,
+	// classloader, and JNI bridge under repeated compilation churn.
+	run("Java compilation storm (50 unique classes)", func() error {
+		runtimeNames := []string{"python", "javascript", "ruby"}
+		for i := 0; i < 50; i++ {
+			target := runtimeNames[i%3]
+			var expr string
+			switch target {
+			case "python":
+				expr = fmt.Sprintf("%d + 1", i)
+			case "javascript":
+				expr = fmt.Sprintf("%d + 1", i)
+			case "ruby":
+				expr = fmt.Sprintf("%d + 1", i)
+			}
+
+			r := jvmRuntime.Eval(fmt.Sprintf(`Integer.parseInt(omnivm.OmniVM.call("%s", "%s"))`, target, expr))
+			if r.Err != nil {
+				return fmt.Errorf("iter %d (%s): %v", i, target, r.Err)
+			}
+			expected := fmt.Sprintf("%d", i+1)
+			if fmt.Sprintf("%v", r.Value) != expected {
+				return fmt.Errorf("iter %d (%s): expected %s, got %v", i, target, expected, r.Value)
+			}
+		}
+
+		// Verify all runtimes still healthy after 50 compilations
+		for _, check := range []struct {
+			name string
+			r    pkg.Runtime
+		}{
+			{"python", pyRuntime},
+			{"javascript", jsRuntime},
+			{"ruby", rbRuntime},
+			{"java", jvmRuntime},
+		} {
+			result := check.r.Eval("1 + 1")
+			if result.Err != nil || fmt.Sprintf("%v", result.Value) != "2" {
+				return fmt.Errorf("%s unhealthy after storm", check.name)
+			}
+		}
+
+		return nil
+	})
+
+	// Test 24: Concurrent Java + other runtimes via dispatcher
+	// Multiple goroutines submit mixed Java/Python/JS/Ruby work through
+	// the dispatcher. Tests that JVM and other runtimes coexist under
+	// concurrent dispatch pressure, including Java cross-runtime calls.
+	run("Concurrent Java + all runtimes via dispatcher", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		disp.RegisterPumpCallback("python_pump", pyRuntime.Pump)
+		defer disp.UnregisterPumpCallback("python_pump")
+
+		var testErr error
+		var mu sync.Mutex
+		setErr := func(err error) {
+			mu.Lock()
+			if testErr == nil {
+				testErr = err
+			}
+			mu.Unlock()
+		}
+
+		go func() {
+			defer cancel()
+			var wg sync.WaitGroup
+
+			// Goroutine A: Java eval 50x
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 50; i++ {
+					capturedI := i
+					err := disp.RunOnMain(func() error {
+						r := jvmRuntime.Eval(fmt.Sprintf("%d + %d", capturedI, capturedI))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", capturedI*2)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("java eval: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine A iter %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine B: Python eval 50x
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 50; i++ {
+					capturedI := i
+					err := disp.RunOnMain(func() error {
+						r := pyRuntime.Eval(fmt.Sprintf("%d * 3", capturedI))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", capturedI*3)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("python eval: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine B iter %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine C: Java → Python cross-runtime 25x
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 25; i++ {
+					capturedI := i
+					err := disp.RunOnMain(func() error {
+						r := jvmRuntime.Eval(fmt.Sprintf(
+							`omnivm.OmniVM.call("python", "%d + %d")`, capturedI, capturedI+1))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", capturedI*2+1)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("java→python: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine C iter %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine D: JS → Java cross-runtime 25x
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 25; i++ {
+					capturedI := i
+					err := disp.RunOnMain(func() error {
+						r := jsRuntime.Eval(fmt.Sprintf(
+							`omnivm.call("java", "%d * 2")`, capturedI))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", capturedI*2)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("js→java: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine D iter %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			// Goroutine E: Ruby → Java → Python deep chain 10x
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 10; i++ {
+					capturedI := i
+					err := disp.RunOnMain(func() error {
+						r := rbRuntime.Eval(fmt.Sprintf(
+							`OmniVM.call("java", 'omnivm.OmniVM.call("python", "%d + 100")')`, capturedI))
+						if r.Err != nil {
+							return r.Err
+						}
+						expected := fmt.Sprintf("%d", capturedI+100)
+						if fmt.Sprintf("%v", r.Value) != expected {
+							return fmt.Errorf("ruby→java→python: expected %s, got %v", expected, r.Value)
+						}
+						return nil
+					})
+					if err != nil {
+						setErr(fmt.Errorf("goroutine E iter %d: %v", i, err))
+						return
+					}
+				}
+			}()
+
+			wg.Wait()
+		}()
+
+		disp.Run(ctx)
+
+		if testErr != nil {
+			return testErr
+		}
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)
