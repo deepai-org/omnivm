@@ -3802,6 +3802,394 @@ except Exception:
 		return nil
 	})
 
+	// Test 47: Ruby Fiber cooperative bridge — Fibers yield bridge requests
+	// that the caller dispatches outside the Fiber's C stack. This tests that
+	// Ruby Fiber C stack switching doesn't corrupt Ruby's internal state when
+	// bridge calls happen between resume/yield cycles.
+	// Note: Bridge calls INSIDE a Fiber body would crash because cgo callbacks
+	// can't extend the goroutine stack from a Fiber's C stack (makecontext).
+	run("Ruby Fiber cooperative bridge (C stack switching)", func() error {
+		// Phase A: Fiber yields bridge requests; caller dispatches them and
+		// feeds results back. 3 cycles through Py, JS, Java.
+		r := rbRuntime.Eval(`
+f = Fiber.new do
+  r1 = Fiber.yield(["python", "10 + 20"])
+  r2 = Fiber.yield(["javascript", "30 + 40"])
+  r3 = Fiber.yield(["java", "50 + 60"])
+  "first:#{r1}|second:#{r2}|third:#{r3}"
+end
+results = []
+req = f.resume
+while req.is_a?(Array)
+  val = OmniVM.call(req[0], req[1])
+  req = f.resume(val)
+end
+req
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase A: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "first:30|second:70|third:110" {
+			return fmt.Errorf("phase A: expected 'first:30|second:70|third:110', got %q", r.Value)
+		}
+
+		// Phase B: 3 Fibers interleaved, each making multiple bridge requests
+		// through different runtimes. Tests multiple suspended Fiber stacks.
+		r = rbRuntime.Eval(`
+fibers = [
+  Fiber.new { |_| r = Fiber.yield(["python", "100 + 1"]); "a:#{r}" },
+  Fiber.new { |_| r = Fiber.yield(["javascript", "200 + 2"]); "b:#{r}" },
+  Fiber.new { |_| r = Fiber.yield(["java", "300 + 3"]); "c:#{r}" }
+]
+# First pass: start all fibers, collect requests
+requests = fibers.map { |f| f.resume(nil) }
+# Second pass: dispatch requests and resume with results
+results = fibers.zip(requests).map do |f, req|
+  val = OmniVM.call(req[0], req[1])
+  f.resume(val)
+end
+results.join(",")
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase B: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "a:101,b:202,c:303" {
+			return fmt.Errorf("phase B: expected 'a:101,b:202,c:303', got %q", r.Value)
+		}
+
+		// Phase C: Fiber with 50 yield/resume cycles and bridge calls between each
+		r = rbRuntime.Eval(`
+f = Fiber.new do
+  sum = 0
+  50.times do |i|
+    val = Fiber.yield(["javascript", "#{i} + 1"])
+    sum += val.to_i
+  end
+  sum.to_s
+end
+req = f.resume
+while req.is_a?(Array)
+  val = OmniVM.call(req[0], req[1])
+  req = f.resume(val)
+end
+req
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase C: %v", r.Err)
+		}
+		// sum of (i+1) for i=0..49 = 1275
+		if fmt.Sprintf("%v", r.Value) != "1275" {
+			return fmt.Errorf("phase C: expected '1275', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 48: Ruby ensure with bridge call during exception unwinding.
+	// Bridge calls must work inside ensure blocks while Ruby's exception
+	// state is in-flight.
+	run("Ruby ensure with bridge during exception unwind", func() error {
+		// Phase A: Basic ensure with bridge call
+		r := rbRuntime.Eval(`
+results = []
+begin
+  begin
+    raise "test_error"
+  ensure
+    results << "ensure:" + OmniVM.call("python", "str(6 * 7)")
+  end
+rescue => e
+  results << "rescued:" + e.message
+end
+results.join("|")
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase A: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "ensure:42|rescued:test_error" {
+			return fmt.Errorf("phase A: expected 'ensure:42|rescued:test_error', got %q", r.Value)
+		}
+
+		// Phase B: 3 nested ensure blocks calling different runtimes during unwinding
+		r = rbRuntime.Eval(`
+out = []
+begin
+  begin
+    begin
+      begin
+        raise "deep_err"
+      ensure
+        out << "e1:" + OmniVM.call("python", "str(1+1)")
+      end
+    ensure
+      out << "e2:" + OmniVM.call("javascript", "3+3")
+    end
+  ensure
+    out << "e3:" + OmniVM.call("java", "7+7")
+  end
+rescue => e
+  out << "r:" + e.message
+end
+out.join("|")
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase B: %v", r.Err)
+		}
+		expected := "e1:2|e2:6|e3:14|r:deep_err"
+		if fmt.Sprintf("%v", r.Value) != expected {
+			return fmt.Errorf("phase B: expected %q, got %q", expected, r.Value)
+		}
+
+		// Phase C: ensure's bridge call triggers a JS error — both errors handled
+		r = rbRuntime.Eval(`
+out = []
+begin
+  begin
+    raise "original_error"
+  ensure
+    begin
+      OmniVM.call("javascript", "throw new Error('ensure_boom')")
+    rescue => inner
+      out << "inner:" + inner.message
+    end
+  end
+rescue => e
+  out << "outer:" + e.message
+end
+out.join("|")
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase C: %v", r.Err)
+		}
+		val := fmt.Sprintf("%v", r.Value)
+		if !strings.Contains(val, "inner:") || !strings.Contains(val, "outer:original_error") {
+			return fmt.Errorf("phase C: expected inner + outer errors, got %q", val)
+		}
+
+		return nil
+	})
+
+	// Test 49: Ruby catch/throw with bridge calls.
+	// catch/throw uses setjmp/longjmp which must not corrupt bridge state.
+	run("Ruby catch/throw with bridge calls (longjmp safety)", func() error {
+		// Phase A: Single-level catch/throw with bridge call
+		r := rbRuntime.Eval(`
+catch(:done) do
+  val = OmniVM.call("javascript", "100 + 23")
+  throw(:done, "caught:" + val) if val.to_i > 100
+  "not_thrown"
+end
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase A: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "caught:123" {
+			return fmt.Errorf("phase A: expected 'caught:123', got %q", r.Value)
+		}
+
+		// Phase B: Nested catch/throw past intermediate bridge-touched frames
+		r = rbRuntime.Eval(`
+catch(:outer) do
+  catch(:inner) do
+    v1 = OmniVM.call("python", "str(10)")
+    v2 = OmniVM.call("java", "20 + 5")
+    throw(:outer, "skip_inner:" + v1 + "+" + v2)
+  end
+  "should_not_reach"
+end
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase B: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "skip_inner:10+25" {
+			return fmt.Errorf("phase B: expected 'skip_inner:10+25', got %q", r.Value)
+		}
+
+		// Phase C: 50 iterations of catch/throw with bridge call
+		r = rbRuntime.Eval(`
+count = 0
+50.times do |i|
+  result = catch(:loop) do
+    val = OmniVM.call("javascript", "#{i} + 1")
+    throw(:loop, val.to_i)
+  end
+  count += result
+end
+count.to_s
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase C: %v", r.Err)
+		}
+		// sum of (i+1) for i=0..49 = 1+2+...+50 = 1275
+		if fmt.Sprintf("%v", r.Value) != "1275" {
+			return fmt.Errorf("phase C: expected '1275', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 50: JS try/finally where bridge throws, finally does bridge call.
+	// Duktape executes finally after duk_error longjmp; bridge calls in
+	// finally must work correctly.
+	run("JS try/finally with bridge throw + bridge in finally", func() error {
+		// Phase A: Basic — Python 1/0 throws, finally calls Ruby
+		r := jsRuntime.Eval(`
+var result = "";
+try {
+  try {
+    omnivm.call("python", "1/0");
+  } finally {
+    result += "finally:" + omnivm.call("ruby", "(7 * 8).to_s");
+  }
+} catch(e) {
+  result += "|caught";
+}
+result
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase A: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "finally:56|caught" {
+			return fmt.Errorf("phase A: expected 'finally:56|caught', got %q", r.Value)
+		}
+
+		// Phase B: Nested finally — two levels of throwing bridge calls + bridge in finally
+		r = jsRuntime.Eval(`
+var out = "";
+try {
+  try {
+    try {
+      omnivm.call("ruby", "raise 'inner_boom'");
+    } finally {
+      out += "f1:" + omnivm.call("python", "str(3*3)");
+    }
+  } finally {
+    out += "|f2:" + omnivm.call("java", "4*4");
+  }
+} catch(e) {
+  out += "|caught";
+}
+out
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase B: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "f1:9|f2:16|caught" {
+			return fmt.Errorf("phase B: expected 'f1:9|f2:16|caught', got %q", r.Value)
+		}
+
+		// Phase C: try calls Python (throws), finally calls Java — tests JNI clean after Python error
+		r = jsRuntime.Eval(`
+var out = "";
+try {
+  try {
+    omnivm.call("python", "1/0");
+  } finally {
+    out += "java:" + omnivm.call("java", "100 + 11");
+  }
+} catch(e) {
+  out += "|ok";
+}
+out
+`)
+		if r.Err != nil {
+			return fmt.Errorf("phase C: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "java:111|ok" {
+			return fmt.Errorf("phase C: expected 'java:111|ok', got %q", r.Value)
+		}
+
+		return nil
+	})
+
+	// Test 51: 4-runtime mutual recursion — stack ALL 4 runtime C frames.
+	// Python dispatches to JS, Java, Ruby in a cycle, each calling back
+	// into Python for the next level. 18 levels = 6 full J→V→R cycles.
+	run("4-runtime mutual recursion (18 levels deep)", func() error {
+		// Define the recursive dispatcher in Python
+		r := pyRuntime.Execute(`
+def _t51_dispatch(depth, max_depth):
+    if depth >= max_depth:
+        return "end"
+    runtimes = ["javascript", "java", "ruby"]
+    labels = {"javascript": "J", "java": "V", "ruby": "R"}
+    rt = runtimes[depth % 3]
+    inner = "_t51_dispatch(" + str(depth+1) + "," + str(max_depth) + ")"
+    if rt == "javascript":
+        result = omnivm.call("javascript", "omnivm.call('python', '" + inner + "')")
+    elif rt == "java":
+        result = omnivm.call("java", 'omnivm.OmniVM.call("python", "' + inner + '")')
+    elif rt == "ruby":
+        result = omnivm.call("ruby", "OmniVM.call('python', '" + inner + "')")
+    return labels[rt] + ">" + result
+`)
+		if r.Err != nil {
+			return fmt.Errorf("define dispatcher: %v", r.Err)
+		}
+
+		// Call with max_depth=18 (6 full J→V→R cycles)
+		r = pyRuntime.Eval("_t51_dispatch(0, 18)")
+		if r.Err != nil {
+			return fmt.Errorf("4-runtime recursion: %v", r.Err)
+		}
+		expected := "J>V>R>J>V>R>J>V>R>J>V>R>J>V>R>J>V>R>end"
+		if fmt.Sprintf("%v", r.Value) != expected {
+			return fmt.Errorf("expected %q, got %q", expected, r.Value)
+		}
+
+		// Verify all 4 runtimes are healthy after deep recursion
+		r = pyRuntime.Eval("'py_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "py_ok" {
+			return fmt.Errorf("Python health check failed: %v", r.Err)
+		}
+		r = jsRuntime.Eval("'js_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "js_ok" {
+			return fmt.Errorf("JS health check failed: %v", r.Err)
+		}
+		r = jvmRuntime.Eval(`"java_ok"`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "java_ok" {
+			return fmt.Errorf("Java health check failed: %v", r.Err)
+		}
+		r = rbRuntime.Eval("'rb_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "rb_ok" {
+			return fmt.Errorf("Ruby health check failed: %v", r.Err)
+		}
+
+		return nil
+	})
+
+	// Test 52: fork() guard — pthread_atfork child handler kills child with exit 71.
+	// Verifies that fork() in a polyglot process is intercepted.
+	run("fork() guard (pthread_atfork kills child with exit 71)", func() error {
+		// Use Execute to run the fork code and capture exit_code, then Eval to read it
+		r := pyRuntime.Execute(`
+import os
+exit_code = -1
+pid = os.fork()
+if pid == 0:
+    os._exit(99)
+else:
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status):
+        exit_code = os.WEXITSTATUS(status)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("fork guard execute: %v", r.Err)
+		}
+		r = pyRuntime.Eval("str(exit_code)")
+		if r.Err != nil {
+			return fmt.Errorf("fork guard eval: %v", r.Err)
+		}
+		if r.Err != nil {
+			return fmt.Errorf("fork guard: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "71" {
+			return fmt.Errorf("expected exit code 71, got %v", r.Value)
+		}
+
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)

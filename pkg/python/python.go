@@ -8,8 +8,10 @@ package python
 #cgo pkg-config: python3-embed
 #include <Python.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 // Bridge callback pointer — set via omnivm_py_set_bridge_callback().
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -309,6 +311,20 @@ static void omnivm_py_clear_interrupt(void) {
     PyRun_SimpleString("try:\n pass\nexcept KeyboardInterrupt:\n pass");
     PyErr_Clear();
 }
+
+// Fork guard: fork() after JVM init leaves dead threads holding mutexes.
+// Install a pthread_atfork child handler that kills the child immediately.
+static void omnivm_fork_child_handler(void) {
+    const char* msg = "FATAL: fork() in OmniVM polyglot process. "
+                      "JVM threads do not survive fork(). "
+                      "Use multiprocessing.set_start_method('spawn').\n";
+    write(STDERR_FILENO, msg, strlen(msg));
+    _exit(71);
+}
+
+static void omnivm_install_fork_guard(void) {
+    pthread_atfork(NULL, NULL, omnivm_fork_child_handler);
+}
 */
 import "C"
 import (
@@ -387,6 +403,10 @@ func (r *Runtime) Initialize() error {
 	// calls _thread.interrupt_main(). This lets Go's Interrupt() work from
 	// any goroutine without needing the GIL or a Python thread state.
 	C.omnivm_py_setup_interrupt()
+
+	// Install fork guard: child processes created by fork() in a polyglot
+	// process with JVM threads will deadlock. Kill them immediately.
+	C.omnivm_install_fork_guard()
 
 	r.initialized = true
 	return nil

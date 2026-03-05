@@ -1,5 +1,5 @@
 # OmniVM Dockerfile
-# Multi-stage build embedding Python, JavaScript (Duktape), JVM, and Ruby
+# Multi-stage build embedding Python, JavaScript (Node.js/V8), JVM, and Ruby
 # into a single Go binary via cgo.
 #
 # Build: docker build -t omnivm .
@@ -50,24 +50,24 @@ RUN mkdir -p /omnivm/java && \
     javac -d /omnivm/java /tmp/java-src/OmniVMRunner.java /tmp/java-src/OmniVM.java && \
     echo "Java helpers compiled OK"
 
-# ---- Duktape (embedded JS engine, V8-bridge compatible) ----
-RUN cd /tmp && \
-    curl -fsSL "https://duktape.org/duktape-2.7.0.tar.xz" -o duktape.tar.xz && \
-    tar xf duktape.tar.xz && \
-    mkdir -p /usr/local/include/duktape && \
-    cp duktape-2.7.0/src/duktape.h duktape-2.7.0/src/duktape.c duktape-2.7.0/src/duk_config.h \
-       /usr/local/include/duktape/ && \
-    rm -rf /tmp/duktape*
+# ---- Node.js (shared library for JS embedding) ----
+RUN apt-get update && apt-get install -y \
+    libnode-dev \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
 
-# Build the Duktape + V8 bridge shim as a shared library
-COPY scripts/v8_bridge_duktape.c /tmp/v8_bridge_duktape.c
+# Build the Node.js + V8 bridge shim as a shared library
+# libnode.so is in /usr/lib/<arch>/, headers in /usr/include/node/
+COPY scripts/v8_bridge_node.cc /tmp/v8_bridge_node.cc
 COPY pkg/javascript/v8_bridge.h /tmp/v8_bridge.h
-RUN gcc -shared -fPIC -o /usr/local/lib/libv8.so \
-        /usr/local/include/duktape/duktape.c \
-        /tmp/v8_bridge_duktape.c \
-        -I/usr/local/include/duktape \
+RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
+    g++ -shared -fPIC -std=c++17 -o /usr/local/lib/libv8.so \
+        /tmp/v8_bridge_node.cc \
+        -I/usr/include/node \
         -I/tmp \
-        -lm && \
+        -L${LIBNODE_DIR} -lnode \
+        -Wl,-rpath,${LIBNODE_DIR} && \
     ln -sf /usr/local/lib/libv8.so /usr/local/lib/libv8_libplatform.so && \
     ln -sf /usr/local/lib/libv8.so /usr/local/lib/libv8_libbase.so && \
     ldconfig
@@ -123,18 +123,23 @@ FROM ubuntu:24.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Full JDK needed for in-memory Java compilation
+# libnode109 provides libnode.so for the V8 bridge shim at runtime
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-dev \
     ruby \
     libruby \
     default-jdk \
+    libnode109 \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the Go binaries
 COPY --from=builder /usr/local/bin/omnivm /usr/local/bin/omnivm
 COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone
 COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
+COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
 
 # Copy the compiled OmniVMRunner class
 COPY --from=builder /omnivm/java/ /omnivm/java/
@@ -142,7 +147,11 @@ COPY --from=builder /omnivm/java/ /omnivm/java/
 # Create libs directory for user JARs (mount or COPY your .jars here)
 RUN mkdir -p /omnivm/libs
 
-# Copy shared libraries (Duktape JS shim)
+# Install Express.js for the express-demo
+RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
+ENV NODE_PATH=/usr/local/lib/node_modules
+
+# Copy V8 bridge shim (libnode.so comes from apt-installed libnode109)
 COPY --from=builder /usr/local/lib/libv8.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libplatform.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libbase.so /usr/local/lib/

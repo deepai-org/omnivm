@@ -22,11 +22,12 @@ package jvm
 import "C"
 GOEOF
 
-# Create CGO override for JavaScript (our Duktape shim)
+# Create CGO override for JavaScript (Node.js bridge shim)
+# Headers are from libnode-dev (/usr/include/node), bridge shim is libv8.so
 cat > /build/pkg/javascript/cgo_flags.go << GOEOF
 package javascript
 
-// #cgo CFLAGS: -I/usr/local/include/v8
+// #cgo CFLAGS: -I/usr/include/node
 // #cgo LDFLAGS: -L/usr/local/lib -lv8 -Wl,-rpath,/usr/local/lib
 import "C"
 GOEOF
@@ -35,3 +36,4 @@ cd /build
 go build -v -o /usr/local/bin/omnivm ./cmd/omnivm/
 go build -v -o /usr/local/bin/telephone ./cmd/telephone/
 go build -v -o /usr/local/bin/stresstest ./cmd/stresstest/
+go build -v -o /usr/local/bin/express-demo ./cmd/express-demo/
