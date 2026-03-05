@@ -61,8 +61,22 @@ var runtimes = make(map[string]pkg.Runtime)
 // Allocation counter for memory leak detection
 var allocCount int64
 
+// goldenThreadID is the OS thread ID of the main goroutine (set in main).
+// OmniCall checks this to reject calls from rogue threads.
+var goldenThreadID int64
+
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
+	// Guard: reject calls from non-Golden threads
+	currentTid := int64(C.get_thread_id())
+	if currentTid != goldenThreadID {
+		msg := fmt.Sprintf("ERR:omnivm.call from non-Golden Thread (tid=%d, expected=%d). "+
+			"Cross-runtime calls must originate from the main thread.", currentTid, goldenThreadID)
+		result := C.CString(msg)
+		atomic.AddInt64(&allocCount, 1)
+		return result
+	}
+
 	rtName := C.GoString(cRuntime)
 	code := C.GoString(cCode)
 
@@ -101,6 +115,7 @@ func OmniFree(ptr *C.char) {
 }
 
 func main() {
+	goldenThreadID = int64(C.get_thread_id())
 	fmt.Println("=== OmniVM Cross-Runtime Stack Mixing Stress Test ===")
 	fmt.Println()
 
@@ -3526,6 +3541,262 @@ tid = threading.get_native_id()
 		}
 		if fmt.Sprintf("%v", r.Value) != "match" {
 			return fmt.Errorf("Python self-check: %v", r.Value)
+		}
+
+		return nil
+	})
+
+	// ================================================================
+	// Rogue Thread, Exception Ping-Pong, GC Standoff (44-46)
+	// ================================================================
+
+	// Test 44: Rogue Thread — background threads calling omnivm.call() get an error, not a crash
+	// Each runtime spawns a native background thread that attempts to call
+	// omnivm.call(). OmniCall detects the wrong OS thread ID and returns
+	// an error instead of invoking a non-thread-safe runtime.
+	run("Rogue thread detection (Python, Java, Ruby)", func() error {
+		// 1. Python background thread tries to call JS via omnivm.call
+		r := pyRuntime.Execute(`
+import threading
+_t44_py_error = None
+def _t44_py_worker():
+    global _t44_py_error
+    try:
+        omnivm.call("javascript", "1 + 1")
+        _t44_py_error = "NO_ERROR"
+    except Exception as e:
+        _t44_py_error = str(e)
+_t44_t = threading.Thread(target=_t44_py_worker)
+_t44_t.start()
+_t44_t.join()
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Python thread setup: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t44_py_error")
+		if r.Err != nil {
+			return fmt.Errorf("Python error check: %v", r.Err)
+		}
+		pyErr := fmt.Sprintf("%v", r.Value)
+		if !strings.Contains(pyErr, "non-Golden Thread") {
+			return fmt.Errorf("Python rogue thread: expected Golden Thread error, got: %s", pyErr)
+		}
+
+		// 2. Java background thread tries to call Python via OmniVM.call
+		r = jvmRuntime.Execute(`
+final String[] error = {null};
+Thread t = new Thread(() -> {
+    try {
+        omnivm.OmniVM.call("python", "1 + 1");
+        error[0] = "NO_ERROR";
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
+});
+t.start();
+t.join();
+System.out.println(error[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Java thread setup: %v", r.Err)
+		}
+		if !strings.Contains(r.Output, "non-Golden Thread") {
+			return fmt.Errorf("Java rogue thread: expected Golden Thread error, got: %s", strings.TrimSpace(r.Output))
+		}
+
+		// 3. Ruby background thread tries to call JS via OmniVM.call
+		r = rbRuntime.Execute(`
+$_t44_rb_error = nil
+t = Thread.new do
+  begin
+    OmniVM.call("javascript", "1 + 1")
+    $_t44_rb_error = "NO_ERROR"
+  rescue => e
+    $_t44_rb_error = e.message
+  end
+end
+t.join
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Ruby thread setup: %v", r.Err)
+		}
+		r = rbRuntime.Eval("$_t44_rb_error")
+		if r.Err != nil {
+			return fmt.Errorf("Ruby error check: %v", r.Err)
+		}
+		rbErr := fmt.Sprintf("%v", r.Value)
+		if !strings.Contains(rbErr, "non-Golden Thread") {
+			return fmt.Errorf("Ruby rogue thread: expected Golden Thread error, got: %s", rbErr)
+		}
+
+		// 4. Verify all runtimes still work after rogue thread attempts
+		r = pyRuntime.Eval("1 + 1")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "2" {
+			return fmt.Errorf("Python post-rogue: %v", r.Err)
+		}
+		r = jsRuntime.Eval("2 + 2")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "4" {
+			return fmt.Errorf("JS post-rogue: %v", r.Err)
+		}
+		r = jvmRuntime.Eval("3 + 3")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "6" {
+			return fmt.Errorf("Java post-rogue: %v", r.Err)
+		}
+		r = rbRuntime.Eval("4 + 4")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "8" {
+			return fmt.Errorf("Ruby post-rogue: %v", r.Err)
+		}
+
+		return nil
+	})
+
+	// Test 45: Exception Ping-Pong — error propagates through all 4 runtimes
+	// Python → JS → Java → Ruby (raises) → error bubbles back through
+	// every C bridge boundary without stack corruption or memory leaks.
+	run("Exception ping-pong (Py → JS → Java → Ruby raises)", func() error {
+		// Set up Ruby function that raises
+		r := rbRuntime.Execute(`def _t45_raise; raise 'ruby_cascade_error'; end`)
+		if r.Err != nil {
+			return fmt.Errorf("Ruby setup: %v", r.Err)
+		}
+
+		// Set up JS function that calls Java which calls Ruby
+		r = jsRuntime.Execute(`function _t45_chain() {
+  return omnivm.call("java", 'omnivm.OmniVM.call("ruby", "_t45_raise")');
+}`)
+		if r.Err != nil {
+			return fmt.Errorf("JS setup: %v", r.Err)
+		}
+
+		// Trigger: Python → JS → Java → Ruby (raises)
+		// The error must propagate back through all 4 runtimes
+		r = pyRuntime.Execute(`
+_t45_error = None
+try:
+    omnivm.call("javascript", "_t45_chain()")
+    _t45_error = "NO_ERROR"
+except Exception as e:
+    _t45_error = str(e)
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Python chain: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t45_error")
+		if r.Err != nil {
+			return fmt.Errorf("Python error check: %v", r.Err)
+		}
+		errMsg := fmt.Sprintf("%v", r.Value)
+		if !strings.Contains(errMsg, "ruby_cascade_error") {
+			return fmt.Errorf("error didn't propagate: got %q", errMsg)
+		}
+
+		// Do it 50 times to verify no memory leaks or stack corruption
+		allocBefore := atomic.LoadInt64(&allocCount)
+		for i := 0; i < 50; i++ {
+			r = pyRuntime.Execute(`
+try:
+    omnivm.call("javascript", "_t45_chain()")
+except Exception:
+    pass
+`)
+			if r.Err != nil {
+				return fmt.Errorf("iteration %d: %v", i, r.Err)
+			}
+		}
+		allocAfter := atomic.LoadInt64(&allocCount)
+		if allocAfter != allocBefore {
+			return fmt.Errorf("allocation leak: before=%d after=%d (delta=%d)",
+				allocBefore, allocAfter, allocAfter-allocBefore)
+		}
+
+		// Verify all runtimes survived
+		r = pyRuntime.Eval("'py_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "py_ok" {
+			return fmt.Errorf("Python post-pingpong: %v", r.Err)
+		}
+		r = jsRuntime.Eval("'js_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "js_ok" {
+			return fmt.Errorf("JS post-pingpong: %v", r.Err)
+		}
+		r = jvmRuntime.Eval(`"java_ok"`)
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "java_ok" {
+			return fmt.Errorf("Java post-pingpong: %v", r.Err)
+		}
+		r = rbRuntime.Eval("'rb_ok'")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "rb_ok" {
+			return fmt.Errorf("Ruby post-pingpong: %v", r.Err)
+		}
+
+		return nil
+	})
+
+	// Test 46: GC Mexican Standoff — rapid large allocations across all runtimes
+	// Each runtime generates 1MB strings that flow through the C bridge
+	// (malloc/strdup → GoString copy → C.free). If any free is missing,
+	// 100 iterations × 4 runtimes × 1MB = 400MB of leaked C strings will OOM.
+	run("GC standoff (1MB × 4 runtimes × 100 rounds + cross-bridge)", func() error {
+		allocBefore := atomic.LoadInt64(&allocCount)
+
+		for i := 0; i < 100; i++ {
+			// Python: generate and return 1MB string
+			r := pyRuntime.Eval("'P' * 1048576")
+			if r.Err != nil {
+				return fmt.Errorf("round %d Python gen: %v", i, r.Err)
+			}
+			if len(fmt.Sprintf("%v", r.Value)) != 1048576 {
+				return fmt.Errorf("round %d Python: wrong size %d", i, len(fmt.Sprintf("%v", r.Value)))
+			}
+
+			// JS: generate and return 1MB string
+			r = jsRuntime.Eval("var _s='J'; while(_s.length<1048576) _s=_s+_s; _s.substring(0,1048576)")
+			if r.Err != nil {
+				return fmt.Errorf("round %d JS gen: %v", i, r.Err)
+			}
+			if len(fmt.Sprintf("%v", r.Value)) != 1048576 {
+				return fmt.Errorf("round %d JS: wrong size %d", i, len(fmt.Sprintf("%v", r.Value)))
+			}
+
+			// Java: generate and return 1MB string
+			r = jvmRuntime.Eval(`new String(new char[1048576]).replace((char)0, 'V')`)
+			if r.Err != nil {
+				return fmt.Errorf("round %d Java gen: %v", i, r.Err)
+			}
+			if len(fmt.Sprintf("%v", r.Value)) != 1048576 {
+				return fmt.Errorf("round %d Java: wrong size %d", i, len(fmt.Sprintf("%v", r.Value)))
+			}
+
+			// Ruby: generate and return 1MB string
+			r = rbRuntime.Eval("'R' * 1048576")
+			if r.Err != nil {
+				return fmt.Errorf("round %d Ruby gen: %v", i, r.Err)
+			}
+			if len(fmt.Sprintf("%v", r.Value)) != 1048576 {
+				return fmt.Errorf("round %d Ruby: wrong size %d", i, len(fmt.Sprintf("%v", r.Value)))
+			}
+
+			// Cross-runtime: Python sends 1MB through JS bridge
+			// Python→Go→JS→Go→Python (1MB return value at each boundary)
+			r = pyRuntime.Eval(`len(omnivm.call("javascript", "var _s='X'; while(_s.length<1048576) _s=_s+_s; _s.substring(0,1048576)"))`)
+			if r.Err != nil {
+				return fmt.Errorf("round %d Py→JS bridge: %v", i, r.Err)
+			}
+			if fmt.Sprintf("%v", r.Value) != "1048576" {
+				return fmt.Errorf("round %d Py→JS bridge: expected 1048576, got %v", i, r.Value)
+			}
+
+			// Cross-runtime: JS sends 1MB through Ruby bridge
+			r = jsRuntime.Eval(`omnivm.call("ruby", "'R' * 1048576").length`)
+			if r.Err != nil {
+				return fmt.Errorf("round %d JS→Ruby bridge: %v", i, r.Err)
+			}
+			if fmt.Sprintf("%v", r.Value) != "1048576" {
+				return fmt.Errorf("round %d JS→Ruby bridge: expected 1048576, got %v", i, r.Value)
+			}
+		}
+
+		allocAfter := atomic.LoadInt64(&allocCount)
+		if allocAfter != allocBefore {
+			return fmt.Errorf("C.CString leak: delta=%d", allocAfter-allocBefore)
 		}
 
 		return nil

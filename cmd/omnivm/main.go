@@ -16,6 +16,8 @@ package main
 
 /*
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 // Forward declarations of exported Go functions (cgo drops const qualifiers)
 extern char* OmniCall(char* runtime, char* code);
@@ -24,6 +26,9 @@ extern void OmniFree(char* ptr);
 // Get function pointers to pass to runtimes
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+
+// Get the current OS thread ID (Linux-specific).
+static long get_thread_id() { return syscall(SYS_gettid); }
 */
 import "C"
 
@@ -58,8 +63,18 @@ func init() {
 // runtimes maps language names to their Runtime implementations.
 var runtimes = make(map[string]pkg.Runtime)
 
+// goldenThreadID is the OS thread ID of the main goroutine.
+var goldenThreadID int64
+
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
+	// Guard: reject calls from non-Golden threads to prevent crashes
+	currentTid := int64(C.get_thread_id())
+	if currentTid != goldenThreadID {
+		return C.CString(fmt.Sprintf("ERR:omnivm.call from non-Golden Thread (tid=%d, expected=%d). "+
+			"Cross-runtime calls must originate from the main thread.", currentTid, goldenThreadID))
+	}
+
 	rtName := C.GoString(cRuntime)
 	code := C.GoString(cCode)
 
@@ -91,6 +106,8 @@ func OmniFree(ptr *C.char) {
 }
 
 func main() {
+	goldenThreadID = int64(C.get_thread_id())
+
 	// Parse flags
 	pyCode := flag.String("python", "", "Execute Python code")
 	jsCode := flag.String("js", "", "Execute JavaScript code")
