@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "os",
+      "runtime": "python",
+      "bind": "os"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "os.getcwd()",
+      "bind": "cwd",
+      "captures": {"os": "os"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('CWD: ' + cwd)",
+      "captures": {"cwd": "cwd"}
+    },
+    {
+      "op": "func_def",
+      "name": "add",
+      "params": [{"name": "a"}, {"name": "b"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "a + b",
+            "captures": {"a": "a", "b": "b"},
+            "bind": "__ret"
+          }
+        }
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "add(3, 4)",
+      "bind": "sum"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('3 + 4 = ' + sum)",
+      "captures": {"sum": "sum"}
+    },
+    {
+      "op": "declare",
+      "bind": "greeting",
+      "value": {"kind": "literal", "value": "Hello from OmniVM"}
+    },
+    {
+      "op": "concat",
+      "bind": "message",
+      "segments": [
+        {"kind": "ref", "name": "greeting"},
+        {"kind": "text", "value": "! Ruby says: "},
+        {"kind": "eval", "runtime": "ruby", "code": "RUBY_VERSION"}
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "print(message)",
+      "captures": {"message": "message"}
+    }
+  ]
+}

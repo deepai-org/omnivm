@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "defaultImport": "express"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.use(express.json())"
+    },
+    {
+      "op": "import",
+      "path": "re",
+      "runtime": "python",
+      "bind": "re"
+    },
+    {
+      "op": "func_def",
+      "name": "slugify",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "text.lower().strip()",
+          "bind": "text",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "re.sub(\"[^\\\\w\\\\s-]\", \"\", text)",
+          "bind": "text",
+          "captures": {
+            "re": "re",
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "re.sub(\"[\\\\s_-]+\", \"-\", text)",
+          "bind": "text",
+          "captures": {
+            "re": "re",
+            "text": "text"
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "text",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "func_def",
+      "name": "analyze_text",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "text.lower().split()",
+          "bind": "words",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "len(words)",
+          "bind": "word_count",
+          "captures": {
+            "words": "words"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "len(set(words))",
+          "bind": "unique_count",
+          "captures": {
+            "words": "words"
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "json.dumps({\"word_count\": word_count, \"unique_words\": unique_count})",
+            "bind": "__ret",
+            "captures": {
+              "json": "json",
+              "word_count": "word_count",
+              "unique_count": "unique_count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/api/health\", async (req, res) => { res.json({status: \"ok\"}) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/api/slug/:text\", async (req, res) => { const slug = slugify(req.params.text); res.json({original: req.params.text, slug: slug}) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.post(\"/api/analyze\", async (req, res) => { const result = analyze_text(req.body.text); res.json(JSON.parse(result)) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.listen(3000, () => { console.log(\"Polyglot server on :3000\") })"
+    }
+  ]
+}

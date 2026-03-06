@@ -78,6 +78,7 @@ COPY go.mod ./
 COPY pkg/ pkg/
 COPY cmd/ cmd/
 COPY scripts/ scripts/
+COPY examples/ examples/
 COPY integration_test.go ./
 
 # ---- Prepare Docker-specific source files ----
@@ -140,9 +141,13 @@ COPY --from=builder /usr/local/bin/omnivm /usr/local/bin/omnivm
 COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone
 COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
 COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
+COPY --from=builder /usr/local/bin/manifest-runner /usr/local/bin/manifest-runner
 
 # Copy the compiled OmniVMRunner class
 COPY --from=builder /omnivm/java/ /omnivm/java/
+
+# Copy example manifests
+COPY --from=builder /build/examples/ /omnivm/examples/
 
 # Create libs directory for user JARs (mount or COPY your .jars here)
 RUN mkdir -p /omnivm/libs

@@ -37,3 +37,4 @@ go build -v -o /usr/local/bin/omnivm ./cmd/omnivm/
 go build -v -o /usr/local/bin/telephone ./cmd/telephone/
 go build -v -o /usr/local/bin/stresstest ./cmd/stresstest/
 go build -v -o /usr/local/bin/express-demo ./cmd/express-demo/
+go build -v -o /usr/local/bin/manifest-runner ./cmd/manifest-runner/

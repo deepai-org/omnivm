@@ -27,4 +27,28 @@ public class OmniVM {
      * Native bridge method — implemented in Go via JNI RegisterNatives.
      */
     public static native String nativeCall(String runtime, String code);
+
+    // Capture storage for manifest executor
+    private static java.util.Map<String, String> captures = new java.util.HashMap<>();
+
+    /**
+     * Set a capture value (called by manifest executor before Java code runs).
+     */
+    public static void setCapture(String name, String jsonValue) {
+        captures.put(name, jsonValue);
+    }
+
+    /**
+     * Get a capture value from the manifest executor.
+     */
+    public static String getCapture(String name) {
+        return captures.get(name);
+    }
+
+    /**
+     * Clear all captures.
+     */
+    public static void clearCaptures() {
+        captures.clear();
+    }
 }

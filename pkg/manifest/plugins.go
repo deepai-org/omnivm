@@ -1,0 +1,103 @@
+package manifest
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"plugin"
+)
+
+const pluginCacheDir = "/tmp/omnivm-plugins"
+
+// compileGoPlugin handles func_def ops with bodyRuntime:"go" and a source field.
+// It compiles the Go source as a plugin, loads exports, and registers them
+// in the executor's goFuncs registry.
+func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
+	hash := sha256Hash(op.Source)
+	soPath := filepath.Join(pluginCacheDir, hash+".so")
+
+	// Check cache
+	if _, err := os.Stat(soPath); os.IsNotExist(err) {
+		if err := compilePlugin(op.Source, soPath); err != nil {
+			return nil, fmt.Errorf("go plugin compile: %w", err)
+		}
+	}
+
+	// Load the plugin
+	plug, err := plugin.Open(soPath)
+	if err != nil {
+		return nil, fmt.Errorf("go plugin open: %w", err)
+	}
+
+	// If the plugin has an Init function and requires dependencies, call it
+	if len(op.Requires) > 0 {
+		initSym, err := plug.Lookup("Init")
+		if err == nil {
+			if initFn, ok := initSym.(func(map[string]interface{})); ok {
+				deps := make(map[string]interface{})
+				for _, req := range op.Requires {
+					if fn, ok := e.goFuncs[req]; ok {
+						deps[req] = fn
+					}
+				}
+				initFn(deps)
+			}
+		}
+	}
+
+	// Register exported symbols
+	for _, name := range op.Exports {
+		sym, err := plug.Lookup(name)
+		if err != nil {
+			return nil, fmt.Errorf("go plugin: export %q not found: %w", name, err)
+		}
+		e.goFuncs[name] = sym
+	}
+
+	return nil, nil
+}
+
+// compilePlugin writes Go source to a temp directory and builds it as a plugin.
+func compilePlugin(source, outputPath string) error {
+	if err := os.MkdirAll(pluginCacheDir, 0o755); err != nil {
+		return err
+	}
+
+	// Create temp directory for compilation
+	tmpDir, err := os.MkdirTemp("", "omnivm-plugin-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write source
+	srcPath := filepath.Join(tmpDir, "plugin.go")
+	if err := os.WriteFile(srcPath, []byte(source), 0o644); err != nil {
+		return err
+	}
+
+	// Write go.mod
+	modContent := "module omnivm-plugin\n\ngo 1.22\n"
+	modPath := filepath.Join(tmpDir, "go.mod")
+	if err := os.WriteFile(modPath, []byte(modContent), 0o644); err != nil {
+		return err
+	}
+
+	// Build plugin
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", outputPath, ".")
+	cmd.Dir = tmpDir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("go build: %s: %w", string(out), err)
+	}
+
+	return nil
+}
+
+func sha256Hash(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", h)
+}
