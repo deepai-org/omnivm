@@ -136,6 +136,10 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
+COPY --from=builder /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
+
 # Copy the Go binaries
 COPY --from=builder /usr/local/bin/omnivm /usr/local/bin/omnivm
 COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone

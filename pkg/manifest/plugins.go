@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plugin"
+	"regexp"
 )
 
 const pluginCacheDir = "/tmp/omnivm-plugins"
@@ -47,13 +48,33 @@ func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
 		}
 	}
 
-	// Register exported symbols
+	// Register exported symbols under both their Go name and the manifest func name
 	for _, name := range op.Exports {
 		sym, err := plug.Lookup(name)
 		if err != nil {
 			return nil, fmt.Errorf("go plugin: export %q not found: %w", name, err)
 		}
 		e.goFuncs[name] = sym
+	}
+
+	// Also register the manifest function name → first export mapping
+	// so HandleCall can find it by the manifest name (e.g. "shard_for" → ShardFor)
+	if op.Name != "" && len(op.Exports) > 0 {
+		if _, exists := e.goFuncs[op.Name]; !exists {
+			e.goFuncs[op.Name] = e.goFuncs[op.Exports[0]]
+		}
+	}
+
+	// Register stubs in each runtime so guest code can call this function
+	if op.Name != "" {
+		params := make([]string, len(op.Params))
+		for i, p := range op.Params {
+			params[i] = p.Name
+		}
+		fd := &FuncDef{Name: op.Name, Params: op.Params}
+		if err := e.registerStubs(fd); err != nil {
+			return nil, fmt.Errorf("go plugin stubs: %w", err)
+		}
 	}
 
 	return nil, nil
@@ -71,6 +92,10 @@ func compilePlugin(source, outputPath string) error {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
+
+	// Rewrite package declaration to "main" (Go plugins require package main)
+	pkgRe := regexp.MustCompile(`(?m)^package\s+\w+`)
+	source = pkgRe.ReplaceAllString(source, "package main")
 
 	// Write source
 	srcPath := filepath.Join(tmpDir, "plugin.go")

@@ -89,7 +89,13 @@ end`, funcName, paramList, funcName, argsArray)
 // HandleCall is invoked when the bridge receives a call to runtime "__manifest".
 // It deserializes {func, args}, pushes a new scope, binds args to params,
 // executes the func_def body, pops the scope, and returns the result.
-func (e *Executor) HandleCall(code string) (string, error) {
+func (e *Executor) HandleCall(code string) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("manifest HandleCall panic: %v", r)
+		}
+	}()
+
 	// Deserialize the call request
 	var req struct {
 		Func string        `json:"func"`
@@ -97,6 +103,11 @@ func (e *Executor) HandleCall(code string) (string, error) {
 	}
 	if err := json.Unmarshal([]byte(code), &req); err != nil {
 		return "", fmt.Errorf("manifest HandleCall: invalid request: %w", err)
+	}
+
+	// Check Go function registry first (Go plugins)
+	if goFn, ok := e.goFuncs[req.Func]; ok {
+		return e.callGoFuncFromBridge(req.Func, goFn, req.Args)
 	}
 
 	fd, ok := e.funcs[req.Func]
@@ -130,7 +141,7 @@ func (e *Executor) HandleCall(code string) (string, error) {
 	}
 
 	// Execute the function body
-	_, err := e.executeOps(fd.Body)
+	_, err = e.executeOps(fd.Body)
 	if ret, ok := err.(ErrReturn); ok {
 		return marshalResult(ret.Value)
 	}
@@ -139,6 +150,59 @@ func (e *Executor) HandleCall(code string) (string, error) {
 	}
 
 	return "", nil
+}
+
+// callGoFuncFromBridge invokes a Go plugin function from a bridge call.
+// Includes panic recovery since plugin code may have type assertion failures.
+func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []interface{}) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("go function %q panicked: %v", name, r)
+		}
+	}()
+
+	// Normalize JSON number args: float64 → int where possible
+	normalizedArgs := normalizeArgs(args)
+
+	// Try func(interface{}) interface{} (single arg)
+	if f, ok := fn.(func(interface{}) interface{}); ok {
+		var arg interface{}
+		if len(normalizedArgs) > 0 {
+			arg = normalizedArgs[0]
+		}
+		res := f(arg)
+		return marshalResult(res)
+	}
+
+	// Try func([]interface{}) (interface{}, error)
+	if f, ok := fn.(func([]interface{}) (interface{}, error)); ok {
+		res, ferr := f(normalizedArgs)
+		if ferr != nil {
+			return "", ferr
+		}
+		return marshalResult(res)
+	}
+
+	// Try func([]interface{}) interface{}
+	if f, ok := fn.(func([]interface{}) interface{}); ok {
+		res := f(normalizedArgs)
+		return marshalResult(res)
+	}
+
+	return "", fmt.Errorf("go function %q has unsupported signature", name)
+}
+
+// normalizeArgs converts float64 JSON numbers to int where they have no fractional part.
+func normalizeArgs(args []interface{}) []interface{} {
+	out := make([]interface{}, len(args))
+	for i, arg := range args {
+		if f, ok := arg.(float64); ok && f == float64(int(f)) {
+			out[i] = int(f)
+		} else {
+			out[i] = arg
+		}
+	}
+	return out
 }
 
 // marshalResult converts a value to a string suitable for bridge return.

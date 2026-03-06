@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "defaultImport": "express"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.use(express.json())"
+    },
+    {
+      "op": "import",
+      "path": "hashlib",
+      "runtime": "python",
+      "bind": "hashlib"
+    },
+    {
+      "op": "func_def",
+      "name": "content_id",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "hashlib.sha256(text.encode()).hexdigest()",
+            "bind": "__ret",
+            "captures": {
+              "hashlib": "hashlib",
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "python"
+    },
+    {
+      "op": "import",
+      "path": "re",
+      "runtime": "python",
+      "bind": "re"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "re.compile(\"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\\\.[a-zA-Z0-9-.]+$\")",
+      "bind": "pattern",
+      "captures": {
+        "re": "re"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "validate_email",
+      "params": [
+        {
+          "name": "email"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "bool(pattern.match(email))",
+            "bind": "__ret",
+            "captures": {
+              "pattern": "pattern",
+              "email": "email"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "func_def",
+      "name": "summarize",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "text.split()",
+          "bind": "words",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "len(text)",
+          "bind": "chars",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "len(text.split(\"\\\\n\"))",
+          "bind": "lines",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "json.dumps({\"words\": len(words), \"chars\": chars, \"lines\": lines})",
+            "bind": "__ret",
+            "captures": {
+              "json": "json",
+              "words": "words",
+              "chars": "chars",
+              "lines": "lines"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "shard_for",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc ShardFor(id interface{}) interface{} {\n\th := id.(int) * 2654435761\n\th = h ^ h >> 16\n\treturn h % 4\n}",
+      "exports": [
+        "ShardFor"
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.post(\"/api/paste\", async (req, res) => { const id = content_id(req.body.text); const stats = summarize(req.body.text); const shard = shard_for(parseInt(id.substring(0, 8), 16)); res.json({id: id, shard: shard, stats: JSON.parse(stats)}) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.post(\"/api/register\", async (req, res) => { const ok = validate_email(req.body.email); const id = content_id(req.body.email); const shard = shard_for(parseInt(id.substring(0, 8), 16)); res.json({valid: ok, user_id: id, shard: shard}) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/api/health\", async (req, res) => { res.json({status: \"ok\", shards: 4, runtimes: [\"javascript\", \"python\", \"go\"]}) })"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.listen(4000, () => { console.log(\"Polyglot pastebin on :4000\") })"
+    }
+  ]
+}
