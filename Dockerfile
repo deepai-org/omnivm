@@ -72,13 +72,19 @@ RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
     ln -sf /usr/local/lib/libv8.so /usr/local/lib/libv8_libbase.so && \
     ldconfig
 
-# ---- Copy source ----
+# ---- Copy source (ordered by change frequency for cache efficiency) ----
 WORKDIR /build
+
+# 1. go.mod + dep download (almost never changes)
 COPY go.mod ./
+RUN go mod download
+
+# 2. Scripts + build infrastructure (rarely changes)
+COPY scripts/ scripts/
+
+# 3. Source code (frequently changes — cache-bust point for build)
 COPY pkg/ pkg/
 COPY cmd/ cmd/
-COPY scripts/ scripts/
-COPY examples/ examples/
 COPY integration_test.go ./
 
 # ---- Prepare Docker-specific source files ----
@@ -97,6 +103,9 @@ RUN chmod +x scripts/build.sh && scripts/build.sh
 
 # Create libs directory for user JARs
 RUN mkdir -p /omnivm/libs
+
+# 5. Examples AFTER build (most frequent changes, no rebuild needed)
+COPY examples/ examples/
 
 # ============================================================
 # Stage 2: Run tests inside Docker
@@ -140,31 +149,15 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-# Copy the Go binaries
-COPY --from=builder /usr/local/bin/omnivm /usr/local/bin/omnivm
-COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone
-COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
-COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
-COPY --from=builder /usr/local/bin/manifest-runner /usr/local/bin/manifest-runner
-
-# Copy the compiled OmniVMRunner class
-COPY --from=builder /omnivm/java/ /omnivm/java/
-
-# Copy example manifests
-COPY --from=builder /build/examples/ /omnivm/examples/
-
-# Create libs directory for user JARs (mount or COPY your .jars here)
-RUN mkdir -p /omnivm/libs
-
-# Install Express.js for the express-demo
-RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
-ENV NODE_PATH=/usr/local/lib/node_modules
-
-# Copy V8 bridge shim (libnode.so comes from apt-installed libnode109)
+# Copy V8 bridge shim (rarely changes — libnode.so comes from apt-installed libnode109)
 COPY --from=builder /usr/local/lib/libv8.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libplatform.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libbase.so /usr/local/lib/
 RUN ldconfig
+
+# Install Express.js for the express-demo (never changes)
+RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Ensure libjvm is findable at runtime
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit 2>/dev/null) && \
@@ -172,14 +165,30 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit 2>/dev/n
         echo "$LIBJVM_DIR" > /etc/ld.so.conf.d/jvm.conf && ldconfig; \
     fi
 
-ENV GOMAXPROCS=1
-ENV JAVA_HOME=/usr/lib/jvm/default-java
-
 # JVM signal chaining: libjsig.so intercepts signal()/sigaction() calls
 # so the JVM's SIGSEGV handler (used for NullPointerException) chains
 # properly with Ruby's and Go's signal handlers instead of conflicting.
 RUN LIBJSIG=$(find /usr/lib/jvm -name "libjsig.so" -print -quit 2>/dev/null) && \
     if [ -n "$LIBJSIG" ]; then echo "LD_PRELOAD=$LIBJSIG" >> /etc/environment; fi
 ENV LD_PRELOAD=/usr/lib/jvm/default-java/lib/libjsig.so
+
+# Create libs directory for user JARs (mount or COPY your .jars here)
+RUN mkdir -p /omnivm/libs
+
+ENV GOMAXPROCS=1
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+
+# Copy the compiled OmniVMRunner class (rarely changes)
+COPY --from=builder /omnivm/java/ /omnivm/java/
+
+# Copy the Go binaries (change most often — keep last)
+COPY --from=builder /usr/local/bin/omnivm /usr/local/bin/omnivm
+COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone
+COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
+COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
+COPY --from=builder /usr/local/bin/manifest-runner /usr/local/bin/manifest-runner
+
+# Copy example manifests (change most often — keep last)
+COPY --from=builder /build/examples/ /omnivm/examples/
 
 ENTRYPOINT ["omnivm"]
