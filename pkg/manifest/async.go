@@ -226,6 +226,7 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 	type asyncBranch struct {
 		op      *Op
 		flagVar string
+		idx     int // original branch index for result variable naming
 	}
 
 	var asyncBranches []asyncBranch
@@ -243,9 +244,12 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 			if err := e.startAsyncBranch(branch, rtName, flagVar, branchIdx); err != nil {
 				return nil, fmt.Errorf("parallel branch %d: %w", branchIdx, err)
 			}
-			asyncBranches = append(asyncBranches, asyncBranch{op: branch, flagVar: flagVar})
+			asyncBranches = append(asyncBranches, asyncBranch{op: branch, flagVar: flagVar, idx: branchIdx})
 		default:
-			// Execute synchronously
+			// Execute synchronously — branches are implicit eval ops
+			if branch.OpType == "" {
+				branch.OpType = "eval"
+			}
 			if _, err := e.executeOp(branch); err != nil {
 				return nil, fmt.Errorf("parallel branch %d [%s]: %w", branchIdx, rtName, err)
 			}
@@ -281,7 +285,7 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 		})
 
 		// Collect results and bind
-		for i, ab := range asyncBranches {
+		for _, ab := range asyncBranches {
 			if ab.op.Bind == "" {
 				continue
 			}
@@ -291,7 +295,7 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 			}
 			rt := e.runtimes[rtName]
 
-			resultVar := fmt.Sprintf("__omni_parallel_%d_result", i)
+			resultVar := fmt.Sprintf("__omni_parallel_%d_result", ab.idx)
 			var evalCode string
 			switch rtName {
 			case "python":
@@ -312,6 +316,15 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int) error {
 	rt := e.runtimes[rtName]
 	resultVar := fmt.Sprintf("__omni_parallel_%d_result", idx)
+
+	// Auto-inject scope bindings so branch code can reference manifest variables
+	autoCode := e.autoInjectScope(rtName)
+	if autoCode != "" {
+		injectResult := rt.Execute(autoCode)
+		if injectResult.Err != nil {
+			return fmt.Errorf("parallel auto-inject [%s]: %w", rtName, injectResult.Err)
+		}
+	}
 
 	code := branch.Code
 	if len(branch.Captures) > 0 {
