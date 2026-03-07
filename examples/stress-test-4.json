@@ -1,0 +1,1348 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "os",
+      "runtime": "python",
+      "bind": "os"
+    },
+    {
+      "op": "import",
+      "path": "asyncio",
+      "runtime": "python",
+      "defaultImport": "asyncio"
+    },
+    {
+      "op": "import",
+      "path": "events",
+      "runtime": "javascript",
+      "specifiers": [
+        {
+          "imported": "EventEmitter",
+          "local": "EventEmitter"
+        }
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "make",
+      "args": [
+        "10"
+      ],
+      "bind": "ch"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "ch",
+      "value": {
+        "kind": "literal",
+        "value": 42
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "data",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "hello"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "ch",
+      "value": {
+        "kind": "ref",
+        "name": "data"
+      },
+      "captures": {
+        "data": "data"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "recv",
+      "runtime": "go",
+      "channel": "ch"
+    },
+    {
+      "op": "chan",
+      "action": "recv",
+      "runtime": "go",
+      "channel": "ch",
+      "bind": "val"
+    },
+    {
+      "op": "chan",
+      "action": "recv",
+      "runtime": "go",
+      "channel": "ch",
+      "bind": "msg"
+    },
+    {
+      "op": "chan",
+      "action": "recv",
+      "runtime": "go",
+      "channel": "ch",
+      "bind": "buf"
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "ch"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "make",
+      "args": [
+        "5"
+      ],
+      "bind": "ch1"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "make",
+      "args": [
+        "5"
+      ],
+      "bind": "ch2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "make",
+      "args": [
+        "5"
+      ],
+      "bind": "ch3"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "ch1",
+      "value": {
+        "kind": "literal",
+        "value": 1
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "ch2",
+      "value": {
+        "kind": "literal",
+        "value": 2
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "ch3",
+      "value": {
+        "kind": "literal",
+        "value": 3
+      }
+    },
+    {
+      "op": "select",
+      "cases": [
+        {
+          "action": "recv",
+          "channel": "ch1",
+          "body": [
+            {
+              "op": "declare",
+              "bind": "a",
+              "mutable": false,
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(a)"
+            }
+          ]
+        },
+        {
+          "action": "recv",
+          "channel": "ch2",
+          "body": [
+            {
+              "op": "declare",
+              "bind": "b",
+              "mutable": false,
+              "value": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(b)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "select",
+      "cases": [
+        {
+          "action": "send",
+          "channel": "ch1",
+          "value": {
+            "kind": "literal",
+            "value": 99
+          },
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(\"sent\")"
+            }
+          ]
+        },
+        {
+          "action": "recv",
+          "channel": "ch2",
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(\"received\")"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "select",
+      "cases": [
+        {
+          "action": "recv",
+          "channel": "ch1",
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(\"got from ch1\")"
+            }
+          ]
+        },
+        {
+          "action": "recv",
+          "channel": "ch2",
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(\"got from ch2\")"
+            }
+          ]
+        }
+      ],
+      "defaultBody": [
+        {
+          "op": "exec",
+          "runtime": "javascript",
+          "code": "console.log(\"no channel ready\")"
+        }
+      ]
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "doWork()"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "processItem(42)"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "handleConnection(conn, ch1)"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "() => { const x = 1; (ch1 <- x) }()"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "() => { for item in items {\n    ch <- item\n  }; (done <- true) }()"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "os.environ",
+      "bind": "config"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "startWorker(config)",
+      "captures": {
+        "config": "config"
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "a",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "b",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 1
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "fibonacci",
+      "params": [],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "yield",
+              "value": {
+                "kind": "ref",
+                "name": "a"
+              }
+            },
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "(a + b)",
+              "bind": "next",
+              "captures": {
+                "a": "a",
+                "b": "b"
+              }
+            },
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "b",
+              "bind": "a",
+              "captures": {
+                "b": "b"
+              }
+            },
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "next",
+              "bind": "b",
+              "captures": {
+                "next": "next"
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "range",
+      "params": [
+        {
+          "name": "start"
+        },
+        {
+          "name": "end"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "start",
+          "bind": "i",
+          "captures": {
+            "start": "start"
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "yield",
+              "value": {
+                "kind": "ref",
+                "name": "i"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "i",
+              "operator": "+=",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(i < end)"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "flatten",
+      "params": [
+        {
+          "name": "nested"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "Array.isArray(item)"
+                  },
+                  "body": [
+                    {
+                      "op": "yield",
+                      "from": {
+                        "op": "eval",
+                        "runtime": "javascript",
+                        "code": "flatten(item)",
+                        "bind": "__yield",
+                        "captures": {
+                          "flatten": "flatten"
+                        }
+                      },
+                      "delegate": true
+                    }
+                  ]
+                }
+              ],
+              "elseBody": [
+                {
+                  "op": "yield",
+                  "value": {
+                    "kind": "ref",
+                    "name": "item"
+                  }
+                }
+              ]
+            }
+          ],
+          "variable": "item",
+          "iterable": {
+            "kind": "ref",
+            "name": "nested"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "pipeline",
+      "params": [
+        {
+          "name": "source"
+        }
+      ],
+      "body": [
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "op": "yield",
+          "value": {
+            "kind": "ref",
+            "name": "source"
+          },
+          "delegate": true
+        },
+        {
+          "op": "yield",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "compute(42)",
+            "bind": "__yield"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(\"step 1\")"
+    },
+    {
+      "op": "func_def",
+      "name": "stepper",
+      "params": [],
+      "body": [
+        {
+          "op": "yield"
+        },
+        {
+          "op": "exec",
+          "runtime": "javascript",
+          "code": "console.log(\"step 2\")"
+        },
+        {
+          "op": "yield"
+        },
+        {
+          "op": "exec",
+          "runtime": "javascript",
+          "code": "console.log(\"done\")"
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "streamEvents",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "await fetch(url)",
+          "bind": "conn",
+          "captures": {
+            "url": "url"
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "await conn.read()",
+              "bind": "event",
+              "captures": {
+                "conn": "conn"
+              }
+            },
+            {
+              "op": "yield",
+              "value": {
+                "kind": "ref",
+                "name": "event"
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true,
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "worker",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [
+        {
+          "op": "chan",
+          "action": "recv",
+          "runtime": "go",
+          "channel": "ch",
+          "bind": "inbox",
+          "captures": {
+            "ch": "ch"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "process(inbox)",
+          "bind": "result",
+          "captures": {
+            "inbox": "inbox"
+          }
+        },
+        {
+          "op": "chan",
+          "action": "send",
+          "runtime": "go",
+          "channel": "ch2",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          },
+          "captures": {
+            "ch2": "ch2",
+            "result": "result"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "go_worker",
+      "params": [
+        {
+          "name": "input"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar transform func(interface{}) interface{}\n\nfunc Init(transformFn func(interface{}) interface{}) {\n\ttransform = transformFn\n}\n\nfunc GoWorker(input interface{}) interface{} {\n\tresult := transform(input)\n\tch <- result\n\treturn result\n}",
+      "exports": [
+        "GoWorker"
+      ],
+      "requires": [
+        "transform"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "multiplexer",
+      "params": [
+        {
+          "name": "ch_a"
+        },
+        {
+          "name": "ch_b"
+        },
+        {
+          "name": "out"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "select",
+              "cases": [
+                {
+                  "action": "recv",
+                  "channel": "ch_a",
+                  "body": [
+                    {
+                      "op": "chan",
+                      "action": "send",
+                      "runtime": "javascript",
+                      "channel": "out",
+                      "value": {
+                        "kind": "literal",
+                        "value": "from a"
+                      },
+                      "captures": {
+                        "out": "out"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "action": "recv",
+                  "channel": "ch_b",
+                  "body": [
+                    {
+                      "op": "chan",
+                      "action": "send",
+                      "runtime": "javascript",
+                      "channel": "out",
+                      "value": {
+                        "kind": "literal",
+                        "value": "from b"
+                      },
+                      "captures": {
+                        "out": "out"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "defaultBody": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": "done"
+                  }
+                }
+              ]
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "fanout",
+      "params": [
+        {
+          "name": "tasks"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "spawn",
+              "runtime": "go",
+              "code": "processTask(task)"
+            }
+          ],
+          "variable": "task",
+          "iterable": {
+            "kind": "ref",
+            "name": "tasks"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_producer",
+      "params": [
+        {
+          "name": "items"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "chan",
+              "action": "send",
+              "runtime": "go",
+              "channel": "ch",
+              "value": {
+                "kind": "ref",
+                "name": "item"
+              },
+              "captures": {
+                "ch": "ch"
+              }
+            }
+          ],
+          "variable": "item",
+          "iterable": {
+            "kind": "ref",
+            "name": "items"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "[]",
+      "bind": "results"
+    },
+    {
+      "op": "func_def",
+      "name": "js_consumer",
+      "params": [],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "chan",
+              "action": "recv",
+              "runtime": "go",
+              "channel": "ch",
+              "bind": "item",
+              "captures": {
+                "ch": "ch"
+              }
+            },
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(item === null)"
+                  },
+                  "body": [
+                    {
+                      "op": "return",
+                      "value": {
+                        "kind": "ref",
+                        "name": "results"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "results.push(item)",
+              "captures": {
+                "results": "results",
+                "item": "item"
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "chan_reader",
+      "params": [
+        {
+          "name": "channel"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "chan",
+              "action": "recv",
+              "runtime": "go",
+              "channel": "channel",
+              "bind": "val",
+              "captures": {
+                "channel": "channel"
+              }
+            },
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(val === null)"
+                  },
+                  "body": [
+                    {
+                      "op": "return"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "yield",
+              "value": {
+                "kind": "ref",
+                "name": "val"
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "parallel_spawn",
+      "params": [],
+      "body": [
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "worker1()"
+        },
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "worker2()"
+        },
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "worker3()"
+        },
+        {
+          "op": "parallel",
+          "branches": [
+            {
+              "runtime": "javascript",
+              "code": "fetch(\"/a\")",
+              "bind": "results_0"
+            },
+            {
+              "runtime": "javascript",
+              "code": "fetch(\"/b\")",
+              "bind": "results_1"
+            },
+            {
+              "runtime": "javascript",
+              "code": "fetch(\"/c\")",
+              "bind": "results_2"
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "results"
+          }
+        }
+      ],
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "router",
+      "params": [
+        {
+          "name": "input"
+        },
+        {
+          "name": "output"
+        },
+        {
+          "name": "errors"
+        }
+      ],
+      "body": [
+        {
+          "op": "select",
+          "cases": [
+            {
+              "action": "recv",
+              "channel": "input",
+              "body": [
+                {
+                  "op": "select",
+                  "cases": [
+                    {
+                      "action": "send",
+                      "channel": "output",
+                      "value": {
+                        "kind": "literal",
+                        "value": "processed"
+                      },
+                      "body": [
+                        {
+                          "op": "exec",
+                          "runtime": "javascript",
+                          "code": "console.log(\"sent to output\")"
+                        }
+                      ]
+                    }
+                  ],
+                  "defaultBody": [
+                    {
+                      "op": "chan",
+                      "action": "send",
+                      "runtime": "javascript",
+                      "channel": "errors",
+                      "value": {
+                        "kind": "literal",
+                        "value": "output full"
+                      },
+                      "captures": {
+                        "errors": "errors"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "action": "recv",
+              "channel": "errors",
+              "body": [
+                {
+                  "op": "exec",
+                  "runtime": "javascript",
+                  "code": "console.log(\"error received\")"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "go"
+    },
+    {
+      "op": "func_def",
+      "name": "safe_send",
+      "params": [
+        {
+          "name": "ch"
+        },
+        {
+          "name": "value"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "chan",
+              "action": "send",
+              "runtime": "javascript",
+              "channel": "ch",
+              "value": {
+                "kind": "ref",
+                "name": "value"
+              },
+              "captures": {
+                "ch": "ch",
+                "value": "value"
+              }
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "exec",
+                  "runtime": "javascript",
+                  "code": "console.log(e)"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": false
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "produce_items",
+      "params": [],
+      "body": [
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": "item1"
+          }
+        },
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": "item2"
+          }
+        },
+        {
+          "op": "yield",
+          "value": {
+            "kind": "literal",
+            "value": "item3"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "generator": true
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "produce_items()",
+      "bind": "items",
+      "captures": {
+        "produce_items": "produce_items"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "make(1)",
+      "bind": "done"
+    },
+    {
+      "op": "func_def",
+      "name": "run_pipeline",
+      "params": [],
+      "body": [
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "() => { for item in items {\n      ch <- item\n    }; (done <- true) }()",
+          "captures": {
+            "done": "done"
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "select",
+              "cases": [
+                {
+                  "action": "recv",
+                  "channel": "ch",
+                  "body": [
+                    {
+                      "op": "exec",
+                      "runtime": "javascript",
+                      "code": "console.log(\"got item\")"
+                    }
+                  ]
+                },
+                {
+                  "action": "recv",
+                  "channel": "done",
+                  "body": [
+                    {
+                      "op": "exec",
+                      "runtime": "javascript",
+                      "code": "console.log(\"all done\")"
+                    },
+                    {
+                      "op": "return"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "kitchen_sink",
+      "params": [
+        {
+          "name": "input_ch"
+        },
+        {
+          "name": "output_ch"
+        }
+      ],
+      "body": [
+        {
+          "op": "chan",
+          "action": "recv",
+          "runtime": "go",
+          "channel": "input_ch",
+          "bind": "msg",
+          "captures": {
+            "input_ch": "input_ch"
+          }
+        },
+        {
+          "op": "chan",
+          "action": "send",
+          "runtime": "javascript",
+          "channel": "output_ch",
+          "value": {
+            "kind": "ref",
+            "name": "msg"
+          },
+          "captures": {
+            "output_ch": "output_ch",
+            "msg": "msg"
+          }
+        },
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "background_task(msg)",
+          "captures": {
+            "msg": "msg"
+          }
+        },
+        {
+          "op": "select",
+          "cases": [
+            {
+              "action": "recv",
+              "channel": "input_ch",
+              "body": [
+                {
+                  "op": "chan",
+                  "action": "send",
+                  "runtime": "javascript",
+                  "channel": "output_ch",
+                  "value": {
+                    "kind": "literal",
+                    "value": "forwarded"
+                  },
+                  "captures": {
+                    "output_ch": "output_ch"
+                  }
+                }
+              ]
+            }
+          ],
+          "defaultBody": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(\"idle\")"
+            }
+          ]
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "fibonacci()",
+          "bind": "gen",
+          "captures": {
+            "fibonacci": "fibonacci"
+          }
+        },
+        {
+          "op": "chan",
+          "action": "close",
+          "runtime": "go",
+          "channel": "output_ch"
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": "done"
+          }
+        }
+      ]
+    }
+  ]
+}

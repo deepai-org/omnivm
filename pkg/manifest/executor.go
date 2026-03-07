@@ -39,28 +39,32 @@ type RuntimeRef struct {
 
 // FuncDef stores a manifest-level function definition.
 type FuncDef struct {
-	Name   string
-	Params []*Param
-	Body   []*Op
+	Name      string
+	Params    []*Param
+	Body      []*Op
+	Generator bool
 }
 
 // Executor runs manifest ops against a set of runtimes.
 type Executor struct {
-	runtimes       map[string]pkg.Runtime
-	defaultRuntime string
-	scopes         []map[string]interface{}
-	funcs          map[string]*FuncDef
-	goFuncs        map[string]interface{}
+	runtimes        map[string]pkg.Runtime
+	defaultRuntime  string
+	scopes          []map[string]interface{}
+	funcs           map[string]*FuncDef
+	goFuncs         map[string]interface{}
+	yieldCollectors [][]interface{} // stack of yield collectors for nested generators
 }
 
 // NewExecutor creates an Executor with the given runtimes.
 func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
-	return &Executor{
+	e := &Executor{
 		runtimes: runtimes,
 		scopes:   []map[string]interface{}{make(map[string]interface{})},
 		funcs:    make(map[string]*FuncDef),
 		goFuncs:  make(map[string]interface{}),
 	}
+	e.registerChannelBuiltins()
+	return e
 }
 
 // Execute runs all top-level ops in the manifest sequentially.
@@ -117,6 +121,14 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opThrow(op)
 	case "parallel":
 		return e.opParallel(op)
+	case "chan":
+		return e.opChan(op)
+	case "select":
+		return e.opSelect(op)
+	case "spawn":
+		return e.opSpawn(op)
+	case "yield":
+		return e.opYield(op)
 	case "exec_compiled":
 		return e.opExecCompiled(op)
 	case "eval_compiled":
@@ -148,6 +160,16 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 	rt, err := e.resolveRuntime(op)
 	if err != nil {
 		return nil, err
+	}
+
+	// Auto-inject current scope bindings so exec code can
+	// reference manifest variables without explicit captures.
+	autoCode := e.autoInjectScope(rt.Name())
+	if autoCode != "" {
+		injectResult := rt.Execute(autoCode)
+		if injectResult.Err != nil {
+			return nil, fmt.Errorf("exec auto-inject [%s]: %w", rt.Name(), injectResult.Err)
+		}
 	}
 
 	code := op.Code
@@ -289,13 +311,37 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 	var code string
 	switch rt.Name() {
 	case "python":
-		if op.DefaultImport != "" {
-			code = fmt.Sprintf("from %s import %s", op.Path, op.DefaultImport)
+		if len(op.Specifiers) > 0 {
+			var specs []string
+			for _, s := range op.Specifiers {
+				if s.Imported == s.Local {
+					specs = append(specs, s.Local)
+				} else {
+					specs = append(specs, s.Imported+" as "+s.Local)
+				}
+			}
+			code = fmt.Sprintf("from %s import %s", op.Path, strings.Join(specs, ", "))
+		} else if op.DefaultImport != "" {
+			if op.DefaultImport == op.Path {
+				code = fmt.Sprintf("import %s", op.Path)
+			} else {
+				code = fmt.Sprintf("import %s as %s", op.Path, op.DefaultImport)
+			}
 		} else {
 			code = fmt.Sprintf("import %s", op.Path)
 		}
 	case "javascript":
-		if op.DefaultImport != "" {
+		if len(op.Specifiers) > 0 {
+			var specs []string
+			for _, s := range op.Specifiers {
+				if s.Imported == s.Local {
+					specs = append(specs, s.Local)
+				} else {
+					specs = append(specs, s.Imported+": "+s.Local)
+				}
+			}
+			code = fmt.Sprintf("var { %s } = require('%s');", strings.Join(specs, ", "), op.Path)
+		} else if op.DefaultImport != "" {
 			code = fmt.Sprintf("var %s = require('%s');", op.DefaultImport, op.Path)
 		} else if op.Bind != "" {
 			code = fmt.Sprintf("var %s = require('%s');", op.Bind, op.Path)
@@ -324,6 +370,9 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 	if op.Bind != "" {
 		e.setBinding(op.Bind, ref)
 	}
+	for _, s := range op.Specifiers {
+		e.setBinding(s.Local, ImportRef{Runtime: rt.Name(), Name: s.Imported})
+	}
 	return ref, nil
 }
 
@@ -331,13 +380,20 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 func (e *Executor) opFuncDef(op *Op) (interface{}, error) {
 	// Go plugin with source
 	if op.BodyRuntime == "go" && op.Source != "" {
-		return e.compileGoPlugin(op)
+		_, err := e.compileGoPlugin(op)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "func_def %q: go plugin: %v (registering as manifest function)\n", op.Name, err)
+			// Fall through to register as regular func_def
+		} else {
+			return nil, nil
+		}
 	}
 
 	fd := &FuncDef{
-		Name:   op.Name,
-		Params: op.Params,
-		Body:   op.Body,
+		Name:      op.Name,
+		Params:    op.Params,
+		Body:      op.Body,
+		Generator: op.Generator,
 	}
 	e.funcs[op.Name] = fd
 
@@ -846,6 +902,77 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 	}
 
 	return e.callGoFunc(funcName, args, op.Bind)
+}
+
+// resolveValueExpr resolves a ValueExpr to its Go value.
+func (e *Executor) resolveValueExpr(v *ValueExpr) (interface{}, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch v.Kind {
+	case "literal":
+		return v.Value, nil
+	case "ref":
+		val, ok := e.getBinding(v.Name)
+		if !ok {
+			return nil, fmt.Errorf("undefined binding %q", v.Name)
+		}
+		if ref, ok := val.(RuntimeRef); ok {
+			return ref.Value, nil
+		}
+		return val, nil
+	default:
+		return nil, fmt.Errorf("unknown value kind %q", v.Kind)
+	}
+}
+
+// opYield appends a value to the current generator's yield collector.
+// All manifest op execution runs single-threaded on the Golden Thread;
+// spawned goroutines only call pure Go functions and never access yieldCollectors.
+func (e *Executor) opYield(op *Op) (interface{}, error) {
+	if len(e.yieldCollectors) == 0 {
+		// Not inside a generator context, no-op
+		return nil, nil
+	}
+
+	var val interface{}
+	if op.From != nil {
+		v, err := e.executeOp(op.From)
+		if err != nil {
+			return nil, err
+		}
+		val = v
+	} else if op.Value != nil {
+		v, err := e.resolveValueExpr(op.Value)
+		if err != nil {
+			return nil, err
+		}
+		val = v
+	}
+	// else: bare yield, val = nil
+
+	top := len(e.yieldCollectors) - 1
+	if op.Delegate {
+		// Delegate yield: spread array values into the collector
+		switch arr := val.(type) {
+		case []interface{}:
+			e.yieldCollectors[top] = append(e.yieldCollectors[top], arr...)
+		case string:
+			// Try parsing JSON array (e.g. from nested generator call via bridge)
+			var parsed []interface{}
+			if json.Unmarshal([]byte(arr), &parsed) == nil {
+				e.yieldCollectors[top] = append(e.yieldCollectors[top], parsed...)
+			} else {
+				e.yieldCollectors[top] = append(e.yieldCollectors[top], val)
+			}
+		default:
+			e.yieldCollectors[top] = append(e.yieldCollectors[top], val)
+		}
+	} else {
+		e.yieldCollectors[top] = append(e.yieldCollectors[top], val)
+	}
+
+	return nil, nil
 }
 
 // Scope operations

@@ -141,6 +141,29 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 		}
 	}
 
+	// For generators, push a yield collector, run body, return collected values
+	if fd.Generator {
+		e.yieldCollectors = append(e.yieldCollectors, []interface{}{})
+		_, bodyErr := e.executeOps(fd.Body)
+
+		top := len(e.yieldCollectors) - 1
+		collected := e.yieldCollectors[top]
+		e.yieldCollectors = e.yieldCollectors[:top]
+
+		// ErrReturn in a generator means "stop generating"
+		if bodyErr != nil {
+			if _, isReturn := bodyErr.(ErrReturn); !isReturn {
+				return "", bodyErr
+			}
+		}
+
+		b, merr := json.Marshal(collected)
+		if merr != nil {
+			return "", merr
+		}
+		return string(b), nil
+	}
+
 	// Execute the function body
 	_, err = e.executeOps(fd.Body)
 	if ret, ok := err.(ErrReturn); ok {

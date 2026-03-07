@@ -68,6 +68,23 @@ type Op struct {
 	// parallel
 	Branches []*Op `json:"branches,omitempty"`
 
+	// chan
+	Action  string `json:"action,omitempty"`
+	Channel string `json:"channel,omitempty"`
+
+	// select
+	Cases       []*SelectCase `json:"cases,omitempty"`
+	DefaultBody []*Op         `json:"defaultBody,omitempty"`
+
+	// func_def generator
+	Generator bool `json:"generator,omitempty"`
+
+	// yield
+	Delegate bool `json:"delegate,omitempty"`
+
+	// import specifiers
+	Specifiers []*ImportSpec `json:"specifiers,omitempty"`
+
 	// exec_compiled/eval_compiled
 	Lang string `json:"lang,omitempty"`
 
@@ -93,6 +110,20 @@ type IfArm struct {
 type CatchClause struct {
 	Param string `json:"param"`
 	Body  []*Op  `json:"body"`
+}
+
+// SelectCase represents a case in a select op.
+type SelectCase struct {
+	Action  string     `json:"action"`
+	Channel string     `json:"channel"`
+	Value   *ValueExpr `json:"value,omitempty"`
+	Body    []*Op      `json:"body"`
+}
+
+// ImportSpec represents a named import specifier.
+type ImportSpec struct {
+	Imported string `json:"imported"`
+	Local    string `json:"local"`
 }
 
 // CondExpr represents a conditional expression (used in if arms and loop tests).

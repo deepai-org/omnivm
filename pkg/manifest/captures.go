@@ -20,6 +20,11 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			return "", fmt.Errorf("capture %q: undefined binding %q", varName, bindingName)
 		}
 
+		// ChanRef: Go channels can't be serialized to JSON
+		if _, ok := val.(*ChanRef); ok {
+			continue
+		}
+
 		// ImportRef: module is already in scope for the owning runtime
 		if ref, ok := val.(ImportRef); ok {
 			if ref.Runtime == rtName {
@@ -166,6 +171,9 @@ func (e *Executor) autoInjectScope(rtName string) string {
 			if _, already := resolved[varName]; already {
 				continue // shadowed by higher scope
 			}
+			if _, ok := val.(*ChanRef); ok {
+				continue
+			}
 			if _, ok := val.(ImportRef); ok {
 				continue
 			}
@@ -214,6 +222,9 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 	for varName, bindingName := range captures {
 		val, ok := e.getBinding(bindingName)
 		if !ok {
+			continue
+		}
+		if _, ok := val.(*ChanRef); ok {
 			continue
 		}
 		if _, ok := val.(ImportRef); ok {
