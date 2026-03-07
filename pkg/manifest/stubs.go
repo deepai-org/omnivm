@@ -174,6 +174,19 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 		return marshalResult(res)
 	}
 
+	// Try func(interface{}, interface{}) interface{} (two args)
+	if f, ok := fn.(func(interface{}, interface{}) interface{}); ok {
+		var a, b interface{}
+		if len(normalizedArgs) > 0 {
+			a = normalizedArgs[0]
+		}
+		if len(normalizedArgs) > 1 {
+			b = normalizedArgs[1]
+		}
+		res := f(a, b)
+		return marshalResult(res)
+	}
+
 	// Try func([]interface{}) (interface{}, error)
 	if f, ok := fn.(func([]interface{}) (interface{}, error)); ok {
 		res, ferr := f(normalizedArgs)
@@ -208,6 +221,13 @@ func normalizeArgs(args []interface{}) []interface{} {
 // marshalResult converts a value to a string suitable for bridge return.
 // The bridge always returns strings, so we format the value as a string.
 func marshalResult(val interface{}) (string, error) {
+	if val == nil {
+		return "", nil
+	}
+	// Unwrap RuntimeRef to get the actual value
+	if ref, ok := val.(RuntimeRef); ok {
+		val = ref.Value
+	}
 	if val == nil {
 		return "", nil
 	}

@@ -173,6 +173,11 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 		return e.callGoFunc(op.Func, op.Args, op.Bind)
 	}
 
+	// runtime:"go" with code — parse as function call expression
+	if op.Runtime == "go" && op.Code != "" {
+		return e.evalGoCode(op)
+	}
+
 	if op.Async {
 		return e.evalAsync(op)
 	}
@@ -343,7 +348,12 @@ func (e *Executor) opReturn(op *Op) (interface{}, error) {
 			if !ok {
 				return nil, fmt.Errorf("return: undefined binding %q", op.Value.Name)
 			}
-			val = v
+			// Unwrap RuntimeRef to get the actual value
+			if ref, ok := v.(RuntimeRef); ok {
+				val = ref.Value
+			} else {
+				val = v
+			}
 		default:
 			return nil, fmt.Errorf("return: unknown value kind %q", op.Value.Kind)
 		}
@@ -518,6 +528,27 @@ func (e *Executor) opAssign(op *Op) (interface{}, error) {
 		newVal = applied
 	}
 
+	// If the target was a RuntimeRef, update the runtime's global scope
+	// so subsequent captures and condition auto-injection see the new value.
+	if existing, ok := e.getBinding(target); ok {
+		if ref, ok := existing.(RuntimeRef); ok {
+			rt, rtOk := e.runtimes[ref.Runtime]
+			if rtOk {
+				// Convert to a value that can be injected as a literal
+				valStr := fmt.Sprintf("%v", newVal)
+				assignCode := runtimeAssign(ref.Runtime, ref.VarName, valStr)
+				rt.Execute(assignCode)
+			}
+			// Keep as RuntimeRef with updated value
+			e.setBinding(target, RuntimeRef{
+				Runtime: ref.Runtime,
+				VarName: ref.VarName,
+				Value:   newVal,
+			})
+			return newVal, nil
+		}
+	}
+
 	e.setBinding(target, newVal)
 	return newVal, nil
 }
@@ -550,6 +581,16 @@ func (e *Executor) evalCondition(cond *CondExpr) (bool, error) {
 			if err != nil {
 				return false, err
 			}
+		} else {
+			// Auto-inject current scope bindings so condition code can
+			// reference func_def params and other manifest variables.
+			captureCode := e.autoInjectScope(rtName)
+			if captureCode != "" {
+				injectResult := rt.Execute(captureCode)
+				if injectResult.Err != nil {
+					return false, fmt.Errorf("condition auto-inject [%s]: %w", rtName, injectResult.Err)
+				}
+			}
 		}
 
 		result := rt.Eval(code)
@@ -563,15 +604,52 @@ func (e *Executor) evalCondition(cond *CondExpr) (bool, error) {
 }
 
 // callGoFunc invokes a function from the Go function registry.
-func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (interface{}, error) {
+func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (val interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("go function %q panicked: %v", name, r)
+		}
+	}()
+
 	fn, ok := e.goFuncs[name]
 	if !ok {
 		return nil, fmt.Errorf("eval go: unknown function %q", name)
 	}
 
-	// Attempt to call as func([]interface{}) (interface{}, error)
+	normalizedArgs := normalizeArgs(args)
+
+	// func(interface{}) interface{} (single arg)
+	if f, ok := fn.(func(interface{}) interface{}); ok {
+		var arg interface{}
+		if len(normalizedArgs) > 0 {
+			arg = normalizedArgs[0]
+		}
+		val = f(arg)
+		if bind != "" {
+			e.setBinding(bind, val)
+		}
+		return val, nil
+	}
+
+	// func(interface{}, interface{}) interface{} (two args)
+	if f, ok := fn.(func(interface{}, interface{}) interface{}); ok {
+		var a, b interface{}
+		if len(normalizedArgs) > 0 {
+			a = normalizedArgs[0]
+		}
+		if len(normalizedArgs) > 1 {
+			b = normalizedArgs[1]
+		}
+		val = f(a, b)
+		if bind != "" {
+			e.setBinding(bind, val)
+		}
+		return val, nil
+	}
+
+	// func([]interface{}) (interface{}, error)
 	if f, ok := fn.(func([]interface{}) (interface{}, error)); ok {
-		val, err := f(args)
+		val, err = f(normalizedArgs)
 		if err != nil {
 			return nil, err
 		}
@@ -581,9 +659,9 @@ func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (int
 		return val, nil
 	}
 
-	// Attempt to call as func([]interface{}) interface{}
+	// func([]interface{}) interface{}
 	if f, ok := fn.(func([]interface{}) interface{}); ok {
-		val := f(args)
+		val = f(normalizedArgs)
 		if bind != "" {
 			e.setBinding(bind, val)
 		}
@@ -591,6 +669,45 @@ func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (int
 	}
 
 	return nil, fmt.Errorf("eval go: function %q has unsupported signature", name)
+}
+
+// evalGoCode parses a simple Go function call expression like "funcName(arg1, arg2)"
+// and dispatches to the goFuncs registry.
+func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
+	code := strings.TrimSpace(op.Code)
+	parenIdx := strings.Index(code, "(")
+	if parenIdx < 0 || !strings.HasSuffix(code, ")") {
+		return nil, fmt.Errorf("eval go: cannot parse expression %q", code)
+	}
+
+	funcName := strings.TrimSpace(code[:parenIdx])
+	argsStr := strings.TrimSpace(code[parenIdx+1 : len(code)-1])
+
+	var args []interface{}
+	if argsStr != "" {
+		for _, part := range strings.Split(argsStr, ",") {
+			part = strings.TrimSpace(part)
+			// Try parsing as number
+			if f, err := strconv.ParseFloat(part, 64); err == nil {
+				if f == float64(int(f)) {
+					args = append(args, int(f))
+				} else {
+					args = append(args, f)
+				}
+			} else {
+				// Try as binding reference
+				if val, ok := e.getBinding(part); ok {
+					args = append(args, val)
+				} else {
+					// Use as string literal (strip quotes if present)
+					part = strings.Trim(part, "\"'")
+					args = append(args, part)
+				}
+			}
+		}
+	}
+
+	return e.callGoFunc(funcName, args, op.Bind)
 }
 
 // Scope operations
@@ -650,21 +767,28 @@ func applyOperator(existing interface{}, op string, newVal interface{}) (interfa
 	ef := toFloat(existing)
 	nf := toFloat(newVal)
 
+	var result float64
 	switch op {
 	case "+=":
-		return ef + nf, nil
+		result = ef + nf
 	case "-=":
-		return ef - nf, nil
+		result = ef - nf
 	case "*=":
-		return ef * nf, nil
+		result = ef * nf
 	case "/=":
 		if nf == 0 {
 			return nil, fmt.Errorf("division by zero")
 		}
-		return ef / nf, nil
+		result = ef / nf
 	default:
 		return nil, fmt.Errorf("unknown operator %q", op)
 	}
+
+	// Return int if the result has no fractional part
+	if result == float64(int(result)) {
+		return int(result), nil
+	}
+	return result, nil
 }
 
 func toFloat(v interface{}) float64 {
@@ -679,6 +803,8 @@ func toFloat(v interface{}) float64 {
 	case json.Number:
 		f, _ := val.Float64()
 		return f
+	case RuntimeRef:
+		return toFloat(val.Value)
 	default:
 		return 0
 	}

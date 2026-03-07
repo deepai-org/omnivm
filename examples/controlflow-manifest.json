@@ -1,0 +1,375 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "classify",
+      "params": [
+        {
+          "name": "score"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(score > 90)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": "A"
+                  }
+                }
+              ]
+            }
+          ],
+          "elseBody": [
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(score > 70)"
+                  },
+                  "body": [
+                    {
+                      "op": "return",
+                      "value": {
+                        "kind": "literal",
+                        "value": "B"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "elseBody": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": "C"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "countdown",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "n",
+          "bind": "i",
+          "captures": {
+            "n": "n"
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(i)",
+              "captures": {
+                "i": "i"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "i",
+              "operator": "-=",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(i > 0)"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "total",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 100
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "+=",
+      "value": {
+        "kind": "literal",
+        "value": 50
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "-=",
+      "value": {
+        "kind": "literal",
+        "value": 25
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "*=",
+      "value": {
+        "kind": "literal",
+        "value": 2
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "greet",
+      "params": [
+        {
+          "name": "name",
+          "defaultValue": "world"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "(\"Hello \" + name)",
+            "bind": "__ret",
+            "captures": {
+              "name": "name"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "merge",
+      "params": [
+        {
+          "name": "base"
+        },
+        {
+          "name": "overrides",
+          "spread": true
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "base"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "pending",
+      "mutable": true
+    },
+    {
+      "op": "declare",
+      "bind": "buffer",
+      "mutable": true
+    },
+    {
+      "op": "func_def",
+      "name": "factorial",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(n <= 1)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": 1
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "(n * factorial((n - 1)))",
+            "bind": "__ret",
+            "captures": {
+              "n": "n",
+              "factorial": "factorial"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "get_version",
+      "params": [],
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": 42
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "name",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "polyscript"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "get_name",
+      "params": [],
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "name"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "import",
+      "path": "hashlib",
+      "runtime": "python",
+      "bind": "hashlib"
+    },
+    {
+      "op": "func_def",
+      "name": "py_hash",
+      "params": [
+        {
+          "name": "data"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "hashlib.sha256(data.encode()).hexdigest()",
+            "bind": "__ret",
+            "captures": {
+              "hashlib": "hashlib",
+              "data": "data"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_multiply",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoMultiply(a interface{}, b interface{}) interface{} {\n\tresult := a.(int) * b.(int)\n\treturn result\n}",
+      "exports": [
+        "GoMultiply"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify(85)",
+      "bind": "grade"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "py_hash(grade)",
+      "bind": "hash",
+      "captures": {
+        "grade": "grade"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "go_multiply(6, 7)",
+      "bind": "product"
+    }
+  ]
+}

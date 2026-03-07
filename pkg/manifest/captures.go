@@ -151,6 +151,54 @@ func wrapJavaCaptures(code string, captures map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+// autoInjectScope injects all serializable bindings from the current scope
+// into the given runtime. Used for conditions without explicit captures.
+func (e *Executor) autoInjectScope(rtName string) string {
+	resolved := make(map[string]string)
+	// Walk the scope stack top-down, collecting serializable bindings
+	for i := len(e.scopes) - 1; i >= 0; i-- {
+		for varName, val := range e.scopes[i] {
+			if _, already := resolved[varName]; already {
+				continue // shadowed by higher scope
+			}
+			if _, ok := val.(ImportRef); ok {
+				continue
+			}
+			if ref, ok := val.(RuntimeRef); ok {
+				if ref.Runtime == rtName {
+					continue // already in scope
+				}
+				jsonVal, err := marshalForCapture(ref.Value)
+				if err != nil {
+					continue
+				}
+				resolved[varName] = jsonVal
+				continue
+			}
+			jsonVal, err := marshalForCapture(val)
+			if err != nil {
+				continue
+			}
+			resolved[varName] = jsonVal
+		}
+	}
+	if len(resolved) == 0 {
+		return ""
+	}
+	switch rtName {
+	case "python":
+		return injectPythonCaptures(resolved)
+	case "javascript":
+		return injectJSCaptures(resolved)
+	case "ruby":
+		return injectRubyCaptures(resolved)
+	case "java":
+		return injectJavaCaptures(resolved)
+	default:
+		return ""
+	}
+}
+
 // buildCaptureInjection generates capture setup code without appending the user's code.
 // Used by opEval which needs captures and assignment as separate steps.
 func (e *Executor) buildCaptureInjection(rtName string, captures map[string]string) string {

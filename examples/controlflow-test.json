@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "classify",
+      "params": [{"name": "score"}],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {"kind": "expr", "runtime": "javascript", "code": "(score > 90)"},
+              "body": [{"op": "return", "value": {"kind": "literal", "value": "A"}}]
+            }
+          ],
+          "elseBody": [
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {"kind": "expr", "runtime": "javascript", "code": "(score > 70)"},
+                  "body": [{"op": "return", "value": {"kind": "literal", "value": "B"}}]
+                }
+              ],
+              "elseBody": [
+                {"op": "return", "value": {"kind": "literal", "value": "C"}}
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify(85)",
+      "bind": "grade"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('classify(85) = ' + grade)",
+      "captures": {"grade": "grade"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify(95)",
+      "bind": "gradeA"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('classify(95) = ' + gradeA)",
+      "captures": {"gradeA": "gradeA"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify(50)",
+      "bind": "gradeC"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('classify(50) = ' + gradeC)",
+      "captures": {"gradeC": "gradeC"}
+    },
+    {
+      "op": "declare",
+      "bind": "total",
+      "mutable": true,
+      "value": {"kind": "literal", "value": 100}
+    },
+    {"op": "assign", "target": "total", "operator": "+=", "value": {"kind": "literal", "value": 50}},
+    {"op": "assign", "target": "total", "operator": "-=", "value": {"kind": "literal", "value": 25}},
+    {"op": "assign", "target": "total", "operator": "*=", "value": {"kind": "literal", "value": 2}},
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('total = ' + total)",
+      "captures": {"total": "total"}
+    },
+    {
+      "op": "func_def",
+      "name": "countdown",
+      "params": [{"name": "n"}],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "n",
+          "bind": "i",
+          "captures": {"n": "n"}
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log('  i=' + i)",
+              "captures": {"i": "i"}
+            },
+            {
+              "op": "assign",
+              "target": "i",
+              "operator": "-=",
+              "value": {"kind": "literal", "value": 1}
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(i > 0)"
+          }
+        },
+        {
+          "op": "return",
+          "value": {"kind": "literal", "value": 0}
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('countdown(3):')"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "countdown(3)",
+      "bind": "cdResult"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('countdown result = ' + cdResult)",
+      "captures": {"cdResult": "cdResult"}
+    },
+    {
+      "op": "func_def",
+      "name": "factorial",
+      "params": [{"name": "n"}],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {"kind": "expr", "runtime": "javascript", "code": "(n <= 1)"},
+              "body": [
+                {"op": "return", "value": {"kind": "literal", "value": 1}}
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "(n * factorial((n - 1)))",
+            "bind": "__ret",
+            "captures": {"n": "n", "factorial": "factorial"}
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "factorial(5)",
+      "bind": "fact5"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('factorial(5) = ' + fact5)",
+      "captures": {"fact5": "fact5"}
+    },
+    {
+      "op": "func_def",
+      "name": "go_multiply",
+      "params": [{"name": "a"}, {"name": "b"}],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoMultiply(a interface{}, b interface{}) interface{} {\n\tresult := a.(int) * b.(int)\n\treturn result\n}",
+      "exports": ["GoMultiply"]
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "go_multiply(6, 7)",
+      "bind": "product"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('go_multiply(6,7) = ' + product)",
+      "captures": {"product": "product"}
+    }
+  ]
+}
