@@ -15,6 +15,11 @@ type ErrReturn struct{ Value interface{} }
 
 func (e ErrReturn) Error() string { return "return" }
 
+// ErrThrow is a sentinel used for manifest-level throw ops.
+type ErrThrow struct{ Value interface{} }
+
+func (e ErrThrow) Error() string { return fmt.Sprintf("throw: %v", e.Value) }
+
 // ImportRef marks a binding as a module import in a specific runtime.
 // Captures for the same runtime skip JSON injection since the module
 // is already in scope. Cross-runtime captures skip module refs entirely.
@@ -106,6 +111,10 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opDeclare(op)
 	case "assign":
 		return e.opAssign(op)
+	case "try":
+		return e.opTry(op)
+	case "throw":
+		return e.opThrow(op)
 	case "parallel":
 		return e.opParallel(op)
 	case "exec_compiled":
@@ -187,7 +196,17 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 		return nil, err
 	}
 
-	// Inject captures first (as separate Execute call), then eval the expression
+	// Auto-inject current scope bindings so eval code can
+	// reference manifest variables without explicit captures.
+	autoCode := e.autoInjectScope(rt.Name())
+	if autoCode != "" {
+		injectResult := rt.Execute(autoCode)
+		if injectResult.Err != nil {
+			return nil, fmt.Errorf("eval auto-inject [%s]: %w", rt.Name(), injectResult.Err)
+		}
+	}
+
+	// Inject explicit captures (overrides auto-injected values)
 	if len(op.Captures) > 0 {
 		captureCode := e.buildCaptureInjection(rt.Name(), op.Captures)
 		if captureCode != "" {
@@ -383,11 +402,16 @@ func (e *Executor) opIf(op *Op) (interface{}, error) {
 func (e *Executor) opLoop(op *Op) (interface{}, error) {
 	const maxIterations = 100000
 
+	// foreach mode with variable/iterable
+	if op.Mode == "foreach" && op.Iterable != nil {
+		return e.opLoopForeach(op)
+	}
+
 	for i := 0; i < maxIterations; i++ {
 		switch op.Mode {
 		case "infinite":
 			// always run
-		case "while", "for", "foreach", "":
+		case "while", "for", "":
 			if op.Test != nil {
 				truthy, err := e.evalCondition(op.Test)
 				if err != nil {
@@ -403,13 +427,123 @@ func (e *Executor) opLoop(op *Op) (interface{}, error) {
 
 		_, err := e.executeOps(op.Body)
 		if err != nil {
-			if _, ok := err.(ErrReturn); ok {
-				return nil, err
-			}
 			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("loop exceeded %d iterations", maxIterations)
+}
+
+// opLoopForeach implements foreach loops over an iterable binding.
+func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
+	// Resolve the iterable
+	var collection []interface{}
+	switch op.Iterable.Kind {
+	case "ref":
+		val, ok := e.getBinding(op.Iterable.Name)
+		if !ok {
+			return nil, fmt.Errorf("foreach: undefined binding %q", op.Iterable.Name)
+		}
+		if ref, ok := val.(RuntimeRef); ok {
+			val = ref.Value
+		}
+		arr, ok := val.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("foreach: iterable %q is not an array (got %T)", op.Iterable.Name, val)
+		}
+		collection = arr
+	case "literal":
+		arr, ok := op.Iterable.Value.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("foreach: literal iterable is not an array")
+		}
+		collection = arr
+	default:
+		return nil, fmt.Errorf("foreach: unknown iterable kind %q", op.Iterable.Kind)
+	}
+
+	for _, elem := range collection {
+		e.setBinding(op.Variable, elem)
+		_, err := e.executeOps(op.Body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// opThrow resolves the value and returns an ErrThrow sentinel.
+func (e *Executor) opThrow(op *Op) (interface{}, error) {
+	var val interface{}
+	if op.Value != nil {
+		switch op.Value.Kind {
+		case "literal":
+			val = op.Value.Value
+		case "ref":
+			v, ok := e.getBinding(op.Value.Name)
+			if !ok {
+				return nil, fmt.Errorf("throw: undefined binding %q", op.Value.Name)
+			}
+			if ref, ok := v.(RuntimeRef); ok {
+				val = ref.Value
+			} else {
+				val = v
+			}
+		default:
+			return nil, fmt.Errorf("throw: unknown value kind %q", op.Value.Kind)
+		}
+	}
+	return nil, ErrThrow{Value: val}
+}
+
+// opTry executes body, catches thrown/runtime errors, and runs finally.
+func (e *Executor) opTry(op *Op) (interface{}, error) {
+	val, bodyErr := e.executeOps(op.Body)
+
+	if bodyErr != nil {
+		// ErrReturn is control flow — never caught, re-propagate
+		if _, ok := bodyErr.(ErrReturn); ok {
+			e.runFinally(op.FinallyBody)
+			return nil, bodyErr
+		}
+
+		// Catch the error
+		if len(op.Catches) > 0 {
+			catch := op.Catches[0]
+			e.pushScope()
+
+			// Bind the error value to the catch param
+			var errVal interface{}
+			if thrown, ok := bodyErr.(ErrThrow); ok {
+				errVal = thrown.Value
+			} else {
+				errVal = bodyErr.Error()
+			}
+			e.setBinding(catch.Param, errVal)
+
+			catchVal, catchErr := e.executeOps(catch.Body)
+			e.popScope()
+
+			e.runFinally(op.FinallyBody)
+
+			if catchErr != nil {
+				return nil, catchErr
+			}
+			return catchVal, nil
+		}
+
+		e.runFinally(op.FinallyBody)
+		return nil, bodyErr
+	}
+
+	e.runFinally(op.FinallyBody)
+	return val, nil
+}
+
+// runFinally executes finallyBody if present, ignoring errors.
+func (e *Executor) runFinally(ops []*Op) {
+	if len(ops) > 0 {
+		e.executeOps(ops)
+	}
 }
 
 // opConcat evaluates segments and concatenates them into a string.
@@ -697,6 +831,10 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 			} else {
 				// Try as binding reference
 				if val, ok := e.getBinding(part); ok {
+					// Unwrap RuntimeRef to get the actual value
+					if ref, ok := val.(RuntimeRef); ok {
+						val = ref.Value
+					}
 					args = append(args, val)
 				} else {
 					// Use as string literal (strip quotes if present)

@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -205,17 +206,39 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 	return "", fmt.Errorf("go function %q has unsupported signature", name)
 }
 
-// normalizeArgs converts float64 JSON numbers to int where they have no fractional part.
+// normalizeArgs converts values to Go-friendly types for plugin calls:
+// - float64 with no fractional part → int
+// - numeric strings → int or float64
+// - RuntimeRef → unwrapped value (recursively normalized)
 func normalizeArgs(args []interface{}) []interface{} {
 	out := make([]interface{}, len(args))
 	for i, arg := range args {
-		if f, ok := arg.(float64); ok && f == float64(int(f)) {
-			out[i] = int(f)
-		} else {
-			out[i] = arg
-		}
+		out[i] = normalizeArg(arg)
 	}
 	return out
+}
+
+func normalizeArg(arg interface{}) interface{} {
+	switch v := arg.(type) {
+	case float64:
+		if v == float64(int(v)) {
+			return int(v)
+		}
+		return v
+	case string:
+		// Try parsing numeric strings as numbers
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			if f == float64(int(f)) {
+				return int(f)
+			}
+			return f
+		}
+		return v
+	case RuntimeRef:
+		return normalizeArg(v.Value)
+	default:
+		return arg
+	}
 }
 
 // marshalResult converts a value to a string suitable for bridge return.

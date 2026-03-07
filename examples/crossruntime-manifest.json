@@ -1,0 +1,614 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "py_upper",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "text.upper()",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_len",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "len(text)",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_reverse",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "list(text)",
+          "bind": "chars",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "exec",
+          "runtime": "python",
+          "code": "chars.reverse()",
+          "captures": {
+            "chars": "chars"
+          }
+        },
+        {
+          "op": "assign",
+          "target": "sep",
+          "operator": "=",
+          "value": {
+            "kind": "literal",
+            "value": ""
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "chars.join(sep)",
+            "bind": "__ret",
+            "captures": {
+              "sep": "sep",
+              "chars": "chars"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "func_def",
+      "name": "py_make_pair",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "json.dumps([a, b])",
+            "bind": "__ret",
+            "captures": {
+              "json": "json",
+              "a": "a",
+              "b": "b"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_double",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoDouble(n interface{}) interface{} {\n\treturn n.(int) * 2\n}",
+      "exports": [
+        "GoDouble"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_add",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoAdd(a interface{}, b interface{}) interface{} {\n\treturn a.(int) + b.(int)\n}",
+      "exports": [
+        "GoAdd"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_abs",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoAbs(n interface{}) interface{} {\n\tresult := n\n\treturn result\n}",
+      "exports": [
+        "GoAbs"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "round_trip",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_upper(text)",
+          "bind": "upper",
+          "captures": {
+            "py_upper": "py_upper",
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_len(upper)",
+          "bind": "length",
+          "captures": {
+            "py_len": "py_len",
+            "upper": "upper"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_double(length)",
+          "bind": "doubled",
+          "captures": {
+            "go_double": "go_double",
+            "length": "length"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "doubled"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "nested_call",
+      "params": [
+        {
+          "name": "x"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_double(x)",
+          "bind": "doubled",
+          "captures": {
+            "go_double": "go_double",
+            "x": "x"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_double(doubled)",
+          "bind": "quad",
+          "captures": {
+            "go_double": "go_double",
+            "doubled": "doubled"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "quad"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "accumulate",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        },
+        {
+          "name": "c"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_add(a, b)",
+          "bind": "sum_ab",
+          "captures": {
+            "go_add": "go_add",
+            "a": "a",
+            "b": "b"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_add(sum_ab, c)",
+          "bind": "total",
+          "captures": {
+            "go_add": "go_add",
+            "sum_ab": "sum_ab",
+            "c": "c"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_upper(\"total\")",
+          "bind": "label",
+          "captures": {
+            "py_upper": "py_upper"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_make_pair(label, total)",
+          "bind": "pair",
+          "captures": {
+            "py_make_pair": "py_make_pair",
+            "label": "label",
+            "total": "total"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "pair"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "clamp",
+      "params": [
+        {
+          "name": "value"
+        },
+        {
+          "name": "low"
+        },
+        {
+          "name": "high"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(value < low)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "low"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(value > high)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "high"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "value"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "sum_to",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(n <= 0)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "sum_to((n - 1))",
+          "bind": "rest",
+          "captures": {
+            "sum_to": "sum_to",
+            "n": "n"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_add(n, rest)",
+          "bind": "total",
+          "captures": {
+            "go_add": "go_add",
+            "n": "n",
+            "rest": "rest"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "total"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "round_trip(\"hello\")",
+      "bind": "chain_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "nested_call(3)",
+      "bind": "nested_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "accumulate(10, 20, 30)",
+      "bind": "accum_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "go_double(21)",
+      "bind": "d1"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "go_add(20, 22)",
+      "bind": "d2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "go_abs(-42)",
+      "bind": "d3"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "clamp(-5, 0, 100)",
+      "bind": "clamped_low"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "clamp(200, 0, 100)",
+      "bind": "clamped_high"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "clamp(50, 0, 100)",
+      "bind": "clamped_mid"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "sum_to(10)",
+      "bind": "sum_10"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "py_reverse(\"polyglot\")",
+      "bind": "reversed"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "py_upper(py_reverse(\"hello\"))",
+      "bind": "upper_reversed"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('round_trip(hello) = ' + chain_result)",
+      "captures": {"chain_result": "chain_result"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('nested_call(3) = ' + nested_result)",
+      "captures": {"nested_result": "nested_result"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('accumulate(10,20,30) = ' + accum_result)",
+      "captures": {"accum_result": "accum_result"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('go_double(21) = ' + d1)",
+      "captures": {"d1": "d1"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('go_add(20,22) = ' + d2)",
+      "captures": {"d2": "d2"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('go_abs(-42) = ' + d3)",
+      "captures": {"d3": "d3"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('clamp(-5,0,100) = ' + clamped_low)",
+      "captures": {"clamped_low": "clamped_low"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('clamp(200,0,100) = ' + clamped_high)",
+      "captures": {"clamped_high": "clamped_high"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('clamp(50,0,100) = ' + clamped_mid)",
+      "captures": {"clamped_mid": "clamped_mid"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('sum_to(10) = ' + sum_10)",
+      "captures": {"sum_10": "sum_10"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('py_reverse(polyglot) = ' + reversed)",
+      "captures": {"reversed": "reversed"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('py_upper(py_reverse(hello)) = ' + upper_reversed)",
+      "captures": {"upper_reversed": "upper_reversed"}
+    }
+  ]
+}

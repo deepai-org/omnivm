@@ -34,10 +34,15 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 				// Same runtime — variable already in scope, skip injection
 				continue
 			}
-			// Cross-runtime: use the serialized value
-			jsonVal, err := marshalForCapture(ref.Value)
+			// Cross-runtime: ask the source runtime to JSON-serialize the value
+			// so complex types (lists, dicts, arrays) transfer correctly.
+			jsonVal, err := e.crossRuntimeSerialize(ref)
 			if err != nil {
-				return "", fmt.Errorf("capture %q: marshal RuntimeRef: %w", varName, err)
+				// Fallback to cached value
+				jsonVal, err = marshalForCapture(ref.Value)
+				if err != nil {
+					return "", fmt.Errorf("capture %q: marshal RuntimeRef: %w", varName, err)
+				}
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -168,9 +173,12 @@ func (e *Executor) autoInjectScope(rtName string) string {
 				if ref.Runtime == rtName {
 					continue // already in scope
 				}
-				jsonVal, err := marshalForCapture(ref.Value)
+				jsonVal, err := e.crossRuntimeSerialize(ref)
 				if err != nil {
-					continue
+					jsonVal, err = marshalForCapture(ref.Value)
+					if err != nil {
+						continue
+					}
 				}
 				resolved[varName] = jsonVal
 				continue
@@ -215,9 +223,12 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 			if ref.Runtime == rtName {
 				continue
 			}
-			jsonVal, err := marshalForCapture(ref.Value)
+			jsonVal, err := e.crossRuntimeSerialize(ref)
 			if err != nil {
-				continue
+				jsonVal, err = marshalForCapture(ref.Value)
+				if err != nil {
+					continue
+				}
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -286,6 +297,45 @@ func injectJavaCaptures(captures map[string]string) string {
 			escapeJavaString(varName), escapeJavaString(jsonVal)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// crossRuntimeSerialize asks the source runtime to JSON-serialize a variable
+// so complex types (lists, dicts, arrays, objects) transfer correctly across runtimes.
+func (e *Executor) crossRuntimeSerialize(ref RuntimeRef) (string, error) {
+	srcRT, ok := e.runtimes[ref.Runtime]
+	if !ok {
+		return "", fmt.Errorf("source runtime %q not found", ref.Runtime)
+	}
+
+	var jsonCode string
+	switch ref.Runtime {
+	case "python":
+		jsonCode = fmt.Sprintf("__import__('json').dumps(%s)", ref.VarName)
+	case "javascript":
+		jsonCode = fmt.Sprintf("JSON.stringify(%s)", ref.VarName)
+	case "ruby":
+		jsonCode = fmt.Sprintf("require 'json'; JSON.generate(%s)", ref.VarName)
+	default:
+		return "", fmt.Errorf("cross-runtime serialize not supported for %q", ref.Runtime)
+	}
+
+	result := srcRT.Eval(jsonCode)
+	if result.Err != nil {
+		return "", result.Err
+	}
+
+	val := result.Value
+	if val == nil {
+		if result.Output != "" {
+			return strings.TrimRight(result.Output, "\n"), nil
+		}
+		return "", fmt.Errorf("no value returned")
+	}
+
+	// The eval result is the JSON string itself — return it directly
+	// (strip surrounding quotes if the eval wrapped it as a string)
+	s := fmt.Sprintf("%v", val)
+	return s, nil
 }
 
 // String escaping helpers

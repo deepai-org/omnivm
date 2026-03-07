@@ -46,8 +46,14 @@ type Op struct {
 	ElseBody []*Op    `json:"elseBody,omitempty"`
 
 	// loop
-	Mode string    `json:"mode,omitempty"`
-	Test *CondExpr `json:"test,omitempty"`
+	Mode     string     `json:"mode,omitempty"`
+	Test     *CondExpr  `json:"test,omitempty"`
+	Variable string     `json:"variable,omitempty"` // foreach loop variable
+	Iterable *ValueExpr `json:"iterable,omitempty"` // foreach iterable
+
+	// try
+	Catches     []*CatchClause `json:"catches,omitempty"`     // try catches
+	FinallyBody []*Op          `json:"finallyBody,omitempty"` // try finally
 
 	// concat
 	Segments []*ConcatSegment `json:"segments,omitempty"`
@@ -81,6 +87,12 @@ type Param struct {
 type IfArm struct {
 	Test *CondExpr `json:"test"`
 	Body []*Op     `json:"body"`
+}
+
+// CatchClause represents a catch block in a try op.
+type CatchClause struct {
+	Param string `json:"param"`
+	Body  []*Op  `json:"body"`
 }
 
 // CondExpr represents a conditional expression (used in if arms and loop tests).

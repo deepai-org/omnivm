@@ -12,6 +12,10 @@ import (
 
 const pluginCacheDir = "/tmp/omnivm-plugins"
 
+// loadedPlugins tracks plugins already opened in this process.
+// Go's plugin.Open panics/errors if the same .so is opened twice.
+var loadedPlugins = map[string]*plugin.Plugin{}
+
 // compileGoPlugin handles func_def ops with bodyRuntime:"go" and a source field.
 // It compiles the Go source as a plugin, loads exports, and registers them
 // in the executor's goFuncs registry.
@@ -19,17 +23,24 @@ func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
 	hash := sha256Hash(op.Source)
 	soPath := filepath.Join(pluginCacheDir, hash+".so")
 
-	// Check cache
-	if _, err := os.Stat(soPath); os.IsNotExist(err) {
-		if err := compilePlugin(op.Source, soPath); err != nil {
-			return nil, fmt.Errorf("go plugin compile: %w", err)
-		}
-	}
+	// Check if already loaded in this process
+	plug, alreadyLoaded := loadedPlugins[soPath]
 
-	// Load the plugin
-	plug, err := plugin.Open(soPath)
-	if err != nil {
-		return nil, fmt.Errorf("go plugin open: %w", err)
+	if !alreadyLoaded {
+		// Check compile cache
+		if _, err := os.Stat(soPath); os.IsNotExist(err) {
+			if err := compilePlugin(op.Source, soPath); err != nil {
+				return nil, fmt.Errorf("go plugin compile: %w", err)
+			}
+		}
+
+		// Load the plugin
+		var err error
+		plug, err = plugin.Open(soPath)
+		if err != nil {
+			return nil, fmt.Errorf("go plugin open: %w", err)
+		}
+		loadedPlugins[soPath] = plug
 	}
 
 	// If the plugin has an Init function and requires dependencies, call it
@@ -103,8 +114,10 @@ func compilePlugin(source, outputPath string) error {
 		return err
 	}
 
-	// Write go.mod
-	modContent := "module omnivm-plugin\n\ngo 1.22\n"
+	// Write go.mod — each plugin needs a unique module name
+	// so Go's plugin system treats them as distinct packages.
+	modName := fmt.Sprintf("omnivm-plugin-%s", filepath.Base(outputPath[:len(outputPath)-3]))
+	modContent := fmt.Sprintf("module %s\n\ngo 1.22\n", modName)
 	modPath := filepath.Join(tmpDir, "go.mod")
 	if err := os.WriteFile(modPath, []byte(modContent), 0o644); err != nil {
 		return err

@@ -1,0 +1,1473 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "declare",
+      "bind": "total",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "sum_items",
+      "params": [
+        {
+          "name": "items"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "assign",
+              "target": "total",
+              "operator": "+=",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "item",
+                "bind": "__rhs"
+              }
+            }
+          ],
+          "variable": "item",
+          "iterable": {
+            "kind": "ref",
+            "name": "items"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "total"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_double",
+      "params": [
+        {
+          "name": "x"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "(x * 2)",
+            "bind": "__ret",
+            "captures": {
+              "x": "x"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "result",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "foreach_transform",
+      "params": [
+        {
+          "name": "items"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "python",
+              "code": "py_double(item)",
+              "bind": "doubled",
+              "captures": {
+                "py_double": "py_double"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "result",
+              "operator": "+=",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "doubled",
+                "bind": "__rhs",
+                "captures": {
+                  "doubled": "doubled"
+                }
+              }
+            }
+          ],
+          "variable": "item",
+          "iterable": {
+            "kind": "ref",
+            "name": "items"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "total",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "i",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "matrix_sum",
+      "params": [
+        {
+          "name": "rows"
+        },
+        {
+          "name": "cols"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "declare",
+              "bind": "j",
+              "mutable": true,
+              "value": {
+                "kind": "literal",
+                "value": 0
+              }
+            },
+            {
+              "op": "loop",
+              "mode": "while",
+              "body": [
+                {
+                  "op": "assign",
+                  "target": "total",
+                  "operator": "+=",
+                  "from": {
+                    "op": "eval",
+                    "runtime": "javascript",
+                    "code": "((i * cols) + j)",
+                    "bind": "__rhs",
+                    "captures": {
+                      "i": "i",
+                      "cols": "cols",
+                      "j": "j"
+                    }
+                  }
+                },
+                {
+                  "op": "assign",
+                  "target": "j",
+                  "operator": "+=",
+                  "value": {
+                    "kind": "literal",
+                    "value": 1
+                  }
+                }
+              ],
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(j < cols)"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "i",
+              "operator": "+=",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(i < rows)"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "total"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "count",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "b",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "batch_process",
+      "params": [
+        {
+          "name": "batches"
+        },
+        {
+          "name": "items"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "loop",
+              "mode": "foreach",
+              "body": [
+                {
+                  "op": "assign",
+                  "target": "count",
+                  "operator": "+=",
+                  "value": {
+                    "kind": "literal",
+                    "value": 1
+                  }
+                }
+              ],
+              "variable": "item",
+              "iterable": {
+                "kind": "ref",
+                "name": "items"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "b",
+              "operator": "+=",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(b < batches)"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "count"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_step",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "python",
+                "code": "(n <= 0)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "js_step((n - 1))",
+            "bind": "__ret",
+            "captures": {
+              "n": "n"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "js_step",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(n <= 0)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "go_step((n - 1))",
+          "bind": "result",
+          "captures": {
+            "n": "n"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "go_step",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoStep(n interface{}) interface{} {\n\treturn n.(int) - 1\n}",
+      "exports": [
+        "GoStep"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "py_step(6)",
+      "bind": "recursion_result"
+    },
+    {
+      "op": "func_def",
+      "name": "safe_divide",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(b === 0)"
+                  },
+                  "body": [
+                    {
+                      "op": "throw",
+                      "value": {
+                        "kind": "literal",
+                        "value": "division by zero"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "return",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "(a / b)",
+                "bind": "__ret",
+                "captures": {
+                  "a": "a",
+                  "b": "b"
+                }
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "return",
+                  "from": {
+                    "op": "eval",
+                    "runtime": "javascript",
+                    "code": "-1",
+                    "bind": "__ret"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_parse_int",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "int(text)",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "safe_parse",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "python",
+              "code": "py_parse_int(text)",
+              "bind": "result",
+              "captures": {
+                "py_parse_int": "py_parse_int",
+                "text": "text"
+              }
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "result"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "status",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": "pending"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "with_cleanup",
+      "params": [
+        {
+          "name": "data"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "process(data)",
+              "bind": "result",
+              "captures": {
+                "data": "data"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "status",
+              "operator": "=",
+              "value": {
+                "kind": "literal",
+                "value": "success"
+              }
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "result"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "assign",
+                  "target": "status",
+                  "operator": "=",
+                  "value": {
+                    "kind": "literal",
+                    "value": "error"
+                  }
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": null
+                  }
+                }
+              ]
+            }
+          ],
+          "finallyBody": [
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(status)",
+              "captures": {
+                "status": "status"
+              }
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "total",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 1000
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "+=",
+      "value": {
+        "kind": "literal",
+        "value": 500
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "-=",
+      "value": {
+        "kind": "literal",
+        "value": 200
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "*=",
+      "value": {
+        "kind": "literal",
+        "value": 2
+      }
+    },
+    {
+      "op": "assign",
+      "target": "total",
+      "operator": "/=",
+      "value": {
+        "kind": "literal",
+        "value": 4
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "ratio",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 100
+      }
+    },
+    {
+      "op": "assign",
+      "target": "ratio",
+      "operator": "/=",
+      "value": {
+        "kind": "literal",
+        "value": 5
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "label",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "outer"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "make_label",
+      "params": [
+        {
+          "name": "prefix"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "(prefix + \"_inner\")",
+          "bind": "label",
+          "captures": {
+            "prefix": "prefix"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "label"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "label",
+      "bind": "outer_label"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "make_label(\"test\")",
+      "bind": "inner_label"
+    },
+    {
+      "op": "func_def",
+      "name": "fetch_and_process",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "await fetch(url)",
+          "bind": "response",
+          "captures": {
+            "url": "url"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "await response.json()",
+          "bind": "data",
+          "captures": {
+            "response": "response"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_double(data)",
+          "bind": "processed",
+          "captures": {
+            "py_double": "py_double",
+            "data": "data"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "processed"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "py_count_chars",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "len(text)",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "big_string",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "py_count_chars(big_string)",
+      "bind": "length",
+      "captures": {
+        "py_count_chars": "py_count_chars",
+        "big_string": "big_string"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "large_data_test",
+      "params": [],
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "length"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_upper",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "text.upper()",
+            "bind": "__ret",
+            "captures": {
+              "text": "text"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_reverse",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "list(text)",
+          "bind": "chars",
+          "captures": {
+            "text": "text"
+          }
+        },
+        {
+          "op": "exec",
+          "runtime": "python",
+          "code": "chars.reverse()",
+          "captures": {
+            "chars": "chars"
+          }
+        },
+        {
+          "op": "assign",
+          "target": "sep",
+          "operator": "=",
+          "value": {
+            "kind": "literal",
+            "value": ""
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "chars.join(sep)",
+            "bind": "__ret",
+            "captures": {
+              "sep": "sep",
+              "chars": "chars"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "transform_chain",
+      "params": [
+        {
+          "name": "text"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_reverse(text)",
+          "bind": "reversed",
+          "captures": {
+            "py_reverse": "py_reverse",
+            "text": "text"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_upper(reversed)",
+          "bind": "upper",
+          "captures": {
+            "py_upper": "py_upper",
+            "reversed": "reversed"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_count_chars(upper)",
+          "bind": "length",
+          "captures": {
+            "py_count_chars": "py_count_chars",
+            "upper": "upper"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "length"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "go_add",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoAdd(a interface{}, b interface{}) interface{} {\n\treturn a.(int) + b.(int)\n}",
+      "exports": [
+        "GoAdd"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_mul",
+      "params": [
+        {
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoMul(a interface{}, b interface{}) interface{} {\n\treturn a.(int) * b.(int)\n}",
+      "exports": [
+        "GoMul"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_square",
+      "params": [
+        {
+          "name": "n"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc GoSquare(n interface{}) interface{} {\n\treturn n.(int) * n.(int)\n}",
+      "exports": [
+        "GoSquare"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_chain",
+      "params": [
+        {
+          "name": "x"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_add(x, x)",
+          "bind": "doubled",
+          "captures": {
+            "go_add": "go_add",
+            "x": "x"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_square(doubled)",
+          "bind": "squared",
+          "captures": {
+            "go_square": "go_square",
+            "doubled": "doubled"
+          }
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_mul(squared, 2)",
+          "bind": "result",
+          "captures": {
+            "go_mul": "go_mul",
+            "squared": "squared"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "py_validate",
+      "params": [
+        {
+          "name": "value"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "python",
+                "code": "(value < 0)"
+              },
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": "invalid"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": "valid"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "validate_and_process",
+      "params": [
+        {
+          "name": "x"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "py_validate(x)",
+          "bind": "status",
+          "captures": {
+            "py_validate": "py_validate",
+            "x": "x"
+          }
+        },
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(status === \"invalid\")"
+              },
+              "body": [
+                {
+                  "op": "throw",
+                  "value": {
+                    "kind": "literal",
+                    "value": "validation failed"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "eval",
+          "runtime": "go",
+          "code": "go_square(x)",
+          "bind": "result",
+          "captures": {
+            "go_square": "go_square",
+            "x": "x"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "safe_validate",
+      "params": [
+        {
+          "name": "x"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "validate_and_process(x)",
+              "bind": "result",
+              "captures": {
+                "validate_and_process": "validate_and_process",
+                "x": "x"
+              }
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "result"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "return",
+                  "from": {
+                    "op": "eval",
+                    "runtime": "javascript",
+                    "code": "-1",
+                    "bind": "__ret"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "classify_and_transform",
+      "params": [
+        {
+          "name": "value"
+        }
+      ],
+      "body": [
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(value > 100)"
+              },
+              "body": [
+                {
+                  "op": "eval",
+                  "runtime": "python",
+                  "code": "py_upper(\"big\")",
+                  "bind": "big",
+                  "captures": {
+                    "py_upper": "py_upper"
+                  }
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "big"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(value > 50)"
+              },
+              "body": [
+                {
+                  "op": "eval",
+                  "runtime": "go",
+                  "code": "go_square(value)",
+                  "bind": "medium",
+                  "captures": {
+                    "go_square": "go_square",
+                    "value": "value"
+                  }
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "medium"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "arms": [
+            {
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "(value > 0)"
+              },
+              "body": [
+                {
+                  "op": "eval",
+                  "runtime": "python",
+                  "code": "py_double(value)",
+                  "bind": "small",
+                  "captures": {
+                    "py_double": "py_double",
+                    "value": "value"
+                  }
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "small"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "sum_items([1, 2, 3, 4, 5])",
+      "bind": "sum_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "foreach_transform([1, 2, 3])",
+      "bind": "transform_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "matrix_sum(3, 4)",
+      "bind": "matrix_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "batch_process(2, [10, 20, 30])",
+      "bind": "batch_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_divide(10, 3)",
+      "bind": "safe_div_ok"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_divide(10, 0)",
+      "bind": "safe_div_zero"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_parse(\"42\")",
+      "bind": "parse_ok"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_parse(\"not_a_number\")",
+      "bind": "parse_fail"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "large_data_test()",
+      "bind": "large_len"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "transform_chain(\"hello\")",
+      "bind": "chain_len"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "go_chain(3)",
+      "bind": "go_chain_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_validate(5)",
+      "bind": "valid_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "safe_validate(-1)",
+      "bind": "invalid_result"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify_and_transform(150)",
+      "bind": "classify_big"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify_and_transform(75)",
+      "bind": "classify_medium"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify_and_transform(25)",
+      "bind": "classify_small"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "classify_and_transform(0)",
+      "bind": "classify_zero"
+    }
+  ]
+}
