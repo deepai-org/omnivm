@@ -184,16 +184,8 @@ func main() {
 			cancel()
 			return
 		}
-		fmt.Fprintln(os.Stderr, "\nManifest execution complete. Pumping event loops (Ctrl+C to stop)...")
-
-		// Keep running (pump loop stays active for servers, etc.)
-		// Wait for signal to shut down
-		select {
-		case <-sigCh:
-			fmt.Fprintln(os.Stderr, "\nReceived signal, shutting down...")
-			cancel()
-		case <-ctx.Done():
-		}
+		fmt.Fprintln(os.Stderr, "\nManifest execution complete.")
+		cancel()
 	}()
 
 	// Run dispatcher on main goroutine (Golden Thread)

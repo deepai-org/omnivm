@@ -1,9 +1,31 @@
 package manifest
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
+
+// drainChannel performs a non-blocking drain of a channel into a slice.
+// Returns all currently buffered values without blocking.
+// Handles closed channels safely by checking the ok flag.
+func drainChannel(ch *ChanRef) []interface{} {
+	result := make([]interface{}, 0)
+	if ch.closed {
+		return result
+	}
+	for {
+		select {
+		case v, ok := <-ch.ch:
+			if !ok {
+				return result
+			}
+			result = append(result, v)
+		default:
+			return result
+		}
+	}
+}
 
 // wrapWithCaptures generates runtime-specific code that injects capture values
 // into the execution scope, then runs the user's code. Each runtime uses
@@ -20,8 +42,14 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			return "", fmt.Errorf("capture %q: undefined binding %q", varName, bindingName)
 		}
 
-		// ChanRef: Go channels can't be serialized to JSON
-		if _, ok := val.(*ChanRef); ok {
+		// ChanRef: drain buffered values into an array
+		if ch, ok := val.(*ChanRef); ok {
+			drained := drainChannel(ch)
+			jsonVal, err := json.Marshal(drained)
+			if err != nil {
+				return "", fmt.Errorf("capture %q: marshal ChanRef: %w", varName, err)
+			}
+			resolved[varName] = string(jsonVal)
 			continue
 		}
 
@@ -172,7 +200,7 @@ func (e *Executor) autoInjectScope(rtName string) string {
 				continue // shadowed by higher scope
 			}
 			if _, ok := val.(*ChanRef); ok {
-				continue
+				continue // Auto-inject skips channels; use explicit captures to drain
 			}
 			if _, ok := val.(ImportRef); ok {
 				continue
@@ -224,7 +252,13 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 		if !ok {
 			continue
 		}
-		if _, ok := val.(*ChanRef); ok {
+		if ch, ok := val.(*ChanRef); ok {
+			drained := drainChannel(ch)
+			jsonVal, merr := json.Marshal(drained)
+			if merr != nil {
+				continue
+			}
+			resolved[varName] = string(jsonVal)
 			continue
 		}
 		if _, ok := val.(ImportRef); ok {

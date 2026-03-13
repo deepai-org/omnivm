@@ -188,6 +188,12 @@ COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
 COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
 COPY --from=builder /usr/local/bin/manifest-runner /usr/local/bin/manifest-runner
 
+# Test data for manifest demos
+RUN mkdir -p /var/data && \
+    touch /var/data/app.log /var/data/error.log /var/data/debug.log \
+          /var/data/server.log /var/data/config.yaml /var/data/readme.txt \
+          /var/data/Thumbs.db /var/data/.DS_Store
+
 # Copy example manifests (change most often — keep last)
 COPY --from=builder /build/examples/ /omnivm/examples/
 

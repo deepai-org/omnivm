@@ -69,8 +69,9 @@ type Op struct {
 	Branches []*Op `json:"branches,omitempty"`
 
 	// chan
-	Action  string `json:"action,omitempty"`
-	Channel string `json:"channel,omitempty"`
+	Action  string      `json:"action,omitempty"`
+	Channel string      `json:"channel,omitempty"`
+	Size    interface{} `json:"size,omitempty"` // chan make buffer size
 
 	// select
 	Cases       []*SelectCase `json:"cases,omitempty"`
@@ -108,8 +109,9 @@ type IfArm struct {
 
 // CatchClause represents a catch block in a try op.
 type CatchClause struct {
-	Param string `json:"param"`
-	Body  []*Op  `json:"body"`
+	Param   string `json:"param,omitempty"`
+	Body    []*Op  `json:"body"`
+	Runtime string `json:"runtime,omitempty"` // cross-runtime error bridging
 }
 
 // SelectCase represents a case in a select op.

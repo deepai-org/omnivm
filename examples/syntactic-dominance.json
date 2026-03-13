@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "os",
+      "runtime": "python",
+      "bind": "os"
+    },
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "os.listdir(\"/var/data\")",
+      "bind": "files"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "files.map((f) => f.toUpperCase())",
+      "bind": "loud",
+      "captures": {
+        "files": "files"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "loud.filter((f) => ((f !== \"THUMBS.DB\") && (f !== \".DS_STORE\")))",
+      "bind": "valid"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(valid)",
+      "bind": "count",
+      "captures": {
+        "valid": "valid"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "valid.filter((f) => /\\.log$/i.test(f))",
+      "bind": "logs"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "sorted(logs)",
+      "bind": "ordered",
+      "captures": {
+        "logs": "logs"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "json.dumps(ordered)",
+      "bind": "payload"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "ordered.reduce((acc, f) => (((acc + \"\\\\n\") + f) , \"=== LOG FILES ===\"))",
+      "bind": "summary",
+      "captures": {
+        "ordered": "ordered"
+      }
+    },
+    {
+      "op": "native",
+      "runtime": "javascript",
+      "code": "print(summary)"
+    },
+    {
+      "op": "native",
+      "runtime": "javascript",
+      "code": "print(payload)"
+    }
+  ]
+}

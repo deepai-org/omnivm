@@ -123,6 +123,80 @@ omnivm.call("javascript",
 
 All calls execute synchronously on the Golden Thread. No marshalling, no IPC, no serialization — just direct function calls through C on a single OS thread.
 
+## Manifest Executor
+
+The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target for a hypothetical PolyScript compiler — each op specifies a runtime, code, captures, and control flow.
+
+```bash
+# Run a single manifest
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-concurrency.json
+
+# Run the full manifest test suite (11 tests, 6 categories)
+make test-manifests
+
+# Quick mode (skip Express/pastebin manifests)
+make test-manifests-quick
+```
+
+```
+=== OmniVM Manifest Test Suite ===
+── Basic Ops ──
+  [TEST] Polyglot eval/exec/import/concat              PASS
+  [TEST] Syntactic dominance (Python+JS pipeline)      PASS
+── Control Flow ──
+  [TEST] If/else, while loops, recursion               PASS
+  [TEST] Params, mutability, assign operators          PASS
+── Cross-Runtime Functions ──
+  [TEST] Round-trip, accumulate, recursive chains      PASS
+── Advanced Patterns ──
+  [TEST] Foreach, try/catch, batch, large data         PASS
+  [TEST] Async/await, parallel, channels, select       PASS
+  [TEST] Channels, generators, spawn workers           PASS
+── Concurrency & Edge Cases ──
+  [TEST] Cursed concurrency (full channel+spawn)       PASS
+── Application Manifests ──
+  [TEST] Express.js + Python text processing           PASS
+  [TEST] Pastebin multi-shard API                      PASS
+Results: 11 passed, 0 failed out of 11
+```
+
+### Supported Ops
+
+| Op | Description |
+|----|-------------|
+| `exec` | Execute code (side effects, stdout capture) |
+| `eval` | Evaluate expression (returns value) |
+| `import` | Runtime-specific module import |
+| `func_def` | Define a manifest function (with optional generator, Go plugin source) |
+| `return` | Return from function |
+| `if` | Conditional branching with arms + else |
+| `loop` | While/for/foreach/infinite loops |
+| `declare` / `assign` | Variable binding and mutation |
+| `concat` | String interpolation with cross-runtime eval segments |
+| `try` / `throw` | Error handling with catch/finally |
+| `parallel` | Concurrent branch execution |
+| `chan` | Go channel operations (make/send/recv/close) |
+| `select` | Go-style select on channels |
+| `spawn` | Launch Go functions or manifest func_defs |
+| `yield` | Generator yield (with delegate support) |
+| `await` | Async/await semantics |
+
+### Manifest Examples
+
+| File | Runtimes | What it tests |
+|------|----------|---------------|
+| `manifest-test.json` | Py, JS, Ruby | Basic eval/exec/import/concat across runtimes |
+| `syntactic-dominance.json` | Py, JS | Filesystem scan + array pipeline across runtimes |
+| `controlflow-test.json` | Py, JS, Go | If/else, while, recursion, Go plugin compilation |
+| `controlflow-manifest.json` | Py, JS, Go | Default params, spread, mutability, assign operators |
+| `crossruntime-manifest.json` | Py, JS, Go | Round-trip chains, recursive cross-runtime calls |
+| `stress-test-2.json` | Py, JS, Go | Foreach, try/catch, batch processing, nested loops |
+| `stress-test-4.json` | Py, JS, Go | Async/await, parallel, channels, select, generators |
+| `stress-test-5.json` | Py, JS, Go | Channel worker pools, generators, spawn |
+| `cursed-concurrency.json` | Py, JS, Go | Full channel+spawn+generator orchestration, cross-runtime iterables, f-string conversion |
+| `express-manifest.json` | Py, JS | Express.js server with Python text processing |
+| `pastebin-manifest.json` | Py, JS, Go | Multi-shard pastebin API with hashing and validation |
+
 ## Stress Tests
 
 52 tests verify correctness under pressure:
@@ -137,23 +211,26 @@ Tests cover cross-runtime stack mixing, generators across C boundaries, asyncio 
 
 ```
 cmd/
-  omnivm/          Main binary (REPL + CLI)
-  stresstest/      52-test stress suite
-  express-demo/    Express + Python/Ruby/Java HTTP demo
-  telephone/       Cross-runtime telephone game
+  omnivm/            Main binary (REPL + CLI)
+  manifest-runner/   JSON manifest executor
+  stresstest/        52-test stress suite
+  express-demo/      Express + Python/Ruby/Java HTTP demo
+  telephone/         Cross-runtime telephone game
 pkg/
-  python/          CPython embedding via cgo
-  javascript/      Node.js/V8 embedding via cgo
-  jvm/             JVM embedding via JNI/cgo
-  ruby/            MRI Ruby embedding via cgo
-  dispatcher/      Golden Thread task serializer (1ms tick)
-  signals/         Signal handler management
-  arrow/           Shared memory primitives
+  python/            CPython embedding via cgo
+  javascript/        Node.js/V8 embedding via cgo
+  jvm/               JVM embedding via JNI/cgo
+  ruby/              MRI Ruby embedding via cgo
+  manifest/          Manifest IR executor (ops, captures, channels, stubs)
+  dispatcher/        Golden Thread task serializer (1ms tick)
+  signals/           Signal handler management
+  arrow/             Shared memory primitives
 scripts/
-  v8_bridge_node.cc  Node.js ↔ v8_bridge.h C++ adapter
+  v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
+  test-manifests.sh    Manifest test suite runner (11 tests)
 runtime/
-  java/            OmniVMRunner.java (in-memory compilation)
-examples/          Sample scripts
+  java/              OmniVMRunner.java (in-memory compilation)
+examples/            Manifest JSON files and sample scripts
 ```
 
 ## Key Design Decisions
@@ -174,7 +251,16 @@ Requires Docker. The multi-stage Dockerfile handles all dependencies:
 
 ```bash
 docker build -t omnivm .
-docker run --rm --entrypoint stresstest omnivm    # 52/52 tests
-docker run --rm --entrypoint express-demo omnivm  # Express demo
+docker run --rm --entrypoint stresstest omnivm    # 52/52 stress tests
 docker run -it --rm omnivm                        # REPL
+```
+
+Or use Make targets:
+
+```bash
+make build                # Build Docker image
+make test-manifests       # Run 11 manifest tests
+make test-manifests-quick # Quick mode (skip Express/pastebin)
+make test-stress          # Run 52 stress tests
+make test-all             # Everything: unit + smoke + stress + manifests
 ```

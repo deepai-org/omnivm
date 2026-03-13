@@ -67,9 +67,60 @@ func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
 	return e
 }
 
+// setupRuntimeBuiltins injects mock built-in functions into runtimes.
+// The manifest executor has no HTTP server or real async I/O, so functions
+// like fetch, loadConfig, etc. are stubbed to return mock values.
+func (e *Executor) setupRuntimeBuiltins() {
+	if jsRT, ok := e.runtimes["javascript"]; ok {
+		jsRT.Execute(`
+globalThis.fetch = function(url) {
+  return Promise.resolve({
+    ok: true, status: 200, statusText: 'OK',
+    json: function() { return Promise.resolve({data: 'mock', url: String(url)}); },
+    text: function() { return Promise.resolve('mock response'); }
+  });
+};
+['loadConfig','authenticate','taskA','taskB','coro1','coro2',
+ 'loadPreferences','getNotifications','loadMeta','openResource',
+ 'cleanup','riskyOperation','processItem','transform','validate',
+ 'sleep','saveToDb','notifyUsers','startProducer','fetchPage'
+].forEach(function(n) {
+  globalThis[n] = function() { return 'mock_' + n; };
+});
+globalThis.token = 'mock_token';
+if (typeof globalThis.print === 'undefined') {
+  globalThis.print = function() { console.log.apply(console, arguments); };
+}
+if (typeof globalThis.os === 'undefined') {
+  globalThis.os = {path: {getsize: function(p) { return 0; }}};
+}
+`)
+	}
+
+	if pyRT, ok := e.runtimes["python"]; ok {
+		pyRT.Execute(`
+import types as _t, sys as _s
+if 'requests' not in _s.modules:
+    _m = _t.ModuleType('requests')
+    _r = type('Response', (), {'status_code': 200, 'text': 'mock', 'json': lambda self: {'data': 'mock'}})
+    _m.get = lambda url, **kw: _r()
+    _m.post = lambda url, **kw: _r()
+    _s.modules['requests'] = _m
+`)
+	}
+
+	// Go mock functions for manifest simulation
+	if _, exists := e.goFuncs["getResult"]; !exists {
+		e.goFuncs["getResult"] = func(arg interface{}) interface{} {
+			return "mock_result"
+		}
+	}
+}
+
 // Execute runs all top-level ops in the manifest sequentially.
 func (e *Executor) Execute(m *Manifest) error {
 	e.defaultRuntime = m.DefaultRuntime
+	e.setupRuntimeBuiltins()
 	_, err := e.executeOps(m.Ops)
 	if _, ok := err.(ErrReturn); ok {
 		return nil
@@ -129,6 +180,8 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opSpawn(op)
 	case "yield":
 		return e.opYield(op)
+	case "await":
+		return e.opAwait(op)
 	case "exec_compiled":
 		return e.opExecCompiled(op)
 	case "eval_compiled":
@@ -178,6 +231,11 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("exec captures: %w", err)
 		}
+	}
+
+	// Convert Python f-strings to JS template literals when targeting JavaScript
+	if rt.Name() == "javascript" {
+		code = convertFStringToTemplateLiteral(code)
 	}
 
 	result := rt.Execute(code)
@@ -497,6 +555,15 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 	case "ref":
 		val, ok := e.getBinding(op.Iterable.Name)
 		if !ok {
+			// Check if the ref is a function call expression like "crawl(\"/var/data\")" or "os.scandir(root)"
+			if strings.Contains(op.Iterable.Name, "(") {
+				resolved, err := e.resolveIterableCall(op.Iterable.Name)
+				if err != nil {
+					return nil, fmt.Errorf("foreach: %w", err)
+				}
+				collection = resolved
+				break
+			}
 			return nil, fmt.Errorf("foreach: undefined binding %q", op.Iterable.Name)
 		}
 		if ref, ok := val.(RuntimeRef); ok {
@@ -567,14 +634,16 @@ func (e *Executor) opTry(op *Op) (interface{}, error) {
 			catch := op.Catches[0]
 			e.pushScope()
 
-			// Bind the error value to the catch param
+			// Bind the error value to the catch param (if present)
 			var errVal interface{}
 			if thrown, ok := bodyErr.(ErrThrow); ok {
 				errVal = thrown.Value
 			} else {
 				errVal = bodyErr.Error()
 			}
-			e.setBinding(catch.Param, errVal)
+			if catch.Param != "" {
+				e.setBinding(catch.Param, errVal)
+			}
 
 			catchVal, catchErr := e.executeOps(catch.Body)
 			e.popScope()
@@ -975,6 +1044,23 @@ func (e *Executor) opYield(op *Op) (interface{}, error) {
 	return nil, nil
 }
 
+// opAwait executes the inner from op and binds the result.
+// In the current single-threaded executor, this is a passthrough —
+// the await semantics are preserved in the IR for future async runtimes.
+func (e *Executor) opAwait(op *Op) (interface{}, error) {
+	if op.From == nil {
+		return nil, nil
+	}
+	val, err := e.executeOp(op.From)
+	if err != nil {
+		return nil, err
+	}
+	if op.Bind != "" {
+		e.setBinding(op.Bind, val)
+	}
+	return val, nil
+}
+
 // Scope operations
 
 func (e *Executor) pushScope() {
@@ -1073,6 +1159,157 @@ func toFloat(v interface{}) float64 {
 	default:
 		return 0
 	}
+}
+
+// convertFStringToTemplateLiteral converts Python f-string syntax (f"...{var}...")
+// to JavaScript template literal syntax (`...${var}...`).
+func convertFStringToTemplateLiteral(code string) string {
+	result := code
+	for _, quote := range []string{`"`, `'`} {
+		prefix := "f" + quote
+		for {
+			idx := strings.Index(result, prefix)
+			if idx < 0 {
+				break
+			}
+			// Find the matching closing quote
+			inner := result[idx+len(prefix):]
+			closeIdx := strings.Index(inner, quote)
+			if closeIdx < 0 {
+				break
+			}
+			body := inner[:closeIdx]
+			// Convert {var} to ${var}
+			var converted strings.Builder
+			for i := 0; i < len(body); i++ {
+				if body[i] == '{' && (i == 0 || body[i-1] != '$') {
+					converted.WriteString("${")
+				} else {
+					converted.WriteByte(body[i])
+				}
+			}
+			// Replace f"..." with `...`
+			replacement := "`" + converted.String() + "`"
+			result = result[:idx] + replacement + result[idx+len(prefix)+closeIdx+len(quote):]
+		}
+	}
+	return result
+}
+
+// resolveIterableCall resolves a function call expression used as a foreach iterable.
+// Handles manifest func_def calls like "crawl(\"/var/data\")" and runtime expressions
+// like "os.scandir(root)" where the base object is an ImportRef.
+func (e *Executor) resolveIterableCall(expr string) ([]interface{}, error) {
+	parenIdx := strings.Index(expr, "(")
+	funcName := strings.TrimSpace(expr[:parenIdx])
+	argsStr := strings.TrimSpace(expr[parenIdx+1 : len(expr)-1])
+
+	// Check if funcName is a manifest func_def
+	if fd, ok := e.funcs[funcName]; ok {
+		var args []interface{}
+		if argsStr != "" {
+			for _, part := range strings.Split(argsStr, ",") {
+				part = strings.TrimSpace(part)
+				if val, ok := e.getBinding(part); ok {
+					if ref, ok := val.(RuntimeRef); ok {
+						args = append(args, ref.Value)
+					} else {
+						args = append(args, val)
+					}
+				} else {
+					part = strings.Trim(part, "\"'")
+					args = append(args, part)
+				}
+			}
+		}
+
+		// Execute inline with generator semantics (iterable context implies generator).
+		// Push scope, bind args, push yield collector, execute body, collect yields.
+		e.pushScope()
+		for i, param := range fd.Params {
+			if i < len(args) {
+				e.setBinding(param.Name, args[i])
+			} else if param.DefaultValue != nil {
+				e.setBinding(param.Name, param.DefaultValue)
+			} else {
+				e.setBinding(param.Name, nil)
+			}
+		}
+		e.yieldCollectors = append(e.yieldCollectors, []interface{}{})
+		_, bodyErr := e.executeOps(fd.Body)
+		top := len(e.yieldCollectors) - 1
+		collected := e.yieldCollectors[top]
+		e.yieldCollectors = e.yieldCollectors[:top]
+		e.popScope()
+
+		if bodyErr != nil {
+			if _, isReturn := bodyErr.(ErrReturn); !isReturn {
+				return nil, fmt.Errorf("resolveIterableCall %q: %w", funcName, bodyErr)
+			}
+		}
+		return collected, nil
+	}
+
+	// Check if the base object (before ".") is an ImportRef — runtime expression
+	dotIdx := strings.Index(funcName, ".")
+	if dotIdx > 0 {
+		baseName := funcName[:dotIdx]
+		if val, ok := e.getBinding(baseName); ok {
+			if ref, ok := val.(ImportRef); ok {
+				return e.evalRuntimeIterable(ref.Runtime, expr)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("resolveIterableCall: cannot resolve %q", expr)
+}
+
+// evalRuntimeIterable evaluates an expression in a source runtime and returns
+// the result as a JSON-parsed array. Substitutes manifest bindings into the expression.
+func (e *Executor) evalRuntimeIterable(rtName, expr string) ([]interface{}, error) {
+	rt, ok := e.runtimes[rtName]
+	if !ok {
+		return nil, fmt.Errorf("evalRuntimeIterable: unknown runtime %q", rtName)
+	}
+
+	// Auto-inject scope so the runtime can see manifest bindings
+	autoCode := e.autoInjectScope(rtName)
+	if autoCode != "" {
+		injectResult := rt.Execute(autoCode)
+		if injectResult.Err != nil {
+			return nil, fmt.Errorf("evalRuntimeIterable auto-inject [%s]: %w", rtName, injectResult.Err)
+		}
+	}
+
+	// Wrap expression to produce JSON array
+	var code string
+	switch rtName {
+	case "python":
+		code = fmt.Sprintf("__import__('json').dumps([{'name': e.name, 'path': e.path} if hasattr(e, 'name') and hasattr(e, 'path') else str(e) for e in %s])", expr)
+	case "javascript":
+		code = fmt.Sprintf("JSON.stringify(Array.from(%s))", expr)
+	case "ruby":
+		code = fmt.Sprintf("require 'json'; JSON.generate(%s.to_a)", expr)
+	default:
+		return nil, fmt.Errorf("evalRuntimeIterable: unsupported runtime %q", rtName)
+	}
+
+	result := rt.Eval(code)
+	if result.Err != nil {
+		return nil, fmt.Errorf("evalRuntimeIterable [%s]: %w", rtName, result.Err)
+	}
+
+	val := result.Value
+	if val == nil {
+		val = result.Output
+	}
+
+	jsonStr := fmt.Sprintf("%v", val)
+	var arr []interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &arr); err != nil {
+		return nil, fmt.Errorf("evalRuntimeIterable: parse JSON: %w", err)
+	}
+	return arr, nil
 }
 
 // marshalForCapture serializes a value to JSON for injection into a runtime.

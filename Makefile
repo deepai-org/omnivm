@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-docker run clean
+.PHONY: build test test-local test-docker test-manifests test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -18,8 +18,23 @@ test-docker: build
 	docker run --rm $(IMAGE_NAME):$(IMAGE_TAG) -ruby "puts 'Ruby OK'"
 	@echo "All runtime smoke tests passed!"
 
+# Run manifest test suite (11 manifests across 6 categories)
+test-manifests: build
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh
+
+# Run manifest tests in quick mode (skip Express/pastebin)
+test-manifests-quick: build
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh --quick
+
+# Run stress tests (52 cross-runtime tests)
+test-stress: build
+	docker run --rm --entrypoint stresstest $(IMAGE_NAME):$(IMAGE_TAG)
+
 # Run full test suite
 test: test-local test-docker
+
+# Run everything: unit tests, smoke tests, stress tests, manifest tests
+test-all: test test-stress test-manifests
 
 # Start the REPL
 run: build

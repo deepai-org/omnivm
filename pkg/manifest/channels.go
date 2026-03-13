@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -25,8 +26,24 @@ func (e *Executor) registerChannelBuiltins() {
 	}
 }
 
-// opChan handles channel send/recv/close operations.
+// opChan handles channel make/send/recv/close operations.
 func (e *Executor) opChan(op *Op) (interface{}, error) {
+	// make action creates a new channel — no existing channel to resolve
+	if op.Action == "make" {
+		size := 0
+		if op.Size != nil {
+			size = int(toFloat(op.Size))
+		}
+		if size < 0 {
+			size = 0
+		}
+		ch := &ChanRef{ch: make(chan interface{}, size)}
+		if op.Bind != "" {
+			e.setBinding(op.Bind, ch)
+		}
+		return ch, nil
+	}
+
 	chVal, ok := e.getBinding(op.Channel)
 	if !ok {
 		return nil, fmt.Errorf("chan %s: undefined channel %q", op.Action, op.Channel)
@@ -42,7 +59,12 @@ func (e *Executor) opChan(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("chan send: %w", err)
 		}
-		chRef.ch <- val
+		// Non-blocking send to prevent deadlocks in single-threaded executor.
+		// Buffered channels with capacity accept the value; full/unbuffered channels drop it.
+		select {
+		case chRef.ch <- val:
+		default:
+		}
 		return nil, nil
 
 	case "recv":
@@ -150,6 +172,10 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 
 	fn, ok := e.goFuncs[funcName]
 	if !ok {
+		// Check if funcName is a manifest func_def
+		if _, isFuncDef := e.funcs[funcName]; isFuncDef {
+			return e.spawnFuncDef(funcName, code[parenIdx+1:len(code)-1])
+		}
 		fmt.Fprintf(os.Stderr, "spawn: undefined function %q\n", funcName)
 		return nil, nil
 	}
@@ -190,6 +216,45 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 		callGoFuncDirect(fn, normalizedArgs)
 	}()
 
+	return nil, nil
+}
+
+// spawnFuncDef executes a manifest func_def inline (single-threaded executor).
+// Parses args from the call expression string, builds a HandleCall JSON request,
+// and invokes the function body via HandleCall.
+func (e *Executor) spawnFuncDef(funcName, argsStr string) (interface{}, error) {
+	argsStr = strings.TrimSpace(argsStr)
+	var args []interface{}
+	if argsStr != "" {
+		for _, part := range strings.Split(argsStr, ",") {
+			part = strings.TrimSpace(part)
+			if val, ok := e.getBinding(part); ok {
+				if ref, ok := val.(RuntimeRef); ok {
+					args = append(args, ref.Value)
+				} else {
+					args = append(args, val)
+				}
+			} else if f, err := strconv.ParseFloat(part, 64); err == nil {
+				if f == float64(int(f)) {
+					args = append(args, int(f))
+				} else {
+					args = append(args, f)
+				}
+			} else {
+				part = strings.Trim(part, "\"'")
+				args = append(args, part)
+			}
+		}
+	}
+
+	reqJSON, err := json.Marshal(map[string]interface{}{"func": funcName, "args": args})
+	if err != nil {
+		return nil, fmt.Errorf("spawn func_def: marshal request: %w", err)
+	}
+	_, err = e.HandleCall(string(reqJSON))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spawn: func_def %q error: %v\n", funcName, err)
+	}
 	return nil, nil
 }
 

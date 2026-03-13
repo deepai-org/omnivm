@@ -1,0 +1,1371 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "os",
+      "runtime": "python",
+      "bind": "os"
+    },
+    {
+      "op": "import",
+      "path": "events",
+      "runtime": "javascript",
+      "specifiers": [
+        {
+          "imported": "EventEmitter",
+          "local": "EventEmitter"
+        }
+      ]
+    },
+    {
+      "op": "await",
+      "runtime": "javascript",
+      "from": {
+        "op": "eval",
+        "runtime": "javascript",
+        "code": "fetch(\"/healthcheck\")",
+        "bind": "__awaited"
+      }
+    },
+    {
+      "op": "await",
+      "runtime": "javascript",
+      "from": {
+        "op": "eval",
+        "runtime": "javascript",
+        "code": "fetch(\"/api/users\")",
+        "bind": "data"
+      },
+      "bind": "data"
+    },
+    {
+      "op": "await",
+      "runtime": "javascript",
+      "from": {
+        "op": "eval",
+        "runtime": "javascript",
+        "code": "loadConfig()",
+        "bind": "config"
+      },
+      "bind": "config"
+    },
+    {
+      "op": "await",
+      "runtime": "javascript",
+      "from": {
+        "op": "eval",
+        "runtime": "javascript",
+        "code": "authenticate(token)",
+        "bind": "session"
+      },
+      "bind": "session"
+    },
+    {
+      "op": "await",
+      "runtime": "go",
+      "from": {
+        "op": "eval",
+        "runtime": "go",
+        "code": "getResult()",
+        "bind": "result"
+      },
+      "bind": "result"
+    },
+    {
+      "op": "parallel",
+      "branches": [
+        {
+          "runtime": "javascript",
+          "code": "fetch(\"/a\")",
+          "bind": "results_0"
+        },
+        {
+          "runtime": "javascript",
+          "code": "fetch(\"/b\")",
+          "bind": "results_1"
+        },
+        {
+          "runtime": "javascript",
+          "code": "fetch(\"/c\")",
+          "bind": "results_2"
+        }
+      ]
+    },
+    {
+      "op": "parallel",
+      "branches": [
+        {
+          "runtime": "javascript",
+          "code": "taskA()",
+          "bind": "__parallel_0"
+        },
+        {
+          "runtime": "javascript",
+          "code": "taskB()",
+          "bind": "__parallel_1"
+        }
+      ]
+    },
+    {
+      "op": "parallel",
+      "branches": [
+        {
+          "runtime": "javascript",
+          "code": "coro1()",
+          "bind": "gathered_0"
+        },
+        {
+          "runtime": "javascript",
+          "code": "coro2()",
+          "bind": "gathered_1"
+        }
+      ]
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "ch",
+      "size": 10
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "inbox",
+      "size": 5
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "buffer",
+      "size": 0
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "size": 100
+    },
+    {
+      "op": "func_def",
+      "name": "fetchUser",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "fetch(`/api/users/${id}`)",
+            "bind": "response"
+          },
+          "bind": "response"
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "response.json()",
+            "bind": "user",
+            "captures": {
+              "response": "response"
+            }
+          },
+          "bind": "user"
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "user"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "loadDashboard",
+      "params": [
+        {
+          "name": "userId"
+        }
+      ],
+      "body": [
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "fetchUser(userId)",
+            "bind": "user",
+            "captures": {
+              "fetchUser": "fetchUser",
+              "userId": "userId"
+            }
+          },
+          "bind": "user"
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "loadPreferences(userId)",
+            "bind": "prefs",
+            "captures": {
+              "userId": "userId"
+            }
+          },
+          "bind": "prefs"
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "getNotifications(userId)",
+            "bind": "notifications",
+            "captures": {
+              "userId": "userId"
+            }
+          },
+          "bind": "notifications"
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "{user: user, prefs: prefs, notifications: notifications}",
+            "bind": "__ret",
+            "captures": {
+              "user": "user",
+              "prefs": "prefs",
+              "notifications": "notifications"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "batchLoad",
+      "params": [
+        {
+          "name": "ids"
+        }
+      ],
+      "body": [
+        {
+          "op": "parallel",
+          "branches": [
+            {
+              "runtime": "javascript",
+              "code": "fetch(\"/a\")",
+              "bind": "batch_0"
+            },
+            {
+              "runtime": "javascript",
+              "code": "fetch(\"/b\")",
+              "bind": "batch_1"
+            }
+          ]
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "fetch(\"/c\")",
+            "bind": "extra"
+          },
+          "bind": "extra"
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "loadMeta()",
+            "bind": "metadata"
+          },
+          "bind": "metadata"
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "{batch: batch, extra: extra, metadata: metadata}",
+            "bind": "__ret",
+            "captures": {
+              "batch": "batch",
+              "extra": "extra",
+              "metadata": "metadata"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "safe_fetch",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "fetch(url)",
+                "bind": "data",
+                "captures": {
+                  "url": "url"
+                }
+              },
+              "bind": "data"
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "data"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "exec",
+                  "runtime": "javascript",
+                  "code": "console.log(e)"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": null
+                  }
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "with_cleanup",
+      "params": [
+        {
+          "name": "resource"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "openResource(resource)",
+                "bind": "handle",
+                "captures": {
+                  "resource": "resource"
+                }
+              },
+              "bind": "handle"
+            },
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "handle.read()",
+                "bind": "data",
+                "captures": {
+                  "handle": "handle"
+                }
+              },
+              "bind": "data"
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "data"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "err",
+              "body": [
+                {
+                  "op": "exec",
+                  "runtime": "javascript",
+                  "code": "console.error(err)"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": null
+                  }
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ],
+          "finallyBody": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "cleanup(resource)",
+              "bind": "status",
+              "captures": {
+                "resource": "resource"
+              }
+            },
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(status)",
+              "captures": {
+                "status": "status"
+              }
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "func_def",
+      "name": "safe_parse",
+      "params": [
+        {
+          "name": "raw"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "python",
+              "code": "json.loads(raw)",
+              "bind": "parsed",
+              "captures": {
+                "json": "json",
+                "raw": "raw"
+              }
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "parsed"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "eval",
+                  "runtime": "javascript",
+                  "code": "JSON.parse(\"{}\")",
+                  "bind": "fallback"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "fallback"
+                  }
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "swallow_errors",
+      "params": [],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "riskyOperation()",
+              "bind": "x"
+            },
+            {
+              "op": "return",
+              "value": {
+                "kind": "ref",
+                "name": "x"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "body": [
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": null
+                  }
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "channel_pipeline",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [
+        {
+          "op": "chan",
+          "action": "make",
+          "runtime": "go",
+          "bind": "ch",
+          "size": 5
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "fetch(url)",
+            "bind": "data",
+            "captures": {
+              "url": "url"
+            }
+          },
+          "bind": "data"
+        },
+        {
+          "op": "spawn",
+          "runtime": "go",
+          "code": "() => { for item in data {\n      ch <- item\n    }; close(ch) }()",
+          "captures": {
+            "ch": "ch"
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "chan",
+              "action": "recv",
+              "runtime": "go",
+              "channel": "ch",
+              "bind": "msg",
+              "captures": {
+                "ch": "ch"
+              }
+            },
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(msg === null)"
+                  },
+                  "body": [
+                    {
+                      "op": "return"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "exec",
+              "runtime": "javascript",
+              "code": "console.log(msg)",
+              "captures": {
+                "msg": "msg"
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "resilient_worker",
+      "params": [
+        {
+          "name": "input"
+        },
+        {
+          "name": "output"
+        },
+        {
+          "name": "errors"
+        }
+      ],
+      "body": [
+        {
+          "op": "chan",
+          "action": "make",
+          "runtime": "go",
+          "bind": "ch",
+          "size": 10
+        },
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "loadConfig()",
+                "bind": "config"
+              },
+              "bind": "config"
+            },
+            {
+              "op": "spawn",
+              "runtime": "go",
+              "code": "startProducer(config, ch)",
+              "captures": {
+                "config": "config",
+                "ch": "ch"
+              }
+            },
+            {
+              "op": "loop",
+              "mode": "while",
+              "body": [
+                {
+                  "op": "select",
+                  "cases": [
+                    {
+                      "action": "recv",
+                      "channel": "input",
+                      "body": [
+                        {
+                          "op": "await",
+                          "runtime": "javascript",
+                          "from": {
+                            "op": "eval",
+                            "runtime": "javascript",
+                            "code": "processItem(input)",
+                            "bind": "data",
+                            "captures": {
+                              "input": "input"
+                            }
+                          },
+                          "bind": "data"
+                        },
+                        {
+                          "op": "chan",
+                          "action": "send",
+                          "runtime": "javascript",
+                          "channel": "output",
+                          "value": {
+                            "kind": "ref",
+                            "name": "data"
+                          },
+                          "captures": {
+                            "output": "output",
+                            "data": "data"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "action": "recv",
+                      "channel": "errors",
+                      "body": [
+                        {
+                          "op": "exec",
+                          "runtime": "javascript",
+                          "code": "console.log(\"error channel signaled\")"
+                        },
+                        {
+                          "op": "return"
+                        }
+                      ]
+                    }
+                  ],
+                  "defaultBody": [
+                    {
+                      "op": "chan",
+                      "action": "recv",
+                      "runtime": "go",
+                      "channel": "ch",
+                      "bind": "item",
+                      "captures": {
+                        "ch": "ch"
+                      }
+                    },
+                    {
+                      "op": "chan",
+                      "action": "send",
+                      "runtime": "javascript",
+                      "channel": "output",
+                      "value": {
+                        "kind": "ref",
+                        "name": "item"
+                      },
+                      "captures": {
+                        "output": "output",
+                        "item": "item"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "test": {
+                "kind": "expr",
+                "runtime": "javascript",
+                "code": "true"
+              }
+            }
+          ],
+          "catches": [
+            {
+              "param": "e",
+              "body": [
+                {
+                  "op": "chan",
+                  "action": "send",
+                  "runtime": "javascript",
+                  "channel": "errors",
+                  "value": {
+                    "kind": "ref",
+                    "name": "e"
+                  },
+                  "captures": {
+                    "errors": "errors"
+                  }
+                },
+                {
+                  "op": "chan",
+                  "action": "close",
+                  "runtime": "go",
+                  "channel": "output"
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "declare",
+      "bind": "page",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 1
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "streamPages",
+      "params": [
+        {
+          "name": "baseUrl"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "fetch(`${baseUrl}?page=${page}`)",
+                "bind": "response"
+              },
+              "bind": "response"
+            },
+            {
+              "op": "await",
+              "runtime": "javascript",
+              "from": {
+                "op": "eval",
+                "runtime": "javascript",
+                "code": "response.json()",
+                "bind": "data",
+                "captures": {
+                  "response": "response"
+                }
+              },
+              "bind": "data"
+            },
+            {
+              "op": "if",
+              "arms": [
+                {
+                  "test": {
+                    "kind": "expr",
+                    "runtime": "javascript",
+                    "code": "(data.length === 0)"
+                  },
+                  "body": [
+                    {
+                      "op": "return"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "yield",
+              "value": {
+                "kind": "ref",
+                "name": "data"
+              }
+            },
+            {
+              "op": "assign",
+              "target": "page",
+              "operator": "+=",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "true"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true,
+      "generator": true
+    },
+    {
+      "op": "func_def",
+      "name": "robust_pipeline",
+      "params": [
+        {
+          "name": "input"
+        }
+      ],
+      "body": [
+        {
+          "op": "try",
+          "body": [
+            {
+              "op": "eval",
+              "runtime": "javascript",
+              "code": "transform(input)",
+              "bind": "stage1",
+              "captures": {
+                "input": "input"
+              }
+            },
+            {
+              "op": "try",
+              "body": [
+                {
+                  "op": "eval",
+                  "runtime": "javascript",
+                  "code": "validate(stage1)",
+                  "bind": "stage2",
+                  "captures": {
+                    "stage1": "stage1"
+                  }
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "stage2"
+                  }
+                }
+              ],
+              "catches": [
+                {
+                  "param": "validationErr",
+                  "body": [
+                    {
+                      "op": "exec",
+                      "runtime": "javascript",
+                      "code": "console.log(\"validation failed\")"
+                    },
+                    {
+                      "op": "return",
+                      "value": {
+                        "kind": "ref",
+                        "name": "stage1"
+                      }
+                    }
+                  ],
+                  "runtime": "javascript"
+                }
+              ]
+            }
+          ],
+          "catches": [
+            {
+              "param": "transformErr",
+              "body": [
+                {
+                  "op": "exec",
+                  "runtime": "javascript",
+                  "code": "console.log(\"transform failed\")"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "literal",
+                    "value": null
+                  }
+                }
+              ],
+              "runtime": "javascript"
+            }
+          ]
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "declare",
+      "bind": "attempts",
+      "mutable": true,
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "poll",
+      "params": [
+        {
+          "name": "url"
+        },
+        {
+          "name": "maxRetries"
+        }
+      ],
+      "body": [
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "try",
+              "body": [
+                {
+                  "op": "await",
+                  "runtime": "javascript",
+                  "from": {
+                    "op": "eval",
+                    "runtime": "javascript",
+                    "code": "fetch(url)",
+                    "bind": "result",
+                    "captures": {
+                      "url": "url"
+                    }
+                  },
+                  "bind": "result"
+                },
+                {
+                  "op": "return",
+                  "value": {
+                    "kind": "ref",
+                    "name": "result"
+                  }
+                }
+              ],
+              "catches": [
+                {
+                  "param": "e",
+                  "body": [
+                    {
+                      "op": "assign",
+                      "target": "attempts",
+                      "operator": "+=",
+                      "value": {
+                        "kind": "literal",
+                        "value": 1
+                      }
+                    },
+                    {
+                      "op": "await",
+                      "runtime": "javascript",
+                      "from": {
+                        "op": "eval",
+                        "runtime": "javascript",
+                        "code": "sleep((attempts * 1000))",
+                        "bind": "delay",
+                        "captures": {
+                          "attempts": "attempts"
+                        }
+                      },
+                      "bind": "delay"
+                    }
+                  ],
+                  "runtime": "javascript"
+                }
+              ]
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(attempts < maxRetries)"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": null
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "orchestrate",
+      "params": [
+        {
+          "name": "tasks"
+        }
+      ],
+      "body": [
+        {
+          "op": "chan",
+          "action": "make",
+          "runtime": "go",
+          "bind": "results",
+          "size": 10
+        },
+        {
+          "op": "chan",
+          "action": "make",
+          "runtime": "go",
+          "bind": "errors",
+          "size": 10
+        },
+        {
+          "op": "chan",
+          "action": "make",
+          "runtime": "go",
+          "bind": "done",
+          "size": 1
+        },
+        {
+          "op": "loop",
+          "mode": "foreach",
+          "body": [
+            {
+              "op": "spawn",
+              "runtime": "go",
+              "code": "() => { try {\n        // await → AwaitOp\n        const result = await processTask(task)\n        results <- result\n      } catch (e) {\n        // catch has runtime for error bridging\n        errors <- e\n      } }()"
+            }
+          ],
+          "variable": "task",
+          "iterable": {
+            "kind": "ref",
+            "name": "tasks"
+          }
+        },
+        {
+          "op": "declare",
+          "bind": "completed",
+          "mutable": true,
+          "value": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "op": "loop",
+          "mode": "while",
+          "body": [
+            {
+              "op": "select",
+              "cases": [
+                {
+                  "action": "recv",
+                  "channel": "results",
+                  "body": [
+                    {
+                      "op": "assign",
+                      "target": "completed",
+                      "operator": "+=",
+                      "value": {
+                        "kind": "literal",
+                        "value": 1
+                      }
+                    },
+                    {
+                      "op": "exec",
+                      "runtime": "javascript",
+                      "code": "console.log(\"task completed\")"
+                    }
+                  ]
+                },
+                {
+                  "action": "recv",
+                  "channel": "errors",
+                  "body": [
+                    {
+                      "op": "exec",
+                      "runtime": "javascript",
+                      "code": "console.log(\"task failed\")"
+                    },
+                    {
+                      "op": "assign",
+                      "target": "completed",
+                      "operator": "+=",
+                      "value": {
+                        "kind": "literal",
+                        "value": 1
+                      }
+                    }
+                  ]
+                },
+                {
+                  "action": "recv",
+                  "channel": "done",
+                  "body": [
+                    {
+                      "op": "return"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "test": {
+            "kind": "expr",
+            "runtime": "javascript",
+            "code": "(completed < tasks.length)"
+          }
+        },
+        {
+          "op": "chan",
+          "action": "close",
+          "runtime": "go",
+          "channel": "results"
+        },
+        {
+          "op": "chan",
+          "action": "close",
+          "runtime": "go",
+          "channel": "errors"
+        },
+        {
+          "op": "chan",
+          "action": "send",
+          "runtime": "javascript",
+          "channel": "done",
+          "value": {
+            "kind": "literal",
+            "value": true
+          },
+          "captures": {
+            "done": "done"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "import",
+      "path": "requests",
+      "runtime": "python",
+      "bind": "requests"
+    },
+    {
+      "op": "func_def",
+      "name": "cross_runtime_fetch",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "requests.get(url)",
+            "bind": "pyData",
+            "captures": {
+              "requests": "requests",
+              "url": "url"
+            }
+          },
+          "bind": "pyData"
+        },
+        {
+          "op": "await",
+          "runtime": "javascript",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "transform(pyData.json())",
+            "bind": "processed",
+            "captures": {
+              "pyData": "pyData"
+            }
+          },
+          "bind": "processed"
+        },
+        {
+          "op": "parallel",
+          "branches": [
+            {
+              "runtime": "javascript",
+              "code": "saveToDb(processed)",
+              "bind": "saved_0",
+              "captures": {
+                "processed": "processed"
+              }
+            },
+            {
+              "runtime": "javascript",
+              "code": "notifyUsers(processed)",
+              "bind": "saved_1",
+              "captures": {
+                "processed": "processed"
+              }
+            }
+          ]
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "saved"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript",
+      "async": true
+    },
+    {
+      "op": "func_def",
+      "name": "safe_load",
+      "params": [
+        {
+          "name": "path"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "python",
+          "code": "os.path.exists(path)",
+          "bind": "data",
+          "captures": {
+            "os": "os",
+            "path": "path"
+          }
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "ref",
+            "name": "data"
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    }
+  ]
+}
