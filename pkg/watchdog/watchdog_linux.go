@@ -29,6 +29,7 @@ static pthread_cond_t wd_cond;
 static int wd_armed = 0;
 static int wd_timeout_ms = 0;
 static int wd_running = 0;
+static int wd_generation = 0;
 static pthread_t golden_tid;
 
 // Temporal routing: which runtime is currently executing on Golden Thread
@@ -47,6 +48,7 @@ static void* watchdog_loop(void* arg) {
 			pthread_cond_wait(&wd_cond, &wd_mutex);
 		if (!wd_running) break;
 
+		int gen = wd_generation;
 		struct timespec deadline;
 		clock_gettime(CLOCK_MONOTONIC, &deadline);
 		deadline.tv_sec += wd_timeout_ms / 1000;
@@ -57,9 +59,12 @@ static void* watchdog_loop(void* arg) {
 		}
 
 		int rc = 0;
-		while (wd_armed && rc != ETIMEDOUT && wd_running)
+		while (wd_armed && rc != ETIMEDOUT && wd_running && wd_generation == gen)
 			rc = pthread_cond_timedwait(&wd_cond, &wd_mutex, &deadline);
 
+		// If generation changed, Arm() was called with a new timeout.
+		// Loop back to recompute the deadline with the new value.
+		if (wd_generation != gen) continue;
 		if (!wd_armed || !wd_running) continue;
 
 		// Timeout fired — interrupt the active runtime
@@ -106,6 +111,7 @@ static void omnivm_watchdog_arm(int timeout_ms) {
 	pthread_mutex_lock(&wd_mutex);
 	wd_timeout_ms = timeout_ms;
 	wd_armed = 1;
+	wd_generation++;
 	pthread_cond_signal(&wd_cond);
 	pthread_mutex_unlock(&wd_mutex);
 }

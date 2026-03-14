@@ -150,8 +150,21 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 			d.pumpNamed("javascript")
 		}
 
-		// Heartbeat — pump everything
+		// Heartbeat — drain any pending tasks, then pump everything.
+		// Task drain here is a safety net: if a task was enqueued
+		// before RunEpoll set wakeupFunc (GOMAXPROCS>1 race), the
+		// eventfd was never written. The heartbeat catches it.
 		if gotHeartbeat {
+			for {
+				select {
+				case t := <-d.taskChan:
+					d.executeTask(t)
+					d.pumpAll()
+				default:
+					goto doneHeartbeatDrain
+				}
+			}
+		doneHeartbeatDrain:
 			d.pumpAll()
 		}
 	}

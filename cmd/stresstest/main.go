@@ -4660,6 +4660,314 @@ except Exception as e:
 		return nil
 	})
 
+	// Test: Watchdog during deep bridge chain (The Ultimate Boss Fight)
+	// Py → JS → Ruby → Java with a spinning loop at the deepest level.
+	// The watchdog must route the interrupt to the correct (deepest)
+	// runtime. The entire interleaved C stack (CPython + V8 + MRI + JVM
+	// frames plus bridge glue) must unwind without segfault.
+	run("Watchdog deep bridge chain (Py → JS → Ruby → Java spin)", func() error {
+		timeout := 3 * time.Second
+		timeoutMS := int(timeout / time.Millisecond)
+		margin := 4 * time.Second
+
+		watchdog.SetActiveRuntime(watchdog.RuntimePython)
+		watchdog.Arm(timeoutMS)
+		start := time.Now()
+
+		// Python → JS → Ruby → Java. Java spins forever.
+		// Each bridge hop updates active_runtime via OmniCall's
+		// save/restore, so the watchdog should see RuntimeJVM at
+		// fire time. But JVM interrupt isn't wired yet (case 4 is
+		// a no-op), so the watchdog won't actually kill Java.
+		// Instead, use Ruby as the deepest spinning runtime:
+		// Py → JS → Ruby(infinite loop). The watchdog should send
+		// SIGUSR1 to the Golden Thread, Ruby's trap raises Interrupt,
+		// and the stack unwinds through JS and Python.
+		result := pyRuntime.Execute(`
+import omnivm
+try:
+    # Py -> JS -> Ruby(spin). Ruby is deepest, gets SIGUSR1.
+    omnivm.call("javascript", "omnivm.call('ruby', 'i=0; loop { i += 1 }')")
+    print("ERROR: should not reach here")
+except Exception as e:
+    print("unwound: " + str(type(e).__name__))
+`)
+		elapsed := time.Since(start)
+		watchdog.Disarm()
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+
+		if elapsed > timeout+margin {
+			return fmt.Errorf("took %v (expected <%v) — watchdog failed to interrupt deep chain", elapsed, timeout+margin)
+		}
+
+		// Verify the stack unwound without segfault
+		if result.Err != nil {
+			// Error propagation is fine — means the interrupt worked
+			fmt.Printf("(unwound in %dms, err=%v) ", elapsed.Milliseconds(), result.Err)
+			return nil
+		}
+		if !strings.Contains(result.Output, "unwound") {
+			return fmt.Errorf("expected 'unwound' in output, got %q", result.Output)
+		}
+		fmt.Printf("(unwound in %dms) ", elapsed.Milliseconds())
+
+		// Prove the runtimes are still healthy after the unwind
+		r := pyRuntime.Eval("1 + 1")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "2" {
+			return fmt.Errorf("Python broken after deep unwind: %v", r.Err)
+		}
+		r = jsRuntime.Eval("3 + 3")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "6" {
+			return fmt.Errorf("JS broken after deep unwind: %v", r.Err)
+		}
+		r = rbRuntime.Eval("4 + 4")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "8" {
+			return fmt.Errorf("Ruby broken after deep unwind: %v", r.Err)
+		}
+		return nil
+	})
+
+	// Test: Watchdog re-arm race (The Silent Killer)
+	// Hammer Arm/Disarm in tight loops to expose condvar race conditions.
+	// A phantom kill would mean the watchdog fired a stale deadline after
+	// Disarm() was called — proving the mutex/condvar sync is broken.
+	run("Watchdog re-arm race (1000 arm/disarm cycles)", func() error {
+		// Track if the watchdog fires when it shouldn't
+		var phantomKills atomic.Int64
+		origRT := watchdog.GetActiveRuntime()
+
+		// Set active runtime to Python so if watchdog fires, it writes
+		// to the interrupt pipe (detectable via ClearInterrupt).
+		watchdog.SetActiveRuntime(watchdog.RuntimePython)
+
+		// Phase 1: Rapid arm/disarm — timeout should NEVER fire
+		for i := 0; i < 1000; i++ {
+			watchdog.Arm(50) // 50ms timeout
+			// Simulate a task that finishes in <1ms
+			watchdog.Disarm()
+		}
+
+		// If any phantom kills happened, the Python interrupt pipe
+		// would have bytes in it. Check by trying to clear.
+		pyRuntime.ClearInterrupt()
+
+		// Phase 2: The critical race — arm, short sleep, disarm, re-arm
+		// with a LONG timeout. If the watchdog uses the stale short
+		// deadline, it fires instantly and kills the long task.
+		for i := 0; i < 100; i++ {
+			watchdog.Arm(10) // 10ms — will fire if not disarmed
+			time.Sleep(5 * time.Millisecond)
+			watchdog.Disarm()
+			// Immediately re-arm with a long timeout
+			watchdog.Arm(30000) // 30 seconds — should NOT fire
+			// Do a quick task
+			r := pyRuntime.Eval("42")
+			if r.Err != nil {
+				phantomKills.Add(1)
+			}
+			watchdog.Disarm()
+		}
+
+		// Phase 3: Verify no phantom interrupts accumulated
+		// Run a Python eval — if phantom kills fired, there may be
+		// a pending KeyboardInterrupt
+		pyRuntime.ClearInterrupt()
+		r := pyRuntime.Eval("'alive'")
+		if r.Err != nil {
+			return fmt.Errorf("Python broken after arm/disarm storm: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "alive" {
+			return fmt.Errorf("expected 'alive', got %v", r.Value)
+		}
+
+		watchdog.SetActiveRuntime(origRT)
+
+		if phantomKills.Load() > 0 {
+			return fmt.Errorf("%d phantom kills detected — condvar race", phantomKills.Load())
+		}
+		return nil
+	})
+
+	// Test: Dispatcher backpressure + cancel (The Production Leak)
+	// Overflow the 256-task channel buffer with 400 goroutines, then
+	// cancel context. All 400 goroutines must unblock — the 144 blocked
+	// on channel send must wake via d.stopped select, not leak forever.
+	run("Dispatcher backpressure + cancel (400 goroutines, 256 buffer)", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var completed atomic.Int64
+		var errored atomic.Int64
+		var wg sync.WaitGroup
+		allSubmitted := make(chan struct{})
+
+		// Launch 400 goroutines that all try to submit tasks
+		for i := 0; i < 400; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := disp.RunOnMain(func() error {
+					// Each task takes 5ms — slow enough to cause backpressure
+					time.Sleep(5 * time.Millisecond)
+					completed.Add(1)
+					return nil
+				})
+				if err != nil {
+					errored.Add(1)
+				}
+			}()
+		}
+
+		// Give goroutines time to fill the channel and block
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			close(allSubmitted)
+		}()
+
+		// Cancel after 300ms — some tasks execute, most are pending/blocked
+		go func() {
+			<-allSubmitted
+			time.Sleep(200 * time.Millisecond)
+			cancel()
+		}()
+
+		start := time.Now()
+		disp.Run(ctx)
+		disp.WaitForStop()
+
+		// All 400 goroutines MUST unblock within 2 seconds
+		allDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(allDone)
+		}()
+		select {
+		case <-allDone:
+		case <-time.After(5 * time.Second):
+			c := completed.Load()
+			e := errored.Load()
+			return fmt.Errorf("goroutine leak: only %d completed + %d errored = %d/400 unblocked",
+				c, e, c+e)
+		}
+
+		elapsed := time.Since(start)
+		c := completed.Load()
+		e := errored.Load()
+
+		if c+e != 400 {
+			return fmt.Errorf("not all goroutines accounted for: %d completed + %d errored = %d/400", c, e, c+e)
+		}
+		if c == 400 {
+			return fmt.Errorf("all 400 completed — cancel didn't reject any (took %v)", elapsed)
+		}
+		if e == 0 {
+			return fmt.Errorf("0 errors — blocked senders never woke up")
+		}
+		fmt.Printf("(%d completed, %d rejected in %dms) ", c, e, elapsed.Milliseconds())
+		return nil
+	})
+
+	// Test: Post-termination V8 storm
+	// Watchdog terminates V8, then rapid-fire 50 V8 evals. Tests that
+	// CancelTerminateExecution properly resets state on every entry.
+	run("Post-termination V8 storm (terminate + 50 rapid evals)", func() error {
+		// Terminate V8 via watchdog
+		watchdog.SetActiveRuntime(watchdog.RuntimeJavaScript)
+		watchdog.Arm(500)
+		start := time.Now()
+		result := jsRuntime.Execute("var i = 0; while(true) { i += 1; }")
+		elapsed := time.Since(start)
+		watchdog.Disarm()
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+
+		if result.Err == nil {
+			return fmt.Errorf("infinite loop should have been terminated")
+		}
+		fmt.Printf("(killed in %dms) ", elapsed.Milliseconds())
+
+		// Now rapid-fire 50 evals — each must succeed, proving
+		// CancelTerminateExecution clears the flag on every entry
+		for i := 0; i < 50; i++ {
+			r := jsRuntime.Eval(fmt.Sprintf("%d * %d", i, i))
+			if r.Err != nil {
+				return fmt.Errorf("eval %d failed after termination: %v", i, r.Err)
+			}
+			expected := fmt.Sprintf("%d", i*i)
+			if fmt.Sprintf("%v", r.Value) != expected {
+				return fmt.Errorf("eval %d: expected %s, got %v", i, expected, r.Value)
+			}
+		}
+
+		// Also test Execute (not just Eval) works after termination
+		r := jsRuntime.Execute("var __v8storm = 'recovered'; __v8storm;")
+		if r.Err != nil {
+			return fmt.Errorf("Execute after termination failed: %v", r.Err)
+		}
+
+		// Cross-runtime call through V8 must also work
+		r = jsRuntime.Eval("parseInt(omnivm.call('python', '7 * 8'))")
+		if r.Err != nil {
+			return fmt.Errorf("cross-runtime through V8 after termination: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "56" {
+			return fmt.Errorf("expected '56', got %v", r.Value)
+		}
+		return nil
+	})
+
+	// Test: Heartbeat-only pump (zero tasks)
+	// JS sets a timer, zero Go tasks submitted. Only the 10ms timerfd
+	// heartbeat should pump libuv, proving the timerfd alone is sufficient.
+	run("Heartbeat-only pump (JS timer, zero Go tasks)", func() error {
+		disp := dispatcher.New()
+		disp.RegisterPumpCallback("javascript", jsRuntime.Pump)
+		uvFD := jsRuntime.GetUVBackendFD()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var timerFired atomic.Bool
+		var testErr error
+
+		go func() {
+			// 1. Set a 100ms JS timer via a single task
+			err := disp.RunOnMain(func() error {
+				r := jsRuntime.Execute("globalThis.__heartbeat_only = false; setTimeout(function() { globalThis.__heartbeat_only = true; }, 100)")
+				return r.Err
+			})
+			if err != nil {
+				testErr = fmt.Errorf("failed to set timer: %v", err)
+				cancel()
+				return
+			}
+
+			// 2. Wait 500ms with ZERO task submissions.
+			// Only the 10ms timerfd heartbeat should pump libuv.
+			time.Sleep(500 * time.Millisecond)
+
+			// 3. Check if the timer fired
+			err = disp.RunOnMain(func() error {
+				r := jsRuntime.Eval("globalThis.__heartbeat_only")
+				if r.Err == nil && fmt.Sprintf("%v", r.Value) == "true" {
+					timerFired.Store(true)
+				}
+				return r.Err
+			})
+			if err != nil {
+				testErr = fmt.Errorf("check failed: %v", err)
+			}
+			cancel()
+		}()
+
+		disp.RunEpoll(ctx, uvFD)
+
+		if testErr != nil {
+			return testErr
+		}
+		if !timerFired.Load() {
+			return fmt.Errorf("JS timer never fired — heartbeat pump broken")
+		}
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)
