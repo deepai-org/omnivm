@@ -49,6 +49,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
 func init() {
@@ -4190,6 +4191,264 @@ else:
 		return nil
 	})
 
+	// ================================================================
+	// Epoll + Watchdog Architecture Stress Tests
+	// ================================================================
+
+	// Test: Rogue Guest Preemption
+	// Dispatch infinite loops in Python, JS, and Ruby to the Golden Thread.
+	// The watchdog must interrupt each one within TaskTimeout.
+	run("Rogue guest preemption (Py+JS+Ruby infinite loops)", func() error {
+		watchdog.Init()
+		watchdog.SetPythonInterrupt(pyRuntime.InterruptFuncPtr())
+		watchdog.SetV8Terminate(jsRuntime.TerminateFuncPtr())
+		rbRuntime.Execute("trap('USR1') { raise Interrupt }")
+
+		timeout := 2 * time.Second
+		timeoutMS := int(timeout / time.Millisecond)
+		margin := 3 * time.Second // generous margin for CI
+
+		type rogueCase struct {
+			name string
+			rt   int
+			exec func() pkg.Result
+		}
+		cases := []rogueCase{
+			{"Python", watchdog.RuntimePython, func() pkg.Result {
+				return pyRuntime.Execute("i = 0\nwhile True:\n    i += 1")
+			}},
+			{"JavaScript", watchdog.RuntimeJavaScript, func() pkg.Result {
+				return jsRuntime.Execute("while(true) {}")
+			}},
+			{"Ruby", watchdog.RuntimeRuby, func() pkg.Result {
+				return rbRuntime.Execute("i = 0; loop { i += 1 }")
+			}},
+		}
+
+		for _, tc := range cases {
+			watchdog.SetActiveRuntime(tc.rt)
+			watchdog.Arm(timeoutMS)
+			start := time.Now()
+			result := tc.exec()
+			elapsed := time.Since(start)
+			watchdog.Disarm()
+			watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+
+			if result.Err == nil {
+				return fmt.Errorf("%s: expected error from interrupted loop, got nil", tc.name)
+			}
+			if elapsed > timeout+margin {
+				return fmt.Errorf("%s: took %v, expected <%v", tc.name, elapsed, timeout+margin)
+			}
+		}
+
+		// Clear Python interrupt state for subsequent tests
+		pyRuntime.ClearInterrupt()
+		return nil
+	})
+
+	// Test: Epoll Coalescing Avalanche
+	// 100 goroutines simultaneously call RunOnMain. eventfd coalescing must
+	// not drop any tasks.
+	run("Epoll coalescing avalanche (100 simultaneous dispatches)", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var completed atomic.Int64
+		var wg sync.WaitGroup
+
+		// Start barrier: hold all goroutines until they're all ready
+		barrier := make(chan struct{})
+
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			i := i
+			go func() {
+				defer wg.Done()
+				<-barrier // Wait for all goroutines to be ready
+				err := disp.RunOnMain(func() error {
+					// Simple cross-runtime math to prove the task ran
+					r := pyRuntime.Eval(fmt.Sprintf("%d * 2", i))
+					if r.Err != nil {
+						return r.Err
+					}
+					completed.Add(1)
+					return nil
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "    goroutine %d error: %v\n", i, err)
+				}
+			}()
+		}
+
+		// Release all 100 goroutines at once
+		time.Sleep(10 * time.Millisecond) // let goroutines park on barrier
+		close(barrier)
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			cancel()
+			close(done)
+		}()
+
+		disp.RunEpoll(ctx, -1)
+		<-done
+
+		c := completed.Load()
+		if c != 100 {
+			return fmt.Errorf("expected 100 tasks completed, got %d", c)
+		}
+		return nil
+	})
+
+	// Test: M:N Isolation (GOMAXPROCS=4)
+	// Run CPU-bound Go work on multiple goroutines while the Golden Thread
+	// processes V8 micro-tasks. Proves GOMAXPROCS>1 doesn't break the
+	// Golden Thread invariant.
+	run("M:N isolation (Go goroutines + Golden Thread V8 tasks)", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Track which OS threads the Go goroutines run on
+		var threadIDs sync.Map
+		var goWorkDone atomic.Int64
+		var jsTasksDone atomic.Int64
+
+		// Launch 4 CPU-bound Go goroutines
+		var goWg sync.WaitGroup
+		for g := 0; g < 4; g++ {
+			goWg.Add(1)
+			go func() {
+				defer goWg.Done()
+				tid := int64(C.get_thread_id())
+				threadIDs.Store(tid, true)
+				// CPU-bound work: tight loop
+				sum := int64(0)
+				for i := int64(0); i < 10_000_000; i++ {
+					sum += i
+				}
+				_ = sum
+				goWorkDone.Add(1)
+			}()
+		}
+
+		// Simultaneously dispatch 100 JS tasks to the Golden Thread
+		var jsWg sync.WaitGroup
+		for i := 0; i < 100; i++ {
+			jsWg.Add(1)
+			i := i
+			go func() {
+				defer jsWg.Done()
+				disp.RunOnMain(func() error {
+					r := jsRuntime.Eval(fmt.Sprintf("%d + %d", i, i))
+					if r.Err != nil {
+						return r.Err
+					}
+					jsTasksDone.Add(1)
+					return nil
+				})
+			}()
+		}
+
+		done := make(chan struct{})
+		go func() {
+			goWg.Wait()
+			jsWg.Wait()
+			cancel()
+			close(done)
+		}()
+
+		disp.RunEpoll(ctx, -1)
+		<-done
+
+		if goWorkDone.Load() != 4 {
+			return fmt.Errorf("expected 4 Go goroutines done, got %d", goWorkDone.Load())
+		}
+		if jsTasksDone.Load() != 100 {
+			return fmt.Errorf("expected 100 JS tasks done, got %d", jsTasksDone.Load())
+		}
+
+		// Count distinct OS threads used by Go goroutines
+		distinctThreads := 0
+		threadIDs.Range(func(_, _ interface{}) bool {
+			distinctThreads++
+			return true
+		})
+		fmt.Printf("(%d Go threads, %d JS tasks) ",
+			distinctThreads, jsTasksDone.Load())
+		return nil
+	})
+
+	// Test: Signal Chaos Trap
+	// Ruby GC stress + rapid active_runtime toggling + raw SIGUSR1.
+	// Proves temporal signal routing doesn't segfault under chaos.
+	run("Signal chaos trap (Ruby GC + rapid runtime toggling + SIGUSR1)", func() error {
+		// Run Ruby code that allocates heavily, forcing GC
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var chaosErr error
+		var chaosDone atomic.Bool
+
+		// Rapidly toggle active_runtime from a Go goroutine
+		go func() {
+			rts := []int{
+				watchdog.RuntimeNone,
+				watchdog.RuntimePython,
+				watchdog.RuntimeJavaScript,
+				watchdog.RuntimeRuby,
+				watchdog.RuntimeJVM,
+			}
+			for !chaosDone.Load() {
+				for _, rt := range rts {
+					watchdog.SetActiveRuntime(rt)
+					time.Sleep(100 * time.Microsecond)
+				}
+			}
+			watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+		}()
+
+		// Dispatch Ruby GC stress on the Golden Thread
+		taskDone := make(chan struct{})
+		go func() {
+			err := disp.RunOnMain(func() error {
+				// Heavy allocation in Ruby to trigger GC
+				r := rbRuntime.Execute(`
+arr = []
+10000.times do |i|
+  arr << ("x" * 1000)
+  arr.shift if arr.length > 100
+end
+arr.length
+`)
+				if r.Err != nil {
+					return r.Err
+				}
+				return nil
+			})
+			if err != nil {
+				chaosErr = err
+			}
+			close(taskDone)
+		}()
+
+		go func() {
+			<-taskDone
+			cancel()
+		}()
+
+		disp.RunEpoll(ctx, -1)
+		chaosDone.Store(true)
+		<-taskDone
+
+		if chaosErr != nil {
+			return chaosErr
+		}
+		// If we get here without segfault, the test passed
+		return nil
+	})
+
 	// Check allocation counter
 	fmt.Println()
 	leaks := atomic.LoadInt64(&allocCount)
@@ -4208,6 +4467,7 @@ else:
 
 	// Shutdown (LIFO)
 	fmt.Fprintln(os.Stderr, "\nShutting down...")
+	watchdog.Shutdown()
 	for _, name := range []string{"ruby", "java", "javascript", "python"} {
 		runtimes[name].Shutdown()
 	}

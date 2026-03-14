@@ -165,6 +165,12 @@ func (d *Dispatcher) executeTask(t task) {
 	if d.OnTaskStart != nil {
 		d.OnTaskStart()
 	}
+	defer func() {
+		close(done)
+		if d.OnTaskEnd != nil {
+			d.OnTaskEnd()
+		}
+	}()
 
 	if d.WatchdogTimeout > 0 && d.OnWatchdogAlert != nil {
 		go d.watchdog(done)
@@ -176,10 +182,6 @@ func (d *Dispatcher) executeTask(t task) {
 
 	err := d.safeExec(t.fn)
 
-	close(done)
-	if d.OnTaskEnd != nil {
-		d.OnTaskEnd()
-	}
 	t.done <- err
 }
 

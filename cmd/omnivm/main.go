@@ -67,6 +67,10 @@ var runtimes = make(map[string]pkg.Runtime)
 // goldenThreadID is the OS thread ID of the main goroutine.
 var goldenThreadID int64
 
+// taskTimeoutMS is the task timeout in milliseconds, used by the watchdog
+// for CLI and REPL paths that bypass the dispatcher.
+var taskTimeoutMS int
+
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 	// Guard: reject calls from non-Golden threads to prevent crashes
@@ -127,6 +131,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[watchdog] Golden Thread blocked for >%v\n", d)
 	}
 	disp.TaskTimeout = 30 * time.Second
+	taskTimeoutMS = int(disp.TaskTimeout / time.Millisecond)
 
 	// Create shared memory store
 	_ = arrow.NewSharedStore()
@@ -215,24 +220,24 @@ func main() {
 	dispatcherRunning := false
 	switch {
 	case *pyCode != "":
-		watchdog.SetActiveRuntime(watchdog.RuntimePython)
-		result := pyRuntime.Execute(*pyCode)
-		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+		result := executeWithWatchdog(watchdog.RuntimePython, func() pkg.Result {
+			return pyRuntime.Execute(*pyCode)
+		})
 		printResult("python", result)
 	case *jsCode != "":
-		watchdog.SetActiveRuntime(watchdog.RuntimeJavaScript)
-		result := jsRuntime.Execute(*jsCode)
-		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+		result := executeWithWatchdog(watchdog.RuntimeJavaScript, func() pkg.Result {
+			return jsRuntime.Execute(*jsCode)
+		})
 		printResult("javascript", result)
 	case *javaCode != "":
-		watchdog.SetActiveRuntime(watchdog.RuntimeJVM)
-		result := jvmRuntime.Execute(*javaCode)
-		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+		result := executeWithWatchdog(watchdog.RuntimeJVM, func() pkg.Result {
+			return jvmRuntime.Execute(*javaCode)
+		})
 		printResult("java", result)
 	case *rubyCode != "":
-		watchdog.SetActiveRuntime(watchdog.RuntimeRuby)
-		result := rbRuntime.Execute(*rubyCode)
-		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+		result := executeWithWatchdog(watchdog.RuntimeRuby, func() pkg.Result {
+			return rbRuntime.Execute(*rubyCode)
+		})
 		printResult("ruby", result)
 	case *filePath != "":
 		executeFile(*filePath)
@@ -263,6 +268,20 @@ func main() {
 			r.Shutdown()
 		}
 	}
+}
+
+// executeWithWatchdog arms the watchdog, sets the active runtime, executes
+// the function, then disarms and clears. Used by CLI one-shots and REPL
+// paths that bypass the dispatcher.
+func executeWithWatchdog(rt int, fn func() pkg.Result) pkg.Result {
+	watchdog.SetActiveRuntime(rt)
+	if taskTimeoutMS > 0 {
+		watchdog.Arm(taskTimeoutMS)
+	}
+	result := fn()
+	watchdog.Disarm()
+	watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+	return result
 }
 
 // runtimeID maps a language name to a watchdog runtime constant.
@@ -322,9 +341,9 @@ func executeFile(path string) {
 		return
 	}
 
-	watchdog.SetActiveRuntime(runtimeID(lang))
-	result := r.Execute(code)
-	watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+	result := executeWithWatchdog(runtimeID(lang), func() pkg.Result {
+		return r.Execute(code)
+	})
 	printResult(lang, result)
 }
 
@@ -373,9 +392,9 @@ func repl(ctx context.Context) {
 			if !ok {
 				fmt.Fprintf(os.Stderr, "Runtime %q not available\n", currentLang)
 			} else {
-				watchdog.SetActiveRuntime(runtimeID(currentLang))
-				result := r.Execute(line)
-				watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+				result := executeWithWatchdog(runtimeID(currentLang), func() pkg.Result {
+					return r.Execute(line)
+				})
 				if result.Err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
 				} else if result.Output != "" {

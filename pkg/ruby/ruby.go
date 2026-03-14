@@ -100,8 +100,9 @@ static char* omnivm_ruby_exec(const char* code) {
     // Execute user code
     VALUE result = rb_eval_string_protect(code, &state);
 
-    // Restore stdout
-    rb_eval_string_protect("$stdout = $__omnivm_old_stdout", &state);
+    // Restore stdout (separate variable to preserve user code error state)
+    int restore_state = 0;
+    rb_eval_string_protect("$stdout = $__omnivm_old_stdout", &restore_state);
 
     if (state) {
         VALUE exception = rb_errinfo();

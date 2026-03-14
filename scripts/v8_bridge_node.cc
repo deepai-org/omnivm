@@ -215,6 +215,11 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
     node::CallbackScope callback_scope(ctx_w->isolate,
         v8::Object::New(ctx_w->isolate), {0, 0});
 
+    // Clear any pending V8 termination from a previous watchdog timeout.
+    // TerminateExecution() persists across calls until explicitly cancelled;
+    // without this, the setup code below crashes with FromJust on Nothing.
+    ctx_w->isolate->CancelTerminateExecution();
+
     v8::Local<v8::Object> global = context->Global();
 
     // Save original console (Node.js has a real one)
@@ -251,11 +256,16 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
         v8::Script::Compile(context, source);
 
     if (maybe_script.IsEmpty()) {
-        v8::Local<v8::Value> exception = try_catch.Exception();
-        v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-        result.error = strdup(*err_str ? *err_str : "compilation error");
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            result.error = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            result.error = strdup(*err_str ? *err_str : "compilation error");
+        }
 
-        // Restore console
+        // Restore console (safe now that termination is cleared)
         if (!orig_console.IsEmpty()) {
             global->Set(context,
                 v8::String::NewFromUtf8Literal(ctx_w->isolate, "console"),
@@ -268,11 +278,16 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
         maybe_script.ToLocalChecked()->Run(context);
 
     if (try_catch.HasCaught()) {
-        v8::Local<v8::Value> exception = try_catch.Exception();
-        v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-        result.error = strdup(*err_str ? *err_str : "runtime error");
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            result.error = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            result.error = strdup(*err_str ? *err_str : "runtime error");
+        }
 
-        // Restore console
+        // Restore console (safe now that termination is cleared)
         if (!orig_console.IsEmpty()) {
             global->Set(context,
                 v8::String::NewFromUtf8Literal(ctx_w->isolate, "console"),
@@ -318,6 +333,8 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
     node::CallbackScope callback_scope(ctx_w->isolate,
         v8::Object::New(ctx_w->isolate), {0, 0});
 
+    ctx_w->isolate->CancelTerminateExecution();
+
     // Ensure omnivm.call is registered
     register_omnivm_bridge(ctx_w->isolate, context);
 
@@ -329,9 +346,14 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
         v8::Script::Compile(context, source);
 
     if (maybe_script.IsEmpty()) {
-        v8::Local<v8::Value> exception = try_catch.Exception();
-        v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-        result.error = strdup(*err_str ? *err_str : "compilation error");
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            result.error = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            result.error = strdup(*err_str ? *err_str : "compilation error");
+        }
         return result;
     }
 
@@ -339,9 +361,14 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
         maybe_script.ToLocalChecked()->Run(context);
 
     if (try_catch.HasCaught()) {
-        v8::Local<v8::Value> exception = try_catch.Exception();
-        v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-        result.error = strdup(*err_str ? *err_str : "runtime error");
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            result.error = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            result.error = strdup(*err_str ? *err_str : "runtime error");
+        }
         return result;
     }
 
