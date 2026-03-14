@@ -20,4 +20,5 @@ func SetV8Terminate(fn unsafe.Pointer)     {}
 func Arm(timeoutMS int)                  {}
 func Disarm()                            {}
 func SetActiveRuntime(rt int)            {}
+func GetActiveRuntime() int              { return RuntimeNone }
 func Shutdown()                          {}

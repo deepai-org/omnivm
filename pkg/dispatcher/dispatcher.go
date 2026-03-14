@@ -129,28 +129,54 @@ func (d *Dispatcher) WaitForStop() {
 	<-d.stopped
 }
 
+// ErrShutdown is returned when a task is submitted to a stopped dispatcher.
+var ErrShutdown = fmt.Errorf("dispatcher shutting down")
+
 // RunOnMain dispatches fn to the Golden Thread and blocks until it completes.
 // If fn panics, the panic is recovered and returned as an error.
+// Returns ErrShutdown if the dispatcher has stopped or stops while waiting.
 func (d *Dispatcher) RunOnMain(fn func() error) error {
 	done := make(chan error, 1)
-	d.taskChan <- task{fn: fn, done: done}
+	t := task{fn: fn, done: done}
+	select {
+	case d.taskChan <- t:
+	case <-d.stopped:
+		return ErrShutdown
+	}
 	if d.wakeupFunc != nil {
 		d.wakeupFunc()
 	}
-	return <-done
+	select {
+	case err := <-done:
+		return err
+	case <-d.stopped:
+		// Task may have completed during drain
+		select {
+		case err := <-done:
+			return err
+		default:
+			return ErrShutdown
+		}
+	}
 }
 
 // RunAsync dispatches fn to the Golden Thread and returns a channel that
 // will receive the result when the function completes.
 func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult {
 	ch := make(chan AsyncResult, 1)
-	d.taskChan <- task{
+	t := task{
 		fn: func() error {
 			val, err := fn()
 			ch <- AsyncResult{Value: val, Err: err}
 			return err
 		},
 		done: make(chan error, 1),
+	}
+	select {
+	case d.taskChan <- t:
+	case <-d.stopped:
+		ch <- AsyncResult{Err: ErrShutdown}
+		return ch
 	}
 	if d.wakeupFunc != nil {
 		d.wakeupFunc()
@@ -249,13 +275,13 @@ func (d *Dispatcher) pumpNamed(name string) {
 	}
 }
 
-// drain processes remaining tasks in the channel during shutdown.
+// drain rejects remaining tasks in the channel during shutdown,
+// sending ErrShutdown to each caller so they unblock immediately.
 func (d *Dispatcher) drain() {
 	for {
 		select {
 		case t := <-d.taskChan:
-			d.executeTask(t)
-			d.pumpAll()
+			t.done <- ErrShutdown
 		default:
 			return
 		}

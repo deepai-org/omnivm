@@ -88,7 +88,11 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 		return result
 	}
 
+	// Temporal routing: track the active runtime across bridge calls
+	prevRT := watchdog.GetActiveRuntime()
+	watchdog.SetActiveRuntime(stressRuntimeID(rtName))
 	evalResult := rt.Eval(code)
+	watchdog.SetActiveRuntime(prevRT)
 	if evalResult.Err != nil {
 		result := C.CString("ERR:" + evalResult.Err.Error())
 		atomic.AddInt64(&allocCount, 1)
@@ -112,6 +116,21 @@ func OmniFree(ptr *C.char) {
 	if ptr != nil {
 		C.free(unsafe.Pointer(ptr))
 		atomic.AddInt64(&allocCount, -1)
+	}
+}
+
+func stressRuntimeID(name string) int {
+	switch name {
+	case "python":
+		return watchdog.RuntimePython
+	case "javascript":
+		return watchdog.RuntimeJavaScript
+	case "ruby":
+		return watchdog.RuntimeRuby
+	case "java":
+		return watchdog.RuntimeJVM
+	default:
+		return watchdog.RuntimeNone
 	}
 }
 
@@ -4390,9 +4409,11 @@ else:
 
 		var chaosErr error
 		var chaosDone atomic.Bool
+		chaosExited := make(chan struct{})
 
 		// Rapidly toggle active_runtime from a Go goroutine
 		go func() {
+			defer close(chaosExited)
 			rts := []int{
 				watchdog.RuntimeNone,
 				watchdog.RuntimePython,
@@ -4440,12 +4461,202 @@ arr.length
 
 		disp.RunEpoll(ctx, -1)
 		chaosDone.Store(true)
+		<-chaosExited // Wait for toggling goroutine to finish
 		<-taskDone
 
 		if chaosErr != nil {
 			return chaosErr
 		}
 		// If we get here without segfault, the test passed
+		return nil
+	})
+
+	// Test: Inception Preemption (Cross-Boundary Watchdog)
+	// Python calls omnivm.call('javascript', 'while(true){}') — the JS
+	// infinite loop must be terminated by the watchdog even though the
+	// outer context is Python. Proves active_runtime tracks across bridge.
+	run("Inception preemption (Py → JS infinite loop via bridge)", func() error {
+		timeout := 3 * time.Second
+		timeoutMS := int(timeout / time.Millisecond)
+		margin := 3 * time.Second
+
+		watchdog.SetActiveRuntime(watchdog.RuntimePython)
+		watchdog.Arm(timeoutMS)
+		start := time.Now()
+
+		// Python calls into JS via the bridge; JS has an infinite loop.
+		// The bridge's OmniCall must switch active_runtime to JS so the
+		// watchdog terminates V8 (not Python).
+		result := pyRuntime.Execute(`
+import omnivm
+try:
+    omnivm.call("javascript", "while(true) {}")
+except Exception as e:
+    print("caught: " + str(type(e).__name__))
+`)
+		elapsed := time.Since(start)
+		watchdog.Disarm()
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
+
+		if elapsed > timeout+margin {
+			return fmt.Errorf("took %v, expected <%v — watchdog didn't route to V8", elapsed, timeout+margin)
+		}
+		// Either Python catches the bridge error, or Execute returns an error
+		if result.Err != nil && elapsed < timeout+margin {
+			// Terminated successfully (error propagated)
+			return nil
+		}
+		// Check that Python caught the error
+		if result.Output == "" && result.Err == nil {
+			return fmt.Errorf("no output and no error — watchdog failed to interrupt")
+		}
+		return nil
+	})
+
+	// Test: Async Event Loop Starvation
+	// Set a JS setTimeout, then bombard the dispatcher with fast Python
+	// tasks. The 10ms heartbeat must still pump libuv so the timer fires.
+	run("Async event loop starvation (JS setTimeout vs Go task flood)", func() error {
+		disp := dispatcher.New()
+		disp.RegisterPumpCallback("javascript", jsRuntime.Pump)
+		uvFD := jsRuntime.GetUVBackendFD()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var timerFired atomic.Bool
+		var tasksDone atomic.Int64
+		var testErr error
+
+		go func() {
+			// 1. Set a 50ms JavaScript timer
+			err := disp.RunOnMain(func() error {
+				r := jsRuntime.Execute("globalThis.__starvation_flag = false; setTimeout(function() { globalThis.__starvation_flag = true; }, 50)")
+				return r.Err
+			})
+			if err != nil {
+				testErr = fmt.Errorf("failed to set timer: %v", err)
+				cancel()
+				return
+			}
+
+			// 2. Bombard with 200 fast Python eval tasks
+			var wg sync.WaitGroup
+			for i := 0; i < 200; i++ {
+				wg.Add(1)
+				i := i
+				go func() {
+					defer wg.Done()
+					disp.RunOnMain(func() error {
+						pyRuntime.Eval(fmt.Sprintf("%d + 1", i))
+						tasksDone.Add(1)
+						return nil
+					})
+				}()
+			}
+			wg.Wait()
+
+			// 3. Poll for the timer to fire (up to 500ms)
+			for attempt := 0; attempt < 50; attempt++ {
+				err := disp.RunOnMain(func() error {
+					r := jsRuntime.Eval("globalThis.__starvation_flag === true ? 'yes' : 'no'")
+					if r.Err != nil {
+						return r.Err
+					}
+					if fmt.Sprintf("%v", r.Value) == "yes" {
+						timerFired.Store(true)
+					}
+					return nil
+				})
+				if err != nil {
+					break
+				}
+				if timerFired.Load() {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			cancel()
+		}()
+
+		disp.RunEpoll(ctx, uvFD)
+
+		if testErr != nil {
+			return testErr
+		}
+		if !timerFired.Load() {
+			return fmt.Errorf("JS setTimeout never fired — heartbeat starved by %d Go tasks", tasksDone.Load())
+		}
+		fmt.Printf("(%d tasks, timer OK) ", tasksDone.Load())
+		return nil
+	})
+
+	// Test: Context Cancellation Guillotine
+	// Enqueue 20 slow tasks, cancel context during 3rd task. Pending
+	// tasks must unblock their callers immediately with shutdown error.
+	run("Context cancellation guillotine (20 tasks, cancel at 3rd)", func() error {
+		disp := dispatcher.New()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var completed atomic.Int64
+		var errored atomic.Int64
+		var wg sync.WaitGroup
+
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := disp.RunOnMain(func() error {
+					time.Sleep(100 * time.Millisecond)
+					completed.Add(1)
+					return nil
+				})
+				if err != nil {
+					errored.Add(1)
+				}
+			}()
+		}
+
+		// Cancel after ~250ms (during 3rd task)
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			cancel()
+		}()
+
+		start := time.Now()
+		disp.Run(ctx)
+		disp.WaitForStop()
+
+		// Wait for all goroutines to unblock
+		allDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(allDone)
+		}()
+		select {
+		case <-allDone:
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("goroutines hung after dispatcher stopped — guillotine failed")
+		}
+
+		elapsed := time.Since(start)
+		c := completed.Load()
+		e := errored.Load()
+
+		// Should complete in ~250-350ms (not 2000ms for all 20 tasks)
+		if elapsed > 800*time.Millisecond {
+			return fmt.Errorf("took %v (expected <800ms) — drain executed instead of rejecting", elapsed)
+		}
+		// Some tasks must have completed, some must have been rejected
+		if c == 0 {
+			return fmt.Errorf("no tasks completed at all")
+		}
+		if e == 0 {
+			return fmt.Errorf("no tasks got shutdown error — all %d completed", c)
+		}
+		if c+e != 20 {
+			return fmt.Errorf("tasks don't add up: %d completed + %d errored != 20", c, e)
+		}
+		fmt.Printf("(%d completed, %d rejected in %dms) ", c, e, elapsed.Milliseconds())
 		return nil
 	})
 

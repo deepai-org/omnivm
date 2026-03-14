@@ -121,6 +121,10 @@ static void omnivm_watchdog_set_active_runtime(int rt) {
 	atomic_store(&active_runtime, rt);
 }
 
+static int omnivm_watchdog_get_active_runtime(void) {
+	return atomic_load(&active_runtime);
+}
+
 static void omnivm_watchdog_set_py_interrupt(void (*fn)(void)) {
 	py_interrupt_fn = fn;
 }
@@ -182,6 +186,11 @@ func Disarm() {
 // Golden Thread. The watchdog uses this to route interrupts.
 func SetActiveRuntime(rt int) {
 	C.omnivm_watchdog_set_active_runtime(C.int(rt))
+}
+
+// GetActiveRuntime returns the current active runtime constant.
+func GetActiveRuntime() int {
+	return int(C.omnivm_watchdog_get_active_runtime())
 }
 
 // Shutdown stops the watchdog pthread and waits for it to exit.

@@ -130,12 +130,14 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 			return
 		}
 
-		// Task wakeup — drain ALL pending tasks (eventfd coalesces writes)
+		// Task wakeup — drain ALL pending tasks (eventfd coalesces writes).
+		// Pump between tasks so V8 timers/microtasks aren't starved.
 		if gotTask {
 			for {
 				select {
 				case t := <-d.taskChan:
 					d.executeTask(t)
+					d.pumpAll()
 				default:
 					goto doneTaskDrain
 				}

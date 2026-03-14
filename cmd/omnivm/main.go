@@ -88,7 +88,14 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 		return C.CString("ERR:unknown runtime: " + rtName)
 	}
 
+	// Temporal routing: track the active runtime across bridge calls
+	// so the watchdog interrupts the correct runtime (e.g. Python calls
+	// into JS which has an infinite loop — watchdog must terminate V8,
+	// not write to the Python interrupt pipe).
+	prevRT := watchdog.GetActiveRuntime()
+	watchdog.SetActiveRuntime(runtimeID(rtName))
 	evalResult := rt.Eval(code)
+	watchdog.SetActiveRuntime(prevRT)
 	if evalResult.Err != nil {
 		return C.CString("ERR:" + evalResult.Err.Error())
 	}
