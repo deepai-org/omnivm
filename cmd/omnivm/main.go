@@ -52,6 +52,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
 	"github.com/omnivm/omnivm/pkg/signals"
+	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
 func init() {
@@ -141,11 +142,22 @@ func main() {
 	runtimes["java"] = jvmRuntime
 	runtimes["ruby"] = rbRuntime
 
-	// Task timeout: interrupt Python (other runtimes lack safe interrupt APIs)
+	// Task timeout: interrupt Python (other runtimes lack safe interrupt APIs).
+	// This is the fallback when no watchdog is available (non-Linux).
 	disp.OnTaskTimeout = func() {
 		fmt.Fprintf(os.Stderr, "[timeout] Task exceeded %v, interrupting Python...\n",
 			disp.TaskTimeout)
 		pyRuntime.Interrupt()
+	}
+
+	// Watchdog arm/disarm hooks: called around each task execution
+	disp.OnTaskStart = func() {
+		if disp.TaskTimeout > 0 {
+			watchdog.Arm(int(disp.TaskTimeout / time.Millisecond))
+		}
+	}
+	disp.OnTaskEnd = func() {
+		watchdog.Disarm()
 	}
 
 	// Context for lifecycle management
@@ -181,6 +193,19 @@ func main() {
 		rt.SetBridgeCallback(callPtr, freePtr)
 	}
 
+	// Initialize watchdog thread for runtime-specific preemption
+	watchdog.Init()
+	if pyInterruptPtr := pyRuntime.InterruptFuncPtr(); pyInterruptPtr != nil {
+		watchdog.SetPythonInterrupt(pyInterruptPtr)
+	}
+	if v8TermPtr := jsRuntime.TerminateFuncPtr(); v8TermPtr != nil {
+		watchdog.SetV8Terminate(v8TermPtr)
+	}
+
+	// Ruby SIGUSR1 trap: MRI intercepts the signal between opcodes
+	// and raises Interrupt. The watchdog sends pthread_kill(golden_tid, SIGUSR1).
+	rbRuntime.Execute("trap('USR1') { raise Interrupt }")
+
 	fmt.Fprintln(os.Stderr, "Ready.")
 
 	// Start signal handler in background
@@ -190,26 +215,34 @@ func main() {
 	dispatcherRunning := false
 	switch {
 	case *pyCode != "":
+		watchdog.SetActiveRuntime(watchdog.RuntimePython)
 		result := pyRuntime.Execute(*pyCode)
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 		printResult("python", result)
 	case *jsCode != "":
+		watchdog.SetActiveRuntime(watchdog.RuntimeJavaScript)
 		result := jsRuntime.Execute(*jsCode)
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 		printResult("javascript", result)
 	case *javaCode != "":
+		watchdog.SetActiveRuntime(watchdog.RuntimeJVM)
 		result := jvmRuntime.Execute(*javaCode)
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 		printResult("java", result)
 	case *rubyCode != "":
+		watchdog.SetActiveRuntime(watchdog.RuntimeRuby)
 		result := rbRuntime.Execute(*rubyCode)
+		watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 		printResult("ruby", result)
 	case *filePath != "":
 		executeFile(*filePath)
 	default:
-		// Start the dispatcher in background, run REPL on main thread
-		// (In this case we run the REPL directly since we're already
-		// on the Golden Thread)
+		// Start the dispatcher with epoll (Linux) or ticker fallback,
+		// run REPL on main thread (already on the Golden Thread)
 		dispatcherRunning = true
+		uvFD := jsRuntime.GetUVBackendFD()
 		go func() {
-			disp.Run(ctx)
+			disp.RunEpoll(ctx, uvFD)
 		}()
 		repl(ctx)
 	}
@@ -223,11 +256,28 @@ func main() {
 		disp.WaitForStop()
 	}
 	fmt.Fprintln(os.Stderr, "\n[shutdown] Shutting down runtimes...")
+	watchdog.Shutdown()
 	for _, name := range []string{"ruby", "java", "javascript", "python"} {
 		if r, ok := runtimes[name]; ok {
 			fmt.Fprintf(os.Stderr, "[shutdown] %s...\n", name)
 			r.Shutdown()
 		}
+	}
+}
+
+// runtimeID maps a language name to a watchdog runtime constant.
+func runtimeID(lang string) int {
+	switch lang {
+	case "python":
+		return watchdog.RuntimePython
+	case "javascript":
+		return watchdog.RuntimeJavaScript
+	case "ruby":
+		return watchdog.RuntimeRuby
+	case "java":
+		return watchdog.RuntimeJVM
+	default:
+		return watchdog.RuntimeNone
 	}
 }
 
@@ -272,7 +322,9 @@ func executeFile(path string) {
 		return
 	}
 
+	watchdog.SetActiveRuntime(runtimeID(lang))
 	result := r.Execute(code)
+	watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 	printResult(lang, result)
 }
 
@@ -321,7 +373,9 @@ func repl(ctx context.Context) {
 			if !ok {
 				fmt.Fprintf(os.Stderr, "Runtime %q not available\n", currentLang)
 			} else {
+				watchdog.SetActiveRuntime(runtimeID(currentLang))
 				result := r.Execute(line)
+				watchdog.SetActiveRuntime(watchdog.RuntimeNone)
 				if result.Err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
 				} else if result.Output != "" {

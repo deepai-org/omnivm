@@ -312,6 +312,11 @@ static void omnivm_py_clear_interrupt(void) {
     PyErr_Clear();
 }
 
+// Return a function pointer to omnivm_py_interrupt for the watchdog.
+static void* omnivm_py_get_interrupt_ptr(void) {
+	return (void*)omnivm_py_interrupt;
+}
+
 // Fork guard: fork() after JVM init leaves dead threads holding mutexes.
 // Install a pthread_atfork child handler that kills the child immediately.
 static void omnivm_fork_child_handler(void) {
@@ -506,6 +511,13 @@ func (r *Runtime) Interrupt() {
 	if r.initialized {
 		C.omnivm_py_interrupt()
 	}
+}
+
+// InterruptFuncPtr returns a C function pointer to omnivm_py_interrupt().
+// This is safe to call from any thread (including the watchdog pthread)
+// because it only performs a write() to the interrupt pipe.
+func (r *Runtime) InterruptFuncPtr() unsafe.Pointer {
+	return unsafe.Pointer(C.omnivm_py_get_interrupt_ptr())
 }
 
 // ClearInterrupt drains any stale interrupt from the pipe and absorbs any

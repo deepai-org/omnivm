@@ -427,6 +427,32 @@ void omnivm_v8_shutdown(void) {
     init_result.reset();
 }
 
+int omnivm_v8_get_uv_backend_fd(omnivm_v8_context* ctx_w) {
+    if (!ctx_w || !ctx_w->event_loop) return -1;
+    return uv_backend_fd(ctx_w->event_loop);
+}
+
+void omnivm_v8_terminate_execution(omnivm_v8_context* ctx_w) {
+    if (!ctx_w || !ctx_w->isolate) return;
+    ctx_w->isolate->TerminateExecution();
+}
+
+// Watchdog support: void(void) wrapper for terminate_execution.
+// Stores the context globally (only one V8 context per process).
+static omnivm_v8_context* g_terminate_ctx = nullptr;
+
+void omnivm_v8_set_terminate_context(omnivm_v8_context* ctx_w) {
+    g_terminate_ctx = ctx_w;
+}
+
+static void omnivm_v8_terminate_thunk(void) {
+    omnivm_v8_terminate_execution(g_terminate_ctx);
+}
+
+void* omnivm_v8_get_terminate_ptr(void) {
+    return (void*)omnivm_v8_terminate_thunk;
+}
+
 void omnivm_v8_free_string(char* s) {
     free(s);
 }

@@ -53,6 +53,18 @@ type Dispatcher struct {
 	// multiple times (once per TaskTimeout interval) if the task doesn't stop.
 	OnTaskTimeout func()
 
+	// OnTaskStart is called at the beginning of each task execution.
+	// Used by the watchdog to arm its timer.
+	OnTaskStart func()
+
+	// OnTaskEnd is called after each task execution completes (in defer).
+	// Used by the watchdog to disarm its timer.
+	OnTaskEnd func()
+
+	// wakeupFunc is called after enqueuing a task to wake the epoll loop.
+	// Set by RunEpoll during init; nil when using ticker-based Run().
+	wakeupFunc func()
+
 	shutdownOnce sync.Once
 
 	// stopped is closed when Run() returns, signaling all pumping has ceased.
@@ -122,6 +134,9 @@ func (d *Dispatcher) WaitForStop() {
 func (d *Dispatcher) RunOnMain(fn func() error) error {
 	done := make(chan error, 1)
 	d.taskChan <- task{fn: fn, done: done}
+	if d.wakeupFunc != nil {
+		d.wakeupFunc()
+	}
 	return <-done
 }
 
@@ -137,12 +152,19 @@ func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult
 		},
 		done: make(chan error, 1),
 	}
+	if d.wakeupFunc != nil {
+		d.wakeupFunc()
+	}
 	return ch
 }
 
 // executeTask runs a single task with panic recovery and watchdog monitoring.
 func (d *Dispatcher) executeTask(t task) {
 	done := make(chan struct{})
+
+	if d.OnTaskStart != nil {
+		d.OnTaskStart()
+	}
 
 	if d.WatchdogTimeout > 0 && d.OnWatchdogAlert != nil {
 		go d.watchdog(done)
@@ -155,6 +177,9 @@ func (d *Dispatcher) executeTask(t task) {
 	err := d.safeExec(t.fn)
 
 	close(done)
+	if d.OnTaskEnd != nil {
+		d.OnTaskEnd()
+	}
 	t.done <- err
 }
 
@@ -209,6 +234,15 @@ func (d *Dispatcher) pumpAll() {
 	d.pumpMu.RLock()
 	defer d.pumpMu.RUnlock()
 	for _, fn := range d.pumpFuncs {
+		fn()
+	}
+}
+
+// pumpNamed calls a single named pump callback.
+func (d *Dispatcher) pumpNamed(name string) {
+	d.pumpMu.RLock()
+	defer d.pumpMu.RUnlock()
+	if fn, ok := d.pumpFuncs[name]; ok {
 		fn()
 	}
 }

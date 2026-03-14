@@ -175,7 +175,7 @@ ENV LD_PRELOAD=/usr/lib/jvm/default-java/lib/libjsig.so
 # Create libs directory for user JARs (mount or COPY your .jars here)
 RUN mkdir -p /omnivm/libs
 
-ENV GOMAXPROCS=1
+ENV GOMAXPROCS=4
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Copy the compiled OmniVMRunner class (rarely changes)

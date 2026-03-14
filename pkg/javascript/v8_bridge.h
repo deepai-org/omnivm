@@ -45,6 +45,16 @@ void omnivm_v8_shutdown(void);
 // Helpers
 void omnivm_v8_free_string(char* s);
 
+// Epoll integration: get libuv's backend fd for epoll monitoring
+int omnivm_v8_get_uv_backend_fd(omnivm_v8_context* ctx);
+
+// Thread-safe execution termination (for watchdog)
+void omnivm_v8_terminate_execution(omnivm_v8_context* ctx);
+
+// Watchdog support: store context and get a void(void) terminate function pointer
+void omnivm_v8_set_terminate_context(omnivm_v8_context* ctx);
+void* omnivm_v8_get_terminate_ptr(void);
+
 #ifdef __cplusplus
 }
 #endif

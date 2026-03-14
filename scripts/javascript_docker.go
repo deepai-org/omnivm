@@ -118,6 +118,35 @@ func (r *Runtime) Pump() {
 	C.omnivm_v8_pump_message_loop(r.isolate)
 }
 
+// GetUVBackendFD returns libuv's backend fd for epoll integration.
+// Returns -1 if the runtime is not initialized.
+func (r *Runtime) GetUVBackendFD() int {
+	if !r.initialized || r.context == nil {
+		return -1
+	}
+	return int(C.omnivm_v8_get_uv_backend_fd(r.context))
+}
+
+// TerminateExecution triggers V8's thread-safe execution termination.
+// Safe to call from any thread (e.g. watchdog pthread).
+func (r *Runtime) TerminateExecution() {
+	if r.initialized && r.context != nil {
+		C.omnivm_v8_terminate_execution(r.context)
+	}
+}
+
+// TerminateFuncPtr returns a C function pointer that terminates V8 execution.
+// Since omnivm_v8_terminate_execution takes a context parameter, we store
+// the context in a global and provide a void(void) wrapper for the watchdog.
+// This is safe because there's only one V8 context in the process.
+func (r *Runtime) TerminateFuncPtr() unsafe.Pointer {
+	if !r.initialized || r.context == nil {
+		return nil
+	}
+	C.omnivm_v8_set_terminate_context(r.context)
+	return unsafe.Pointer(C.omnivm_v8_get_terminate_ptr())
+}
+
 func (r *Runtime) Shutdown() error {
 	if !r.initialized {
 		return nil
