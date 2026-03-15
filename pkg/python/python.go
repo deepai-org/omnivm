@@ -19,9 +19,9 @@ typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
 
-// Helper to run Python code and capture output via a StringIO redirect.
-// Returns the output string (caller must free) or NULL on error.
-static char* omnivm_py_exec(const char* code) {
+// Inner helper: runs Python code and captures output via StringIO redirect.
+// Must be called with GIL held. Returns output (caller must free) or NULL on error.
+static char* omnivm_py_exec_inner(const char* code) {
     // Set up output capture
     PyObject* io_module = PyImport_ImportModule("io");
     if (!io_module) return NULL;
@@ -73,6 +73,15 @@ static char* omnivm_py_exec(const char* code) {
     return output;
 }
 
+// Thread-safe exec: acquires GIL, delegates to inner, releases GIL.
+// PyGILState_Ensure is recursive-safe — no-op if GIL already held.
+static char* omnivm_py_exec(const char* code) {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    char* result = omnivm_py_exec_inner(code);
+    PyGILState_Release(gstate);
+    return result;
+}
+
 // Helper to convert a PyObject to a strdup'd string.
 static char* py_obj_to_str(PyObject* obj) {
     if (!obj || obj == Py_None) return strdup("None");
@@ -85,9 +94,9 @@ static char* py_obj_to_str(PyObject* obj) {
     return output;
 }
 
-// Eval: try Py_eval_input first, then multi-line split (like Jupyter).
-// Returns expression value as string (caller must free) or NULL on error.
-static char* omnivm_py_eval(const char* code) {
+// Inner eval: try Py_eval_input first, then multi-line split (like Jupyter).
+// Must be called with GIL held. Returns expression value as string (caller must free) or NULL on error.
+static char* omnivm_py_eval_inner(const char* code) {
     PyObject* main_module = PyImport_AddModule("__main__");
     if (!main_module) return NULL;
     PyObject* globals = PyModule_GetDict(main_module);
@@ -169,8 +178,17 @@ static char* omnivm_py_eval(const char* code) {
     return strdup("None");
 }
 
-// Fetch the current Python error as a string. Caller must free.
-static char* omnivm_py_fetch_error() {
+// Thread-safe eval: acquires GIL, delegates to inner, releases GIL.
+static char* omnivm_py_eval(const char* code) {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    char* result = omnivm_py_eval_inner(code);
+    PyGILState_Release(gstate);
+    return result;
+}
+
+// Inner fetch error: retrieves current Python error as a string.
+// Must be called with GIL held. Caller must free.
+static char* omnivm_py_fetch_error_inner() {
     PyObject *type, *value, *traceback;
     PyErr_Fetch(&type, &value, &traceback);
     if (!value) {
@@ -194,7 +212,18 @@ static char* omnivm_py_fetch_error() {
     return result;
 }
 
-// C implementation of omnivm.call(runtime, code) for Python
+// Thread-safe fetch error: acquires GIL, delegates to inner, releases GIL.
+static char* omnivm_py_fetch_error() {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    char* result = omnivm_py_fetch_error_inner();
+    PyGILState_Release(gstate);
+    return result;
+}
+
+// C implementation of omnivm.call(runtime, code) for Python.
+// Releases GIL during the cross-runtime call so other threads can run Python
+// concurrently. This also prevents deadlock when a foreign thread holds the
+// GIL and calls into a runtime that needs to pump Python.
 static PyObject* py_omnivm_call(PyObject* self, PyObject* args) {
     const char* runtime;
     const char* code;
@@ -207,7 +236,12 @@ static PyObject* py_omnivm_call(PyObject* self, PyObject* args) {
         return NULL;
     }
 
+    // Release GIL while calling into other runtime.
+    // Between SaveThread and RestoreThread, NO Python C-API calls are allowed.
+    PyThreadState* _save = PyEval_SaveThread();
     char* result = g_bridge_call(runtime, code);
+    PyEval_RestoreThread(_save);
+
     if (!result) {
         PyErr_SetString(PyExc_RuntimeError, "omnivm.call returned NULL");
         return NULL;
@@ -297,7 +331,7 @@ static void omnivm_py_interrupt(void) {
 // KeyboardInterrupt. Call this before code that must not be interrupted
 // by a prior test's leftover interrupt.
 static void omnivm_py_clear_interrupt(void) {
-    // Drain unread bytes from the pipe (non-blocking)
+    // Drain unread bytes from the pipe (non-blocking) — no GIL needed
     if (interrupt_pipe[0] >= 0) {
         char buf[16];
         int flags = fcntl(interrupt_pipe[0], F_GETFL, 0);
@@ -308,8 +342,11 @@ static void omnivm_py_clear_interrupt(void) {
     // Wait for watcher thread to process any byte it already read
     usleep(10000); // 10ms
     // Absorb any KeyboardInterrupt already queued by the watcher thread
+    // Needs GIL since we call Python C-API.
+    PyGILState_STATE gstate = PyGILState_Ensure();
     PyRun_SimpleString("try:\n pass\nexcept KeyboardInterrupt:\n pass");
     PyErr_Clear();
+    PyGILState_Release(gstate);
 }
 
 // Return a function pointer to omnivm_py_interrupt for the watchdog.
@@ -342,9 +379,10 @@ import (
 // Pre-allocated C strings to avoid repeated malloc in hot paths.
 // These are allocated once and never freed (process-lifetime).
 var (
-	cImportOmnivm   *C.char
-	cSetupInterrupt *C.char
-	cPumpCode       *C.char
+	cImportOmnivm    *C.char
+	cSetupInterrupt  *C.char
+	cPumpCode        *C.char
+	cForceSpawnMode  *C.char
 )
 
 func init() {
@@ -353,6 +391,7 @@ func init() {
 	// Py_InitializeEx(0) skips signal handler setup, leaving the handler table
 	// empty. Without this, _thread.interrupt_main() has no handler to invoke.
 	cSetupInterrupt = C.CString("import signal; signal.signal(signal.SIGINT, signal.default_int_handler)")
+	cForceSpawnMode = C.CString("import multiprocessing; multiprocessing.set_start_method('spawn', force=True)")
 	cPumpCode = C.CString(`
 import asyncio
 try:
@@ -412,6 +451,16 @@ func (r *Runtime) Initialize() error {
 	// Install fork guard: child processes created by fork() in a polyglot
 	// process with JVM threads will deadlock. Kill them immediately.
 	C.omnivm_install_fork_guard()
+
+	// Force multiprocessing to use 'spawn' instead of 'fork'.
+	// fork() after JVM init leaves dead threads holding mutexes.
+	C.PyRun_SimpleString(cForceSpawnMode)
+
+	// Release the GIL so it's available for all threads (including the
+	// Golden Thread). Every subsequent Python call acquires/releases the
+	// GIL via PyGILState_Ensure/Release. Without this, the main thread
+	// holds the GIL forever and foreign threads deadlock on Ensure().
+	C.PyEval_SaveThread()
 
 	r.initialized = true
 	return nil
@@ -480,28 +529,26 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 	)
 }
 
-// ExecuteOffThread runs Python code on a separate OS thread with proper
-// GIL management. Use this for CPU-bound work to avoid blocking the
-// Golden Thread.
+// ExecuteOffThread runs Python code on a separate OS thread.
+// GIL acquisition is handled automatically by omnivm_py_exec (Phase 1A).
 func (r *Runtime) ExecuteOffThread(code string) <-chan pkg.Result {
 	ch := make(chan pkg.Result, 1)
 	go func() {
-		// Acquire the GIL from this (non-main) thread
-		gstate := C.PyGILState_Ensure()
 		result := r.Execute(code)
-		C.PyGILState_Release(gstate)
 		ch <- result
 	}()
 	return ch
 }
 
 // Pump runs pending asyncio events. Called by the dispatcher on every cycle.
+// Acquires the GIL since the main thread no longer holds it persistently.
 func (r *Runtime) Pump() {
 	if !r.initialized {
 		return
 	}
-	// Run one iteration of the asyncio event loop if one is running
+	gstate := C.PyGILState_Ensure()
 	C.PyRun_SimpleString(cPumpCode)
+	C.PyGILState_Release(gstate)
 }
 
 // Interrupt raises a KeyboardInterrupt in Python at the next bytecode check.

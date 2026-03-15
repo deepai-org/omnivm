@@ -68,16 +68,6 @@ var goldenThreadID int64
 
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
-	// Guard: reject calls from non-Golden threads
-	currentTid := int64(C.get_thread_id())
-	if currentTid != goldenThreadID {
-		msg := fmt.Sprintf("ERR:omnivm.call from non-Golden Thread (tid=%d, expected=%d). "+
-			"Cross-runtime calls must originate from the main thread.", currentTid, goldenThreadID)
-		result := C.CString(msg)
-		atomic.AddInt64(&allocCount, 1)
-		return result
-	}
-
 	rtName := C.GoString(cRuntime)
 	code := C.GoString(cCode)
 
@@ -88,11 +78,21 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 		return result
 	}
 
-	// Temporal routing: track the active runtime across bridge calls
-	prevRT := watchdog.GetActiveRuntime()
-	watchdog.SetActiveRuntime(stressRuntimeID(rtName))
+	// Only manage watchdog for Golden Thread tasks.
+	// Foreign thread calls are outside watchdog scope.
+	isGolden := int64(C.get_thread_id()) == goldenThreadID
+	var prevRT int
+	if isGolden {
+		prevRT = watchdog.GetActiveRuntime()
+		watchdog.SetActiveRuntime(stressRuntimeID(rtName))
+	}
+
 	evalResult := rt.Eval(code)
-	watchdog.SetActiveRuntime(prevRT)
+
+	if isGolden {
+		watchdog.SetActiveRuntime(prevRT)
+	}
+
 	if evalResult.Err != nil {
 		result := C.CString("ERR:" + evalResult.Err.Error())
 		atomic.AddInt64(&allocCount, 1)
@@ -3508,6 +3508,8 @@ try { s.length(); } catch (NullPointerException e) { System.out.println("ok"); }
 		pyTid := fmt.Sprintf("%v", r.Value)
 
 		// 3. Ruby: Thread.current.native_thread_id (Ruby 3.1+)
+		//    Ruby now runs on a dedicated proxy thread (not Golden Thread),
+		//    so its TID should be DIFFERENT from Go's.
 		r = rbRuntime.Eval("Thread.current.native_thread_id")
 		if r.Err != nil {
 			return fmt.Errorf("Ruby native_thread_id: %v", r.Err)
@@ -3530,16 +3532,17 @@ try { s.length(); } catch (NullPointerException e) { System.out.println("ok"); }
 		}
 		jsBridgeTid := fmt.Sprintf("%v", r.Value)
 
-		// 6. Verify ALL thread IDs match
+		// 6. Verify Python, Java→Py, JS→Py all match Golden Thread.
+		//    Ruby runs on its dedicated proxy thread (different TID).
 		goTidStr := fmt.Sprintf("%d", goTid)
-		fmt.Printf("    Go/C tid=%s, Python tid=%s, Ruby tid=%s, Java→Py tid=%s, JS→Py tid=%s\n",
+		fmt.Printf("    Go/C tid=%s, Python tid=%s, Ruby tid=%s(proxy), Java→Py tid=%s, JS→Py tid=%s\n",
 			goTidStr, pyTid, rbTid, javaBridgeTid, jsBridgeTid)
 
 		if pyTid != goTidStr {
 			return fmt.Errorf("Python on different thread: Go=%s Python=%s", goTidStr, pyTid)
 		}
-		if rbTid != goTidStr {
-			return fmt.Errorf("Ruby on different thread: Go=%s Ruby=%s", goTidStr, rbTid)
+		if rbTid == goTidStr {
+			return fmt.Errorf("Ruby should be on proxy thread, not Golden Thread (tid=%s)", goTidStr)
 		}
 		if javaBridgeTid != goTidStr {
 			return fmt.Errorf("Java→Python bridge on different thread: Go=%s Java→Py=%s", goTidStr, javaBridgeTid)
@@ -3570,20 +3573,20 @@ tid = threading.get_native_id()
 	// Rogue Thread, Exception Ping-Pong, GC Standoff (44-46)
 	// ================================================================
 
-	// Test 44: Rogue Thread — background threads calling omnivm.call() get an error, not a crash
-	// Each runtime spawns a native background thread that attempts to call
-	// omnivm.call(). OmniCall detects the wrong OS thread ID and returns
-	// an error instead of invoking a non-thread-safe runtime.
-	run("Rogue thread detection (Python, Java, Ruby)", func() error {
-		// 1. Python background thread tries to call JS via omnivm.call
+	// Test 44: Foreign thread bridge — background threads can call omnivm.call()
+	// Each runtime spawns a native background thread that calls omnivm.call().
+	// With thread-safe entry points (GIL, GVL, JNI attach, v8::Locker),
+	// these calls now succeed instead of being rejected.
+	run("Foreign thread bridge (Python, Java, Ruby)", func() error {
+		// 1. Python background thread calls JS via omnivm.call
 		r := pyRuntime.Execute(`
 import threading
+_t44_py_result = None
 _t44_py_error = None
 def _t44_py_worker():
-    global _t44_py_error
+    global _t44_py_result, _t44_py_error
     try:
-        omnivm.call("javascript", "1 + 1")
-        _t44_py_error = "NO_ERROR"
+        _t44_py_result = omnivm.call("javascript", "1 + 1")
     except Exception as e:
         _t44_py_error = str(e)
 _t44_t = threading.Thread(target=_t44_py_worker)
@@ -3597,40 +3600,47 @@ _t44_t.join()
 		if r.Err != nil {
 			return fmt.Errorf("Python error check: %v", r.Err)
 		}
-		pyErr := fmt.Sprintf("%v", r.Value)
-		if !strings.Contains(pyErr, "non-Golden Thread") {
-			return fmt.Errorf("Python rogue thread: expected Golden Thread error, got: %s", pyErr)
+		if fmt.Sprintf("%v", r.Value) != "None" {
+			return fmt.Errorf("Python thread got error: %v", r.Value)
+		}
+		r = pyRuntime.Eval("_t44_py_result")
+		if r.Err != nil {
+			return fmt.Errorf("Python result check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "2" {
+			return fmt.Errorf("Python thread: expected '2', got %v", r.Value)
 		}
 
-		// 2. Java background thread tries to call Python via OmniVM.call
+		// 2. Java background thread calls Python via OmniVM.call
 		r = jvmRuntime.Execute(`
+final String[] result = {null};
 final String[] error = {null};
 Thread t = new Thread(() -> {
     try {
-        omnivm.OmniVM.call("python", "1 + 1");
-        error[0] = "NO_ERROR";
+        result[0] = omnivm.OmniVM.call("python", "6 * 9");
     } catch (Exception e) {
         error[0] = e.getMessage();
     }
 });
 t.start();
 t.join();
-System.out.println(error[0]);
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
 `)
 		if r.Err != nil {
 			return fmt.Errorf("Java thread setup: %v", r.Err)
 		}
-		if !strings.Contains(r.Output, "non-Golden Thread") {
-			return fmt.Errorf("Java rogue thread: expected Golden Thread error, got: %s", strings.TrimSpace(r.Output))
+		if strings.TrimSpace(r.Output) != "54" {
+			return fmt.Errorf("Java thread: expected '54', got %q", strings.TrimSpace(r.Output))
 		}
 
-		// 3. Ruby background thread tries to call JS via OmniVM.call
+		// 3. Ruby background thread calls JS via OmniVM.call
 		r = rbRuntime.Execute(`
+$_t44_rb_result = nil
 $_t44_rb_error = nil
 t = Thread.new do
   begin
-    OmniVM.call("javascript", "1 + 1")
-    $_t44_rb_error = "NO_ERROR"
+    $_t44_rb_result = OmniVM.call("javascript", "3 + 4")
   rescue => e
     $_t44_rb_error = e.message
   end
@@ -3644,27 +3654,33 @@ t.join
 		if r.Err != nil {
 			return fmt.Errorf("Ruby error check: %v", r.Err)
 		}
-		rbErr := fmt.Sprintf("%v", r.Value)
-		if !strings.Contains(rbErr, "non-Golden Thread") {
-			return fmt.Errorf("Ruby rogue thread: expected Golden Thread error, got: %s", rbErr)
+		if fmt.Sprintf("%v", r.Value) != "" {
+			return fmt.Errorf("Ruby thread got error: %v", r.Value)
+		}
+		r = rbRuntime.Eval("$_t44_rb_result")
+		if r.Err != nil {
+			return fmt.Errorf("Ruby result check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "7" {
+			return fmt.Errorf("Ruby thread: expected '7', got %v", r.Value)
 		}
 
-		// 4. Verify all runtimes still work after rogue thread attempts
+		// 4. Verify all runtimes still work after foreign thread calls
 		r = pyRuntime.Eval("1 + 1")
 		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "2" {
-			return fmt.Errorf("Python post-rogue: %v", r.Err)
+			return fmt.Errorf("Python post-thread: %v", r.Err)
 		}
 		r = jsRuntime.Eval("2 + 2")
 		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "4" {
-			return fmt.Errorf("JS post-rogue: %v", r.Err)
+			return fmt.Errorf("JS post-thread: %v", r.Err)
 		}
 		r = jvmRuntime.Eval("3 + 3")
 		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "6" {
-			return fmt.Errorf("Java post-rogue: %v", r.Err)
+			return fmt.Errorf("Java post-thread: %v", r.Err)
 		}
 		r = rbRuntime.Eval("4 + 4")
 		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "8" {
-			return fmt.Errorf("Ruby post-rogue: %v", r.Err)
+			return fmt.Errorf("Ruby post-thread: %v", r.Err)
 		}
 
 		return nil
@@ -4221,7 +4237,7 @@ else:
 		watchdog.Init()
 		watchdog.SetPythonInterrupt(pyRuntime.InterruptFuncPtr())
 		watchdog.SetV8Terminate(jsRuntime.TerminateFuncPtr())
-		rbRuntime.Execute("trap('USR1') { raise Interrupt }")
+		watchdog.SetRubyInterrupt(rbRuntime.InterruptFuncPtr())
 
 		timeout := 2 * time.Second
 		timeoutMS := int(timeout / time.Millisecond)
@@ -4964,6 +4980,212 @@ except Exception as e:
 		}
 		if !timerFired.Load() {
 			return fmt.Errorf("JS timer never fired — heartbeat pump broken")
+		}
+		return nil
+	})
+
+	// ================================================================
+	// Thread-Safe Bridge Tests (65-71)
+	// ================================================================
+
+	// Test 65: JVM spawned thread → Python
+	run("JVM thread → Python (6*9=54)", func() error {
+		r := jvmRuntime.Execute(`
+final String[] result = {null};
+Thread t = new Thread(() -> {
+    result[0] = omnivm.OmniVM.call("python", "6 * 9");
+});
+t.start();
+t.join();
+System.out.println(result[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM thread execute: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "54" {
+			return fmt.Errorf("expected '54', got %q", strings.TrimSpace(r.Output))
+		}
+		return nil
+	})
+
+	// Test 66: JVM spawned thread → JS
+	run("JVM thread → JS (7*8=56)", func() error {
+		r := jvmRuntime.Execute(`
+final String[] result = {null};
+Thread t = new Thread(() -> {
+    result[0] = omnivm.OmniVM.call("javascript", "7 * 8");
+});
+t.start();
+t.join();
+System.out.println(result[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM thread execute: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "56" {
+			return fmt.Errorf("expected '56', got %q", strings.TrimSpace(r.Output))
+		}
+		return nil
+	})
+
+	// Test 67: JVM spawned thread → Ruby
+	run("JVM thread → Ruby (5+3=8)", func() error {
+		r := jvmRuntime.Execute(`
+final String[] result = {null};
+Thread t = new Thread(() -> {
+    result[0] = omnivm.OmniVM.call("ruby", "5 + 3");
+});
+t.start();
+t.join();
+System.out.println(result[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM thread execute: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "8" {
+			return fmt.Errorf("expected '8', got %q", strings.TrimSpace(r.Output))
+		}
+		return nil
+	})
+
+	// Test 68: 4 concurrent JVM threads calling bridge (4×50 calls)
+	run("4 JVM threads × 50 bridge calls", func() error {
+		r := jvmRuntime.Execute(`
+int numThreads = 4;
+int callsPerThread = 50;
+final boolean[] errors = new boolean[numThreads];
+Thread[] threads = new Thread[numThreads];
+for (int i = 0; i < numThreads; i++) {
+    final int idx = i;
+    final String runtime;
+    final String code;
+    final String expected;
+    switch (idx) {
+        case 0: runtime = "python"; code = "10 + " + idx; expected = "10"; break;
+        case 1: runtime = "javascript"; code = "20 + " + idx; expected = "21"; break;
+        case 2: runtime = "ruby"; code = "30 + " + idx; expected = "32"; break;
+        default: runtime = "python"; code = "40 + " + idx; expected = "43"; break;
+    }
+    threads[i] = new Thread(() -> {
+        for (int j = 0; j < callsPerThread; j++) {
+            String result = omnivm.OmniVM.call(runtime, code);
+            if (!result.equals(expected)) {
+                errors[idx] = true;
+                break;
+            }
+        }
+    });
+}
+for (Thread t : threads) t.start();
+for (Thread t : threads) t.join();
+boolean anyError = false;
+for (boolean e : errors) if (e) anyError = true;
+System.out.println(anyError ? "FAIL" : "OK");
+`)
+		if r.Err != nil {
+			return fmt.Errorf("concurrent JVM threads: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "OK" {
+			return fmt.Errorf("concurrent JVM threads: %s", strings.TrimSpace(r.Output))
+		}
+		return nil
+	})
+
+	// Test 69: Python threading.Thread → JS
+	run("Python thread → JS (3*7=21)", func() error {
+		r := pyRuntime.Execute(`
+import threading
+_t69_result = None
+_t69_error = None
+def _t69_worker():
+    global _t69_result, _t69_error
+    try:
+        _t69_result = omnivm.call("javascript", "3 * 7")
+    except Exception as e:
+        _t69_error = str(e)
+_t69_t = threading.Thread(target=_t69_worker)
+_t69_t.start()
+_t69_t.join()
+`)
+		if r.Err != nil {
+			return fmt.Errorf("Python thread execute: %v", r.Err)
+		}
+		r = pyRuntime.Eval("_t69_error")
+		if r.Err != nil {
+			return fmt.Errorf("error check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "None" {
+			return fmt.Errorf("Python thread error: %v", r.Value)
+		}
+		r = pyRuntime.Eval("_t69_result")
+		if r.Err != nil {
+			return fmt.Errorf("result check: %v", r.Err)
+		}
+		if fmt.Sprintf("%v", r.Value) != "21" {
+			return fmt.Errorf("expected '21', got %v", r.Value)
+		}
+		return nil
+	})
+
+	// Test 70: GIL contention — Golden Thread + JVM thread both call Python
+	// Verifies GIL serialization works when two OS threads contend.
+	run("GIL contention (Golden + JVM thread → Python)", func() error {
+		// Golden Thread sets a Python variable
+		r := pyRuntime.Eval("100 + 23")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "123" {
+			return fmt.Errorf("Golden Thread pre-check: %v", r.Err)
+		}
+
+		// JVM thread calls Python while Golden Thread is idle
+		r = jvmRuntime.Execute(`
+final String[] result = {null};
+Thread t = new Thread(() -> {
+    result[0] = omnivm.OmniVM.call("python", "200 + 34");
+});
+t.start();
+t.join();
+System.out.println(result[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("JVM thread → Python: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "234" {
+			return fmt.Errorf("JVM thread: expected '234', got %q", strings.TrimSpace(r.Output))
+		}
+
+		// Golden Thread Python still healthy
+		r = pyRuntime.Eval("300 + 45")
+		if r.Err != nil || fmt.Sprintf("%v", r.Value) != "345" {
+			return fmt.Errorf("Golden Thread post-check: %v", r.Err)
+		}
+		return nil
+	})
+
+	// Test 71: Nested foreign-thread bridge — JVM thread → Python → JS → back
+	// Tests deep cross-runtime chain originating from a non-Golden thread.
+	run("Nested foreign-thread bridge (JVM → Py → JS)", func() error {
+		r := jvmRuntime.Execute(`
+final String[] result = {null};
+final String[] error = {null};
+Thread t = new Thread(() -> {
+    try {
+        // JVM thread → Python → JS (via omnivm.call chain)
+        result[0] = omnivm.OmniVM.call("python",
+            "omnivm.call('javascript', '10 + 5')");
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
+});
+t.start();
+t.join();
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
+`)
+		if r.Err != nil {
+			return fmt.Errorf("nested bridge execute: %v", r.Err)
+		}
+		if strings.TrimSpace(r.Output) != "15" {
+			return fmt.Errorf("expected '15', got %q", strings.TrimSpace(r.Output))
 		}
 		return nil
 	})

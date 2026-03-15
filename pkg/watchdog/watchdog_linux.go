@@ -11,7 +11,7 @@
 // Interrupt mechanisms per runtime:
 //   - Python: pipe write (safe from any thread, no GIL needed)
 //   - JavaScript: v8::Isolate::TerminateExecution() (thread-safe atomic flag)
-//   - Ruby: pthread_kill(golden_tid, SIGUSR1) → trap('USR1') { raise Interrupt }
+//   - Ruby: pipe write → watcher thread raises Interrupt on proxy thread
 //   - JVM: future (JNI Thread.interrupt())
 package watchdog
 
@@ -39,6 +39,9 @@ static atomic_int active_runtime = 0;
 // Runtime interrupt function pointers (set during init)
 static void (*py_interrupt_fn)(void) = NULL;
 static void (*v8_terminate_fn)(void) = NULL;
+
+// Ruby interrupt function pointer (pipe write, like Python)
+static void (*rb_interrupt_fn)(void) = NULL;
 
 static void* watchdog_loop(void* arg) {
 	(void)arg;
@@ -79,8 +82,8 @@ static void* watchdog_loop(void* arg) {
 		case 2: // JavaScript — V8 atomic flag (thread-safe)
 			if (v8_terminate_fn) v8_terminate_fn();
 			break;
-		case 3: // Ruby — signal to Golden Thread, MRI handles between opcodes
-			pthread_kill(golden_tid, SIGUSR1);
+		case 3: // Ruby — pipe write (safe from any thread)
+			if (rb_interrupt_fn) rb_interrupt_fn();
 			break;
 		case 4: // JVM — future: JNI Thread.interrupt()
 			break;
@@ -139,6 +142,10 @@ static void omnivm_watchdog_set_v8_terminate(void (*fn)(void)) {
 	v8_terminate_fn = fn;
 }
 
+static void omnivm_watchdog_set_rb_interrupt(void (*fn)(void)) {
+	rb_interrupt_fn = fn;
+}
+
 static void omnivm_watchdog_shutdown(void) {
 	pthread_mutex_lock(&wd_mutex);
 	wd_running = 0;
@@ -175,6 +182,12 @@ func SetPythonInterrupt(fn unsafe.Pointer) {
 // v8::Isolate::TerminateExecution() is thread-safe.
 func SetV8Terminate(fn unsafe.Pointer) {
 	C.omnivm_watchdog_set_v8_terminate((*[0]byte)(fn))
+}
+
+// SetRubyInterrupt sets the function pointer called to interrupt Ruby execution.
+// The function writes to a pipe; a watcher thread raises Interrupt on the proxy.
+func SetRubyInterrupt(fn unsafe.Pointer) {
+	C.omnivm_watchdog_set_rb_interrupt((*[0]byte)(fn))
 }
 
 // Arm starts the watchdog timer. After timeoutMS milliseconds, the

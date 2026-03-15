@@ -73,13 +73,6 @@ var taskTimeoutMS int
 
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
-	// Guard: reject calls from non-Golden threads to prevent crashes
-	currentTid := int64(C.get_thread_id())
-	if currentTid != goldenThreadID {
-		return C.CString(fmt.Sprintf("ERR:omnivm.call from non-Golden Thread (tid=%d, expected=%d). "+
-			"Cross-runtime calls must originate from the main thread.", currentTid, goldenThreadID))
-	}
-
 	rtName := C.GoString(cRuntime)
 	code := C.GoString(cCode)
 
@@ -88,14 +81,22 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 		return C.CString("ERR:unknown runtime: " + rtName)
 	}
 
-	// Temporal routing: track the active runtime across bridge calls
-	// so the watchdog interrupts the correct runtime (e.g. Python calls
-	// into JS which has an infinite loop — watchdog must terminate V8,
-	// not write to the Python interrupt pipe).
-	prevRT := watchdog.GetActiveRuntime()
-	watchdog.SetActiveRuntime(runtimeID(rtName))
+	// Only manage watchdog for Golden Thread tasks.
+	// Foreign thread calls are outside watchdog scope — they rely on
+	// their native ecosystem's timeout mechanisms.
+	isGolden := int64(C.get_thread_id()) == goldenThreadID
+	var prevRT int
+	if isGolden {
+		prevRT = watchdog.GetActiveRuntime()
+		watchdog.SetActiveRuntime(runtimeID(rtName))
+	}
+
 	evalResult := rt.Eval(code)
-	watchdog.SetActiveRuntime(prevRT)
+
+	if isGolden {
+		watchdog.SetActiveRuntime(prevRT)
+	}
+
 	if evalResult.Err != nil {
 		return C.CString("ERR:" + evalResult.Err.Error())
 	}
@@ -214,9 +215,10 @@ func main() {
 		watchdog.SetV8Terminate(v8TermPtr)
 	}
 
-	// Ruby SIGUSR1 trap: MRI intercepts the signal between opcodes
-	// and raises Interrupt. The watchdog sends pthread_kill(golden_tid, SIGUSR1).
-	rbRuntime.Execute("trap('USR1') { raise Interrupt }")
+	// Ruby interrupt via pipe — watcher thread raises Interrupt on proxy
+	if rbInterruptPtr := rbRuntime.InterruptFuncPtr(); rbInterruptPtr != nil {
+		watchdog.SetRubyInterrupt(rbInterruptPtr)
+	}
 
 	fmt.Fprintln(os.Stderr, "Ready.")
 

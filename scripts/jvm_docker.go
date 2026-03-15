@@ -18,10 +18,29 @@ static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
 
 static JavaVM* jvm_ptr = NULL;
-static JNIEnv* env_ptr = NULL;
+static JNIEnv* env_ptr = NULL;  // Initial thread's env (used during init only)
 static jclass runner_class = NULL;
 static jmethodID execute_method = NULL;
 static jmethodID eval_method_id = NULL;
+
+// Get a JNIEnv for the current thread. If the thread is not attached to the
+// JVM, attach it as a daemon thread. Sets *did_attach=1 if newly attached
+// (caller must call omnivm_jvm_maybe_detach).
+static JNIEnv* omnivm_jvm_get_env(int* did_attach) {
+    JNIEnv* env = NULL;
+    *did_attach = 0;
+    if (!jvm_ptr) return NULL;
+    jint rc = (*jvm_ptr)->GetEnv(jvm_ptr, (void**)&env, JNI_VERSION_10);
+    if (rc == JNI_OK) return env;
+    rc = (*jvm_ptr)->AttachCurrentThreadAsDaemon(jvm_ptr, (void**)&env, NULL);
+    if (rc != JNI_OK) return NULL;
+    *did_attach = 1;
+    return env;
+}
+
+static void omnivm_jvm_maybe_detach(int did_attach) {
+    if (did_attach && jvm_ptr) (*jvm_ptr)->DetachCurrentThread(jvm_ptr);
+}
 
 // JNI native implementation of OmniVM.call(runtime, code)
 static jstring JNICALL Java_omnivm_OmniVM_nativeCall(JNIEnv* env, jclass cls,
@@ -138,130 +157,142 @@ static int omnivm_jvm_init(const char* classpath) {
 }
 
 // Execute Java code via OmniVMRunner.execute()
+// Thread-safe: attaches current thread to JVM if needed.
 // Returns output string (caller must free) or error prefixed with "JavaError: "
 static char* omnivm_jvm_exec(const char* code) {
-    if (!env_ptr) return strdup("JavaError: JVM not initialized");
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env) return strdup("JavaError: JVM not available");
     if (!runner_class || !execute_method) {
+        omnivm_jvm_maybe_detach(did_attach);
         return strdup("JavaError: OmniVMRunner not available (check classpath)");
     }
 
-    // Convert code to Java string
-    jstring jcode = (*env_ptr)->NewStringUTF(env_ptr, code);
+    if ((*env)->PushLocalFrame(env, 16) < 0) {
+        omnivm_jvm_maybe_detach(did_attach);
+        return strdup("JavaError: PushLocalFrame failed");
+    }
+
+    jstring jcode = (*env)->NewStringUTF(env, code);
     if (!jcode) {
-        (*env_ptr)->ExceptionClear(env_ptr);
+        (*env)->ExceptionClear(env);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
         return strdup("JavaError: Failed to create Java string");
     }
 
-    // Call OmniVMRunner.execute(code)
-    jstring result = (jstring)(*env_ptr)->CallStaticObjectMethod(
-        env_ptr, runner_class, execute_method, jcode);
+    jstring result = (jstring)(*env)->CallStaticObjectMethod(
+        env, runner_class, execute_method, jcode);
 
-    // Check for JNI-level exceptions
-    if ((*env_ptr)->ExceptionCheck(env_ptr)) {
-        jthrowable exc = (*env_ptr)->ExceptionOccurred(env_ptr);
-        (*env_ptr)->ExceptionClear(env_ptr);
+    if ((*env)->ExceptionCheck(env)) {
+        jthrowable exc = (*env)->ExceptionOccurred(env);
+        (*env)->ExceptionClear(env);
 
-        jclass throwable_class = (*env_ptr)->FindClass(env_ptr, "java/lang/Throwable");
-        jmethodID to_string = (*env_ptr)->GetMethodID(env_ptr, throwable_class,
+        jclass throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+        jmethodID to_string = (*env)->GetMethodID(env, throwable_class,
             "toString", "()Ljava/lang/String;");
-        jstring msg = (jstring)(*env_ptr)->CallObjectMethod(env_ptr, exc, to_string);
+        jstring msg = (jstring)(*env)->CallObjectMethod(env, exc, to_string);
 
+        char* err = strdup("JavaError: Unknown JNI exception");
         if (msg) {
-            const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, msg, NULL);
+            const char* utf = (*env)->GetStringUTFChars(env, msg, NULL);
             size_t len = strlen(utf) + 20;
-            char* err = (char*)malloc(len);
-            if (err) {
-                snprintf(err, len, "JavaError: %s", utf);
-            } else {
-                err = strdup("JavaError: out of memory");
+            char* formatted = (char*)malloc(len);
+            if (formatted) {
+                snprintf(formatted, len, "JavaError: %s", utf);
+                free(err);
+                err = formatted;
             }
-            (*env_ptr)->ReleaseStringUTFChars(env_ptr, msg, utf);
-            (*env_ptr)->DeleteLocalRef(env_ptr, msg);
-            (*env_ptr)->DeleteLocalRef(env_ptr, exc);
-            (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
-            (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
-            return err;
+            (*env)->ReleaseStringUTFChars(env, msg, utf);
         }
-        (*env_ptr)->DeleteLocalRef(env_ptr, exc);
-        (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
-        (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
-        return strdup("JavaError: Unknown JNI exception");
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return err;
     }
 
     if (!result) {
-        (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
         return strdup("JavaError: execute() returned null");
     }
 
-    const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, result, NULL);
+    const char* utf = (*env)->GetStringUTFChars(env, result, NULL);
     char* output = strdup(utf);
-    (*env_ptr)->ReleaseStringUTFChars(env_ptr, result, utf);
-    (*env_ptr)->DeleteLocalRef(env_ptr, result);
-    (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
+    (*env)->ReleaseStringUTFChars(env, result, utf);
 
+    (*env)->PopLocalFrame(env, NULL);
+    omnivm_jvm_maybe_detach(did_attach);
     return output;
 }
 
-// Eval Java code via OmniVMRunner.eval() — returns expression value
+// Eval Java code via OmniVMRunner.eval() — returns expression value.
+// Thread-safe: attaches current thread to JVM if needed.
 static char* omnivm_jvm_eval(const char* code) {
-    if (!env_ptr) return strdup("JavaError: JVM not initialized");
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env) return strdup("JavaError: JVM not available");
 
     // If eval method is available, use it
     if (runner_class && eval_method_id) {
-        jstring jcode = (*env_ptr)->NewStringUTF(env_ptr, code);
+        if ((*env)->PushLocalFrame(env, 16) < 0) {
+            omnivm_jvm_maybe_detach(did_attach);
+            return strdup("JavaError: PushLocalFrame failed");
+        }
+
+        jstring jcode = (*env)->NewStringUTF(env, code);
         if (!jcode) {
-            (*env_ptr)->ExceptionClear(env_ptr);
+            (*env)->ExceptionClear(env);
+            (*env)->PopLocalFrame(env, NULL);
+            omnivm_jvm_maybe_detach(did_attach);
             return strdup("JavaError: Failed to create Java string");
         }
 
-        jstring result = (jstring)(*env_ptr)->CallStaticObjectMethod(
-            env_ptr, runner_class, eval_method_id, jcode);
+        jstring result = (jstring)(*env)->CallStaticObjectMethod(
+            env, runner_class, eval_method_id, jcode);
 
-        if ((*env_ptr)->ExceptionCheck(env_ptr)) {
-            jthrowable exc = (*env_ptr)->ExceptionOccurred(env_ptr);
-            (*env_ptr)->ExceptionClear(env_ptr);
+        if ((*env)->ExceptionCheck(env)) {
+            jthrowable exc = (*env)->ExceptionOccurred(env);
+            (*env)->ExceptionClear(env);
 
-            jclass throwable_class = (*env_ptr)->FindClass(env_ptr, "java/lang/Throwable");
-            jmethodID to_string = (*env_ptr)->GetMethodID(env_ptr, throwable_class,
+            jclass throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+            jmethodID to_string = (*env)->GetMethodID(env, throwable_class,
                 "toString", "()Ljava/lang/String;");
-            jstring msg = (jstring)(*env_ptr)->CallObjectMethod(env_ptr, exc, to_string);
+            jstring msg = (jstring)(*env)->CallObjectMethod(env, exc, to_string);
 
+            char* err = strdup("JavaError: Unknown JNI exception");
             if (msg) {
-                const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, msg, NULL);
+                const char* utf = (*env)->GetStringUTFChars(env, msg, NULL);
                 size_t len = strlen(utf) + 20;
-                char* err = (char*)malloc(len);
-                if (err) {
-                    snprintf(err, len, "JavaError: %s", utf);
-                } else {
-                    err = strdup("JavaError: out of memory");
+                char* formatted = (char*)malloc(len);
+                if (formatted) {
+                    snprintf(formatted, len, "JavaError: %s", utf);
+                    free(err);
+                    err = formatted;
                 }
-                (*env_ptr)->ReleaseStringUTFChars(env_ptr, msg, utf);
-                (*env_ptr)->DeleteLocalRef(env_ptr, msg);
-                (*env_ptr)->DeleteLocalRef(env_ptr, exc);
-                (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
-                (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
-                return err;
+                (*env)->ReleaseStringUTFChars(env, msg, utf);
             }
-            (*env_ptr)->DeleteLocalRef(env_ptr, exc);
-            (*env_ptr)->DeleteLocalRef(env_ptr, throwable_class);
-            (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
-            return strdup("JavaError: Unknown JNI exception");
+            (*env)->PopLocalFrame(env, NULL);
+            omnivm_jvm_maybe_detach(did_attach);
+            return err;
         }
 
         if (!result) {
-            (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
+            (*env)->PopLocalFrame(env, NULL);
+            omnivm_jvm_maybe_detach(did_attach);
             return strdup("null");
         }
 
-        const char* utf = (*env_ptr)->GetStringUTFChars(env_ptr, result, NULL);
+        const char* utf = (*env)->GetStringUTFChars(env, result, NULL);
         char* output = strdup(utf);
-        (*env_ptr)->ReleaseStringUTFChars(env_ptr, result, utf);
-        (*env_ptr)->DeleteLocalRef(env_ptr, result);
-        (*env_ptr)->DeleteLocalRef(env_ptr, jcode);
+        (*env)->ReleaseStringUTFChars(env, result, utf);
+
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
         return output;
     }
 
-    // Fall back to execute
+    // Fall back to execute (which handles its own attach/detach)
+    omnivm_jvm_maybe_detach(did_attach);
     return omnivm_jvm_exec(code);
 }
 

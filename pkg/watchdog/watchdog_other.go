@@ -17,6 +17,7 @@ const (
 func Init()                              {}
 func SetPythonInterrupt(fn unsafe.Pointer) {}
 func SetV8Terminate(fn unsafe.Pointer)     {}
+func SetRubyInterrupt(fn unsafe.Pointer)   {}
 func Arm(timeoutMS int)                  {}
 func Disarm()                            {}
 func SetActiveRuntime(rt int)            {}

@@ -67,7 +67,15 @@ static void OmnivmCallCallback(const v8::FunctionCallbackInfo<v8::Value>& info) 
         return;
     }
 
-    char* result = g_bridge_call(*runtime, *code);
+    char* result;
+    {
+        // Release V8 Isolate lock so other threads (Golden Thread pump,
+        // other JVM threads) can enter V8 while we wait in another runtime.
+        v8::Unlocker unlocker(isolate);
+        result = g_bridge_call(*runtime, *code);
+    }
+    // Locker automatically reacquired when unlocker goes out of scope
+
     if (!result) {
         isolate->ThrowException(v8::Exception::Error(
             v8::String::NewFromUtf8Literal(isolate, "omnivm.call returned NULL")));
@@ -307,6 +315,10 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
     v8::String::Utf8Value output_str(ctx_w->isolate, output_val);
     result.value = strdup(*output_str ? *output_str : "");
 
+    // Drain microtasks so Promises triggered by this call resolve immediately.
+    // Safe even on the Golden Thread (idempotent — already-drained queues are a no-op).
+    ctx_w->isolate->PerformMicrotaskCheckpoint();
+
     // Restore original console
     if (!orig_console.IsEmpty()) {
         global->Set(context,
@@ -383,6 +395,9 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
             result.value = strdup(*val_str ? *val_str : "undefined");
         }
     }
+
+    // Drain microtasks so Promises triggered by this eval resolve immediately
+    ctx_w->isolate->PerformMicrotaskCheckpoint();
 
     return result;
 }
