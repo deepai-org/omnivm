@@ -123,20 +123,38 @@ static VALUE rb_fproxy_serve(VALUE self) {
 // Submit work from a foreign (non-Ruby) thread. Blocks until completion.
 // Multiple foreign threads are serialized by the mutex.
 static char* rb_fproxy_submit(const char* code, int is_eval) {
+    // Reject if the proxy is shutting down / already dead
+    if (rb_fproxy_shutdown) {
+        return strdup("RubyError: runtime is shutting down");
+    }
+
     // Wait for proxy thread to be ready (handles init startup race)
-    while (!rb_fproxy_ready) {
+    while (!rb_fproxy_ready && !rb_fproxy_shutdown) {
         usleep(1000);  // 1ms
+    }
+    if (rb_fproxy_shutdown) {
+        return strdup("RubyError: runtime is shutting down");
     }
 
     pthread_mutex_lock(&rb_fproxy_mtx);
+    if (rb_fproxy_shutdown) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return strdup("RubyError: runtime is shutting down");
+    }
     rb_fproxy_code = code;
     rb_fproxy_is_eval = is_eval;
     rb_fproxy_has_request = 1;
     pthread_cond_signal(&rb_fproxy_req_cv);
 
-    // Wait for result
-    while (rb_fproxy_has_request) {
+    // Wait for result — also bail if the proxy shuts down mid-request
+    while (rb_fproxy_has_request && !rb_fproxy_shutdown) {
         pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+    }
+    if (rb_fproxy_shutdown && rb_fproxy_has_request) {
+        // Proxy died before completing our request
+        rb_fproxy_has_request = 0;
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return strdup("RubyError: runtime shut down during execution");
     }
     char* result = rb_fproxy_result;
     rb_fproxy_result = NULL;
@@ -495,10 +513,12 @@ static void omnivm_ruby_set_bridge_callback(omni_call_fn call_fn, omni_free_fn f
 
 static void omnivm_ruby_shutdown(void) {
     if (ruby_initialized) {
-        // Signal the foreign-thread proxy to shut down
+        // Signal the foreign-thread proxy to shut down and wake any
+        // foreign thread blocked in rb_fproxy_submit's wait loop.
         pthread_mutex_lock(&rb_fproxy_mtx);
         rb_fproxy_shutdown = 1;
         pthread_cond_signal(&rb_fproxy_req_cv);
+        pthread_cond_broadcast(&rb_fproxy_res_cv);
         pthread_mutex_unlock(&rb_fproxy_mtx);
 
         // Close interrupt pipe to wake the watcher thread
