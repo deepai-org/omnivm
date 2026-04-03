@@ -295,8 +295,8 @@ func main() {
 | `ExecuteWithContext(ctx, runtime, code)` | Execute with per-request deadline/cancellation |
 | `SetAfterCall(runtime, code)` | Cleanup code that runs after every call (like `defer`) |
 | `SetOnCallDone(fn)` | Observe-only callback after each dispatch |
-| `RegisterDrainHook(fn)` | Shutdown hook (flush DB connections, Sentry, etc.) |
-| `Shutdown()` | Graceful stop: drain hooks → reverse-order runtime teardown |
+| `RegisterDrainHook(fn)` | Shutdown hook — runs on Golden Thread, can call `drainExecute()` |
+| `Shutdown()` | Graceful stop: drain hooks (on Golden Thread) → reverse-order runtime teardown |
 
 ### Concurrency Model
 

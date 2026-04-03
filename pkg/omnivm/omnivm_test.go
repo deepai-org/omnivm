@@ -425,6 +425,42 @@ func TestShutdown_DrainHooksFirst(t *testing.T) {
 	}
 }
 
+func TestShutdown_DrainHookCanExecute(t *testing.T) {
+	py := newMock("python")
+	py.evalResult = pkg.Result{Value: "ok"}
+	py.execResult = pkg.Result{Output: "flushed"}
+	vm, cancel := startedVM(t, py)
+
+	var drainResult string
+	var drainErr error
+	vm.RegisterDrainHook(func() {
+		// Drain hooks must be able to call into the runtime
+		// (e.g., connections.close_all(), sentry_sdk.flush())
+		drainResult, drainErr = vm.drainExecute("python", "flush_all()")
+	})
+
+	cancel()
+	vm.Shutdown()
+
+	if drainErr != nil {
+		t.Errorf("drain Execute failed: %v", drainErr)
+	}
+	if drainResult != "flushed" {
+		t.Errorf("drain result = %q, want 'flushed'", drainResult)
+	}
+
+	execs := py.getExecCalls()
+	found := false
+	for _, c := range execs {
+		if c == "flush_all()" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("drain hook Execute not dispatched, execs = %v", execs)
+	}
+}
+
 func TestShutdown_Idempotent(t *testing.T) {
 	py := newMock("python")
 	vm, cancel := startedVM(t, py)

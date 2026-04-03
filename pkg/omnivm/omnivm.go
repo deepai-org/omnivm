@@ -43,6 +43,7 @@ type VM struct {
 	cancel   context.CancelFunc
 	started  bool
 	shutdown bool
+	draining bool
 }
 
 // New creates a new VM with the given configuration.
@@ -266,8 +267,14 @@ func (vm *VM) RegisterDrainHook(fn func()) {
 	vm.drainHooks = append(vm.drainHooks, fn)
 }
 
-// Shutdown gracefully stops the VM. Runs drain hooks, then shuts down runtimes
-// in reverse initialization order. Safe to call multiple times (idempotent).
+// Shutdown gracefully stops the VM. Must be called on the Golden Thread
+// (after Run returns). Runs drain hooks directly on the current goroutine
+// (so they can call into runtimes), then shuts down runtimes in reverse
+// initialization order. Safe to call multiple times (idempotent).
+//
+// Drain hooks run on the Golden Thread without the dispatcher — they can
+// call runtime methods directly via drainExecute(). This is safe because
+// after Run() returns, no other goroutine is accessing the runtimes.
 func (vm *VM) Shutdown() error {
 	vm.mu.Lock()
 	if vm.shutdown {
@@ -275,22 +282,27 @@ func (vm *VM) Shutdown() error {
 		return nil
 	}
 	vm.shutdown = true
+	vm.draining = true
 	hooks := make([]func(), len(vm.drainHooks))
 	copy(hooks, vm.drainHooks)
 	order := make([]string, len(vm.initOrder))
 	copy(order, vm.initOrder)
 	vm.mu.Unlock()
 
-	// Cancel dispatcher context
+	// Cancel dispatcher and wait for it to stop
 	if vm.cancel != nil {
 		vm.cancel()
 	}
 	vm.disp.WaitForStop()
 
-	// Run drain hooks
+	// Run drain hooks directly on the Golden Thread.
+	// The dispatcher is stopped, so we call runtimes directly — no dispatch needed.
+	// Hooks can use vm.drainExecute() for runtime calls during this phase.
 	for _, fn := range hooks {
 		fn()
 	}
+
+	vm.draining = false
 
 	// Shutdown runtimes in reverse init order
 	for i := len(order) - 1; i >= 0; i-- {
@@ -298,6 +310,22 @@ func (vm *VM) Shutdown() error {
 	}
 
 	return nil
+}
+
+// drainExecute runs code on a runtime during the drain phase.
+// Called directly on the Golden Thread (no dispatcher). Only valid
+// inside drain hooks during Shutdown().
+func (vm *VM) drainExecute(runtime, code string) (string, error) {
+	rt, ok := vm.runtimes[runtime]
+	if !ok {
+		return "", &ErrUnknownRuntime{Name: runtime}
+	}
+
+	result := rt.Execute(code)
+	if result.Err != nil {
+		return "", result.Err
+	}
+	return result.Output, nil
 }
 
 func (vm *VM) checkReady(runtime string) error {
