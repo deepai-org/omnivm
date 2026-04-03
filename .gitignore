@@ -1,4 +1,4 @@
-omnivm
+/omnivm
 *.o
 *.so
 *.dylib
