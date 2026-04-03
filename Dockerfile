@@ -197,4 +197,7 @@ RUN mkdir -p /var/data && \
 # Copy example manifests (change most often — keep last)
 COPY --from=builder /build/examples/ /omnivm/examples/
 
+# Copy test scripts
+COPY --from=builder /build/scripts/test-cli.sh /omnivm/scripts/test-cli.sh
+
 ENTRYPOINT ["omnivm"]

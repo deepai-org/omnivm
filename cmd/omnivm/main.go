@@ -1,17 +1,18 @@
 // OmniVM - The Go-Hosted Polyglot Runtime
 //
-// A single Go binary that embeds Python (CPython), JavaScript (V8),
-// Java (JVM/JNI), and Ruby (MRI) runtimes, orchestrated via a Golden
-// Thread dispatcher pattern.
+// A single binary that embeds Python (CPython), JavaScript (V8),
+// Java (JVM/JNI), Ruby (MRI), and Go runtimes.
 //
 // Usage:
 //
-//	omnivm                     Start the interactive REPL
-//	omnivm -python "code"      Execute Python code
-//	omnivm -js "code"          Execute JavaScript code
-//	omnivm -java "code"        Execute Java code (via ScriptEngine)
-//	omnivm -ruby "code"        Execute Ruby code
-//	omnivm -file script.py     Execute a file (detected by extension)
+//	omnivm                          Start the interactive REPL
+//	omnivm run script.py [args...]  Run a file (language detected by extension)
+//	omnivm run main.go [args...]    Compile and run Go code
+//	omnivm -python "code"           Execute Python code (legacy)
+//	omnivm -js "code"               Execute JavaScript code (legacy)
+//	omnivm -java "code"             Execute Java code (legacy)
+//	omnivm -ruby "code"             Execute Ruby code (legacy)
+//	omnivm -file script.py          Execute a file (legacy)
 package main
 
 /*
@@ -35,10 +36,8 @@ import "C"
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -46,7 +45,10 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
+	"github.com/omnivm/omnivm/pkg/cli"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
+	"github.com/omnivm/omnivm/pkg/errmsg"
+	golangrt "github.com/omnivm/omnivm/pkg/golang"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/python"
@@ -71,6 +73,9 @@ var goldenThreadID int64
 // for CLI and REPL paths that bypass the dispatcher.
 var taskTimeoutMS int
 
+// goRuntime handles Go file execution via "go run".
+var goRuntime = golangrt.New()
+
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 	rtName := C.GoString(cRuntime)
@@ -82,8 +87,6 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 	}
 
 	// Only manage watchdog for Golden Thread tasks.
-	// Foreign thread calls are outside watchdog scope — they rely on
-	// their native ecosystem's timeout mechanisms.
 	isGolden := int64(C.get_thread_id()) == goldenThreadID
 	var prevRT int
 	if isGolden {
@@ -121,13 +124,21 @@ func OmniFree(ptr *C.char) {
 func main() {
 	goldenThreadID = int64(C.get_thread_id())
 
-	// Parse flags
-	pyCode := flag.String("python", "", "Execute Python code")
-	jsCode := flag.String("js", "", "Execute JavaScript code")
-	javaCode := flag.String("java", "", "Execute Java code")
-	rubyCode := flag.String("ruby", "", "Execute Ruby code")
-	filePath := flag.String("file", "", "Execute a script file (detected by extension)")
-	flag.Parse()
+	// Parse CLI arguments
+	cmd, err := cli.Parse(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Go runtime is handled externally — no Golden Thread needed
+	if cmd.Language == "go" {
+		runGoFile(cmd)
+		return
+	}
+
+	// Determine which runtimes to initialize (lazy init)
+	needed := cli.RequiredRuntimes(cmd)
 
 	// Set up signal handling
 	sigMgr := signals.NewManager()
@@ -144,26 +155,27 @@ func main() {
 	// Create shared memory store
 	_ = arrow.NewSharedStore()
 
-	// Create runtimes
+	// Create runtimes — only the ones we need
 	pyRuntime := python.New()
 	jsRuntime := javascript.New()
 	jvmRuntime := jvm.New()
 	rbRuntime := ruby.New()
 
-	runtimes["python"] = pyRuntime
-	runtimes["javascript"] = jsRuntime
-	runtimes["java"] = jvmRuntime
-	runtimes["ruby"] = rbRuntime
+	allRuntimes := map[string]pkg.Runtime{
+		"python":     pyRuntime,
+		"javascript": jsRuntime,
+		"java":       jvmRuntime,
+		"ruby":       rbRuntime,
+	}
 
-	// Task timeout: interrupt Python (other runtimes lack safe interrupt APIs).
-	// This is the fallback when no watchdog is available (non-Linux).
+	// Task timeout callback
 	disp.OnTaskTimeout = func() {
 		fmt.Fprintf(os.Stderr, "[timeout] Task exceeded %v, interrupting Python...\n",
 			disp.TaskTimeout)
 		pyRuntime.Interrupt()
 	}
 
-	// Watchdog arm/disarm hooks: called around each task execution
+	// Watchdog arm/disarm hooks
 	disp.OnTaskStart = func() {
 		if disp.TaskTimeout > 0 {
 			watchdog.Arm(int(disp.TaskTimeout / time.Millisecond))
@@ -176,48 +188,61 @@ func main() {
 	// Context for lifecycle management
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// On signal, just cancel context; explicit shutdown happens at end of main
 	sigMgr.RegisterShutdown("dispatcher", func() {
 		cancel()
 	})
 
-	// Initialize all runtimes on the Golden Thread
-	fmt.Fprintln(os.Stderr, "OmniVM - Go-Hosted Polyglot Runtime")
-	fmt.Fprintln(os.Stderr, "Initializing runtimes...")
+	// Initialize only needed runtimes (lazy init)
+	needSet := make(map[string]bool)
+	for _, n := range needed {
+		needSet[n] = true
+	}
 
-	initRuntime := func(r pkg.Runtime) {
+	fmt.Fprintln(os.Stderr, "OmniVM - Go-Hosted Polyglot Runtime")
+	if cmd.Mode == ModeREPL {
+		fmt.Fprintln(os.Stderr, "Initializing runtimes...")
+	} else {
+		fmt.Fprintf(os.Stderr, "Initializing %s runtime...\n", cmd.Language)
+	}
+
+	// Initialize runtimes in dependency order (Python first for bridge)
+	for _, name := range []string{"python", "javascript", "java", "ruby"} {
+		if !needSet[name] {
+			continue
+		}
+		r := allRuntimes[name]
 		if err := r.Initialize(); err != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] FAILED: %v\n", r.Name(), err)
+			fmt.Fprintf(os.Stderr, "  [%s] FAILED: %v\n", name, err)
 		} else {
-			fmt.Fprintf(os.Stderr, "  [%s] OK\n", r.Name())
-			disp.RegisterPumpCallback(r.Name(), r.Pump)
+			fmt.Fprintf(os.Stderr, "  [%s] OK\n", name)
+			runtimes[name] = r
+			disp.RegisterPumpCallback(name, r.Pump)
 		}
 	}
 
-	initRuntime(pyRuntime)
-	initRuntime(jsRuntime)
-	initRuntime(jvmRuntime)
-	initRuntime(rbRuntime)
-
-	// Install cross-runtime bridge callbacks
+	// Install cross-runtime bridge callbacks on initialized runtimes
 	callPtr := uintptr(C.get_omni_call_ptr())
 	freePtr := uintptr(C.get_omni_free_ptr())
 	for _, rt := range runtimes {
 		rt.SetBridgeCallback(callPtr, freePtr)
 	}
 
-	// Initialize watchdog thread for runtime-specific preemption
+	// Initialize watchdog
 	watchdog.Init()
-	if pyInterruptPtr := pyRuntime.InterruptFuncPtr(); pyInterruptPtr != nil {
-		watchdog.SetPythonInterrupt(pyInterruptPtr)
+	if _, ok := runtimes["python"]; ok {
+		if ptr := pyRuntime.InterruptFuncPtr(); ptr != nil {
+			watchdog.SetPythonInterrupt(ptr)
+		}
 	}
-	if v8TermPtr := jsRuntime.TerminateFuncPtr(); v8TermPtr != nil {
-		watchdog.SetV8Terminate(v8TermPtr)
+	if _, ok := runtimes["javascript"]; ok {
+		if ptr := jsRuntime.TerminateFuncPtr(); ptr != nil {
+			watchdog.SetV8Terminate(ptr)
+		}
 	}
-
-	// Ruby interrupt via pipe — watcher thread raises Interrupt on proxy
-	if rbInterruptPtr := rbRuntime.InterruptFuncPtr(); rbInterruptPtr != nil {
-		watchdog.SetRubyInterrupt(rbInterruptPtr)
+	if _, ok := runtimes["ruby"]; ok {
+		if ptr := rbRuntime.InterruptFuncPtr(); ptr != nil {
+			watchdog.SetRubyInterrupt(ptr)
+		}
 	}
 
 	fmt.Fprintln(os.Stderr, "Ready.")
@@ -227,44 +252,41 @@ func main() {
 
 	// Determine execution mode
 	dispatcherRunning := false
-	switch {
-	case *pyCode != "":
-		result := executeWithWatchdog(watchdog.RuntimePython, func() pkg.Result {
-			return pyRuntime.Execute(*pyCode)
+	switch cmd.Mode {
+	case ModeExec:
+		r, ok := runtimes[cmd.Language]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Runtime %q not available\n", cmd.Language)
+			os.Exit(1)
+		}
+		result := executeWithWatchdog(runtimeID(cmd.Language), func() pkg.Result {
+			return r.Execute(cmd.Code)
 		})
-		printResult("python", result)
-	case *jsCode != "":
-		result := executeWithWatchdog(watchdog.RuntimeJavaScript, func() pkg.Result {
-			return jsRuntime.Execute(*jsCode)
-		})
-		printResult("javascript", result)
-	case *javaCode != "":
-		result := executeWithWatchdog(watchdog.RuntimeJVM, func() pkg.Result {
-			return jvmRuntime.Execute(*javaCode)
-		})
-		printResult("java", result)
-	case *rubyCode != "":
-		result := executeWithWatchdog(watchdog.RuntimeRuby, func() pkg.Result {
-			return rbRuntime.Execute(*rubyCode)
-		})
-		printResult("ruby", result)
-	case *filePath != "":
-		executeFile(*filePath)
+		printResult(cmd.Language, result)
+
+	case ModeRun:
+		executeFileNew(cmd)
+
 	default:
-		// Start the dispatcher with epoll (Linux) or ticker fallback,
-		// run REPL on main thread (already on the Golden Thread)
+		// REPL mode
 		dispatcherRunning = true
-		uvFD := jsRuntime.GetUVBackendFD()
-		go func() {
-			disp.RunEpoll(ctx, uvFD)
-		}()
+		if jsRT, ok := runtimes["javascript"]; ok {
+			uvFD := jsRT.(*javascript.Runtime).GetUVBackendFD()
+			go func() {
+				disp.RunEpoll(ctx, uvFD)
+			}()
+		} else {
+			go func() {
+				disp.RunEpoll(ctx, -1)
+			}()
+		}
 		repl(ctx)
 	}
 
 	// Flush stdout before shutdown messages on stderr
 	os.Stdout.Sync()
 
-	// Graceful shutdown: signal dispatcher to stop and wait for it
+	// Graceful shutdown
 	cancel()
 	if dispatcherRunning {
 		disp.WaitForStop()
@@ -279,9 +301,121 @@ func main() {
 	}
 }
 
+// Alias cli.Mode constants for use in this file
+const (
+	ModeREPL = cli.ModeREPL
+	ModeRun  = cli.ModeRun
+	ModeExec = cli.ModeExec
+)
+
+// runGoFile handles Go file execution — no Golden Thread or embedded runtimes needed.
+func runGoFile(cmd cli.Command) {
+	result := goRuntime.ExecuteFile(cmd.File, cmd.Args, os.Stdin)
+	if result.Err != nil {
+		enhanced := errmsg.Enhance("go", result.Err.Error())
+		fmt.Fprintln(os.Stderr, enhanced)
+		exitCode := result.ExitCode
+		if exitCode == 0 {
+			exitCode = 1
+		}
+		os.Exit(exitCode)
+	}
+	if result.Output != "" {
+		fmt.Print(result.Output)
+	}
+}
+
+// executeFileNew runs a script file with argv, stdin, and shebang support.
+func executeFileNew(cmd cli.Command) {
+	data, err := os.ReadFile(cmd.File)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+		os.Exit(1)
+	}
+
+	code := cli.StripShebang(string(data))
+
+	r, ok := runtimes[cmd.Language]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Runtime %q not available\n", cmd.Language)
+		os.Exit(1)
+	}
+
+	// Set up argv for the target runtime before executing
+	setupArgv(cmd.Language, cmd.File, cmd.Args)
+
+	// Set up stdin forwarding for the target runtime
+	setupStdin(cmd.Language)
+
+	result := executeWithWatchdog(runtimeID(cmd.Language), func() pkg.Result {
+		return r.Execute(code)
+	})
+	printResult(cmd.Language, result)
+}
+
+// setupArgv configures sys.argv / process.argv / ARGV etc. for the target runtime.
+func setupArgv(lang, file string, args []string) {
+	r, ok := runtimes[lang]
+	if !ok {
+		return
+	}
+
+	switch lang {
+	case "python":
+		// Build sys.argv = [file, arg1, arg2, ...]
+		parts := []string{fmt.Sprintf("%q", file)}
+		for _, a := range args {
+			parts = append(parts, fmt.Sprintf("%q", a))
+		}
+		code := fmt.Sprintf("import sys; sys.argv = [%s]", strings.Join(parts, ", "))
+		r.Execute(code)
+
+	case "javascript":
+		// Build process.argv = [node, file, arg1, arg2, ...]
+		parts := []string{`"node"`, fmt.Sprintf("%q", file)}
+		for _, a := range args {
+			parts = append(parts, fmt.Sprintf("%q", a))
+		}
+		code := fmt.Sprintf("process.argv = [%s]", strings.Join(parts, ", "))
+		r.Execute(code)
+
+	case "ruby":
+		// ARGV = [arg1, arg2, ...], $0 = file, $PROGRAM_NAME = file
+		parts := []string{}
+		for _, a := range args {
+			parts = append(parts, fmt.Sprintf("%q", a))
+		}
+		code := fmt.Sprintf("ARGV.replace([%s]); $0 = %q; $PROGRAM_NAME = %q",
+			strings.Join(parts, ", "), file, file)
+		r.Execute(code)
+
+	case "java":
+		// Store args in a system property for retrieval
+		joined := strings.Join(args, "\x00")
+		code := fmt.Sprintf(`System.setProperty("omnivm.argv", "%s")`, escapeJavaString(joined))
+		r.Execute(code)
+	}
+}
+
+// setupStdin configures stdin forwarding for embedded runtimes.
+// For Python/Ruby/JS, stdin is already available via the process's fd 0.
+// No special setup needed — the embedded runtimes inherit the process stdin.
+func setupStdin(lang string) {
+	// Python: sys.stdin reads from fd 0 (inherited from process)
+	// JavaScript: process.stdin reads from fd 0
+	// Ruby: $stdin / STDIN reads from fd 0
+	// Java: System.in reads from fd 0
+	// All inherited automatically — nothing to do.
+}
+
+func escapeJavaString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
 // executeWithWatchdog arms the watchdog, sets the active runtime, executes
-// the function, then disarms and clears. Used by CLI one-shots and REPL
-// paths that bypass the dispatcher.
+// the function, then disarms and clears.
 func executeWithWatchdog(rt int, fn func() pkg.Result) pkg.Result {
 	watchdog.SetActiveRuntime(rt)
 	if taskTimeoutMS > 0 {
@@ -311,49 +445,19 @@ func runtimeID(lang string) int {
 
 func printResult(lang string, result pkg.Result) {
 	if result.Err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Error: %v\n", lang, result.Err)
-		os.Exit(1)
+		errMsg := result.Err.Error()
+		enhanced := errmsg.Enhance(lang, errMsg)
+		formatted := errmsg.FormatTraceback(lang, enhanced)
+		fmt.Fprintln(os.Stderr, formatted)
+		exitCode := result.ExitCode
+		if exitCode == 0 {
+			exitCode = 1
+		}
+		os.Exit(exitCode)
 	}
 	if result.Output != "" {
 		fmt.Print(result.Output)
 	}
-}
-
-func executeFile(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-		os.Exit(1)
-	}
-
-	code := string(data)
-	ext := filepath.Ext(path)
-
-	var lang string
-	var r pkg.Runtime
-	switch ext {
-	case ".py":
-		lang = "python"
-		r = runtimes["python"]
-	case ".js":
-		lang = "javascript"
-		r = runtimes["javascript"]
-	case ".java":
-		lang = "java"
-		r = runtimes["java"]
-	case ".rb":
-		lang = "ruby"
-		r = runtimes["ruby"]
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown file extension: %s\n", ext)
-		os.Exit(1)
-		return
-	}
-
-	result := executeWithWatchdog(runtimeID(lang), func() pkg.Result {
-		return r.Execute(code)
-	})
-	printResult(lang, result)
 }
 
 func repl(ctx context.Context) {
@@ -391,12 +495,14 @@ func repl(ctx context.Context) {
 		case line == ":ruby" || line == ":rb":
 			currentLang = "ruby"
 			fmt.Println("Switched to Ruby")
+		case line == ":go":
+			currentLang = "go"
+			fmt.Println("Switched to Go")
 		case line == ":help":
 			printHelp()
 		case line == ":status":
 			printStatus()
 		default:
-			// Execute code in current language
 			r, ok := runtimes[currentLang]
 			if !ok {
 				fmt.Fprintf(os.Stderr, "Runtime %q not available\n", currentLang)
@@ -405,7 +511,8 @@ func repl(ctx context.Context) {
 					return r.Execute(line)
 				})
 				if result.Err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
+					enhanced := errmsg.Enhance(currentLang, result.Err.Error())
+					fmt.Fprintln(os.Stderr, enhanced)
 				} else if result.Output != "" {
 					fmt.Print(result.Output)
 				}
@@ -422,9 +529,15 @@ func printHelp() {
   :javascript, :js   Switch to JavaScript
   :java, :jvm        Switch to Java
   :ruby, :rb         Switch to Ruby
+  :go                Switch to Go
   :status            Show runtime status
   :help              Show this help
-  :quit, :q          Exit`)
+  :quit, :q          Exit
+
+CLI Usage:
+  omnivm run <file> [args...]   Run a script file
+  omnivm -python "code"         Execute Python code
+  omnivm -js "code"             Execute JavaScript code`)
 }
 
 func printStatus() {

@@ -19,8 +19,22 @@ typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
 
-// Inner helper: runs Python code and captures output via StringIO redirect.
+// Helper to get the value from a StringIO object as a strdup'd C string.
+static char* get_stringio_value(PyObject* sio) {
+    PyObject* getvalue = PyObject_GetAttrString(sio, "getvalue");
+    if (!getvalue) return NULL;
+    PyObject* py_val = PyObject_CallObject(getvalue, NULL);
+    Py_DECREF(getvalue);
+    if (!py_val) return NULL;
+    const char* utf8 = PyUnicode_AsUTF8(py_val);
+    char* result = utf8 ? strdup(utf8) : NULL;
+    Py_DECREF(py_val);
+    return result;
+}
+
+// Inner helper: runs Python code and captures stdout/stderr via StringIO redirect.
 // Must be called with GIL held. Returns output (caller must free) or NULL on error.
+// On error, returns "ERR:<traceback>" so the Go side can extract the error message.
 static char* omnivm_py_exec_inner(const char* code) {
     // Set up output capture
     PyObject* io_module = PyImport_ImportModule("io");
@@ -30,44 +44,54 @@ static char* omnivm_py_exec_inner(const char* code) {
     Py_DECREF(io_module);
     if (!string_io_class) return NULL;
 
-    PyObject* string_io = PyObject_CallObject(string_io_class, NULL);
-    Py_DECREF(string_io_class);
-    if (!string_io) return NULL;
+    PyObject* stdout_io = PyObject_CallObject(string_io_class, NULL);
+    if (!stdout_io) { Py_DECREF(string_io_class); return NULL; }
 
-    // Redirect sys.stdout
+    PyObject* stderr_io = PyObject_CallObject(string_io_class, NULL);
+    Py_DECREF(string_io_class);
+    if (!stderr_io) { Py_DECREF(stdout_io); return NULL; }
+
+    // Redirect sys.stdout and sys.stderr
     PyObject* sys_module = PyImport_ImportModule("sys");
-    if (!sys_module) { Py_DECREF(string_io); return NULL; }
+    if (!sys_module) { Py_DECREF(stdout_io); Py_DECREF(stderr_io); return NULL; }
 
     PyObject* old_stdout = PyObject_GetAttrString(sys_module, "stdout");
-    PyObject_SetAttrString(sys_module, "stdout", string_io);
+    PyObject* old_stderr = PyObject_GetAttrString(sys_module, "stderr");
+    PyObject_SetAttrString(sys_module, "stdout", stdout_io);
+    PyObject_SetAttrString(sys_module, "stderr", stderr_io);
 
     // Execute code
     int result = PyRun_SimpleString(code);
 
-    // Restore stdout
+    // Restore stdout and stderr
     if (old_stdout) {
         PyObject_SetAttrString(sys_module, "stdout", old_stdout);
         Py_DECREF(old_stdout);
     }
+    if (old_stderr) {
+        PyObject_SetAttrString(sys_module, "stderr", old_stderr);
+        Py_DECREF(old_stderr);
+    }
 
     char* output = NULL;
     if (result == 0) {
-        // Get captured output
-        PyObject* getvalue = PyObject_GetAttrString(string_io, "getvalue");
-        if (getvalue) {
-            PyObject* py_output = PyObject_CallObject(getvalue, NULL);
-            Py_DECREF(getvalue);
-            if (py_output) {
-                const char* utf8 = PyUnicode_AsUTF8(py_output);
-                if (utf8) {
-                    output = strdup(utf8);
-                }
-                Py_DECREF(py_output);
+        output = get_stringio_value(stdout_io);
+    } else {
+        // On error, return the captured traceback from stderr as ERR: prefix
+        char* err_text = get_stringio_value(stderr_io);
+        if (err_text && strlen(err_text) > 0) {
+            size_t len = strlen(err_text) + 5; // "ERR:" + null
+            output = (char*)malloc(len);
+            if (output) {
+                snprintf(output, len, "ERR:%s", err_text);
             }
+            free(err_text);
         }
+        // If no stderr captured, output stays NULL
     }
 
-    Py_DECREF(string_io);
+    Py_DECREF(stdout_io);
+    Py_DECREF(stderr_io);
     Py_DECREF(sys_module);
 
     return output;
@@ -491,6 +515,12 @@ func (r *Runtime) Execute(code string) pkg.Result {
 
 	output := C.GoString(cOutput)
 	C.free(unsafe.Pointer(cOutput))
+
+	// Check for ERR: prefix (captured traceback from stderr)
+	if len(output) > 4 && output[:4] == "ERR:" {
+		return pkg.Result{Err: fmt.Errorf("%s", output[4:])}
+	}
+
 	return pkg.Result{Output: output}
 }
 
@@ -577,11 +607,17 @@ func (r *Runtime) ClearInterrupt() {
 }
 
 // Shutdown finalizes CPython.
+// In polyglot mode, Py_FinalizeEx can crash when other runtime threads
+// (JVM, Ruby proxy) are still active. When running standalone, it can also
+// crash due to signal handler teardown conflicts with libjsig.so.
+// Since we're exiting the process anyway, skip finalization — same strategy
+// as Ruby shutdown.
 func (r *Runtime) Shutdown() error {
 	if !r.initialized {
 		return nil
 	}
 	r.initialized = false
-	C.Py_FinalizeEx()
+	// Skip Py_FinalizeEx — process exit reclaims all resources.
+	// See Ruby shutdown strategy in MEMORY.md.
 	return nil
 }

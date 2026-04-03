@@ -1,11 +1,20 @@
 // Package pkg defines the common interfaces for guest runtimes.
 package pkg
 
+import "io"
+
 // Result represents the outcome of executing code in a guest runtime.
 type Result struct {
-	Value  interface{}
-	Output string
-	Err    error
+	Value    interface{}
+	Output   string
+	Err      error
+	ExitCode int // Non-zero exit code from the program (for file execution)
+}
+
+// FileExecutor is an optional interface for runtimes that support file execution
+// with arguments, stdin, and environment passthrough.
+type FileExecutor interface {
+	ExecuteFile(path string, args []string, stdin io.Reader) Result
 }
 
 // Runtime is the interface that all guest language runtimes must implement.
