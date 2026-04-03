@@ -3,6 +3,8 @@ package omnivm
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -297,6 +299,56 @@ func TestOnCallDone_Fires(t *testing.T) {
 	}
 	if gotErr != nil {
 		t.Errorf("callback err = %v, want nil", gotErr)
+	}
+}
+
+// --- Phase 5b: LoadFile ---
+
+func TestLoadFile_ExecutesFileContents(t *testing.T) {
+	py := newMock("python")
+	py.execResult = pkg.Result{Output: ""}
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	// Create a temp file with Python code
+	dir := t.TempDir()
+	path := filepath.Join(dir, "helpers.py")
+	os.WriteFile(path, []byte("def greet(name):\n    return 'hello ' + name\n"), 0644)
+
+	err := vm.LoadFile("python", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	execs := py.getExecCalls()
+	if len(execs) != 1 {
+		t.Fatalf("expected 1 exec call, got %d", len(execs))
+	}
+	if execs[0] != "def greet(name):\n    return 'hello ' + name\n" {
+		t.Errorf("exec code = %q", execs[0])
+	}
+}
+
+func TestLoadFile_NotFound(t *testing.T) {
+	py := newMock("python")
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	err := vm.LoadFile("python", "/nonexistent/file.py")
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+func TestLoadFile_UnknownRuntime(t *testing.T) {
+	py := newMock("python")
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	err := vm.LoadFile("ruby", "file.rb")
+	var unk *ErrUnknownRuntime
+	if !errors.As(err, &unk) {
+		t.Errorf("expected ErrUnknownRuntime, got %v", err)
 	}
 }
 

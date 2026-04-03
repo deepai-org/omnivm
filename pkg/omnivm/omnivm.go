@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -239,6 +240,21 @@ func (vm *VM) ExecuteWithContext(ctx context.Context, runtime, code string) (str
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
+}
+
+// LoadFile reads a file and executes its contents in the named runtime.
+// Use this to define helper functions from .py/.js/.rb files instead of
+// inline string literals in Go code.
+func (vm *VM) LoadFile(runtime, path string) error {
+	if err := vm.checkReady(runtime); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("omnivm: load file: %w", err)
+	}
+	_, execErr := vm.Execute(runtime, string(data))
+	return execErr
 }
 
 // SetAfterCall registers cleanup code that runs after every Call/Execute

@@ -293,10 +293,41 @@ func main() {
 | `CallWithContext(ctx, runtime, code)` | Call with per-request deadline/cancellation |
 | `Execute(runtime, code)` | Run code, return captured stdout (goroutine-safe) |
 | `ExecuteWithContext(ctx, runtime, code)` | Execute with per-request deadline/cancellation |
+| `LoadFile(runtime, path)` | Execute a file's contents (define helpers from .py files) |
 | `SetAfterCall(runtime, code)` | Cleanup code that runs after every call (like `defer`) |
 | `SetOnCallDone(fn)` | Observe-only callback after each dispatch |
 | `RegisterDrainHook(fn)` | Shutdown hook — runs on Golden Thread, can call `drainExecute()` |
 | `Shutdown()` | Graceful stop: drain hooks (on Golden Thread) → reverse-order runtime teardown |
+
+### Helper Function Pattern
+
+The interpreter is persistent — variables and functions survive across calls. The recommended pattern is to define Python helper functions at startup (from files), then call them with one-liners per request:
+
+```python
+# helpers/user.py
+import json
+from django.contrib.auth.models import User
+
+def get_user_json(user_id):
+    u = User.objects.get(id=int(user_id))
+    return json.dumps({"email": u.email, "active": u.is_active})
+
+def validate_session(session_key):
+    from django.contrib.sessions.backends.db import SessionStore
+    s = SessionStore(session_key=session_key)
+    return s.get("_auth_user_id", "")
+```
+
+```go
+// At startup — load helpers from files (not inline strings)
+vm.LoadFile("python", "helpers/user.py")
+
+// Per request — clean one-liner
+result, err := vm.Call("python", fmt.Sprintf(`get_user_json(%q)`, userID))
+sessionUID, err := vm.Call("python", fmt.Sprintf(`validate_session(%q)`, sessionKey))
+```
+
+ORM objects can't cross the bridge (everything is a string), so helpers should serialize their return values (JSON). This matches the typical Django view pattern where the output is already `JsonResponse`.
 
 ### Concurrency Model
 
