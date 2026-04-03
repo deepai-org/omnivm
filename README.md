@@ -208,6 +208,100 @@ docker run --rm --entrypoint stresstest omnivm
 
 Tests cover cross-runtime stack mixing, generators across C boundaries, asyncio pumping with bridge callbacks, re-entrant calls (Python → JS → Python), signal handling (JVM SIGSEGV + Ruby + Python interrupts), GC interaction, 1MB string round-trips, Ruby Fiber cooperative bridging, 4-runtime mutual recursion (18 levels deep), Golden Thread verification, `pthread_atfork` fork guard, watchdog-driven preemption of infinite loops across all runtimes, foreign thread bridge calls (JVM threads → Python/JS/Ruby), concurrent multi-thread bridge contention, and nested foreign-thread cross-runtime chains.
 
+## Library API
+
+The `pkg/omnivm` package lets you embed OmniVM as a Go library — no CLI required. This is designed for production use cases like a Go HTTP server calling Django's ORM:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os/signal"
+    "runtime"
+    "syscall"
+    "time"
+
+    "github.com/omnivm/omnivm/pkg/omnivm"
+    "github.com/omnivm/omnivm/pkg/python"
+)
+
+func init() { runtime.LockOSThread() }
+
+func main() {
+    vm := omnivm.New(omnivm.Config{
+        TaskTimeout:  30 * time.Second,
+        DrainTimeout: 25 * time.Second,
+    })
+
+    // Only load what you need — no JVM, no Ruby, no V8 overhead
+    vm.Register("python", python.New())
+
+    if err := vm.Start(); err != nil {
+        log.Fatal(err)
+    }
+
+    // Django setup — runs once, state persists across all calls
+    vm.Execute("python", `
+        import os, django
+        os.environ['DJANGO_SETTINGS_MODULE'] = 'myapp.settings'
+        django.setup()
+    `)
+
+    // DB cleanup after every call (runs even on error, like defer)
+    vm.SetAfterCall("python",
+        "from django.db import close_old_connections; close_old_connections()")
+
+    ctx, cancel := signal.NotifyContext(context.Background(),
+        syscall.SIGTERM, syscall.SIGINT)
+    defer cancel()
+
+    go func() {
+        http.HandleFunc("/api/user", func(w http.ResponseWriter, r *http.Request) {
+            // Per-request context — cancels if client disconnects
+            result, err := vm.CallWithContext(r.Context(), "python", fmt.Sprintf(
+                `from apps.models import User; User.objects.get(id=%%q).to_json()`,
+                r.URL.Query().Get("id"),
+            ))
+            if err != nil {
+                http.Error(w, "internal error", 500)
+                return
+            }
+            w.Header().Set("Content-Type", "application/json")
+            w.Write([]byte(result))
+        })
+        log.Fatal(http.ListenAndServe(":8080", nil))
+    }()
+
+    vm.Run(ctx)  // blocks on Golden Thread
+    vm.Shutdown() // drain hooks → runtime teardown (reverse order)
+}
+```
+
+### Library API Reference
+
+| Method | Description |
+|--------|-------------|
+| `New(Config)` | Create a VM instance |
+| `Register(name, runtime)` | Add a runtime (selective — only load what you need) |
+| `Start()` | Initialize runtimes on Golden Thread |
+| `Run(ctx)` | Block running the dispatcher (returns on context cancel) |
+| `Call(runtime, code)` | Eval code, return result as string (goroutine-safe) |
+| `CallWithContext(ctx, runtime, code)` | Call with per-request deadline/cancellation |
+| `Execute(runtime, code)` | Run code, return captured stdout (goroutine-safe) |
+| `ExecuteWithContext(ctx, runtime, code)` | Execute with per-request deadline/cancellation |
+| `SetAfterCall(runtime, code)` | Cleanup code that runs after every call (like `defer`) |
+| `SetOnCallDone(fn)` | Observe-only callback after each dispatch |
+| `RegisterDrainHook(fn)` | Shutdown hook (flush DB connections, Sentry, etc.) |
+| `Shutdown()` | Graceful stop: drain hooks → reverse-order runtime teardown |
+
+### Concurrency Model
+
+All runtime calls serialize through the Golden Thread — Python and JavaScript cannot overlap. This is inherent to cgo and the GIL/GVL. The performance model is: Go handles HTTP routing and concurrency (fast), Python/JS/Ruby handle business logic (serialized but short). `CallWithContext` provides caller-side cancellation, but the Golden Thread task runs to completion (cgo cannot be interrupted mid-call).
+
 ## Project Structure
 
 ```
@@ -218,6 +312,7 @@ cmd/
   express-demo/      Express + Python/Ruby/Java HTTP demo
   telephone/         Cross-runtime telephone game
 pkg/
+  omnivm/            Library API (VM, Config, Call, Execute, Shutdown)
   cli/               CLI parsing, language detection, shebang handling
   errmsg/            Error enhancement (hints, traceback formatting)
   golang/            Go runtime (go run with args/stdin/exit codes)
