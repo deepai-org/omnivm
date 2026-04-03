@@ -136,10 +136,12 @@ func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string
 	ch := vm.disp.RunAsync(func() (interface{}, error) {
 		result := rt.Eval(code)
 
-		// Run afterCall regardless of error
+		// Run afterCall regardless of error. Uses Eval (not Execute) to skip
+		// StringIO stdout capture overhead — afterCall is cleanup code that
+		// doesn't need output capture.
 		afterCode, hasAfter := vm.afterCall[runtime]
 		if hasAfter {
-			afterResult := rt.Execute(afterCode)
+			afterResult := rt.Eval(afterCode)
 			if afterResult.Err != nil {
 				log.Printf("omnivm: afterCall error for %s: %v", runtime, afterResult.Err)
 			}
@@ -156,6 +158,74 @@ func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string
 
 		if result.Err != nil {
 			// Try to parse structured error
+			errMsg := result.Err.Error()
+			if re := ParseError(runtime, errMsg); re != nil {
+				return nil, re
+			}
+			return nil, result.Err
+		}
+
+		val := ""
+		if result.Value != nil {
+			val = fmt.Sprintf("%v", result.Value)
+		}
+		return val, nil
+	})
+
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		if res.Value == nil {
+			return "", nil
+		}
+		return res.Value.(string), nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// CallFast is like Call but uses the high-priority dispatch channel.
+// Fast calls are always processed before normal calls, reducing head-of-line
+// blocking for latency-sensitive operations (e.g., auth checks).
+func (vm *VM) CallFast(runtime, code string) (string, error) {
+	return vm.CallFastWithContext(context.Background(), runtime, code)
+}
+
+// CallFastWithContext is like CallWithContext but uses high-priority dispatch.
+func (vm *VM) CallFastWithContext(ctx context.Context, runtime, code string) (string, error) {
+	if err := vm.checkReady(runtime); err != nil {
+		return "", err
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	rt := vm.runtimes[runtime]
+	ch := vm.disp.RunAsyncFast(func() (interface{}, error) {
+		result := rt.Eval(code)
+
+		afterCode, hasAfter := vm.afterCall[runtime]
+		if hasAfter {
+			afterResult := rt.Eval(afterCode)
+			if afterResult.Err != nil {
+				log.Printf("omnivm: afterCall error for %s: %v", runtime, afterResult.Err)
+			}
+		}
+
+		if vm.onCallDone != nil {
+			resultStr := ""
+			if result.Value != nil {
+				resultStr = fmt.Sprintf("%v", result.Value)
+			}
+			vm.onCallDone(runtime, resultStr, result.Err)
+		}
+
+		if result.Err != nil {
 			errMsg := result.Err.Error()
 			if re := ParseError(runtime, errMsg); re != nil {
 				return nil, re

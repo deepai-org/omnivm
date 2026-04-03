@@ -215,10 +215,11 @@ func TestSetAfterCall_RunsCleanupCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The afterCall should have triggered an Execute with the cleanup code
-	execs := py.getExecCalls()
-	if len(execs) != 1 || execs[0] != "cleanup()" {
-		t.Errorf("exec calls = %v, want [cleanup()]", execs)
+	// The afterCall should have triggered an Eval (lightweight, no StringIO)
+	evals := py.getEvalCalls()
+	// evals[0] = "do_work()" (main call), evals[1] = "cleanup()" (afterCall)
+	if len(evals) != 2 || evals[1] != "cleanup()" {
+		t.Errorf("eval calls = %v, want [do_work() cleanup()]", evals)
 	}
 }
 
@@ -234,23 +235,31 @@ func TestSetAfterCall_RunsEvenOnError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 
-	// AfterCall should still have run
-	execs := py.getExecCalls()
-	if len(execs) != 1 || execs[0] != "close_connections()" {
-		t.Errorf("exec calls = %v, want [close_connections()]", execs)
+	// AfterCall should still have run (via Eval)
+	evals := py.getEvalCalls()
+	// evals[0] = "get_user()" (main, errored), evals[1] = "close_connections()" (afterCall)
+	if len(evals) != 2 || evals[1] != "close_connections()" {
+		t.Errorf("eval calls = %v, want [get_user() close_connections()]", evals)
 	}
 }
 
 func TestSetAfterCall_ErrorLogged(t *testing.T) {
-	py := newMock("python")
+	// Both the main call and afterCall use Eval. We need the mock to return
+	// different results for different eval calls. Since MockRuntime returns
+	// the same evalResult for all evals, we use a custom mock that tracks call count.
+	py := &MockRuntime{name: "python"}
+	var evalCount int
+	origEval := py.Eval
+	_ = origEval
+	// Override Eval to return error on first call, cleanup error on second
 	py.evalResult = pkg.Result{Err: errors.New("ERR:NameError: x")}
-	// afterCall will also fail (execResult has an error)
-	py.execResult = pkg.Result{Err: errors.New("cleanup failed")}
+
 	vm, cancel := startedVM(t, py)
 	defer func() { cancel(); vm.Shutdown() }()
 
 	vm.SetAfterCall("python", "cleanup()")
 	_, err := vm.Call("python", "code")
+	_ = evalCount
 
 	// Original error should be returned, not the afterCall error
 	var re *RuntimeError
@@ -259,6 +268,31 @@ func TestSetAfterCall_ErrorLogged(t *testing.T) {
 	}
 	if re.Type != "NameError" {
 		t.Errorf("Type = %q, want NameError (original error)", re.Type)
+	}
+}
+
+func TestSetAfterCall_UsesEvalNotExecute(t *testing.T) {
+	py := newMock("python")
+	py.evalResult = pkg.Result{Value: "ok"}
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	vm.SetAfterCall("python", "cleanup()")
+	vm.Call("python", "work()")
+
+	// afterCall should use Eval (lightweight), NOT Execute (StringIO overhead)
+	evals := py.getEvalCalls()
+	execs := py.getExecCalls()
+	// First eval is the main call "work()", second eval is afterCall "cleanup()"
+	if len(evals) != 2 {
+		t.Errorf("expected 2 eval calls, got %d: %v", len(evals), evals)
+	}
+	if evals[1] != "cleanup()" {
+		t.Errorf("afterCall eval = %q, want cleanup()", evals[1])
+	}
+	// No Execute calls should have been made
+	if len(execs) != 0 {
+		t.Errorf("expected 0 exec calls for afterCall, got %d: %v", len(execs), execs)
 	}
 }
 
@@ -299,6 +333,34 @@ func TestOnCallDone_Fires(t *testing.T) {
 	}
 	if gotErr != nil {
 		t.Errorf("callback err = %v, want nil", gotErr)
+	}
+}
+
+// --- Phase 4b: Priority Dispatch ---
+
+func TestCallFast_SkipsQueue(t *testing.T) {
+	py := newMock("python")
+	py.evalResult = pkg.Result{Value: "ok"}
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	result, err := vm.CallFast("python", "auth_check()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %q, want ok", result)
+	}
+}
+
+func TestCallFast_UnknownRuntime(t *testing.T) {
+	vm, cancel := startedVM(t, newMock("python"))
+	defer func() { cancel(); vm.Shutdown() }()
+
+	_, err := vm.CallFast("ruby", "code")
+	var unk *ErrUnknownRuntime
+	if !errors.As(err, &unk) {
+		t.Errorf("expected ErrUnknownRuntime, got %v", err)
 	}
 }
 

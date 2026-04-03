@@ -228,6 +228,102 @@ func TestDispatcherPanicRecovery(t *testing.T) {
 	}
 }
 
+func TestDispatcherFastPriority(t *testing.T) {
+	d := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// We'll track execution order
+	var order []string
+	var mu sync.Mutex
+	record := func(label string) {
+		mu.Lock()
+		order = append(order, label)
+		mu.Unlock()
+	}
+
+	go d.Run(ctx)
+
+	// Block the dispatcher with a slow task
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go d.RunOnMain(func() error {
+		close(started)
+		<-release
+		record("slow")
+		return nil
+	})
+	<-started
+
+	// While blocked, queue a normal task and a fast task
+	go d.RunOnMain(func() error {
+		record("normal")
+		return nil
+	})
+	time.Sleep(2 * time.Millisecond) // ensure normal is queued first
+	go d.RunOnMainFast(func() error {
+		record("fast")
+		return nil
+	})
+	time.Sleep(2 * time.Millisecond) // ensure fast is queued
+
+	// Release the blocker — fast should run before normal
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 {
+		t.Fatalf("expected 3 tasks, got %v", order)
+	}
+	if order[0] != "slow" {
+		t.Errorf("first should be slow, got %v", order)
+	}
+	if order[1] != "fast" {
+		t.Errorf("second should be fast, got %v", order)
+	}
+	if order[2] != "normal" {
+		t.Errorf("third should be normal, got %v", order)
+	}
+}
+
+func TestDispatcherRunAsyncFast(t *testing.T) {
+	d := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go d.Run(ctx)
+
+	ch := d.RunAsyncFast(func() (interface{}, error) {
+		return "priority", nil
+	})
+
+	result := <-ch
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Value.(string) != "priority" {
+		t.Errorf("got %v, want priority", result.Value)
+	}
+}
+
+func TestDispatcherFastShutdown(t *testing.T) {
+	d := New()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go d.Run(ctx)
+	d.RunOnMain(func() error { return nil }) // ensure running
+
+	cancel()
+	d.WaitForStop()
+
+	// Fast path should also return ErrShutdown after stop
+	err := d.RunOnMainFast(func() error { return nil })
+	if err != ErrShutdown {
+		t.Errorf("expected ErrShutdown, got %v", err)
+	}
+}
+
 func TestDispatcherShutdownDrainsQueue(t *testing.T) {
 	d := New()
 	ctx, cancel := context.WithCancel(context.Background())

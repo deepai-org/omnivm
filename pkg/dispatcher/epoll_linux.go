@@ -130,10 +130,13 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 			return
 		}
 
-		// Task wakeup — drain ALL pending tasks (eventfd coalesces writes).
+		// Task wakeup — drain fast channel first, then normal tasks.
 		// Pump between tasks so V8 timers/microtasks aren't starved.
 		if gotTask {
+			d.drainFast()
 			for {
+				// Check fast channel again between normal tasks
+				d.drainFast()
 				select {
 				case t := <-d.taskChan:
 					d.executeTask(t)
@@ -155,7 +158,9 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 		// before RunEpoll set wakeupFunc (GOMAXPROCS>1 race), the
 		// eventfd was never written. The heartbeat catches it.
 		if gotHeartbeat {
+			d.drainFast()
 			for {
+				d.drainFast()
 				select {
 				case t := <-d.taskChan:
 					d.executeTask(t)

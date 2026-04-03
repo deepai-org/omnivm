@@ -32,6 +32,7 @@ type PumpFunc func()
 // work onto the Golden Thread via a channel.
 type Dispatcher struct {
 	taskChan chan task
+	fastChan chan task // high-priority channel, drained before taskChan
 
 	pumpMu    sync.RWMutex
 	pumpFuncs map[string]PumpFunc
@@ -75,6 +76,7 @@ type Dispatcher struct {
 func New() *Dispatcher {
 	return &Dispatcher{
 		taskChan:  make(chan task, 256),
+		fastChan:  make(chan task, 64),
 		pumpFuncs: make(map[string]PumpFunc),
 		stopped:   make(chan struct{}),
 	}
@@ -109,7 +111,15 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
+		// Always drain fast channel first (priority tasks)
+		if d.drainFast() {
+			d.pumpAll()
+			continue
+		}
+
 		select {
+		case t := <-d.fastChan:
+			d.executeTask(t)
 		case t := <-d.taskChan:
 			d.executeTask(t)
 		case <-ticker.C:
@@ -119,6 +129,20 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			return
 		}
 		d.pumpAll()
+	}
+}
+
+// drainFast executes all pending fast tasks. Returns true if any were executed.
+func (d *Dispatcher) drainFast() bool {
+	drained := false
+	for {
+		select {
+		case t := <-d.fastChan:
+			d.executeTask(t)
+			drained = true
+		default:
+			return drained
+		}
 	}
 }
 
@@ -158,6 +182,57 @@ func (d *Dispatcher) RunOnMain(fn func() error) error {
 			return ErrShutdown
 		}
 	}
+}
+
+// RunOnMainFast dispatches fn to the high-priority channel. Fast tasks
+// are always drained before normal tasks, reducing head-of-line blocking
+// for latency-sensitive operations (e.g., auth checks vs. report generation).
+func (d *Dispatcher) RunOnMainFast(fn func() error) error {
+	done := make(chan error, 1)
+	t := task{fn: fn, done: done}
+	select {
+	case d.fastChan <- t:
+	case <-d.stopped:
+		return ErrShutdown
+	}
+	if d.wakeupFunc != nil {
+		d.wakeupFunc()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-d.stopped:
+		select {
+		case err := <-done:
+			return err
+		default:
+			return ErrShutdown
+		}
+	}
+}
+
+// RunAsyncFast dispatches fn to the high-priority channel and returns
+// a channel that will receive the result.
+func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncResult {
+	ch := make(chan AsyncResult, 1)
+	t := task{
+		fn: func() error {
+			val, err := fn()
+			ch <- AsyncResult{Value: val, Err: err}
+			return err
+		},
+		done: make(chan error, 1),
+	}
+	select {
+	case d.fastChan <- t:
+	case <-d.stopped:
+		ch <- AsyncResult{Err: ErrShutdown}
+		return ch
+	}
+	if d.wakeupFunc != nil {
+		d.wakeupFunc()
+	}
+	return ch
 }
 
 // RunAsync dispatches fn to the Golden Thread and returns a channel that
@@ -280,6 +355,8 @@ func (d *Dispatcher) pumpNamed(name string) {
 func (d *Dispatcher) drain() {
 	for {
 		select {
+		case t := <-d.fastChan:
+			t.done <- ErrShutdown
 		case t := <-d.taskChan:
 			t.done <- ErrShutdown
 		default:
