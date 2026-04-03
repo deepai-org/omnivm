@@ -291,6 +291,8 @@ func main() {
 | `Run(ctx)` | Block running the dispatcher (returns on context cancel) |
 | `Call(runtime, code)` | Eval code, return result as string (goroutine-safe) |
 | `CallWithContext(ctx, runtime, code)` | Call with per-request deadline/cancellation |
+| `CallFast(runtime, code)` | Priority eval — skips ahead of queued normal calls |
+| `CallFastWithContext(ctx, runtime, code)` | Priority eval with deadline/cancellation |
 | `Execute(runtime, code)` | Run code, return captured stdout (goroutine-safe) |
 | `ExecuteWithContext(ctx, runtime, code)` | Execute with per-request deadline/cancellation |
 | `LoadFile(runtime, path)` | Execute a file's contents (define helpers from .py files) |
@@ -329,9 +331,27 @@ sessionUID, err := vm.Call("python", fmt.Sprintf(`validate_session(%q)`, session
 
 ORM objects can't cross the bridge (everything is a string), so helpers should serialize their return values (JSON). This matches the typical Django view pattern where the output is already `JsonResponse`.
 
+### Priority Dispatch
+
+The dispatcher has two channels: a **fast channel** (64 slots) and a **normal channel** (256 slots). Fast tasks are always drained before normal tasks on every dispatcher cycle, reducing head-of-line blocking.
+
+Use `CallFast` for latency-sensitive operations (auth checks, session validation) and `Call` for heavier business logic (report generation, batch processing). A slow Python query in the normal queue won't block fast auth checks queued behind it:
+
+```go
+// Auth middleware — uses priority channel, skips ahead of slow queries
+userID, err := vm.CallFast("python", fmt.Sprintf(`validate_session(%q)`, sessionKey))
+
+// Business logic — normal priority
+report, err := vm.Call("python", fmt.Sprintf(`generate_report(%q)`, reportID))
+```
+
 ### Concurrency Model
 
 All runtime calls serialize through the Golden Thread — Python and JavaScript cannot overlap. This is inherent to cgo and the GIL/GVL. The performance model is: Go handles HTTP routing and concurrency (fast), Python/JS/Ruby handle business logic (serialized but short). `CallWithContext` provides caller-side cancellation, but the Golden Thread task runs to completion (cgo cannot be interrupted mid-call).
+
+### AfterCall Performance
+
+`SetAfterCall` cleanup code (e.g., `close_old_connections()`) uses the lightweight `Eval` path internally, skipping the stdout/stderr capture overhead that `Execute` requires. This saves ~100μs per request compared to routing cleanup through `Execute`.
 
 ## Project Structure
 
