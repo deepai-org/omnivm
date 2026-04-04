@@ -4,9 +4,12 @@ import javax.tools.*;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.jar.*;
 import java.util.regex.*;
+import java.util.stream.*;
 
 /**
  * OmniVMRunner - In-memory Java compilation and execution engine.
@@ -18,22 +21,351 @@ import java.util.regex.*;
  * Supports:
  * - Full Java classes with main() methods
  * - Code snippets (auto-wrapped in a class)
- * - Classpath extensions for Maven JARs
- * - System.out/System.err capture
+ * - File execution (.java, .class, .jar)
+ * - Classpath auto-detection (Maven, Gradle, lib/)
+ * - System.out/System.err capture (REPL) or passthrough (file execution)
+ * - Cross-runtime bridge via OmniVM.call()
  */
 public class OmniVMRunner {
 
     private static final String WRAPPER_CLASS = "OmniVMUserCode";
     private static String classpathDir = "/omnivm/libs";
 
+    // ---- File Execution (called from JNI for "omnivm run") ----
+    // stdout/stderr are NOT redirected — they go to the real process streams.
+    // Returns: "0" for success, "N" for System.exit(N), or "JavaError: ..." on failure.
+
     /**
-     * Execute Java source code. Entry point called from JNI.
+     * Execute a file (.java, .class, or .jar) with arguments.
+     * @param path     absolute path to the file
+     * @param argsJoined arguments joined with \0
+     * @return exit code as string, or "JavaError: ..." on failure
+     */
+    public static String executeFile(String path, String argsJoined) {
+        String[] args = (argsJoined == null || argsJoined.isEmpty())
+            ? new String[0]
+            : argsJoined.split("\n", -1);
+
+        try {
+            if (path.endsWith(".jar")) {
+                return runJar(path, args);
+            } else if (path.endsWith(".class")) {
+                return runClassFile(path, args);
+            } else if (path.endsWith(".java")) {
+                return runJavaFile(path, args);
+            } else {
+                return "JavaError: Unsupported file type: " + path;
+            }
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            StringWriter sw = new StringWriter();
+            (cause != null ? cause : e).printStackTrace(new PrintWriter(sw));
+            return "JavaError: " + sw.toString();
+        } catch (Exception e) {
+            StringWriter sw = new StringWriter();
+            e.printStackTrace(new PrintWriter(sw));
+            return "JavaError: " + sw.toString();
+        }
+    }
+
+    // ---- .java file execution ----
+
+    private static String runJavaFile(String path, String[] args) throws Exception {
+        File srcFile = new File(path).getAbsoluteFile();
+        String source = new String(Files.readAllBytes(srcFile.toPath()), StandardCharsets.UTF_8);
+
+        String className = extractClassName(source);
+        if (className == null) {
+            return "JavaError: Could not find class name in " + path;
+        }
+        String packageName = extractPackageName(source);
+        String fqcn = packageName != null ? packageName + "." + className : className;
+
+        // Build classpath from project structure
+        File srcDir = srcFile.getParentFile();
+        File projectRoot = findProjectRoot(srcDir);
+        String cp = buildFileClasspath(projectRoot, srcDir);
+
+        // Compile: use sourcepath so multi-file projects resolve automatically
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            return "JavaError: No Java compiler available (JDK required, not just JRE)";
+        }
+
+        DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+        StandardJavaFileManager stdFileManager = compiler.getStandardFileManager(diagnostics, null, null);
+
+        // Determine source root for package-relative compilation.
+        // If the file has "package com.example;" and lives in src/com/example/App.java,
+        // the source root is src/.
+        File sourceRoot = resolveSourceRoot(srcDir, packageName);
+
+        List<String> options = new ArrayList<>();
+        options.add("-classpath");
+        options.add(cp);
+        options.add("-sourcepath");
+        options.add(sourceRoot.getAbsolutePath());
+
+        // Compile to an in-memory file manager
+        JavaFileObject sourceFile = new InMemoryJavaSource(fqcn, source);
+        InMemoryFileManager fileManager = new InMemoryFileManager(stdFileManager);
+
+        JavaCompiler.CompilationTask task = compiler.getTask(
+            null, fileManager, diagnostics, options, null,
+            Collections.singletonList(sourceFile)
+        );
+
+        boolean success = task.call();
+        if (!success) {
+            StringBuilder errors = new StringBuilder("JavaError: Compilation failed:\n");
+            for (Diagnostic<? extends JavaFileObject> d : diagnostics.getDiagnostics()) {
+                if (d.getKind() == Diagnostic.Kind.ERROR) {
+                    errors.append(String.format("  %s:%d: %s\n",
+                        srcFile.getName(), d.getLineNumber(), d.getMessage(null)));
+                }
+            }
+            return errors.toString().trim();
+        }
+
+        // Build a classloader that chains: in-memory classes -> file classpath
+        URL[] cpUrls = classpathToURLs(cp);
+        URLClassLoader parentLoader = new URLClassLoader(cpUrls, OmniVMRunner.class.getClassLoader());
+        InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
+
+        return invokeMain(classLoader, fqcn, args);
+    }
+
+    // ---- .class file execution ----
+
+    private static String runClassFile(String path, String[] args) throws Exception {
+        File classFile = new File(path).getAbsoluteFile();
+        File dir = classFile.getParentFile();
+
+        // Derive class name: strip .class extension
+        String simpleName = classFile.getName().replace(".class", "");
+
+        // Try to detect package from directory structure by reading the class bytes.
+        // Simpler approach: add the directory to classpath and try loading by simple name.
+        // If that fails, walk up looking for a reasonable root.
+        File projectRoot = findProjectRoot(dir);
+        String cp = buildFileClasspath(projectRoot, dir);
+
+        URL[] cpUrls = classpathToURLs(cp);
+        URLClassLoader classLoader = new URLClassLoader(cpUrls, OmniVMRunner.class.getClassLoader());
+
+        // Try simple name first, then try to figure out FQCN from directory structure
+        String fqcn = inferFQCN(dir, simpleName, projectRoot);
+
+        return invokeMain(classLoader, fqcn, args);
+    }
+
+    // ---- .jar file execution ----
+
+    private static String runJar(String path, String[] args) throws Exception {
+        File jarFile = new File(path).getAbsoluteFile();
+
+        // Read Main-Class from manifest
+        String mainClass = null;
+        try (JarFile jar = new JarFile(jarFile)) {
+            Manifest manifest = jar.getManifest();
+            if (manifest != null) {
+                mainClass = manifest.getMainAttributes().getValue("Main-Class");
+            }
+        }
+        if (mainClass == null) {
+            return "JavaError: No Main-Class in manifest of " + path;
+        }
+
+        // Build classpath: the jar itself + its Class-Path entries + project libs
+        File projectRoot = findProjectRoot(jarFile.getParentFile());
+        StringBuilder cp = new StringBuilder(jarFile.getAbsolutePath());
+
+        // Add Class-Path from manifest
+        try (JarFile jar = new JarFile(jarFile)) {
+            String cpAttr = jar.getManifest().getMainAttributes().getValue("Class-Path");
+            if (cpAttr != null) {
+                for (String entry : cpAttr.split("\\s+")) {
+                    File resolved = new File(jarFile.getParentFile(), entry);
+                    if (resolved.exists()) {
+                        cp.append(File.pathSeparator).append(resolved.getAbsolutePath());
+                    }
+                }
+            }
+        }
+
+        // Add standard library paths
+        cp.append(File.pathSeparator).append(buildFileClasspath(projectRoot, jarFile.getParentFile()));
+
+        URL[] cpUrls = classpathToURLs(cp.toString());
+        URLClassLoader classLoader = new URLClassLoader(cpUrls, OmniVMRunner.class.getClassLoader());
+
+        return invokeMain(classLoader, mainClass, args);
+    }
+
+    // ---- Shared: invoke main() with System.exit() interception ----
+
+    private static String invokeMain(ClassLoader classLoader, String fqcn, String[] args) throws Exception {
+        Class<?> clazz;
+        try {
+            clazz = classLoader.loadClass(fqcn);
+        } catch (ClassNotFoundException e) {
+            return "JavaError: Class not found: " + fqcn;
+        }
+
+        Method main;
+        try {
+            main = clazz.getMethod("main", String[].class);
+        } catch (NoSuchMethodException e) {
+            return "JavaError: No main(String[]) method in " + fqcn;
+        }
+
+        main.invoke(null, (Object) args);
+        return "0";
+    }
+
+    // ---- Classpath auto-detection ----
+
+    /**
+     * Build classpath for file execution by scanning the project structure.
+     * Looks for Maven, Gradle, and manual lib directories.
+     */
+    private static String buildFileClasspath(File projectRoot, File srcDir) {
+        List<String> entries = new ArrayList<>();
+
+        // Source directory itself (for .class files alongside .java)
+        entries.add(srcDir.getAbsolutePath());
+
+        if (projectRoot != null) {
+            // Maven: target/classes, target/dependency/*.jar, target/*.jar
+            addDirIfExists(entries, projectRoot, "target/classes");
+            addJarsFrom(entries, projectRoot, "target/dependency");
+            addJarsFrom(entries, projectRoot, "target");
+
+            // Gradle: build/classes/java/main, build/libs/*.jar
+            addDirIfExists(entries, projectRoot, "build/classes/java/main");
+            addJarsFrom(entries, projectRoot, "build/libs");
+
+            // Common: lib/*.jar, libs/*.jar
+            addJarsFrom(entries, projectRoot, "lib");
+            addJarsFrom(entries, projectRoot, "libs");
+        }
+
+        // OmniVM default libs
+        addJarsFrom(entries, new File("/omnivm"), "libs");
+
+        // System classpath (includes OmniVMRunner/OmniVM classes)
+        String sysCp = System.getProperty("java.class.path", "");
+        if (!sysCp.isEmpty()) {
+            entries.add(sysCp);
+        }
+
+        return String.join(File.pathSeparator, entries);
+    }
+
+    private static void addDirIfExists(List<String> entries, File root, String sub) {
+        File dir = new File(root, sub);
+        if (dir.isDirectory()) {
+            entries.add(dir.getAbsolutePath());
+        }
+    }
+
+    private static void addJarsFrom(List<String> entries, File root, String sub) {
+        File dir = new File(root, sub);
+        if (!dir.isDirectory()) return;
+        File[] jars = dir.listFiles((d, name) -> name.endsWith(".jar"));
+        if (jars != null) {
+            for (File jar : jars) {
+                entries.add(jar.getAbsolutePath());
+            }
+        }
+    }
+
+    /**
+     * Walk up from srcDir looking for project markers (pom.xml, build.gradle, etc).
+     * Returns the project root, or srcDir if no marker found.
+     */
+    private static File findProjectRoot(File dir) {
+        File current = dir;
+        for (int i = 0; i < 10 && current != null; i++) {
+            if (new File(current, "pom.xml").exists() ||
+                new File(current, "build.gradle").exists() ||
+                new File(current, "build.gradle.kts").exists() ||
+                new File(current, "lib").isDirectory() ||
+                new File(current, "libs").isDirectory()) {
+                return current;
+            }
+            current = current.getParentFile();
+        }
+        return dir;
+    }
+
+    /**
+     * Given that a source file is in srcDir and declares packageName,
+     * resolve the source root by stripping package-matching directories.
+     * E.g., srcDir=/project/src/com/example, package=com.example → /project/src
+     */
+    private static File resolveSourceRoot(File srcDir, String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
+            return srcDir;
+        }
+        String[] parts = packageName.split("\\.");
+        File root = srcDir;
+        // Walk up, matching package components from the end
+        for (int i = parts.length - 1; i >= 0; i--) {
+            if (root.getName().equals(parts[i])) {
+                root = root.getParentFile();
+            } else {
+                // Directory structure doesn't match package — just use srcDir
+                return srcDir;
+            }
+        }
+        return root;
+    }
+
+    /**
+     * Try to infer FQCN for a .class file by checking directory structure against
+     * known class output directories (target/classes, build/classes/java/main).
+     */
+    private static String inferFQCN(File classDir, String simpleName, File projectRoot) {
+        // Check if the class lives under a known output directory
+        String path = classDir.getAbsolutePath();
+        String[] roots = {
+            projectRoot + "/target/classes",
+            projectRoot + "/build/classes/java/main",
+        };
+        for (String root : roots) {
+            if (path.startsWith(root) && path.length() > root.length()) {
+                String relative = path.substring(root.length() + 1);
+                return relative.replace(File.separatorChar, '.') + "." + simpleName;
+            }
+        }
+        return simpleName;
+    }
+
+    private static URL[] classpathToURLs(String cp) {
+        return Arrays.stream(cp.split(File.pathSeparator))
+            .filter(s -> !s.isEmpty())
+            .map(s -> {
+                try {
+                    return new File(s).toURI().toURL();
+                } catch (Exception e) {
+                    return null;
+                }
+            })
+            .filter(Objects::nonNull)
+            .toArray(URL[]::new);
+    }
+
+    // ---- REPL execution (with stdout capture) ----
+
+    /**
+     * Execute Java source code. Entry point called from JNI for REPL/inline mode.
+     * Captures stdout/stderr and returns the output.
      *
      * @param code Java source code (full class or snippet)
      * @return captured stdout output, or error prefixed with "JavaError: "
      */
     public static String execute(String code) {
-        // Capture stdout and stderr
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream capturedOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
         PrintStream oldOut = System.out;
@@ -43,7 +375,6 @@ public class OmniVMRunner {
             System.setOut(capturedOut);
             System.setErr(capturedOut);
 
-            // Determine if this is a full class or a snippet
             String className;
             String fullSource;
 
@@ -52,15 +383,19 @@ public class OmniVMRunner {
                 if (className == null) {
                     return "JavaError: Could not determine class name from source";
                 }
-                // Strip package declaration if present for simplicity
-                fullSource = code.replaceFirst("^\\s*package\\s+[^;]+;\\s*", "");
-                className = extractClassName(fullSource);
+                String pkg = extractPackageName(code);
+                if (pkg != null) {
+                    // Keep source intact — compile with package
+                    fullSource = code;
+                    className = pkg + "." + className;
+                } else {
+                    fullSource = code;
+                }
             } else {
                 className = WRAPPER_CLASS;
                 fullSource = wrapSnippet(code);
             }
 
-            // Compile
             String compileError = compileAndRun(className, fullSource);
             if (compileError != null) {
                 return compileError;
@@ -80,14 +415,10 @@ public class OmniVMRunner {
     }
 
     /**
-     * Eval Java expression. Returns the expression's toString() value directly,
-     * not stdout capture. For use by the cross-runtime bridge.
-     *
-     * @param code Java expression (e.g., "1 + 2", "String.valueOf(42)")
-     * @return string representation of the expression value, or error prefixed with "JavaError: "
+     * Eval Java expression. Returns the expression's toString() value directly.
+     * For use by the cross-runtime bridge.
      */
     public static String eval(String code) {
-        // For simple expressions, wrap in a class that returns the value
         String className = "OmniVMEval";
         String source =
             "public class " + className + " {\n" +
@@ -122,8 +453,6 @@ public class OmniVMRunner {
 
             boolean success = task.call();
             if (!success) {
-                // Compilation failed — maybe it's a statement, not an expression.
-                // Fall back to execute() which wraps in main().
                 return execute(code);
             }
 
@@ -145,15 +474,13 @@ public class OmniVMRunner {
         }
     }
 
-    /**
-     * Set the classpath directory for external JARs.
-     */
     public static void setClasspathDir(String dir) {
         classpathDir = dir;
     }
 
+    // ---- Source analysis ----
+
     private static boolean isFullClass(String code) {
-        // Check if the code contains a class/interface/enum declaration
         return code.matches("(?s).*\\b(public\\s+)?(class|interface|enum|record)\\s+\\w+.*");
     }
 
@@ -166,8 +493,16 @@ public class OmniVMRunner {
         return null;
     }
 
+    private static String extractPackageName(String code) {
+        Pattern p = Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;", Pattern.MULTILINE);
+        Matcher m = p.matcher(code);
+        if (m.find()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
     private static String wrapSnippet(String code) {
-        // Check if code has import statements
         StringBuilder imports = new StringBuilder();
         StringBuilder body = new StringBuilder();
 
@@ -188,17 +523,17 @@ public class OmniVMRunner {
             "}\n";
     }
 
+    // ---- REPL compilation (in-memory, with stdout capture) ----
+
     private static String compileAndRun(String className, String source) throws Exception {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) {
             return "JavaError: No Java compiler available (JDK required, not just JRE)";
         }
 
-        // Set up in-memory file manager
         DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
         StandardJavaFileManager stdFileManager = compiler.getStandardFileManager(diagnostics, null, null);
 
-        // Build classpath: include external JARs if present
         List<String> options = new ArrayList<>();
         String cp = buildClasspath();
         if (cp != null && !cp.isEmpty()) {
@@ -206,13 +541,11 @@ public class OmniVMRunner {
             options.add(cp);
         }
 
-        // In-memory source file
-        JavaFileObject sourceFile = new InMemoryJavaSource(className, source);
-
-        // In-memory class output
+        // For FQCN like "com.example.Foo", the source file URI needs the path form
+        String sourcePath = className.replace('.', '/');
+        JavaFileObject sourceFile = new InMemoryJavaSource(sourcePath, source);
         InMemoryFileManager fileManager = new InMemoryFileManager(stdFileManager);
 
-        // Compile
         JavaCompiler.CompilationTask task = compiler.getTask(
             null, fileManager, diagnostics, options, null,
             Collections.singletonList(sourceFile)
@@ -228,22 +561,18 @@ public class OmniVMRunner {
             return errors.toString();
         }
 
-        // Load and run
         InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses());
         Class<?> clazz = classLoader.loadClass(className);
 
-        // Look for main method
         try {
             Method main = clazz.getMethod("main", String[].class);
             main.invoke(null, (Object) new String[]{});
         } catch (NoSuchMethodException e) {
-            // No main method - try to find a run() method or just instantiate
             try {
                 Method run = clazz.getMethod("run");
                 Object instance = clazz.getDeclaredConstructor().newInstance();
                 run.invoke(instance);
             } catch (NoSuchMethodException e2) {
-                // Just instantiate the class (constructor might do work)
                 clazz.getDeclaredConstructor().newInstance();
             }
         } catch (java.lang.reflect.InvocationTargetException e) {
@@ -257,6 +586,7 @@ public class OmniVMRunner {
         return null; // Success
     }
 
+    /** Classpath for REPL mode — system cp + /omnivm/libs */
     private static String buildClasspath() {
         File libDir = new File(classpathDir);
         if (!libDir.exists() || !libDir.isDirectory()) {
@@ -338,6 +668,13 @@ public class OmniVMRunner {
         private final Map<String, byte[]> classData = new HashMap<>();
 
         InMemoryClassLoader(List<InMemoryClassFile> classes) {
+            for (InMemoryClassFile cf : classes) {
+                classData.put(cf.getClassName(), cf.getBytes());
+            }
+        }
+
+        InMemoryClassLoader(List<InMemoryClassFile> classes, ClassLoader parent) {
+            super(parent);
             for (InMemoryClassFile cf : classes) {
                 classData.put(cf.getClassName(), cf.getBytes());
             }

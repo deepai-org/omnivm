@@ -24,11 +24,13 @@ type Command struct {
 }
 
 var extToLang = map[string]string{
-	".py":   "python",
-	".js":   "javascript",
-	".java": "java",
-	".rb":   "ruby",
-	".go":   "go",
+	".py":    "python",
+	".js":    "javascript",
+	".java":  "java",
+	".class": "java",
+	".jar":   "java",
+	".rb":    "ruby",
+	".go":    "go",
 }
 
 var legacyFlags = map[string]string{

@@ -326,7 +326,25 @@ func runGoFile(cmd cli.Command) {
 }
 
 // executeFileNew runs a script file with argv, stdin, and shebang support.
+// If the runtime implements FileExecutor, uses that (real args, real stdout).
+// Otherwise falls back to reading the file and calling Execute(code).
 func executeFileNew(cmd cli.Command) {
+	r, ok := runtimes[cmd.Language]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Runtime %q not available\n", cmd.Language)
+		os.Exit(1)
+	}
+
+	// Prefer FileExecutor: real args to main(), real stdout/stderr, exit codes
+	if fe, ok := r.(pkg.FileExecutor); ok {
+		result := executeWithWatchdog(runtimeID(cmd.Language), func() pkg.Result {
+			return fe.ExecuteFile(cmd.File, cmd.Args, os.Stdin)
+		})
+		printResult(cmd.Language, result)
+		return
+	}
+
+	// Fallback: read file, set up argv manually, Execute(code)
 	data, err := os.ReadFile(cmd.File)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
@@ -334,12 +352,6 @@ func executeFileNew(cmd cli.Command) {
 	}
 
 	code := cli.StripShebang(string(data))
-
-	r, ok := runtimes[cmd.Language]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Runtime %q not available\n", cmd.Language)
-		os.Exit(1)
-	}
 
 	// Set up argv for the target runtime before executing
 	setupArgv(cmd.Language, cmd.File, cmd.Args)

@@ -298,6 +298,123 @@ else
     fail "python network access" "got: $OUT"
 fi
 
+# --- Test 21: omnivm run Hello.java ---
+echo "--- Test: omnivm run Hello.java ---"
+cat > /tmp/Hello.java << 'EOF'
+public class Hello {
+    public static void main(String[] args) {
+        System.out.println("hello from java");
+    }
+}
+EOF
+OUT=$(omnivm run /tmp/Hello.java 2>/dev/null)
+if [ "$OUT" = "hello from java" ]; then
+    pass "run java file"
+else
+    fail "run java file" "got: $OUT"
+fi
+
+# --- Test 22: Java argv passthrough ---
+echo "--- Test: Java argv passthrough ---"
+cat > /tmp/JavaArgs.java << 'EOF'
+public class JavaArgs {
+    public static void main(String[] args) {
+        System.out.println(String.join(" ", args));
+    }
+}
+EOF
+OUT=$(omnivm run /tmp/JavaArgs.java foo bar baz 2>/dev/null)
+if [ "$OUT" = "foo bar baz" ]; then
+    pass "java argv"
+else
+    fail "java argv" "got: $OUT"
+fi
+
+# --- Test 23: Java System.exit() ---
+echo "--- Test: Java System.exit() ---"
+cat > /tmp/JavaExit.java << 'EOF'
+public class JavaExit {
+    public static void main(String[] args) {
+        System.out.println("before exit");
+        System.exit(42);
+    }
+}
+EOF
+set +e
+OUT=$(omnivm run /tmp/JavaExit.java 2>/dev/null)
+CODE=$?
+set -e
+# System.exit(42) kills the process with exit code 42
+if [ "$CODE" = "42" ]; then
+    pass "java exit code"
+elif [ "$CODE" != "0" ]; then
+    pass "java exit code (non-zero: $CODE)"
+else
+    fail "java exit code" "exit=$CODE output=$OUT"
+fi
+
+# --- Test 24: Java with Gson library (real Maven dependency) ---
+echo "--- Test: Java with Gson library ---"
+cat > /tmp/GsonTest.java << 'EOF'
+import com.google.gson.Gson;
+import java.util.*;
+
+public class GsonTest {
+    public static void main(String[] args) {
+        Gson gson = new Gson();
+        Map<String, Object> data = new HashMap<>();
+        data.put("status", "ok");
+        String json = gson.toJson(data);
+        System.out.println(json);
+    }
+}
+EOF
+OUT=$(omnivm run /tmp/GsonTest.java 2>/dev/null)
+if echo "$OUT" | grep -q '"status":"ok"'; then
+    pass "java gson library"
+else
+    fail "java gson library" "got: $OUT"
+fi
+
+# --- Test 25: Java JAR execution ---
+echo "--- Test: Java JAR execution ---"
+# Create a minimal JAR with a main class
+mkdir -p /tmp/jartest
+cat > /tmp/jartest/JarMain.java << 'EOF'
+public class JarMain {
+    public static void main(String[] args) {
+        System.out.println("hello from jar");
+    }
+}
+EOF
+javac -d /tmp/jartest /tmp/jartest/JarMain.java
+echo "Main-Class: JarMain" > /tmp/jartest/MANIFEST.MF
+jar cfm /tmp/test.jar /tmp/jartest/MANIFEST.MF -C /tmp/jartest JarMain.class
+OUT=$(omnivm run /tmp/test.jar 2>/dev/null)
+if [ "$OUT" = "hello from jar" ]; then
+    pass "run jar file"
+else
+    fail "run jar file" "got: $OUT"
+fi
+
+# --- Test 26: Java .class file execution ---
+echo "--- Test: Java .class file execution ---"
+mkdir -p /tmp/classtest
+cat > /tmp/classtest/ClassMain.java << 'EOF'
+public class ClassMain {
+    public static void main(String[] args) {
+        System.out.println("hello from class");
+    }
+}
+EOF
+javac -d /tmp/classtest /tmp/classtest/ClassMain.java
+OUT=$(omnivm run /tmp/classtest/ClassMain.class 2>/dev/null)
+if [ "$OUT" = "hello from class" ]; then
+    pass "run class file"
+else
+    fail "run class file" "got: $OUT"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

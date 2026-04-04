@@ -11,8 +11,11 @@ var (
 	pyModuleNotFound = regexp.MustCompile(`ModuleNotFoundError: No module named '([^']+)'`)
 	jsModuleNotFound = regexp.MustCompile(`Cannot find module '([^']+)'`)
 	rbLoadError      = regexp.MustCompile(`LoadError: cannot load such file -- (.+)`)
-	javaClassNotFound = regexp.MustCompile(`ClassNotFoundException: (.+)`)
-	goUndefined      = regexp.MustCompile(`undefined: (\S+)`)
+	javaClassNotFound  = regexp.MustCompile(`ClassNotFoundException: (.+)`)
+	javaNoMainClass    = regexp.MustCompile(`No Main-Class in manifest`)
+	javaNoMainMethod   = regexp.MustCompile(`No main\(String\[\]\) method in (\S+)`)
+	javaCompileFailed  = regexp.MustCompile(`Compilation failed:`)
+	goUndefined        = regexp.MustCompile(`undefined: (\S+)`)
 	pyTracebackLine  = regexp.MustCompile(`File "([^"]+)", line (\d+)`)
 )
 
@@ -33,7 +36,16 @@ func Enhance(lang, errMsg string) string {
 	case "java":
 		if m := javaClassNotFound.FindStringSubmatch(errMsg); m != nil {
 			cls := strings.TrimSpace(m[1])
-			return fmt.Sprintf("%s\n\n  Hint: Ensure %s is on the classpath. Mount JARs to /omnivm/libs/", errMsg, cls)
+			return fmt.Sprintf("%s\n\n  Hint: Ensure %s is on the classpath.\n  Place JARs in ./lib/, ./libs/, or /omnivm/libs/\n  Maven: mvn dependency:copy-dependencies\n  Gradle: gradle copyDependencies", errMsg, cls)
+		}
+		if javaNoMainClass.MatchString(errMsg) {
+			return fmt.Sprintf("%s\n\n  Hint: JAR has no Main-Class manifest entry. Run: jar -uvfe app.jar com.example.Main", errMsg)
+		}
+		if m := javaNoMainMethod.FindStringSubmatch(errMsg); m != nil {
+			return fmt.Sprintf("%s\n\n  Hint: Add a main method: public static void main(String[] args) { ... }", errMsg)
+		}
+		if javaCompileFailed.MatchString(errMsg) {
+			return fmt.Sprintf("%s\n\n  Hint: If using external libraries, place JARs in ./lib/ or ./libs/", errMsg)
 		}
 	case "go":
 		if m := goUndefined.FindStringSubmatch(errMsg); m != nil {

@@ -172,8 +172,14 @@ RUN LIBJSIG=$(find /usr/lib/jvm -name "libjsig.so" -print -quit 2>/dev/null) && 
     if [ -n "$LIBJSIG" ]; then echo "LD_PRELOAD=$LIBJSIG" >> /etc/environment; fi
 ENV LD_PRELOAD=/usr/lib/jvm/default-java/lib/libjsig.so
 
-# Create libs directory for user JARs (mount or COPY your .jars here)
-RUN mkdir -p /omnivm/libs
+# Install Maven and fetch a real dependency (Gson) to /omnivm/libs
+RUN mkdir -p /omnivm/libs && \
+    apt-get update && apt-get install -y --no-install-recommends maven && \
+    mvn dependency:copy \
+        -Dartifact=com.google.code.gson:gson:2.10.1 \
+        -DoutputDirectory=/omnivm/libs \
+        -q && \
+    apt-get remove -y maven && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /root/.m2
 
 ENV GOMAXPROCS=4
 ENV JAVA_HOME=/usr/lib/jvm/default-java

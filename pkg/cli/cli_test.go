@@ -15,6 +15,8 @@ func TestDetectLanguage(t *testing.T) {
 		{"Main.java", "java", false},
 		{"script.rb", "ruby", false},
 		{"main.go", "go", false},
+		{"App.class", "java", false},
+		{"app.jar", "java", false},
 		{"unknown.xyz", "", true},
 		{"noext", "", true},
 	}

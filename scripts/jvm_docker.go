@@ -22,6 +22,7 @@ static JNIEnv* env_ptr = NULL;  // Initial thread's env (used during init only)
 static jclass runner_class = NULL;
 static jmethodID execute_method = NULL;
 static jmethodID eval_method_id = NULL;
+static jmethodID exec_file_method_id = NULL;
 
 // Get a JNIEnv for the current thread. If the thread is not attached to the
 // JVM, attach it as a daemon thread. Sets *did_attach=1 if newly attached
@@ -136,6 +137,13 @@ static int omnivm_jvm_init(const char* classpath) {
     if (!eval_method_id) {
         (*env_ptr)->ExceptionClear(env_ptr);
         // eval not available; will fall back to execute
+    }
+
+    // Cache the executeFile method
+    exec_file_method_id = (*env_ptr)->GetStaticMethodID(env_ptr, runner_class,
+        "executeFile", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    if (!exec_file_method_id) {
+        (*env_ptr)->ExceptionClear(env_ptr);
     }
 
     // Register native method for OmniVM.call
@@ -296,6 +304,78 @@ static char* omnivm_jvm_eval(const char* code) {
     return omnivm_jvm_exec(code);
 }
 
+// Execute a .java, .class, or .jar file via OmniVMRunner.executeFile().
+// Thread-safe. Returns result string (caller must free):
+//   "0"            - success (exit code 0)
+//   "N"            - System.exit(N)
+//   "JavaError: …" - compilation/runtime error
+static char* omnivm_jvm_exec_file(const char* path, const char* args_joined) {
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env) return strdup("JavaError: JVM not available");
+    if (!runner_class || !exec_file_method_id) {
+        omnivm_jvm_maybe_detach(did_attach);
+        return strdup("JavaError: OmniVMRunner.executeFile() not available");
+    }
+
+    if ((*env)->PushLocalFrame(env, 16) < 0) {
+        omnivm_jvm_maybe_detach(did_attach);
+        return strdup("JavaError: PushLocalFrame failed");
+    }
+
+    jstring jpath = (*env)->NewStringUTF(env, path);
+    jstring jargs = (*env)->NewStringUTF(env, args_joined ? args_joined : "");
+    if (!jpath || !jargs) {
+        (*env)->ExceptionClear(env);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return strdup("JavaError: Failed to create Java strings");
+    }
+
+    jstring result = (jstring)(*env)->CallStaticObjectMethod(
+        env, runner_class, exec_file_method_id, jpath, jargs);
+
+    if ((*env)->ExceptionCheck(env)) {
+        jthrowable exc = (*env)->ExceptionOccurred(env);
+        (*env)->ExceptionClear(env);
+
+        jclass throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+        jmethodID to_string = (*env)->GetMethodID(env, throwable_class,
+            "toString", "()Ljava/lang/String;");
+        jstring msg = (jstring)(*env)->CallObjectMethod(env, exc, to_string);
+
+        char* err = strdup("JavaError: Unknown JNI exception");
+        if (msg) {
+            const char* utf = (*env)->GetStringUTFChars(env, msg, NULL);
+            size_t len = strlen(utf) + 20;
+            char* formatted = (char*)malloc(len);
+            if (formatted) {
+                snprintf(formatted, len, "JavaError: %s", utf);
+                free(err);
+                err = formatted;
+            }
+            (*env)->ReleaseStringUTFChars(env, msg, utf);
+        }
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return err;
+    }
+
+    if (!result) {
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return strdup("JavaError: executeFile() returned null");
+    }
+
+    const char* utf = (*env)->GetStringUTFChars(env, result, NULL);
+    char* output = strdup(utf);
+    (*env)->ReleaseStringUTFChars(env, result, utf);
+
+    (*env)->PopLocalFrame(env, NULL);
+    omnivm_jvm_maybe_detach(did_attach);
+    return output;
+}
+
 static void omnivm_jvm_set_bridge_callback(omni_call_fn call_fn, omni_free_fn free_fn) {
     g_bridge_call = call_fn;
     g_bridge_free = free_fn;
@@ -318,6 +398,9 @@ static void omnivm_jvm_shutdown(void) {
 import "C"
 import (
 	"fmt"
+	"io"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -402,6 +485,49 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: output, Output: output}
+}
+
+// ExecuteFile runs a .java, .class, or .jar file with arguments.
+// stdout/stderr go directly to the process streams (not captured).
+// Implements pkg.FileExecutor.
+func (r *Runtime) ExecuteFile(path string, args []string, stdin io.Reader) pkg.Result {
+	if !r.initialized {
+		return pkg.Result{Err: fmt.Errorf("jvm: not initialized"), ExitCode: 1}
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("jvm: %v", err), ExitCode: 1}
+	}
+
+	argsJoined := strings.Join(args, "\n")
+
+	cPath := C.CString(absPath)
+	defer C.free(unsafe.Pointer(cPath))
+	cArgs := C.CString(argsJoined)
+	defer C.free(unsafe.Pointer(cArgs))
+
+	cResult := C.omnivm_jvm_exec_file(cPath, cArgs)
+	if cResult == nil {
+		return pkg.Result{Err: fmt.Errorf("jvm: executeFile returned nil"), ExitCode: 1}
+	}
+
+	result := C.GoString(cResult)
+	C.free(unsafe.Pointer(cResult))
+
+	if strings.HasPrefix(result, "JavaError: ") {
+		return pkg.Result{
+			Err:      fmt.Errorf("%s", strings.TrimPrefix(result, "JavaError: ")),
+			ExitCode: 1,
+		}
+	}
+
+	// Result is the exit code as a string
+	exitCode, _ := strconv.Atoi(result)
+	if exitCode != 0 {
+		return pkg.Result{ExitCode: exitCode, Err: fmt.Errorf("exit status %d", exitCode)}
+	}
+	return pkg.Result{}
 }
 
 // SetBridgeCallback installs the cross-runtime callback function pointer.

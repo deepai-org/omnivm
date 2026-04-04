@@ -6,6 +6,12 @@ A single Go binary that embeds Python (CPython), JavaScript (Node.js/V8), Java (
 $ omnivm run hello.py
 hello from python
 
+$ omnivm run App.java arg1 arg2
+Hello! Args: arg1, arg2
+
+$ omnivm run app.jar
+server started on :8080
+
 $ omnivm run main.go --flag value
 args: [--flag value]
 
@@ -27,10 +33,14 @@ docker run --rm omnivm run /omnivm/examples/hello.py
 docker run --rm omnivm run /omnivm/examples/hello.js
 docker run --rm omnivm run /omnivm/examples/hello.rb
 
+# Run Java files (.java compiled in-memory, .class and .jar supported)
+docker run --rm omnivm run /omnivm/examples/Hello.java
+docker run --rm omnivm run /omnivm/examples/GsonDemo.java hello world
+
 # Run Go programs (compiled on the fly)
 docker run --rm -v $(pwd)/main.go:/app/main.go omnivm run /app/main.go
 
-# Pass arguments
+# Pass arguments (all runtimes — goes to main(String[] args), sys.argv, etc.)
 docker run --rm omnivm run /omnivm/examples/hello.py arg1 arg2
 
 # Pipe stdin
@@ -75,6 +85,16 @@ Error: Cannot find module 'express'
 ```
 
 ```
+$ omnivm run App.java
+JavaError: Class not found: com.example.HttpClient
+
+  Hint: Ensure com.example.HttpClient is on the classpath.
+  Place JARs in ./lib/, ./libs/, or /omnivm/libs/
+  Maven: mvn dependency:copy-dependencies
+  Gradle: gradle copyDependencies
+```
+
+```
 $ omnivm run main.go
 ./main.go:5:2: undefined: fmt.Prntln
 
@@ -92,7 +112,7 @@ $ omnivm run exit42.py; echo $?
 
 ## Architecture
 
-All four embedded runtimes are orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go programs run externally via `go run`.
+All four embedded runtimes are orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go programs run externally via `go run`. Java files are compiled in-memory via `javax.tools.JavaCompiler` and executed on the embedded JVM — supporting `.java`, `.class`, and `.jar` files with auto-detected classpath.
 
 ```
 Go main goroutine (runtime.LockOSThread)
@@ -379,9 +399,9 @@ pkg/
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
   test-manifests.sh    Manifest test suite runner (11 tests)
-  test-cli.sh          CLI integration tests (20 tests)
+  test-cli.sh          CLI integration tests (26 tests)
 runtime/
-  java/              OmniVMRunner.java (in-memory compilation)
+  java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
 ```
 
@@ -400,7 +420,7 @@ Or use Make targets:
 ```bash
 make build                # Build Docker image
 make test-local           # Pure Go tests (cli, errmsg, golang, dispatcher, signals, arrow)
-make test-cli             # CLI integration tests (20 tests in Docker)
+make test-cli             # CLI integration tests (26 tests in Docker)
 make test-manifests       # Run 11 manifest tests
 make test-stress          # Run 71 stress tests
 make test-all             # Everything: unit + smoke + CLI + stress + manifests
@@ -409,6 +429,7 @@ make test-all             # Everything: unit + smoke + CLI + stress + manifests
 ## Key Design Decisions
 
 - **Lazy runtime initialization**: Only the runtime needed for the target file is started. `omnivm run main.go` skips all embedded runtimes. `omnivm run script.py` only starts CPython.
+- **Java file execution**: `omnivm run App.java` compiles in-memory via `javax.tools.JavaCompiler` and runs on the embedded JVM with real `main(String[] args)` and direct stdout/stderr. Supports `.class` and `.jar` files. Classpath auto-detects Maven (`target/dependency/`), Gradle (`build/libs/`), and `lib/`/`libs/` directories — downloaded JARs just work.
 - **Go as first-class runtime**: Go files are compiled and executed via `go run` with full argv, stdin, and exit code passthrough. The Go toolchain is bundled in the Docker image.
 - **Thread-safe bridge gateway**: Any thread can call `omnivm.call()` — not just the Golden Thread. Each runtime's entry point acquires the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), `rb_thread_call_with_gvl` or proxy submit (Ruby), `AttachCurrentThreadAsDaemon` (JVM). Bridge hops release the source lock so no thread ever holds two runtime locks simultaneously — deadlock-free by construction.
 - **Ruby proxy thread**: Ruby is initialized on a dedicated pthread. The Golden Thread never holds the GVL. Foreign threads (JVM, Python) submit work to the proxy via condvar, avoiding `rb_thread_call_with_gvl`'s restriction against non-Ruby threads.
