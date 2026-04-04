@@ -14,10 +14,29 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plugin"
+	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/omnivm/omnivm/pkg"
 )
+
+// goModVersion returns the Go version string for generated go.mod files,
+// derived from the running binary's Go toolchain to avoid plugin mismatches.
+func goModVersion() string {
+	// runtime.Version() returns e.g. "go1.22.5"
+	v := strings.TrimPrefix(runtime.Version(), "go")
+	// Use major.minor only (e.g. "1.22")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) >= 2 {
+		return parts[0] + "." + parts[1]
+	}
+	return v
+}
+
+// globalCounter ensures unique plugin module names across all Runtime instances,
+// since Go's plugin system rejects loading plugins with duplicate module paths.
+var globalCounter uint64
 
 // Runtime implements pkg.Runtime and pkg.FileExecutor for Go via plugins.
 type Runtime struct {
@@ -108,7 +127,7 @@ func (r *Runtime) compileAndRun(src, entrypoint, filePath string, args []string)
 	if err := os.WriteFile(filepath.Join(buildDir, "_bridge.go"), []byte(bridgeShimSource), 0644); err != nil {
 		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
 	}
-	if err := os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte("module omnivm_plugin\n\ngo 1.21\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte(fmt.Sprintf("module omnivm-plugin-%d\n\ngo %s\n", atomic.AddUint64(&globalCounter, 1), goModVersion())), 0644); err != nil {
 		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
 	}
 

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"plugin"
 	"regexp"
+	"runtime"
+	"strings"
 )
 
 const pluginCacheDir = "/tmp/omnivm-plugins"
@@ -117,7 +119,11 @@ func compilePlugin(source, outputPath string) error {
 	// Write go.mod — each plugin needs a unique module name
 	// so Go's plugin system treats them as distinct packages.
 	modName := fmt.Sprintf("omnivm-plugin-%s", filepath.Base(outputPath[:len(outputPath)-3]))
-	modContent := fmt.Sprintf("module %s\n\ngo 1.22\n", modName)
+	goVer := strings.TrimPrefix(runtime.Version(), "go")
+	if parts := strings.SplitN(goVer, ".", 3); len(parts) >= 2 {
+		goVer = parts[0] + "." + parts[1]
+	}
+	modContent := fmt.Sprintf("module %s\n\ngo %s\n", modName, goVer)
 	modPath := filepath.Join(tmpDir, "go.mod")
 	if err := os.WriteFile(modPath, []byte(modContent), 0o644); err != nil {
 		return err

@@ -118,8 +118,12 @@ FROM builder AS tester
 
 WORKDIR /build
 
-# Pure Go tests
-RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/golang/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/
+# Pure Go tests (race detector enabled)
+RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/
+
+# Go plugin tests — cannot use -race because the test binary and dynamically
+# compiled plugins must share identical runtime/internal/sys instrumentation.
+RUN go test -v -count=1 ./pkg/golang/
 
 # cgo-linked runtime tests
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
