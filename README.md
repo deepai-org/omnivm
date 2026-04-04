@@ -118,7 +118,7 @@ All five runtimes are equal peers orchestrated by a **Golden Thread** dispatcher
 ```
 Go main goroutine (runtime.LockOSThread)
   └─ Epoll dispatcher (Linux: eventfd + timerfd + libuv fd)
-       ├─ Python (CPython 3.12)  — GIL-wrapped entry, pipe-based interrupt
+       ├─ Python (CPython 3.14)  — GIL-wrapped entry, pipe-based interrupt
        ├─ JavaScript (Node.js 18 / V8) — v8::Locker, TerminateExecution
        ├─ Java (JVM 21 / JNI)   — AttachCurrentThreadAsDaemon
        ├─ Ruby (MRI 3.2)        — proxy thread, pipe-based interrupt
@@ -179,7 +179,7 @@ Express listening on :3000
 --- GET / ---
 Status: 200 OK
 Body:   {"message":"Hello from Express inside OmniVM!",
-         "python":"3.12.3","ruby":"3.2.3","java":"21.0.10",
+         "python":"3.14.3","ruby":"3.2.3","java":"21.0.10",
          "engine":"Node.js v18.19.1"}
 
 --- GET /compute ---

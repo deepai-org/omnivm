@@ -5,7 +5,7 @@
 package python
 
 /*
-#cgo pkg-config: python3-embed
+#cgo pkg-config: python-3.14-embed
 #include <Python.h>
 #include <stdlib.h>
 #include <string.h>
@@ -478,12 +478,6 @@ func (r *Runtime) Initialize() error {
 
 	if C.Py_IsInitialized() == 0 {
 		return fmt.Errorf("python: Py_InitializeEx failed")
-	}
-
-	// Initialize the GIL state for multi-thread usage
-	// (even though we primarily use the Golden Thread)
-	if C.PyEval_ThreadsInitialized() == 0 {
-		C.PyEval_InitThreads()
 	}
 
 	// Register the omnivm Python module and import it into __main__

@@ -34,8 +34,12 @@ ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 ENV GOPATH=/go
 ENV GOFLAGS="-buildvcs=false"
 
-# ---- Python 3 dev ----
-RUN apt-get update && apt-get install -y python3-dev && rm -rf /var/lib/apt/lists/*
+# ---- Python 3.14 dev (deadsnakes PPA — Ubuntu 24.04 ships 3.12) ----
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y python3.14-dev python3.14-venv && \
+    rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
 # ---- Ruby dev ----
 RUN apt-get update && apt-get install -y ruby-dev && rm -rf /var/lib/apt/lists/*
@@ -134,16 +138,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Full JDK needed for in-memory Java compilation
 # libnode109 provides libnode.so for the V8 bridge shim at runtime
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-dev \
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y \
+    python3.14 \
+    python3.14-dev \
+    python3.14-venv \
     ruby \
     libruby \
     default-jdk \
     libnode109 \
     nodejs \
     npm \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go

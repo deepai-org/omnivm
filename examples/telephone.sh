@@ -90,7 +90,7 @@ public class Telephone {
         System.out.println(\"║         TELEPHONE GAME - FINAL RESULTS          ║\");
         System.out.println(\"╠══════════════════════════════════════════════════╣\");
         System.out.println(\"║                                                  ║\");
-        System.out.println(\"║  1. Python 3.12   → \\\"The quick brown fox\\\"       ║\");
+        System.out.println(\"║  1. Python 3.14   → \\\"The quick brown fox\\\"       ║\");
         System.out.println(\"║     computed: sum(1..10) = 55                    ║\");
         System.out.println(\"║                                                  ║\");
         System.out.println(\"║  2. JavaScript    → \\\"jumps over the lazy dog\\\"   ║\");
