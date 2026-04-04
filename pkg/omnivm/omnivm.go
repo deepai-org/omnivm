@@ -25,6 +25,28 @@ type Config struct {
 	DrainTimeout time.Duration
 }
 
+// CallMetrics is passed to the OnCallDone callback with observability data.
+type CallMetrics struct {
+	Runtime   string        // which runtime was called
+	Result    string        // string result (empty on error)
+	Err       error         // nil on success
+	Duration  time.Duration // wall-clock time of the Python/JS/etc execution
+	QueueWait time.Duration // time spent waiting in the dispatcher queue
+	Fast      bool          // true if dispatched via the high-priority channel
+	RequestID string        // caller-provided correlation ID (empty if not set)
+}
+
+// BatchItem is one element in a CallBatch request.
+type BatchItem struct {
+	Code string // code to evaluate
+}
+
+// BatchResult is one element in a CallBatch response.
+type BatchResult struct {
+	Value string // result string on success
+	Err   error  // non-nil on failure
+}
+
 // VM is the main entry point for the OmniVM library.
 type VM struct {
 	cfg Config
@@ -38,7 +60,7 @@ type VM struct {
 
 	afterCall  map[string]string // runtime name → cleanup code
 	drainHooks []func()
-	onCallDone func(runtime, result string, err error)
+	onCallDone func(CallMetrics)
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -121,24 +143,37 @@ func (vm *VM) Call(runtime, code string) (string, error) {
 // If ctx is cancelled before the call completes, returns ctx.Err().
 // Note: the Golden Thread task still runs to completion (cgo cannot be interrupted).
 func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string, error) {
+	return vm.callInternal(ctx, runtime, code, "", false)
+}
+
+// CallWithRequestID is like CallWithContext but attaches a request ID for
+// correlation in the OnCallDone metrics callback.
+func (vm *VM) CallWithRequestID(ctx context.Context, runtime, code, requestID string) (string, error) {
+	return vm.callInternal(ctx, runtime, code, requestID, false)
+}
+
+// callInternal is the shared implementation for Call, CallFast, and their variants.
+func (vm *VM) callInternal(ctx context.Context, runtime, code, requestID string, fast bool) (string, error) {
 	if err := vm.checkReady(runtime); err != nil {
 		return "", err
 	}
 
-	// Check context before dispatching
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
 	default:
 	}
 
+	enqueueTime := time.Now()
 	rt := vm.runtimes[runtime]
-	ch := vm.disp.RunAsync(func() (interface{}, error) {
+
+	dispatchFn := func() (interface{}, error) {
+		execStart := time.Now()
+		queueWait := execStart.Sub(enqueueTime)
+
 		result := rt.Eval(code)
 
-		// Run afterCall regardless of error. Uses Eval (not Execute) to skip
-		// StringIO stdout capture overhead — afterCall is cleanup code that
-		// doesn't need output capture.
+		// Run afterCall regardless of error.
 		afterCode, hasAfter := vm.afterCall[runtime]
 		if hasAfter {
 			afterResult := rt.Eval(afterCode)
@@ -147,17 +182,26 @@ func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string
 			}
 		}
 
-		// Fire onCallDone callback
+		execDuration := time.Since(execStart)
+
+		// Fire onCallDone callback with metrics
 		if vm.onCallDone != nil {
 			resultStr := ""
 			if result.Value != nil {
 				resultStr = fmt.Sprintf("%v", result.Value)
 			}
-			vm.onCallDone(runtime, resultStr, result.Err)
+			vm.onCallDone(CallMetrics{
+				Runtime:   runtime,
+				Result:    resultStr,
+				Err:       result.Err,
+				Duration:  execDuration,
+				QueueWait: queueWait,
+				Fast:      fast,
+				RequestID: requestID,
+			})
 		}
 
 		if result.Err != nil {
-			// Try to parse structured error
 			errMsg := result.Err.Error()
 			if re := ParseError(runtime, errMsg); re != nil {
 				return nil, re
@@ -170,7 +214,14 @@ func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string
 			val = fmt.Sprintf("%v", result.Value)
 		}
 		return val, nil
-	})
+	}
+
+	var ch <-chan dispatcher.AsyncResult
+	if fast {
+		ch = vm.disp.RunAsyncFast(dispatchFn)
+	} else {
+		ch = vm.disp.RunAsync(dispatchFn)
+	}
 
 	select {
 	case res := <-ch:
@@ -195,20 +246,67 @@ func (vm *VM) CallFast(runtime, code string) (string, error) {
 
 // CallFastWithContext is like CallWithContext but uses high-priority dispatch.
 func (vm *VM) CallFastWithContext(ctx context.Context, runtime, code string) (string, error) {
+	return vm.callInternal(ctx, runtime, code, "", true)
+}
+
+// CallFastWithRequestID is like CallFastWithContext with a request ID for metrics.
+func (vm *VM) CallFastWithRequestID(ctx context.Context, runtime, code, requestID string) (string, error) {
+	return vm.callInternal(ctx, runtime, code, requestID, true)
+}
+
+// CallBatch evaluates multiple independent code snippets in a single Golden
+// Thread dispatch. All items execute sequentially within one task, avoiding
+// N round-trips through the dispatcher queue. AfterCall runs once after all
+// items complete (not per-item). Each item gets independent error handling —
+// a failure in item[1] does not prevent item[2] from executing.
+//
+// This is ideal when a single HTTP handler needs multiple independent pieces
+// of data (e.g., subscription state + usage totals + lock status).
+func (vm *VM) CallBatch(runtime string, items []BatchItem) []BatchResult {
+	return vm.CallBatchWithContext(context.Background(), runtime, items, "")
+}
+
+// CallBatchWithContext is like CallBatch with context cancellation and request ID.
+func (vm *VM) CallBatchWithContext(ctx context.Context, runtime string, items []BatchItem, requestID string) []BatchResult {
+	results := make([]BatchResult, len(items))
 	if err := vm.checkReady(runtime); err != nil {
-		return "", err
+		for i := range results {
+			results[i].Err = err
+		}
+		return results
 	}
 
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		for i := range results {
+			results[i].Err = ctx.Err()
+		}
+		return results
 	default:
 	}
 
+	enqueueTime := time.Now()
 	rt := vm.runtimes[runtime]
-	ch := vm.disp.RunAsyncFast(func() (interface{}, error) {
-		result := rt.Eval(code)
 
+	ch := vm.disp.RunAsync(func() (interface{}, error) {
+		execStart := time.Now()
+		queueWait := execStart.Sub(enqueueTime)
+
+		for i, item := range items {
+			result := rt.Eval(item.Code)
+			if result.Err != nil {
+				errMsg := result.Err.Error()
+				if re := ParseError(runtime, errMsg); re != nil {
+					results[i].Err = re
+				} else {
+					results[i].Err = result.Err
+				}
+			} else if result.Value != nil {
+				results[i].Value = fmt.Sprintf("%v", result.Value)
+			}
+		}
+
+		// AfterCall once for the whole batch
 		afterCode, hasAfter := vm.afterCall[runtime]
 		if hasAfter {
 			afterResult := rt.Eval(afterCode)
@@ -217,40 +315,35 @@ func (vm *VM) CallFastWithContext(ctx context.Context, runtime, code string) (st
 			}
 		}
 
+		execDuration := time.Since(execStart)
+
 		if vm.onCallDone != nil {
-			resultStr := ""
-			if result.Value != nil {
-				resultStr = fmt.Sprintf("%v", result.Value)
-			}
-			vm.onCallDone(runtime, resultStr, result.Err)
+			vm.onCallDone(CallMetrics{
+				Runtime:   runtime,
+				Duration:  execDuration,
+				QueueWait: queueWait,
+				RequestID: requestID,
+			})
 		}
 
-		if result.Err != nil {
-			errMsg := result.Err.Error()
-			if re := ParseError(runtime, errMsg); re != nil {
-				return nil, re
-			}
-			return nil, result.Err
-		}
-
-		val := ""
-		if result.Value != nil {
-			val = fmt.Sprintf("%v", result.Value)
-		}
-		return val, nil
+		return results, nil
 	})
 
 	select {
 	case res := <-ch:
 		if res.Err != nil {
-			return "", res.Err
+			for i := range results {
+				results[i].Err = res.Err
+			}
 		}
-		if res.Value == nil {
-			return "", nil
-		}
-		return res.Value.(string), nil
+		return results
 	case <-ctx.Done():
-		return "", ctx.Err()
+		for i := range results {
+			if results[i].Err == nil && results[i].Value == "" {
+				results[i].Err = ctx.Err()
+			}
+		}
+		return results
 	}
 }
 
@@ -272,8 +365,12 @@ func (vm *VM) ExecuteWithContext(ctx context.Context, runtime, code string) (str
 	default:
 	}
 
+	enqueueTime := time.Now()
 	rt := vm.runtimes[runtime]
 	ch := vm.disp.RunAsync(func() (interface{}, error) {
+		execStart := time.Now()
+		queueWait := execStart.Sub(enqueueTime)
+
 		result := rt.Execute(code)
 
 		afterCode, hasAfter := vm.afterCall[runtime]
@@ -284,8 +381,17 @@ func (vm *VM) ExecuteWithContext(ctx context.Context, runtime, code string) (str
 			}
 		}
 
+		execDuration := time.Since(execStart)
+
 		if vm.onCallDone != nil {
-			vm.onCallDone(runtime, result.Output, result.Err)
+			vm.onCallDone(CallMetrics{
+				Runtime:   runtime,
+				Result:    result.Output,
+				Err:       result.Err,
+				Duration:  execDuration,
+				QueueWait: queueWait,
+				Fast:      false,
+			})
 		}
 
 		if result.Err != nil {
@@ -339,7 +445,9 @@ func (vm *VM) SetAfterCall(runtime, code string) {
 
 // SetOnCallDone registers an observe-only callback that fires after each
 // Call/Execute completes (including afterCall). Must not call back into the VM.
-func (vm *VM) SetOnCallDone(fn func(runtime, result string, err error)) {
+// The CallMetrics struct includes duration, queue wait time, channel type,
+// and caller-provided request ID for production observability.
+func (vm *VM) SetOnCallDone(fn func(CallMetrics)) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 	vm.onCallDone = fn

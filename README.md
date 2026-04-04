@@ -313,13 +313,17 @@ func main() {
 | `Run(ctx)` | Block running the dispatcher (returns on context cancel) |
 | `Call(runtime, code)` | Eval code, return result as string (goroutine-safe) |
 | `CallWithContext(ctx, runtime, code)` | Call with per-request deadline/cancellation |
+| `CallWithRequestID(ctx, runtime, code, id)` | Call with request ID for metrics correlation |
 | `CallFast(runtime, code)` | Priority eval — skips ahead of queued normal calls |
 | `CallFastWithContext(ctx, runtime, code)` | Priority eval with deadline/cancellation |
+| `CallFastWithRequestID(ctx, runtime, code, id)` | Priority eval with request ID |
 | `Execute(runtime, code)` | Run code, return captured stdout (goroutine-safe) |
 | `ExecuteWithContext(ctx, runtime, code)` | Execute with per-request deadline/cancellation |
 | `LoadFile(runtime, path)` | Execute a file's contents (define helpers from .py files) |
 | `SetAfterCall(runtime, code)` | Cleanup code that runs after every call (like `defer`) |
-| `SetOnCallDone(fn)` | Observe-only callback after each dispatch |
+| `SetOnCallDone(fn)` | Observe-only callback with `CallMetrics` (duration, queue wait, fast/normal, request ID) |
+| `CallBatch(runtime, items)` | Execute multiple independent snippets in one Golden Thread dispatch |
+| `CallBatchWithContext(ctx, runtime, items, requestID)` | Batch call with context and request ID |
 | `RegisterDrainHook(fn)` | Shutdown hook — runs on Golden Thread, can call `drainExecute()` |
 | `Shutdown()` | Graceful stop: drain hooks (on Golden Thread) → reverse-order runtime teardown |
 
@@ -366,6 +370,50 @@ userID, err := vm.CallFast("python", fmt.Sprintf(`validate_session(%q)`, session
 // Business logic — normal priority
 report, err := vm.Call("python", fmt.Sprintf(`generate_report(%q)`, reportID))
 ```
+
+### Batch Calls
+
+When a single HTTP handler needs multiple independent pieces of data, `CallBatch` executes them all in one Golden Thread dispatch — avoiding N round-trips through the dispatcher queue:
+
+```go
+results := vm.CallBatch("python", []omnivm.BatchItem{
+    {Code: "get_subscription_state(123)"},
+    {Code: "get_usage_totals(123)"},
+    {Code: "get_lock_status(123)"},
+})
+// results[0].Value, results[0].Err — independent per item
+// results[1].Value, results[1].Err
+// results[2].Value, results[2].Err
+```
+
+Each item gets independent error handling — a failure in item 1 does not prevent item 2 from executing. `AfterCall` runs once after all items complete (not per-item). Use `CallBatchWithContext` for context cancellation and request ID correlation.
+
+### Observability
+
+`SetOnCallDone` receives a `CallMetrics` struct with production-grade telemetry:
+
+```go
+vm.SetOnCallDone(func(m omnivm.CallMetrics) {
+    histogram.WithLabelValues(m.Runtime, fmt.Sprint(m.Fast)).
+        Observe(m.Duration.Seconds())
+    if m.QueueWait > 50*time.Millisecond {
+        log.Warn("high dispatcher queue wait",
+            "request_id", m.RequestID,
+            "queue_wait", m.QueueWait,
+            "exec_duration", m.Duration)
+    }
+})
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Runtime` | `string` | Which runtime was called (`"python"`, `"javascript"`, etc.) |
+| `Result` | `string` | String result (empty on error) |
+| `Err` | `error` | `nil` on success |
+| `Duration` | `time.Duration` | Wall-clock execution time on the Golden Thread |
+| `QueueWait` | `time.Duration` | Time spent waiting in the dispatcher queue |
+| `Fast` | `bool` | `true` if dispatched via the high-priority channel |
+| `RequestID` | `string` | Caller-provided correlation ID (via `CallWithRequestID` / `CallFastWithRequestID`) |
 
 ### Concurrency Model
 
@@ -449,4 +497,4 @@ make test-all             # Everything: build + CLI + stress + manifests
 - **Node.js over Duktape**: Duktape was ES5.1 — no `const`/`let`, no arrow functions, no `require()`, no npm. Node.js (via `libnode-dev`) gives full ES2024+, the npm ecosystem, and built-in modules.
 - **Skip `Py_FinalizeEx`, `ruby_cleanup()`, `V8::Dispose()`**: All crash in a polyglot process. Process exit reclaims resources.
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
-- **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic message. Python forced to `multiprocessing.set_start_method('spawn')`.
+- **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`.

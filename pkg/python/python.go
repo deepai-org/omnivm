@@ -12,6 +12,9 @@ package python
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#ifdef __GLIBC__
+#include <execinfo.h>
+#endif
 
 // Bridge callback pointer — set via omnivm_py_set_bridge_callback().
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -380,11 +383,34 @@ static void* omnivm_py_get_interrupt_ptr(void) {
 
 // Fork guard: fork() after JVM init leaves dead threads holding mutexes.
 // Install a pthread_atfork child handler that kills the child immediately.
+// Logs the call stack so operators can identify which dependency forked.
 static void omnivm_fork_child_handler(void) {
     const char* msg = "FATAL: fork() in OmniVM polyglot process. "
                       "JVM threads do not survive fork(). "
                       "Use multiprocessing.set_start_method('spawn').\n";
     write(STDERR_FILENO, msg, strlen(msg));
+
+    // Log C call stack to help identify the offending fork() call site.
+    // backtrace() is async-signal-safe enough for a dying child process.
+#ifdef __GLIBC__
+    const char* hdr = "Fork call stack (child process, pre-_exit):\n";
+    write(STDERR_FILENO, hdr, strlen(hdr));
+    void* frames[32];
+    int n = backtrace(frames, 32);
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+#endif
+
+    // Also dump Python stack if possible — this is the most likely culprit.
+    // We're in the forked child so the GIL state is undefined, but
+    // Py_IsInitialized() and faulthandler are safe enough pre-_exit.
+    if (Py_IsInitialized()) {
+        const char* py_hdr = "Python stack at fork:\n";
+        write(STDERR_FILENO, py_hdr, strlen(py_hdr));
+        // faulthandler.dump_traceback writes directly to fd, no GIL needed
+        PyRun_SimpleString(
+            "import faulthandler; faulthandler.dump_traceback(open(2,'w'))");
+    }
+
     _exit(71);
 }
 

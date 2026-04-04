@@ -302,15 +302,12 @@ func TestOnCallDone_Fires(t *testing.T) {
 	vm, cancel := startedVM(t, py)
 	defer func() { cancel(); vm.Shutdown() }()
 
-	var gotRuntime, gotResult string
-	var gotErr error
+	var gotMetrics CallMetrics
 	var mu sync.Mutex
-	vm.SetOnCallDone(func(runtime, result string, err error) {
+	vm.SetOnCallDone(func(m CallMetrics) {
 		mu.Lock()
 		defer mu.Unlock()
-		gotRuntime = runtime
-		gotResult = result
-		gotErr = err
+		gotMetrics = m
 	})
 
 	result, err := vm.Call("python", "code")
@@ -325,14 +322,20 @@ func TestOnCallDone_Fires(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
-	if gotRuntime != "python" {
-		t.Errorf("callback runtime = %q, want python", gotRuntime)
+	if gotMetrics.Runtime != "python" {
+		t.Errorf("callback runtime = %q, want python", gotMetrics.Runtime)
 	}
-	if gotResult != "result123" {
-		t.Errorf("callback result = %q, want result123", gotResult)
+	if gotMetrics.Result != "result123" {
+		t.Errorf("callback result = %q, want result123", gotMetrics.Result)
 	}
-	if gotErr != nil {
-		t.Errorf("callback err = %v, want nil", gotErr)
+	if gotMetrics.Err != nil {
+		t.Errorf("callback err = %v, want nil", gotMetrics.Err)
+	}
+	if gotMetrics.Duration == 0 {
+		t.Error("callback duration should be non-zero")
+	}
+	if gotMetrics.Fast {
+		t.Error("callback should not be fast channel")
 	}
 }
 
