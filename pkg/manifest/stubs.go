@@ -70,16 +70,33 @@ func pythonStub(funcName string, params []string) string {
     return omnivm.call('__manifest', __j.dumps({'func': '%s', 'args': %s}))`, funcName, paramList, funcName, argsArray)
 }
 
+// rubyReserved is the set of Ruby keywords that cannot be used as parameter names.
+var rubyReserved = map[string]bool{
+	"end": true, "begin": true, "class": true, "def": true, "do": true,
+	"if": true, "unless": true, "while": true, "until": true, "for": true,
+	"case": true, "when": true, "module": true, "then": true, "else": true,
+	"elsif": true, "ensure": true, "rescue": true, "retry": true, "return": true,
+	"yield": true, "super": true, "self": true, "nil": true, "true": true,
+	"false": true, "and": true, "or": true, "not": true, "in": true,
+}
+
 // rubyStub generates a Ruby function that calls back into the manifest executor.
 // Returns the raw string result — caller decides whether to JSON.parse.
+// Parameter names that collide with Ruby keywords are suffixed with _ in the
+// function signature, then mapped back to the original names in the args array.
 func rubyStub(funcName string, params []string) string {
-	paramList := strings.Join(params, ", ")
-
-	var argEntries []string
-	for _, p := range params {
-		argEntries = append(argEntries, p)
+	// Build safe param names for the Ruby signature
+	safeParams := make([]string, len(params))
+	for i, p := range params {
+		if rubyReserved[p] {
+			safeParams[i] = p + "_"
+		} else {
+			safeParams[i] = p
+		}
 	}
-	argsArray := "[" + strings.Join(argEntries, ", ") + "]"
+
+	paramList := strings.Join(safeParams, ", ")
+	argsArray := "[" + strings.Join(safeParams, ", ") + "]"
 
 	return fmt.Sprintf(`def %s(%s)
   require 'json'
