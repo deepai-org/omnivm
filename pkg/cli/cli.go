@@ -38,6 +38,7 @@ var legacyFlags = map[string]string{
 	"-js":     "javascript",
 	"-java":   "java",
 	"-ruby":   "ruby",
+	"-go":     "go",
 }
 
 func DetectLanguage(filename string) (string, error) {
@@ -113,12 +114,10 @@ func Parse(args []string) (Command, error) {
 }
 
 // RequiredRuntimes returns which runtimes need to be initialized for the given command.
-// REPL needs all embedded runtimes. File/exec mode only needs the target language.
-// Go runtime is handled externally (go run), so it's included but won't need
-// Golden Thread initialization.
+// REPL needs all runtimes. File/exec mode only needs the target language.
 func RequiredRuntimes(cmd Command) []string {
 	if cmd.Mode == ModeREPL {
-		return []string{"python", "javascript", "java", "ruby"}
+		return []string{"python", "javascript", "java", "ruby", "go"}
 	}
 	return []string{cmd.Language}
 }

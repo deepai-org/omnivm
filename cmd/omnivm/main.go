@@ -73,7 +73,7 @@ var goldenThreadID int64
 // for CLI and REPL paths that bypass the dispatcher.
 var taskTimeoutMS int
 
-// goRuntime handles Go file execution via "go run".
+// goRuntime is the Go plugin runtime, initialized alongside other runtimes.
 var goRuntime = golangrt.New()
 
 //export OmniCall
@@ -131,12 +131,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Go runtime is handled externally — no Golden Thread needed
-	if cmd.Language == "go" {
-		runGoFile(cmd)
-		return
-	}
-
 	// Determine which runtimes to initialize (lazy init)
 	needed := cli.RequiredRuntimes(cmd)
 
@@ -166,6 +160,7 @@ func main() {
 		"javascript": jsRuntime,
 		"java":       jvmRuntime,
 		"ruby":       rbRuntime,
+		"go":         goRuntime,
 	}
 
 	// Task timeout callback
@@ -206,7 +201,7 @@ func main() {
 	}
 
 	// Initialize runtimes in dependency order (Python first for bridge)
-	for _, name := range []string{"python", "javascript", "java", "ruby"} {
+	for _, name := range []string{"python", "javascript", "java", "ruby", "go"} {
 		if !needSet[name] {
 			continue
 		}
@@ -225,6 +220,24 @@ func main() {
 	freePtr := uintptr(C.get_omni_free_ptr())
 	for _, rt := range runtimes {
 		rt.SetBridgeCallback(callPtr, freePtr)
+	}
+
+	// Set up Go bridge: Go plugins call back via a Go closure (no C needed)
+	if _, ok := runtimes["go"]; ok {
+		goRuntime.BridgeFn = func(rtName, code string) string {
+			rt, ok := runtimes[rtName]
+			if !ok {
+				return "ERR:unknown runtime: " + rtName
+			}
+			result := rt.Eval(code)
+			if result.Err != nil {
+				return "ERR:" + result.Err.Error()
+			}
+			if result.Value != nil {
+				return fmt.Sprintf("%v", result.Value)
+			}
+			return result.Output
+		}
 	}
 
 	// Initialize watchdog
@@ -293,7 +306,7 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "\n[shutdown] Shutting down runtimes...")
 	watchdog.Shutdown()
-	for _, name := range []string{"ruby", "java", "javascript", "python"} {
+	for _, name := range []string{"go", "ruby", "java", "javascript", "python"} {
 		if r, ok := runtimes[name]; ok {
 			fmt.Fprintf(os.Stderr, "[shutdown] %s...\n", name)
 			r.Shutdown()
@@ -307,23 +320,6 @@ const (
 	ModeRun  = cli.ModeRun
 	ModeExec = cli.ModeExec
 )
-
-// runGoFile handles Go file execution — no Golden Thread or embedded runtimes needed.
-func runGoFile(cmd cli.Command) {
-	result := goRuntime.ExecuteFile(cmd.File, cmd.Args, os.Stdin)
-	if result.Err != nil {
-		enhanced := errmsg.Enhance("go", result.Err.Error())
-		fmt.Fprintln(os.Stderr, enhanced)
-		exitCode := result.ExitCode
-		if exitCode == 0 {
-			exitCode = 1
-		}
-		os.Exit(exitCode)
-	}
-	if result.Output != "" {
-		fmt.Print(result.Output)
-	}
-}
 
 // executeFileNew runs a script file with argv, stdin, and shebang support.
 // If the runtime implements FileExecutor, uses that (real args, real stdout).

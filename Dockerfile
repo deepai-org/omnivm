@@ -115,7 +115,7 @@ FROM builder AS tester
 WORKDIR /build
 
 # Pure Go tests
-RUN go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/
+RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/golang/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/
 
 # cgo-linked runtime tests
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \

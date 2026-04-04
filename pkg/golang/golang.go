@@ -1,60 +1,283 @@
-// Package golang provides a Go runtime that compiles and executes Go files via "go run".
+// Package golang provides a Go runtime using Go plugins for in-process execution.
+// User code is compiled as a plugin (-buildmode=plugin), loaded, and executed
+// in the same process — making Go an equal peer to Python, JS, Java, and Ruby.
 package golang
 
 import (
-	"bytes"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"io"
+	"os"
 	"os/exec"
-	"regexp"
-	"strconv"
-	"syscall"
+	"path/filepath"
+	"plugin"
+	"strings"
 
 	"github.com/omnivm/omnivm/pkg"
 )
 
-var exitStatusRe = regexp.MustCompile(`exit status (\d+)`)
+// Runtime implements pkg.Runtime and pkg.FileExecutor for Go via plugins.
+type Runtime struct {
+	// BridgeFn is set by the host to enable cross-runtime calls from Go plugins.
+	BridgeFn func(runtime, code string) string
 
-type Runtime struct{}
+	tempDir string
+	counter int
+}
 
 func New() *Runtime { return &Runtime{} }
 
 func (r *Runtime) Name() string { return "go" }
 
-func (r *Runtime) ExecuteFile(path string, args []string, stdin io.Reader) pkg.Result {
-	cmdArgs := append([]string{"run", path}, args...)
-	cmd := exec.Command("go", cmdArgs...)
-	cmd.Stdin = stdin
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+func (r *Runtime) Initialize() error {
+	dir, err := os.MkdirTemp("", "omnivm-go-")
 	if err != nil {
-		exitCode := 1
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-				exitCode = status.ExitStatus()
-			}
-		}
-		errMsg := stderr.String()
-		// go run wraps non-zero exits as "exit status N" on stderr
-		// and always returns exit code 1. Parse the real code.
-		if m := exitStatusRe.FindStringSubmatch(errMsg); m != nil {
-			if code, e := strconv.Atoi(m[1]); e == nil {
-				exitCode = code
-			}
-		}
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
+		return fmt.Errorf("go: %w", err)
+	}
+	r.tempDir = dir
+	return nil
+}
+
+// SetBridgeCallback is a no-op for Go. The host sets BridgeFn directly
+// since Go plugins use Go closures, not C function pointers.
+func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {}
+
+func (r *Runtime) Pump() {}
+
+func (r *Runtime) Shutdown() error {
+	if r.tempDir != "" {
+		os.RemoveAll(r.tempDir)
+	}
+	return nil
+}
+
+// Execute compiles a Go code snippet as a plugin and runs it.
+// Each call is independent — no shared state between calls.
+func (r *Runtime) Execute(code string) pkg.Result {
+	src := wrapSnippet(code)
+	return r.compileAndRun(src, "Run", "", nil)
+}
+
+// Eval compiles a Go expression, executes it, and returns the result as a string.
+func (r *Runtime) Eval(code string) pkg.Result {
+	src := wrapEval(code)
+	result := r.compileAndRun(src, "Eval", "", nil)
+	if result.Err == nil {
+		result.Value = result.Output
+		result.Output = ""
+	}
+	return result
+}
+
+// ExecuteFile compiles a .go file as a plugin and calls its Main() function.
+// The source is transformed: func main() → func Main() (exported for plugin lookup).
+func (r *Runtime) ExecuteFile(path string, args []string, stdin io.Reader) pkg.Result {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+
+	transformed, err := transformMain(string(data))
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+
+	return r.compileAndRun(transformed, "Main", absPath, args)
+}
+
+// compileAndRun builds a Go plugin from source, loads it, and calls the named entrypoint.
+func (r *Runtime) compileAndRun(src, entrypoint, filePath string, args []string) pkg.Result {
+	r.counter++
+	buildDir := filepath.Join(r.tempDir, fmt.Sprintf("build_%d", r.counter))
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+
+	// Write source and bridge shim
+	if err := os.WriteFile(filepath.Join(buildDir, "main.go"), []byte(src), 0644); err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "_bridge.go"), []byte(bridgeShimSource), 0644); err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte("module omnivm_plugin\n\ngo 1.21\n"), 0644); err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: %w", err), ExitCode: 1}
+	}
+
+	// Compile as plugin
+	soPath := filepath.Join(buildDir, "plugin.so")
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soPath, ".")
+	cmd.Dir = buildDir
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return pkg.Result{
-			Output:   stdout.String(),
-			Err:      fmt.Errorf("%s", errMsg),
-			ExitCode: exitCode,
+			Err:      fmt.Errorf("go compilation failed:\n%s", strings.TrimSpace(string(out))),
+			ExitCode: 1,
 		}
 	}
 
-	return pkg.Result{Output: stdout.String()}
+	// Load plugin
+	p, err := plugin.Open(soPath)
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: plugin load: %w", err), ExitCode: 1}
+	}
+
+	// Install bridge
+	if r.BridgeFn != nil {
+		if sym, err := p.Lookup("SetBridge"); err == nil {
+			sym.(func(func(string, string) string))(r.BridgeFn)
+		}
+	}
+
+	// Override os.Args for file execution
+	if filePath != "" {
+		savedArgs := os.Args
+		os.Args = append([]string{filePath}, args...)
+		defer func() { os.Args = savedArgs }()
+	}
+
+	// Look up entrypoint
+	sym, err := p.Lookup(entrypoint)
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: symbol %q not found: %w", entrypoint, err), ExitCode: 1}
+	}
+
+	// Capture stdout
+	origStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return pkg.Result{Err: fmt.Errorf("go: pipe: %w", err), ExitCode: 1}
+	}
+	os.Stdout = pw
+
+	// Channel to collect captured output
+	outCh := make(chan string, 1)
+	go func() {
+		buf, _ := io.ReadAll(pr)
+		outCh <- string(buf)
+	}()
+
+	// Call the entrypoint, recovering from panics
+	var callResult string
+	var callErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				callErr = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		switch fn := sym.(type) {
+		case func():
+			fn()
+		case func() string:
+			callResult = fn()
+		default:
+			callErr = fmt.Errorf("unexpected symbol type %T for %s", sym, entrypoint)
+		}
+	}()
+
+	// Restore stdout and read captured output
+	pw.Close()
+	os.Stdout = origStdout
+	captured := <-outCh
+	pr.Close()
+
+	if callErr != nil {
+		// Include any output produced before the error
+		return pkg.Result{Output: captured, Err: callErr, ExitCode: 1}
+	}
+
+	output := captured
+	if callResult != "" {
+		output = callResult
+	}
+
+	return pkg.Result{Output: output}
 }
+
+// transformMain renames func main() to func Main() using the Go AST.
+func transformMain(src string) (string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
+	if err != nil {
+		return "", fmt.Errorf("parse error: %w", err)
+	}
+
+	found := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "main" && fn.Recv == nil {
+			fn.Name.Name = "Main"
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("no func main() found")
+	}
+
+	var buf strings.Builder
+	if err := printer.Fprint(&buf, fset, f); err != nil {
+		return "", fmt.Errorf("print error: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// wrapSnippet wraps a code snippet in a plugin-compatible source file.
+func wrapSnippet(code string) string {
+	if strings.Contains(code, "package ") {
+		return code
+	}
+	return fmt.Sprintf(`package main
+
+import "fmt"
+
+var _ = fmt.Println
+
+func Run() {
+%s
+}
+`, code)
+}
+
+// wrapEval wraps an expression in a function that returns its string representation.
+func wrapEval(code string) string {
+	return fmt.Sprintf(`package main
+
+import "fmt"
+
+func Eval() string {
+	return fmt.Sprintf("%%v", %s)
+}
+`, code)
+}
+
+const bridgeShimSource = `package main
+
+var _omnivm_bridge func(string, string) string
+
+// SetBridge is called by the host to install the cross-runtime bridge.
+func SetBridge(fn func(string, string) string) {
+	_omnivm_bridge = fn
+}
+
+type _omnivm_t struct{}
+
+// OmniVM provides cross-runtime bridge access.
+// Call OmniVM.Call("python", "1+1") from Go to invoke other runtimes.
+var OmniVM _omnivm_t
+
+func (o _omnivm_t) Call(runtime, code string) string {
+	if _omnivm_bridge == nil {
+		return "ERR:bridge not initialized"
+	}
+	return _omnivm_bridge(runtime, code)
+}
+`

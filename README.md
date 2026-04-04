@@ -1,6 +1,6 @@
 # OmniVM
 
-A single Go binary that embeds Python (CPython), JavaScript (Node.js/V8), Java (JVM/JNI), Ruby (MRI), and Go — replacing five runtimes with one.
+A single Go binary that embeds Python (CPython), JavaScript (Node.js/V8), Java (JVM/JNI), Ruby (MRI), and Go (plugins) — five peer runtimes in one process.
 
 ```bash
 $ omnivm run hello.py
@@ -37,7 +37,7 @@ docker run --rm omnivm run /omnivm/examples/hello.rb
 docker run --rm omnivm run /omnivm/examples/Hello.java
 docker run --rm omnivm run /omnivm/examples/GsonDemo.java hello world
 
-# Run Go programs (compiled on the fly)
+# Run Go programs (compiled as plugins, loaded in-process)
 docker run --rm -v $(pwd)/main.go:/app/main.go omnivm run /app/main.go
 
 # Pass arguments (all runtimes — goes to main(String[] args), sys.argv, etc.)
@@ -58,6 +58,7 @@ docker run --rm omnivm -python "print('hello')"
 docker run --rm omnivm -js "console.log('hello')"
 docker run --rm omnivm -java 'System.out.println("hello");'
 docker run --rm omnivm -ruby "puts 'hello'"
+docker run --rm omnivm -go 'fmt.Println("hello")'
 ```
 
 ### Lazy Initialization
@@ -112,7 +113,7 @@ $ omnivm run exit42.py; echo $?
 
 ## Architecture
 
-All four embedded runtimes are orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go programs run externally via `go run`. Java files are compiled in-memory via `javax.tools.JavaCompiler` and executed on the embedded JVM — supporting `.java`, `.class`, and `.jar` files with auto-detected classpath.
+All five runtimes are equal peers orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go is the host only because its runtime was the pickiest about embedding — not because it has special status. Java files are compiled in-memory via `javax.tools.JavaCompiler` and executed on the embedded JVM — supporting `.java`, `.class`, and `.jar` files with auto-detected classpath. Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and can call other runtimes via the bridge.
 
 ```
 Go main goroutine (runtime.LockOSThread)
@@ -120,10 +121,8 @@ Go main goroutine (runtime.LockOSThread)
        ├─ Python (CPython 3.12)  — GIL-wrapped entry, pipe-based interrupt
        ├─ JavaScript (Node.js 18 / V8) — v8::Locker, TerminateExecution
        ├─ Java (JVM 21 / JNI)   — AttachCurrentThreadAsDaemon
-       └─ Ruby (MRI 3.2)        — proxy thread, pipe-based interrupt
-
-Go runtime (external)
-  └─ go run main.go [args...]  — compile + execute, stdin/stdout passthrough
+       ├─ Ruby (MRI 3.2)        — proxy thread, pipe-based interrupt
+       └─ Go (plugins)          — compiled as .so, loaded via plugin.Open
 
 C pthread watchdog (independent of Go scheduler)
   └─ Temporal signal routing: active_runtime → per-runtime interrupt
@@ -135,7 +134,7 @@ On Linux, the dispatcher uses **epoll** with eventfd (task wakeup), timerfd (hea
 
 ## Cross-Runtime Calls
 
-The bridge function `omnivm.call(runtime, code)` is available from every embedded runtime and from any thread:
+The bridge function `omnivm.call(runtime, code)` is available from every runtime and from any thread:
 
 ```python
 # Python calling JavaScript
@@ -146,6 +145,9 @@ var result = omnivm.call("ruby", "('hello' + ' world').upcase");
 
 # Java calling Python (works from JVM-spawned threads too)
 String result = omnivm.OmniVM.call("python", "2 ** 100");
+
+# Go calling Python (via plugin bridge)
+result := OmniVM.Call("python", "2 ** 100")
 ```
 
 All calls execute synchronously — no marshalling, no IPC, no serialization. Golden Thread calls are direct C function calls. Foreign thread calls automatically acquire the target runtime's lock (GIL, GVL, v8::Locker, or JNI AttachCurrentThread).
@@ -386,7 +388,7 @@ pkg/
   omnivm/            Library API (VM, Config, Call, Execute, Shutdown)
   cli/               CLI parsing, language detection, shebang handling
   errmsg/            Error enhancement (hints, traceback formatting)
-  golang/            Go runtime (go run with args/stdin/exit codes)
+  golang/            Go runtime (plugin-based, in-process compilation + execution)
   python/            CPython embedding via cgo
   javascript/        Node.js/V8 embedding via cgo
   jvm/               JVM embedding via JNI/cgo
@@ -399,38 +401,46 @@ pkg/
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
   test-manifests.sh    Manifest test suite runner (11 tests)
-  test-cli.sh          CLI integration tests (26 tests)
+  test-cli.sh          CLI integration tests (27 tests)
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
 ```
 
-## Building
+## Building & Testing
 
-Requires Docker. The multi-stage Dockerfile handles all dependencies:
+Requires Docker. The multi-stage Dockerfile handles all dependencies (Go, CPython, Node.js, JVM, Ruby). Unit tests run during the build. Integration tests run against the final image.
 
 ```bash
+# Build (runs unit tests during build)
 docker build -t omnivm .
-docker run --rm --entrypoint stresstest omnivm    # 71/71 stress tests
-docker run -it --rm omnivm                        # REPL
+
+# Run ALL tests against the built image
+docker run --rm --entrypoint /bin/bash omnivm /omnivm/scripts/test-cli.sh  # 27 CLI tests
+docker run --rm --entrypoint stresstest omnivm                             # 71 stress tests
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/manifest-test.json
+
+# REPL
+docker run -it --rm omnivm
 ```
 
-Or use Make targets:
+Always run the full test suite after a Docker build — unit tests in the build verify compilation, but CLI, stress, and manifest tests verify end-to-end behavior in the final image.
+
+Make targets:
 
 ```bash
 make build                # Build Docker image
-make test-local           # Pure Go tests (cli, errmsg, golang, dispatcher, signals, arrow)
-make test-cli             # CLI integration tests (26 tests in Docker)
+make test-cli             # CLI integration tests (27 tests in Docker)
 make test-manifests       # Run 11 manifest tests
 make test-stress          # Run 71 stress tests
-make test-all             # Everything: unit + smoke + CLI + stress + manifests
+make test-all             # Everything: build + CLI + stress + manifests
 ```
 
 ## Key Design Decisions
 
 - **Lazy runtime initialization**: Only the runtime needed for the target file is started. `omnivm run main.go` skips all embedded runtimes. `omnivm run script.py` only starts CPython.
 - **Java file execution**: `omnivm run App.java` compiles in-memory via `javax.tools.JavaCompiler` and runs on the embedded JVM with real `main(String[] args)` and direct stdout/stderr. Supports `.class` and `.jar` files. Classpath auto-detects Maven (`target/dependency/`), Gradle (`build/libs/`), and `lib/`/`libs/` directories — downloaded JARs just work.
-- **Go as first-class runtime**: Go files are compiled and executed via `go run` with full argv, stdin, and exit code passthrough. The Go toolchain is bundled in the Docker image.
+- **Go as equal peer**: Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and executed — not via subprocess. `func main()` is transformed to an exported `func Main()` via the Go AST, compiled, and called via `plugin.Open`/`Lookup`. Go plugins can call other runtimes through the bridge (`OmniVM.Call("python", "...")`) and participate in the REPL and inline execution (`omnivm -go 'code'`). Go is the host because its runtime was the pickiest about embedding, not because it has special status.
 - **Thread-safe bridge gateway**: Any thread can call `omnivm.call()` — not just the Golden Thread. Each runtime's entry point acquires the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), `rb_thread_call_with_gvl` or proxy submit (Ruby), `AttachCurrentThreadAsDaemon` (JVM). Bridge hops release the source lock so no thread ever holds two runtime locks simultaneously — deadlock-free by construction.
 - **Ruby proxy thread**: Ruby is initialized on a dedicated pthread. The Golden Thread never holds the GVL. Foreign threads (JVM, Python) submit work to the proxy via condvar, avoiding `rb_thread_call_with_gvl`'s restriction against non-Ruby threads.
 - **Epoll dispatcher (Linux)**: eventfd for task wakeup, timerfd for heartbeat, libuv backend fd for V8 I/O. Replaces the 1ms polling ticker with event-driven wakeups — zero CPU when idle.

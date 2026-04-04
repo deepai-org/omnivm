@@ -415,6 +415,15 @@ else
     fail "run class file" "got: $OUT"
 fi
 
+# --- Test 27: Go inline execution ---
+echo "--- Test: Go inline execution ---"
+OUT=$(omnivm -go 'fmt.Println("hello from go repl")' 2>/dev/null)
+if [ "$OUT" = "hello from go repl" ]; then
+    pass "go inline execution"
+else
+    fail "go inline execution" "got: $OUT"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

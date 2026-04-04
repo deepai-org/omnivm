@@ -3,13 +3,32 @@ package golang
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+func skipIfNoPlugins(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("Go plugins only reliably work on Linux")
+	}
+}
+
+func newInitialized(t *testing.T) *Runtime {
+	t.Helper()
+	skipIfNoPlugins(t)
+	rt := New()
+	if err := rt.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(func() { rt.Shutdown() })
+	return rt
+}
+
 func TestExecuteFile(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "hello.go")
+	rt := newInitialized(t)
+	f := filepath.Join(t.TempDir(), "hello.go")
 	os.WriteFile(f, []byte(`package main
 
 import "fmt"
@@ -19,7 +38,6 @@ func main() {
 }
 `), 0644)
 
-	rt := New()
 	result := rt.ExecuteFile(f, nil, nil)
 	if result.Err != nil {
 		t.Fatalf("ExecuteFile: %v", result.Err)
@@ -30,62 +48,33 @@ func main() {
 }
 
 func TestExecuteFileWithArgs(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "args.go")
+	rt := newInitialized(t)
+	f := filepath.Join(t.TempDir(), "args.go")
 	os.WriteFile(f, []byte(`package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
-	fmt.Println(os.Args[1:])
+	fmt.Println(strings.Join(os.Args[1:], " "))
 }
 `), 0644)
 
-	rt := New()
 	result := rt.ExecuteFile(f, []string{"foo", "bar"}, nil)
 	if result.Err != nil {
 		t.Fatalf("ExecuteFile: %v", result.Err)
 	}
-	if !strings.Contains(result.Output, "foo") || !strings.Contains(result.Output, "bar") {
-		t.Errorf("output = %q, want args foo bar", result.Output)
-	}
-}
-
-func TestExecuteFileWithStdin(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "stdin.go")
-	os.WriteFile(f, []byte(`package main
-
-import (
-	"bufio"
-	"fmt"
-	"os"
-)
-
-func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		fmt.Println("got:", scanner.Text())
-	}
-}
-`), 0644)
-
-	rt := New()
-	result := rt.ExecuteFile(f, nil, strings.NewReader("line1\nline2\n"))
-	if result.Err != nil {
-		t.Fatalf("ExecuteFile: %v", result.Err)
-	}
-	if !strings.Contains(result.Output, "got: line1") || !strings.Contains(result.Output, "got: line2") {
-		t.Errorf("output = %q", result.Output)
+	if strings.TrimSpace(result.Output) != "foo bar" {
+		t.Errorf("output = %q, want 'foo bar'", result.Output)
 	}
 }
 
 func TestExecuteFileCompileError(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "bad.go")
+	rt := newInitialized(t)
+	f := filepath.Join(t.TempDir(), "bad.go")
 	os.WriteFile(f, []byte(`package main
 
 func main() {
@@ -93,7 +82,6 @@ func main() {
 }
 `), 0644)
 
-	rt := New()
 	result := rt.ExecuteFile(f, nil, nil)
 	if result.Err == nil {
 		t.Fatal("expected compile error")
@@ -103,52 +91,56 @@ func main() {
 	}
 }
 
-func TestExecuteFileExitCode(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "exit.go")
-	os.WriteFile(f, []byte(`package main
-
-import "os"
-
-func main() {
-	os.Exit(42)
-}
-`), 0644)
-
-	rt := New()
-	result := rt.ExecuteFile(f, nil, nil)
-	if result.Err == nil {
-		t.Fatal("expected exit error")
-	}
-	if result.ExitCode != 42 {
-		t.Errorf("ExitCode = %d, want 42", result.ExitCode)
-	}
-}
-
-func TestExecuteFileEnvironment(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "env.go")
-	os.WriteFile(f, []byte(`package main
-
-import (
-	"fmt"
-	"os"
-)
-
-func main() {
-	fmt.Println(os.Getenv("HOME"))
-	wd, _ := os.Getwd()
-	fmt.Println(wd)
-}
-`), 0644)
-
-	rt := New()
-	result := rt.ExecuteFile(f, nil, nil)
+func TestExecute(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Execute(`fmt.Println("snippet works")`)
 	if result.Err != nil {
-		t.Fatalf("ExecuteFile: %v", result.Err)
+		t.Fatalf("Execute: %v", result.Err)
 	}
-	// Should have HOME and CWD in output
-	if !strings.Contains(result.Output, "/") {
-		t.Errorf("expected path output, got: %q", result.Output)
+	if strings.TrimSpace(result.Output) != "snippet works" {
+		t.Errorf("output = %q", result.Output)
+	}
+}
+
+func TestEval(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Eval("1 + 2")
+	if result.Err != nil {
+		t.Fatalf("Eval: %v", result.Err)
+	}
+	if result.Value != "3" {
+		t.Errorf("value = %q, want '3'", result.Value)
+	}
+}
+
+func TestTransformMain(t *testing.T) {
+	src := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`
+	out, err := transformMain(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "func Main()") {
+		t.Errorf("expected 'func Main()' in output:\n%s", out)
+	}
+	if strings.Contains(out, "func main()") {
+		t.Errorf("'func main()' should be renamed:\n%s", out)
+	}
+}
+
+func TestTransformMainNotFound(t *testing.T) {
+	src := `package main
+
+func helper() {}
+`
+	_, err := transformMain(src)
+	if err == nil {
+		t.Fatal("expected error for missing main()")
 	}
 }

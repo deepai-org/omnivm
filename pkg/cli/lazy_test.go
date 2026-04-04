@@ -12,7 +12,7 @@ func TestRequiredRuntimes(t *testing.T) {
 		{Command{Mode: ModeRun, Language: "python"}, []string{"python"}},
 		{Command{Mode: ModeRun, Language: "go"}, []string{"go"}},
 		{Command{Mode: ModeExec, Language: "javascript"}, []string{"javascript"}},
-		{Command{Mode: ModeREPL}, []string{"python", "javascript", "java", "ruby"}},
+		{Command{Mode: ModeREPL}, []string{"python", "javascript", "java", "ruby", "go"}},
 	}
 	for _, tt := range tests {
 		got := RequiredRuntimes(tt.cmd)
