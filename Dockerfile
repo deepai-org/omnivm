@@ -5,24 +5,28 @@
 # Build: docker build -t omnivm .
 # Run:   docker run -it omnivm
 # Test:  docker run omnivm -python "print('hello')"
+#
+# Base: Debian sid — provides Python 3.14, Node.js 22 (libnode127),
+# Ruby 3.3, and JDK 21+ from standard repos (no PPAs needed).
 
 # ============================================================
 # Stage 1: Build environment with all dev headers
 # ============================================================
-FROM ubuntu:24.04 AS builder
+FROM debian:sid AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base build tools
+# Base build tools (binutils-gold needed: Go's linker uses -fuse-ld=gold)
 RUN apt-get update && apt-get install -y \
     build-essential \
+    binutils-gold \
     pkg-config \
     curl \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Go (architecture-aware) ----
-ENV GO_VERSION=1.22.5
+ENV GO_VERSION=1.23.6
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GOARCH=amd64 ;; \
@@ -34,11 +38,8 @@ ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 ENV GOPATH=/go
 ENV GOFLAGS="-buildvcs=false"
 
-# ---- Python 3.14 dev (deadsnakes PPA — Ubuntu 24.04 ships 3.12) ----
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update && apt-get install -y python3.14-dev python3.14-venv && \
-    rm -rf /var/lib/apt/lists/* && \
+# ---- Python 3.14 dev ----
+RUN apt-get update && apt-get install -y python3.14-dev && rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
 # ---- Ruby dev ----
@@ -54,7 +55,7 @@ RUN mkdir -p /omnivm/java && \
     javac -d /omnivm/java /tmp/java-src/OmniVMRunner.java /tmp/java-src/OmniVM.java && \
     echo "Java helpers compiled OK"
 
-# ---- Node.js (shared library for JS embedding) ----
+# ---- Node.js 22 (shared library for JS embedding) ----
 RUN apt-get update && apt-get install -y \
     libnode-dev \
     nodejs \
@@ -66,7 +67,7 @@ RUN apt-get update && apt-get install -y \
 COPY scripts/v8_bridge_node.cc /tmp/v8_bridge_node.cc
 COPY pkg/javascript/v8_bridge.h /tmp/v8_bridge.h
 RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
-    g++ -shared -fPIC -std=c++17 -o /usr/local/lib/libv8.so \
+    g++ -shared -fPIC -std=c++20 -o /usr/local/lib/libv8.so \
         /tmp/v8_bridge_node.cc \
         -I/usr/include/node \
         -I/tmp \
@@ -136,22 +137,20 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)
 # ============================================================
-FROM ubuntu:24.04 AS runtime
+FROM debian:sid AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Full JDK needed for in-memory Java compilation
-# libnode109 provides libnode.so for the V8 bridge shim at runtime
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update && apt-get install -y \
+# libnode127 provides libnode.so for the V8 bridge shim at runtime
+RUN apt-get update && apt-get install -y \
     python3.14 \
     python3.14-dev \
     python3.14-venv \
     ruby \
     libruby \
     default-jdk \
-    libnode109 \
+    libnode127 \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/* && \
@@ -161,7 +160,7 @@ RUN apt-get update && apt-get install -y software-properties-common && \
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-# Copy V8 bridge shim (rarely changes — libnode.so comes from apt-installed libnode109)
+# Copy V8 bridge shim (rarely changes — libnode.so comes from apt-installed libnode127)
 COPY --from=builder /usr/local/lib/libv8.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libplatform.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libbase.so /usr/local/lib/

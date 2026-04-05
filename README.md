@@ -119,9 +119,9 @@ All five runtimes are equal peers orchestrated by a **Golden Thread** dispatcher
 Go main goroutine (runtime.LockOSThread)
   └─ Epoll dispatcher (Linux: eventfd + timerfd + libuv fd)
        ├─ Python (CPython 3.14)  — GIL-wrapped entry, pipe-based interrupt
-       ├─ JavaScript (Node.js 18 / V8) — v8::Locker, TerminateExecution
+       ├─ JavaScript (Node.js 22 / V8) — v8::Locker, TerminateExecution
        ├─ Java (JVM 21 / JNI)   — AttachCurrentThreadAsDaemon
-       ├─ Ruby (MRI 3.2)        — proxy thread, pipe-based interrupt
+       ├─ Ruby (MRI 3.3)        — proxy pthread, pipe-based interrupt
        └─ Go (plugins)          — compiled as .so, loaded via plugin.Open
 
 C pthread watchdog (independent of Go scheduler)
@@ -180,7 +180,7 @@ Express listening on :3000
 Status: 200 OK
 Body:   {"message":"Hello from Express inside OmniVM!",
          "python":"3.14.3","ruby":"3.2.3","java":"21.0.10",
-         "engine":"Node.js v18.19.1"}
+         "engine":"Node.js v22.22.2"}
 
 --- GET /compute ---
 Status: 200 OK
@@ -490,11 +490,11 @@ make test-all             # Everything: build + CLI + stress + manifests
 - **Java file execution**: `omnivm run App.java` compiles in-memory via `javax.tools.JavaCompiler` and runs on the embedded JVM with real `main(String[] args)` and direct stdout/stderr. Supports `.class` and `.jar` files. Classpath auto-detects Maven (`target/dependency/`), Gradle (`build/libs/`), and `lib/`/`libs/` directories — downloaded JARs just work.
 - **Go as equal peer**: Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and executed — not via subprocess. `func main()` is transformed to an exported `func Main()` via the Go AST, compiled, and called via `plugin.Open`/`Lookup`. Go plugins can call other runtimes through the bridge (`OmniVM.Call("python", "...")`) and participate in the REPL and inline execution (`omnivm -go 'code'`). Go is the host because its runtime was the pickiest about embedding, not because it has special status.
 - **Thread-safe bridge gateway**: Any thread can call `omnivm.call()` — not just the Golden Thread. Each runtime's entry point acquires the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), `rb_thread_call_with_gvl` or proxy submit (Ruby), `AttachCurrentThreadAsDaemon` (JVM). Bridge hops release the source lock so no thread ever holds two runtime locks simultaneously — deadlock-free by construction.
-- **Ruby proxy thread**: Ruby is initialized on a dedicated pthread. The Golden Thread never holds the GVL. Foreign threads (JVM, Python) submit work to the proxy via condvar, avoiding `rb_thread_call_with_gvl`'s restriction against non-Ruby threads.
+- **Ruby proxy pthread**: Ruby is initialized on a dedicated pthread that doubles as the execution thread. All Ruby calls route through condvar-based dispatch to this pthread, which holds the GVL permanently. Ruby 3.3's M:N threading breaks `Thread.new` and `rb_thread_call_without_gvl` on non-main pthreads, so we avoid Ruby threads entirely — the pthread runs a simple request loop.
 - **Epoll dispatcher (Linux)**: eventfd for task wakeup, timerfd for heartbeat, libuv backend fd for V8 I/O. Replaces the 1ms polling ticker with event-driven wakeups — zero CPU when idle.
 - **C pthread watchdog**: Independent of the Go scheduler. `pthread_cond_timedwait` with `CLOCK_MONOTONIC` (immune to NTP jumps). Temporal signal routing dispatches runtime-specific interrupts: Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby proxy `Thread#raise`.
 - **Error enhancement**: Missing module errors get "pip install" / "npm install" / "gem install" hints. Python tracebacks are reformatted with `file:line` references. Go compile errors get "Did you mean?" suggestions.
-- **Node.js over Duktape**: Duktape was ES5.1 — no `const`/`let`, no arrow functions, no `require()`, no npm. Node.js (via `libnode-dev`) gives full ES2024+, the npm ecosystem, and built-in modules.
+- **Node.js over Duktape**: Duktape was ES5.1 — no `const`/`let`, no arrow functions, no `require()`, no npm. Node.js (via `libnode-dev` / `libnode127`) gives full ES2024+, the npm ecosystem, and built-in modules.
 - **Skip `Py_FinalizeEx`, `ruby_cleanup()`, `V8::Dispose()`**: All crash in a polyglot process. Process exit reclaims resources.
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
 - **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`.

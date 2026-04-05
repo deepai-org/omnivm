@@ -454,6 +454,10 @@ except RuntimeError:
 `)
 }
 
+// cpythonInitialized guards against double CPython init across Runtime instances.
+// CPython can only be initialized once per process; a second call crashes on 3.14+.
+var cpythonInitialized bool
+
 // Runtime implements pkg.Runtime for CPython.
 type Runtime struct {
 	initialized bool
@@ -471,6 +475,13 @@ func (r *Runtime) Name() string { return "python" }
 func (r *Runtime) Initialize() error {
 	if r.initialized {
 		return fmt.Errorf("python: already initialized")
+	}
+
+	if cpythonInitialized {
+		// CPython was already initialized (and never truly finalized).
+		// Just mark this Runtime as initialized — the interpreter is still live.
+		r.initialized = true
+		return nil
 	}
 
 	// 0 = skip signal handler registration (Go owns signals)
@@ -507,6 +518,7 @@ func (r *Runtime) Initialize() error {
 	C.PyEval_SaveThread()
 
 	r.initialized = true
+	cpythonInitialized = true
 	return nil
 }
 

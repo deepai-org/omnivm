@@ -15,6 +15,10 @@ import (
 	"github.com/omnivm/omnivm/pkg"
 )
 
+// v8Initialized guards against double Node.js/V8 init per process.
+// InitializeOncePerProcess aborts on second call in Node 22+.
+var v8Initialized bool
+
 // Runtime implements pkg.Runtime for JavaScript.
 type Runtime struct {
 	initialized bool
@@ -33,8 +37,11 @@ func (r *Runtime) Initialize() error {
 		return fmt.Errorf("javascript: already initialized")
 	}
 
-	if rc := C.omnivm_v8_init(); rc != 0 {
-		return fmt.Errorf("javascript: initialization failed (rc=%d)", rc)
+	if !v8Initialized {
+		if rc := C.omnivm_v8_init(); rc != 0 {
+			return fmt.Errorf("javascript: initialization failed (rc=%d)", rc)
+		}
+		v8Initialized = true
 	}
 
 	r.isolate = C.omnivm_v8_isolate_new()
@@ -161,6 +168,7 @@ func (r *Runtime) Shutdown() error {
 		C.omnivm_v8_isolate_free(r.isolate)
 		r.isolate = nil
 	}
-	C.omnivm_v8_shutdown()
+	// Skip omnivm_v8_shutdown() — InitializeOncePerProcess can't be called
+	// again in Node 22+, so we keep the platform alive. Process exit reclaims.
 	return nil
 }

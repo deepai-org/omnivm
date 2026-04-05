@@ -7,10 +7,12 @@ package ruby
 #cgo pkg-config: ruby
 #include <ruby.h>
 #include <ruby/version.h>
+#include <ruby/thread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <signal.h>
 
 // Bridge callback pointer — set via omnivm_ruby_set_bridge_callback().
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -69,17 +71,6 @@ static volatile int rb_fproxy_has_request = 0;
 static volatile int rb_fproxy_shutdown = 0;
 static volatile int rb_fproxy_ready = 0;
 
-// Called WITHOUT the GVL — blocks waiting for work from foreign threads.
-static void* rb_fproxy_wait(void* arg) {
-    (void)arg;
-    pthread_mutex_lock(&rb_fproxy_mtx);
-    while (!rb_fproxy_has_request && !rb_fproxy_shutdown) {
-        pthread_cond_wait(&rb_fproxy_req_cv, &rb_fproxy_mtx);
-    }
-    pthread_mutex_unlock(&rb_fproxy_mtx);
-    return NULL;
-}
-
 // Proxy thread's pthread_t (stored for reference).
 static pthread_t rb_fproxy_tid;
 
@@ -89,36 +80,10 @@ static pthread_t rb_fproxy_tid;
 static int ruby_interrupt_pipe[2] = {-1, -1};
 static VALUE ruby_proxy_thread_val = Qnil;
 
-// Ruby method: OmniVM._proxy_serve — runs in a dedicated Ruby Thread.
-// Loops forever: releases GVL → waits for work → reacquires GVL → executes.
-static VALUE rb_fproxy_serve(VALUE self) {
-    rb_fproxy_tid = pthread_self();
-    tls_holds_gvl = 1;
-    tls_is_ruby_thread = 1;
-    rb_fproxy_ready = 1;
-
-    while (!rb_fproxy_shutdown) {
-        tls_holds_gvl = 0;
-        rb_thread_call_without_gvl(rb_fproxy_wait, NULL, RUBY_UBF_IO, NULL);
-        tls_holds_gvl = 1;
-
-        if (rb_fproxy_shutdown) break;
-
-        // Execute the requested code (we hold GVL)
-        if (rb_fproxy_is_eval) {
-            rb_fproxy_result = omnivm_ruby_eval(rb_fproxy_code);
-        } else {
-            rb_fproxy_result = omnivm_ruby_exec(rb_fproxy_code);
-        }
-
-        // Signal completion
-        pthread_mutex_lock(&rb_fproxy_mtx);
-        rb_fproxy_has_request = 0;
-        pthread_cond_signal(&rb_fproxy_res_cv);
-        pthread_mutex_unlock(&rb_fproxy_mtx);
-    }
-    return Qnil;
-}
+// NOTE: rb_fproxy_serve (Ruby Thread-based proxy) is no longer used.
+// Ruby 3.3's M:N threading breaks Thread.new and rb_thread_call_without_gvl
+// on non-main pthreads. The proxy now runs as a plain C condvar loop in
+// ruby_init_thread_func instead.
 
 // Submit work from a foreign (non-Ruby) thread. Blocks until completion.
 // Multiple foreign threads are serialized by the mutex.
@@ -162,107 +127,108 @@ static char* rb_fproxy_submit(const char* code, int is_eval) {
     return result;
 }
 
-// Yield GVL briefly to let the proxy thread start up.
-static void* rb_fproxy_yield_for_startup(void* arg) {
-    (void)arg;
-    while (!rb_fproxy_ready) {
-        usleep(100);
-    }
-    return NULL;
-}
 
 // --- Ruby initialization on dedicated pthread ---
-// Ruby is initialized on a background thread so the Golden Thread never
-// holds the GVL. This prevents deadlocks when JVM/Python threads try to
-// call Ruby while the Golden Thread is executing non-Ruby code.
+// Ruby is initialized on a background pthread that stays alive (anchoring
+// RUBY_INIT_STACK). The pthread also serves as the execution thread —
+// all Ruby code runs on this pthread via condvar-based request dispatch.
+//
+// Ruby 3.3 M:N threading note: Thread.new and rb_thread_call_without_gvl
+// don't properly schedule on non-main pthreads. So we avoid Ruby threads
+// entirely — the init pthread holds the GVL permanently and executes
+// requests in a simple condvar loop.
 
 static pthread_t ruby_init_pthread;
 static volatile int ruby_init_done = 0;
 static volatile int ruby_init_error = 0;
 
-// Idle condvar — the Ruby main thread blocks here after releasing GVL.
-static pthread_mutex_t ruby_idle_mtx = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t ruby_idle_cv = PTHREAD_COND_INITIALIZER;
+// Set up an alternate signal stack on the current thread.
+static void setup_sigaltstack(void) {
+    stack_t ss;
+    ss.ss_sp = malloc(SIGSTKSZ);
+    if (ss.ss_sp == NULL) return;
+    ss.ss_size = SIGSTKSZ;
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+}
 
-// Callback for rb_thread_call_without_gvl — blocks until shutdown.
-static void* ruby_main_idle(void* arg) {
-    (void)arg;
-    pthread_mutex_lock(&ruby_idle_mtx);
-    while (!rb_fproxy_shutdown) {
-        pthread_cond_wait(&ruby_idle_cv, &ruby_idle_mtx);
+// Fix Ruby's signal handlers to include SA_ONSTACK.
+// Go requires all signal handlers to use SA_ONSTACK. Ruby 3.3 installs
+// handlers (SIGCHLD, SIGPIPE, etc.) without this flag, which causes
+// "non-Go code set up signal handler without SA_ONSTACK flag" crashes.
+static void fix_signal_handlers_sa_onstack(void) {
+    for (int sig = 1; sig < NSIG; sig++) {
+        struct sigaction sa;
+        if (sigaction(sig, NULL, &sa) == 0) {
+            if (sa.sa_handler != SIG_DFL && sa.sa_handler != SIG_IGN &&
+                !(sa.sa_flags & SA_ONSTACK)) {
+                sa.sa_flags |= SA_ONSTACK;
+                sigaction(sig, &sa, NULL);
+            }
+        }
     }
-    pthread_mutex_unlock(&ruby_idle_mtx);
-    return NULL;
 }
 
 static void* ruby_init_thread_func(void* arg) {
     (void)arg;
 
-    // Initialize Ruby on this thread
-    if (omnivm_ruby_init() != 0) {
-        ruby_init_error = 1;
-        ruby_init_done = 1;
-        return NULL;
+    // Set up alternate signal stack BEFORE Ruby installs signal handlers.
+    setup_sigaltstack();
+
+    if (!ruby_initialized) {
+        // First-time init: set up Ruby VM
+        if (omnivm_ruby_init() != 0) {
+            ruby_init_error = 1;
+            ruby_init_done = 1;
+            return NULL;
+        }
+
+        omnivm_ruby_register_bridge();
+
+        if (pipe(ruby_interrupt_pipe) != 0) {
+            ruby_init_error = 1;
+            ruby_init_done = 1;
+            return NULL;
+        }
+
+        // Install fork guard
+        int state = 0;
+        rb_eval_string_protect(
+            "module Process; def self.fork; raise RuntimeError, "
+            "'fork() not safe in OmniVM'; end; end",
+            &state
+        );
     }
 
-    // Register bridge module (includes _proxy_serve)
-    omnivm_ruby_register_bridge();
-
-    // Create interrupt pipe (before starting threads)
-    if (pipe(ruby_interrupt_pipe) != 0) {
-        ruby_init_error = 1;
-        ruby_init_done = 1;
-        return NULL;
-    }
-
-    // Start the proxy thread — store its Thread object for interrupt routing
-    int state = 0;
-    ruby_proxy_thread_val = rb_eval_string_protect(
-        "Thread.new { OmniVM._proxy_serve }", &state);
-    if (state) {
-        ruby_init_error = 1;
-        ruby_init_done = 1;
-        return NULL;
-    }
-    rb_gc_register_mark_object(ruby_proxy_thread_val);
-    rb_gv_set("$__omnivm_proxy", ruby_proxy_thread_val);
-
-    // Yield GVL to let proxy thread start
-    tls_holds_gvl = 0;
-    rb_thread_call_without_gvl(rb_fproxy_yield_for_startup, NULL, NULL, NULL);
-    tls_holds_gvl = 1;
-
-    // Start the interrupt watcher thread — reads from pipe and raises
-    // Interrupt on the proxy thread. Uses Thread#raise which enqueues
-    // an interrupt that Ruby checks between opcodes.
-    char watcher_code[512];
-    snprintf(watcher_code, sizeof(watcher_code),
-        "Thread.new {\n"
-        "  r = IO.new(%d, autoclose: false)\n"
-        "  loop {\n"
-        "    r.read(1) or break\n"
-        "    $__omnivm_proxy.raise(Interrupt) rescue nil\n"
-        "  }\n"
-        "}",
-        ruby_interrupt_pipe[0]
-    );
-    rb_eval_string_protect(watcher_code, &state);
-
-    // Install fork guard
-    state = 0;
-    rb_eval_string_protect(
-        "module Process; def self.fork; raise RuntimeError, "
-        "'fork() not safe in OmniVM'; end; end",
-        &state
-    );
-
-    // Signal to Go that init is complete
+    // Signal to Go that init/restart is complete
     ruby_init_done = 1;
 
-    // Release GVL permanently — the proxy thread handles all execution.
-    tls_holds_gvl = 0;
-    rb_thread_call_without_gvl(ruby_main_idle, NULL, NULL, NULL);
-    tls_holds_gvl = 1;
+    // Enter the request-serving loop. This pthread holds the GVL
+    // permanently and processes requests from any thread via condvar.
+    // No Ruby threads are used — avoiding Ruby 3.3 M:N scheduling issues.
+    rb_fproxy_ready = 1;
+    while (!rb_fproxy_shutdown) {
+        pthread_mutex_lock(&rb_fproxy_mtx);
+        while (!rb_fproxy_has_request && !rb_fproxy_shutdown) {
+            pthread_cond_wait(&rb_fproxy_req_cv, &rb_fproxy_mtx);
+        }
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+
+        if (rb_fproxy_shutdown) break;
+
+        // Execute the requested code (we hold GVL)
+        if (rb_fproxy_is_eval) {
+            rb_fproxy_result = omnivm_ruby_eval(rb_fproxy_code);
+        } else {
+            rb_fproxy_result = omnivm_ruby_exec(rb_fproxy_code);
+        }
+
+        // Signal completion
+        pthread_mutex_lock(&rb_fproxy_mtx);
+        rb_fproxy_has_request = 0;
+        pthread_cond_signal(&rb_fproxy_res_cv);
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+    }
 
     return NULL;
 }
@@ -291,6 +257,10 @@ static void* omnivm_ruby_get_interrupt_ptr(void) {
 
 // Thread-safe exec: direct if we hold GVL, via rb_thread_call_with_gvl
 // for Ruby-known threads, via proxy for foreign threads.
+//
+// In inline init mode (Ruby 3.3+), the calling Go thread IS the Ruby
+// main thread and always holds the GVL. Foreign thread proxy is available
+// if omnivm_ruby_start_proxy() was called.
 static char* omnivm_ruby_exec_safe(const char* code) {
     if (tls_holds_gvl) return omnivm_ruby_exec(code);
     if (tls_is_ruby_thread) {
@@ -366,6 +336,8 @@ static int omnivm_ruby_init(void) {
 
     ruby_init();
     ruby_init_loadpath();
+    // Fix Ruby's signal handlers to include SA_ONSTACK (required by Go)
+    fix_signal_handlers_sa_onstack();
     ruby_initialized = 1;
     // Calling thread holds the GVL after ruby_init()
     tls_holds_gvl = 1;
@@ -503,7 +475,6 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
 static void omnivm_ruby_register_bridge() {
     VALUE mod = rb_define_module("OmniVM");
     rb_define_module_function(mod, "call", rb_omnivm_call, 2);
-    rb_define_module_function(mod, "_proxy_serve", rb_fproxy_serve, 0);
 }
 
 static void omnivm_ruby_set_bridge_callback(omni_call_fn call_fn, omni_free_fn free_fn) {
@@ -521,18 +492,13 @@ static void omnivm_ruby_shutdown(void) {
         pthread_cond_broadcast(&rb_fproxy_res_cv);
         pthread_mutex_unlock(&rb_fproxy_mtx);
 
-        // Close interrupt pipe to wake the watcher thread
+        // Close interrupt pipe
         if (ruby_interrupt_pipe[0] >= 0) {
             close(ruby_interrupt_pipe[0]);
             close(ruby_interrupt_pipe[1]);
             ruby_interrupt_pipe[0] = -1;
             ruby_interrupt_pipe[1] = -1;
         }
-
-        // Wake the Ruby main idle thread so it can exit
-        pthread_mutex_lock(&ruby_idle_mtx);
-        pthread_cond_signal(&ruby_idle_cv);
-        pthread_mutex_unlock(&ruby_idle_mtx);
 
         // NOTE: We intentionally do NOT call ruby_cleanup() here.
         // In a polyglot process, ruby_cleanup() calls rb_thread_terminate_all()
@@ -541,7 +507,9 @@ static void omnivm_ruby_shutdown(void) {
         // segfault. Since the process is exiting, the OS will reclaim all
         // resources. This is safe and matches how other embedded Ruby hosts
         // (e.g., Apache mod_ruby) handle shutdown.
-        ruby_initialized = 0;
+        // NOTE: We keep ruby_initialized = 1 because the Ruby VM stays
+        // alive (no ruby_cleanup). The Go-level rubyInitialized guard
+        // handles reattach on next Initialize() call.
     }
 }
 */
@@ -566,12 +534,24 @@ func New() *Runtime {
 
 func (r *Runtime) Name() string { return "ruby" }
 
-// Initialize starts the Ruby VM on a dedicated background pthread.
-// The Golden Thread never holds the Ruby GVL — all Ruby calls from any
-// thread are routed through a proxy thread.
+// rubyInitialized guards against double Ruby init per process.
+// ruby_init() cannot be called twice — the proxy thread and GVL state
+// become corrupted. Since Shutdown() skips ruby_cleanup(), the VM stays live.
+var rubyInitialized bool
+
+// Initialize starts the Ruby VM on the calling thread.
+// The calling goroutine must be locked to an OS thread (runtime.LockOSThread).
+// After init, the calling thread holds the GVL and direct Ruby calls work.
 func (r *Runtime) Initialize() error {
 	if r.initialized {
 		return fmt.Errorf("ruby: already initialized")
+	}
+
+	if rubyInitialized {
+		// Ruby VM still alive from previous Runtime — just reattach.
+		// The proxy pthread is still running (shutdown is a no-op).
+		r.initialized = true
+		return nil
 	}
 
 	rc := C.omnivm_ruby_init_on_thread()
@@ -580,6 +560,7 @@ func (r *Runtime) Initialize() error {
 	}
 
 	r.initialized = true
+	rubyInitialized = true
 	return nil
 }
 
@@ -650,12 +631,16 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 // Pump is a no-op for Ruby (no cooperative event loop).
 func (r *Runtime) Pump() {}
 
-// Shutdown finalizes the Ruby VM.
+// Shutdown marks the Ruby runtime as inactive.
+// The Ruby VM and proxy pthread stay alive — ruby_cleanup() is unsafe
+// in a polyglot process, and the pthread can't be cleanly restarted.
+// The proxy thread idles harmlessly when no requests are pending.
 func (r *Runtime) Shutdown() error {
 	if !r.initialized {
 		return nil
 	}
 	r.initialized = false
-	C.omnivm_ruby_shutdown()
+	// Don't call C.omnivm_ruby_shutdown() — the proxy pthread can't be
+	// restarted without GVL, and ruby_cleanup crashes in polyglot process.
 	return nil
 }

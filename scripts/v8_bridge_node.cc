@@ -44,8 +44,8 @@ struct omnivm_v8_context {
 static omnivm_bridge_call_fn g_bridge_call = nullptr;
 static omnivm_bridge_free_fn g_bridge_free = nullptr;
 
-// Node.js per-process init result
-static std::unique_ptr<node::InitializationResult> init_result;
+// Node.js per-process init result (shared_ptr since Node 24)
+static std::shared_ptr<node::InitializationResult> init_result;
 
 // ---- omnivm.call() V8 native function ----
 
