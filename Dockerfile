@@ -153,6 +153,8 @@ RUN apt-get update && apt-get install -y \
     libnode127 \
     nodejs \
     npm \
+    build-essential \
+    binutils-gold \
     && rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
