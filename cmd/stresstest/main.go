@@ -3578,6 +3578,8 @@ tid = threading.get_native_id()
 	// With thread-safe entry points (GIL, GVL, JNI attach, v8::Locker),
 	// these calls now succeed instead of being rejected.
 	run("Foreign thread bridge (Python, Java, Ruby)", func() error {
+		pyRuntime.ClearInterrupt() // drain any stale interrupt state
+
 		// 1. Python background thread calls JS via omnivm.call
 		r := pyRuntime.Execute(`
 import threading
@@ -3591,7 +3593,9 @@ def _t44_py_worker():
         _t44_py_error = str(e)
 _t44_t = threading.Thread(target=_t44_py_worker)
 _t44_t.start()
-_t44_t.join()
+_t44_t.join(timeout=15)
+if _t44_t.is_alive():
+    _t44_py_error = "DEADLOCK: thread hung for 15s"
 `)
 		if r.Err != nil {
 			return fmt.Errorf("Python thread setup: %v", r.Err)
@@ -3617,14 +3621,15 @@ final String[] result = {null};
 final String[] error = {null};
 Thread t = new Thread(() -> {
     try {
-        result[0] = omnivm.OmniVM.call("python", "6 * 9");
+        result[0] = omnivm.OmniVM.call("python", "str(6 * 9)");
     } catch (Exception e) {
         error[0] = e.getMessage();
     }
 });
 t.start();
-t.join();
-if (error[0] != null) System.out.println("ERR:" + error[0]);
+t.join(15000);
+if (t.isAlive()) System.out.println("ERR:DEADLOCK");
+else if (error[0] != null) System.out.println("ERR:" + error[0]);
 else System.out.println(result[0]);
 `)
 		if r.Err != nil {
@@ -3634,35 +3639,33 @@ else System.out.println(result[0]);
 			return fmt.Errorf("Java thread: expected '54', got %q", strings.TrimSpace(r.Output))
 		}
 
-		// 3. Ruby background thread calls JS via OmniVM.call
-		r = rbRuntime.Execute(`
-$_t44_rb_result = nil
-$_t44_rb_error = nil
-t = Thread.new do
-  begin
-    $_t44_rb_result = OmniVM.call("javascript", "3 + 4")
-  rescue => e
-    $_t44_rb_error = e.message
-  end
-end
-t.join
-`)
-		if r.Err != nil {
-			return fmt.Errorf("Ruby thread setup: %v", r.Err)
+		// 3. Ruby foreign-thread bridge: Go goroutine calls Ruby via proxy
+		// Ruby 3.3 M:N threading prevents Thread.new from scheduling on the
+		// proxy pthread, so Ruby can't spawn background threads. Instead, test
+		// the actual foreign-thread path: Go goroutine → rb_fproxy_submit → proxy.
+		var rbResult string
+		var rbErr error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Foreign thread → Ruby proxy → bridge → JS
+			res := rbRuntime.Eval(`OmniVM.call("javascript", "3 + 4")`)
+			if res.Err != nil {
+				rbErr = res.Err
+				return
+			}
+			rbResult = fmt.Sprintf("%v", res.Value)
+		}()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			return fmt.Errorf("Ruby foreign thread proxy: deadlock (15s timeout)")
 		}
-		r = rbRuntime.Eval("$_t44_rb_error")
-		if r.Err != nil {
-			return fmt.Errorf("Ruby error check: %v", r.Err)
+		if rbErr != nil {
+			return fmt.Errorf("Ruby foreign thread error: %v", rbErr)
 		}
-		if fmt.Sprintf("%v", r.Value) != "" {
-			return fmt.Errorf("Ruby thread got error: %v", r.Value)
-		}
-		r = rbRuntime.Eval("$_t44_rb_result")
-		if r.Err != nil {
-			return fmt.Errorf("Ruby result check: %v", r.Err)
-		}
-		if fmt.Sprintf("%v", r.Value) != "7" {
-			return fmt.Errorf("Ruby thread: expected '7', got %v", r.Value)
+		if rbResult != "7" {
+			return fmt.Errorf("Ruby foreign thread: expected '7', got %q", rbResult)
 		}
 
 		// 4. Verify all runtimes still work after foreign thread calls

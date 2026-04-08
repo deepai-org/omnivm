@@ -336,6 +336,48 @@ static int omnivm_ruby_init(void) {
 
     ruby_init();
     ruby_init_loadpath();
+
+    // Load internal preludes so core methods like Integer#times exist.
+    // Ruby 3.3 defines many core methods in <internal:numeric> etc.
+    // ruby_init() alone doesn't load them. ruby_options() loads them but
+    // breaks the watchdog interrupt mechanism. Instead, polyfill the
+    // methods we need using rb_eval_string_protect.
+    {
+        int state = 0;
+        rb_eval_string_protect(
+            "class Integer\n"
+            "  def times\n"
+            "    return to_enum(:times) { self } unless block_given?\n"
+            "    i = 0\n"
+            "    while i < self\n"
+            "      yield i\n"
+            "      i += 1\n"
+            "    end\n"
+            "    self\n"
+            "  end\n"
+            "  def upto(max)\n"
+            "    return to_enum(:upto, max) unless block_given?\n"
+            "    i = self\n"
+            "    while i <= max\n"
+            "      yield i\n"
+            "      i += 1\n"
+            "    end\n"
+            "    self\n"
+            "  end\n"
+            "  def downto(min)\n"
+            "    return to_enum(:downto, min) unless block_given?\n"
+            "    i = self\n"
+            "    while i >= min\n"
+            "      yield i\n"
+            "      i -= 1\n"
+            "    end\n"
+            "    self\n"
+            "  end\n"
+            "end\n",
+            &state
+        );
+    }
+
     // Fix Ruby's signal handlers to include SA_ONSTACK (required by Go)
     fix_signal_handlers_sa_onstack();
     ruby_initialized = 1;
