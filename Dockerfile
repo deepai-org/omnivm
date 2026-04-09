@@ -90,6 +90,7 @@ COPY scripts/ scripts/
 # 3. Source code (frequently changes — cache-bust point for build)
 COPY pkg/ pkg/
 COPY cmd/ cmd/
+COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
 
 # ---- Prepare Docker-specific source files ----
@@ -206,6 +207,23 @@ COPY --from=builder /usr/local/bin/telephone /usr/local/bin/telephone
 COPY --from=builder /usr/local/bin/stresstest /usr/local/bin/stresstest
 COPY --from=builder /usr/local/bin/express-demo /usr/local/bin/express-demo
 COPY --from=builder /usr/local/bin/manifest-runner /usr/local/bin/manifest-runner
+
+# Python interpreter mode: symlink python3 → omnivm so that
+# "python3 -m pytest", "pip install", "gunicorn" all work transparently.
+# When invoked as python3, omnivm delegates to Py_BytesMain().
+RUN ln -sf /usr/local/bin/omnivm /usr/local/bin/python3-omnivm
+# Note: We use python3-omnivm rather than overwriting python3 since the
+# runtime image still needs system python3 for apt/pip. Users building
+# their own image (FROM omnivm/python:3.14-slim) would set:
+#   RUN ln -sf /usr/local/bin/omnivm /usr/local/bin/python3
+
+# libomnivm.so — c-shared library for pip-installable Python package.
+# Loaded via ctypes.CDLL post-fork in Gunicorn workers.
+COPY --from=builder /usr/local/lib/libomnivm.so /usr/local/lib/libomnivm.so
+RUN ldconfig
+
+# Install the omnivm Python package (pure Python, lazy-loads libomnivm.so)
+COPY --from=builder /build/pyomnivm/omnivm/ /usr/local/lib/python3.14/dist-packages/omnivm/
 
 # Test data for manifest demos
 RUN mkdir -p /var/data && \

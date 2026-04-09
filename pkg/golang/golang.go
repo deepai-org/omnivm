@@ -45,6 +45,9 @@ type Runtime struct {
 
 	tempDir string
 	counter int
+
+	// loadedPlugins maps plugin names to loaded plugin handles for pre-compiled plugins.
+	loadedPlugins map[string]*plugin.Plugin
 }
 
 func New() *Runtime { return &Runtime{} }
@@ -80,8 +83,23 @@ func (r *Runtime) Execute(code string) pkg.Result {
 	return r.compileAndRun(src, "Run", "", nil)
 }
 
-// Eval compiles a Go expression, executes it, and returns the result as a string.
+// Eval evaluates a Go expression and returns its value as a string.
+// If the expression looks like "plugin.Func(args)", it calls the loaded plugin directly.
+// Otherwise it compiles and runs the expression as a snippet.
 func (r *Runtime) Eval(code string) pkg.Result {
+	// Check for plugin call pattern: "pluginname.FuncName(args)"
+	if r.loadedPlugins != nil {
+		if pluginName, funcName, args, ok := parsePluginCall(code); ok {
+			if _, loaded := r.loadedPlugins[pluginName]; loaded {
+				result, err := r.CallPlugin(pluginName, funcName, args)
+				if err != nil {
+					return pkg.Result{Err: err}
+				}
+				return pkg.Result{Value: result, Output: result}
+			}
+		}
+	}
+
 	src := wrapEval(code)
 	result := r.compileAndRun(src, "Eval", "", nil)
 	if result.Err == nil {
@@ -221,6 +239,79 @@ func (r *Runtime) compileAndRun(src, entrypoint, filePath string, args []string)
 	return pkg.Result{Output: output}
 }
 
+// LoadPlugin loads a pre-compiled Go plugin (.so) and registers its exported
+// functions. The plugin must be built with the same Go version as OmniVM.
+// Plugin functions are callable via Eval as "pluginname.FuncName(args)".
+func (r *Runtime) LoadPlugin(path string) error {
+	p, err := plugin.Open(path)
+	if err != nil {
+		return fmt.Errorf("go: plugin load %s: %w", path, err)
+	}
+
+	// Install bridge if available
+	if r.BridgeFn != nil {
+		if sym, lookupErr := p.Lookup("SetBridge"); lookupErr == nil {
+			sym.(func(func(string, string) string))(r.BridgeFn)
+		}
+	}
+
+	// Derive plugin name from filename: /path/to/sessvalidator.so → sessvalidator
+	base := filepath.Base(path)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+
+	if r.loadedPlugins == nil {
+		r.loadedPlugins = make(map[string]*plugin.Plugin)
+	}
+	r.loadedPlugins[name] = p
+
+	// Call Init() if the plugin exports it (for one-time setup)
+	if sym, lookupErr := p.Lookup("Init"); lookupErr == nil {
+		if initFn, ok := sym.(func()); ok {
+			initFn()
+		}
+	}
+
+	return nil
+}
+
+// CallPlugin calls an exported function on a loaded plugin by name.
+// funcName is "pluginname.FuncName", args is the string argument.
+// Returns the string result or an error.
+func (r *Runtime) CallPlugin(pluginName, funcName, args string) (string, error) {
+	p, ok := r.loadedPlugins[pluginName]
+	if !ok {
+		return "", fmt.Errorf("go: plugin %q not loaded", pluginName)
+	}
+
+	sym, err := p.Lookup(funcName)
+	if err != nil {
+		return "", fmt.Errorf("go: %s.%s: %w", pluginName, funcName, err)
+	}
+
+	// Call with panic recovery
+	var result string
+	var callErr error
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				callErr = fmt.Errorf("panic in %s.%s: %v", pluginName, funcName, rec)
+			}
+		}()
+		switch fn := sym.(type) {
+		case func(string) string:
+			result = fn(args)
+		case func() string:
+			result = fn()
+		case func():
+			fn()
+		default:
+			callErr = fmt.Errorf("go: %s.%s has unsupported type %T", pluginName, funcName, sym)
+		}
+	}()
+
+	return result, callErr
+}
+
 // transformMain renames func main() to func Main() using the Go AST.
 func transformMain(src string) (string, error) {
 	fset := token.NewFileSet()
@@ -276,6 +367,44 @@ func Eval() string {
 	return fmt.Sprintf("%%v", %s)
 }
 `, code)
+}
+
+// parsePluginCall parses "pluginname.FuncName(args)" into its components.
+// Returns (pluginName, funcName, args, ok).
+func parsePluginCall(code string) (string, string, string, bool) {
+	code = strings.TrimSpace(code)
+
+	// Find the dot separating plugin name from function name
+	dot := strings.IndexByte(code, '.')
+	if dot <= 0 {
+		return "", "", "", false
+	}
+	pluginName := code[:dot]
+
+	// Find the opening paren
+	rest := code[dot+1:]
+	paren := strings.IndexByte(rest, '(')
+	if paren <= 0 {
+		return "", "", "", false
+	}
+	funcName := rest[:paren]
+
+	// Extract args (everything between first '(' and last ')')
+	if code[len(code)-1] != ')' {
+		return "", "", "", false
+	}
+	argsStr := rest[paren+1 : len(rest)-1]
+
+	// Strip surrounding quotes from single-argument string calls
+	argsStr = strings.TrimSpace(argsStr)
+	if len(argsStr) >= 2 && argsStr[0] == '"' && argsStr[len(argsStr)-1] == '"' {
+		// Unescape basic Go string
+		argsStr = argsStr[1 : len(argsStr)-1]
+		argsStr = strings.ReplaceAll(argsStr, `\"`, `"`)
+		argsStr = strings.ReplaceAll(argsStr, `\\`, `\`)
+	}
+
+	return pluginName, funcName, argsStr, true
 }
 
 const bridgeShimSource = `package main

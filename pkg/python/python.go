@@ -318,6 +318,10 @@ static void omnivm_py_set_bridge_callback(omni_call_fn call_fn, omni_free_fn fre
     g_bridge_free = free_fn;
 }
 
+static void omnivm_py_set_bridge_free(omni_free_fn free_fn) {
+    g_bridge_free = free_fn;
+}
+
 // Pipe-based interrupt mechanism.
 // PyErr_SetInterrupt() from a non-Python thread (cgo) fails because
 // _PyRuntimeState_GetThreadState() returns NULL, so eval_breaker is
@@ -381,12 +385,17 @@ static void* omnivm_py_get_interrupt_ptr(void) {
 	return (void*)omnivm_py_interrupt;
 }
 
-// Fork guard: fork() after JVM init leaves dead threads holding mutexes.
+// Fork guard: fork() after JVM/Ruby init leaves dead threads holding mutexes.
 // Install a pthread_atfork child handler that kills the child immediately.
-// Logs the call stack so operators can identify which dependency forked.
+// Conditional: only fires if JVM or Ruby were loaded (Go+JS are fork-safe
+// when initialized post-fork).
+static int fork_guard_active = 0;
+
 static void omnivm_fork_child_handler(void) {
+    if (!fork_guard_active) return;
+
     const char* msg = "FATAL: fork() in OmniVM polyglot process. "
-                      "JVM threads do not survive fork(). "
+                      "JVM/Ruby threads do not survive fork(). "
                       "Use multiprocessing.set_start_method('spawn').\n";
     write(STDERR_FILENO, msg, strlen(msg));
 
@@ -416,6 +425,167 @@ static void omnivm_fork_child_handler(void) {
 
 static void omnivm_install_fork_guard(void) {
     pthread_atfork(NULL, NULL, omnivm_fork_child_handler);
+}
+
+static void omnivm_activate_fork_guard(void) {
+    fork_guard_active = 1;
+}
+
+// -------------------------------------------------------------------
+// Python interpreter mode: _omnivm built-in C extension module
+// -------------------------------------------------------------------
+// Registered via PyImport_AppendInittab BEFORE Py_BytesMain() so that
+// "import omnivm" works in any Python code run by the interpreter.
+// Defers actual runtime init to omnivm.init_runtimes().
+
+// Callbacks into Go (set by the main binary via OmniSetPythonModeCallbacks)
+typedef char* (*omni_init_runtimes_fn)(const char* list);
+typedef char* (*omni_load_plugin_fn)(const char* runtime, const char* path);
+typedef void  (*omni_shutdown_fn)(void);
+
+static omni_init_runtimes_fn  g_init_runtimes = NULL;
+static omni_load_plugin_fn    g_load_plugin   = NULL;
+static omni_shutdown_fn       g_shutdown      = NULL;
+
+static void omnivm_set_pymode_callbacks(
+    omni_init_runtimes_fn init_fn,
+    omni_load_plugin_fn   load_fn,
+    omni_shutdown_fn      shut_fn
+) {
+    g_init_runtimes = init_fn;
+    g_load_plugin   = load_fn;
+    g_shutdown      = shut_fn;
+}
+
+// omnivm.init_runtimes(["go", "javascript"])
+static PyObject* pymode_init_runtimes(PyObject* self, PyObject* args) {
+    PyObject* list;
+    if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &list)) return NULL;
+
+    if (!g_init_runtimes) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm: not running in OmniVM interpreter mode");
+        return NULL;
+    }
+
+    // Build comma-separated string from list
+    Py_ssize_t n = PyList_Size(list);
+    char buf[256] = {0};
+    int pos = 0;
+    for (Py_ssize_t i = 0; i < n && pos < 250; i++) {
+        PyObject* item = PyList_GetItem(list, i);
+        const char* s = PyUnicode_AsUTF8(item);
+        if (!s) return NULL;
+        if (i > 0) buf[pos++] = ',';
+        int len = strlen(s);
+        if (pos + len >= 255) break;
+        memcpy(buf + pos, s, len);
+        pos += len;
+    }
+    buf[pos] = '\0';
+
+    // Release GIL during Go runtime initialization
+    PyThreadState* _save = PyEval_SaveThread();
+    char* result = g_init_runtimes(buf);
+    PyEval_RestoreThread(_save);
+
+    if (result && strncmp(result, "ERR:", 4) == 0) {
+        PyErr_SetString(PyExc_RuntimeError, result + 4);
+        if (g_bridge_free) g_bridge_free(result);
+        return NULL;
+    }
+    if (result && g_bridge_free) g_bridge_free(result);
+    Py_RETURN_NONE;
+}
+
+// omnivm.call(runtime, code)
+// Reuses g_bridge_call which is set by init_runtimes via SetBridgeCallback.
+static PyObject* pymode_call(PyObject* self, PyObject* args) {
+    return py_omnivm_call(self, args);
+}
+
+// omnivm.load_plugin(runtime, path)
+static PyObject* pymode_load_plugin(PyObject* self, PyObject* args) {
+    const char* runtime;
+    const char* path;
+    if (!PyArg_ParseTuple(args, "ss", &runtime, &path)) return NULL;
+
+    if (!g_load_plugin) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm: not running in OmniVM interpreter mode");
+        return NULL;
+    }
+
+    PyThreadState* _save = PyEval_SaveThread();
+    char* result = g_load_plugin(runtime, path);
+    PyEval_RestoreThread(_save);
+
+    if (result && strncmp(result, "ERR:", 4) == 0) {
+        PyErr_SetString(PyExc_RuntimeError, result + 4);
+        if (g_bridge_free) g_bridge_free(result);
+        return NULL;
+    }
+    if (result && g_bridge_free) g_bridge_free(result);
+    Py_RETURN_NONE;
+}
+
+// omnivm.shutdown()
+static PyObject* pymode_shutdown(PyObject* self, PyObject* args) {
+    if (g_shutdown) {
+        PyThreadState* _save = PyEval_SaveThread();
+        g_shutdown();
+        PyEval_RestoreThread(_save);
+    }
+    Py_RETURN_NONE;
+}
+
+// omnivm.execute(runtime, code) — runs code, returns captured stdout
+static PyObject* pymode_execute(PyObject* self, PyObject* args) {
+    const char* runtime;
+    const char* code;
+    if (!PyArg_ParseTuple(args, "ss", &runtime, &code)) return NULL;
+
+    if (!g_bridge_call) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm bridge not initialized — call init_runtimes() first");
+        return NULL;
+    }
+
+    // For execute, we use the same bridge but with a different Go-side handler.
+    // The bridge's OmniCall uses Eval(); for stdout capture we'd need Execute().
+    // For now, delegate to the same call path — execute vs eval distinction
+    // is handled at the Go level by the caller's code string.
+    return py_omnivm_call(self, args);
+}
+
+static PyMethodDef omnivm_pymode_methods[] = {
+    {"init_runtimes", pymode_init_runtimes, METH_VARARGS, "Initialize runtimes: omnivm.init_runtimes(['go', 'javascript'])"},
+    {"call",          pymode_call,          METH_VARARGS, "Call a runtime: omnivm.call('go', 'expr')"},
+    {"load_plugin",   pymode_load_plugin,   METH_VARARGS, "Load a plugin: omnivm.load_plugin('go', '/path/to/plugin.so')"},
+    {"shutdown",      pymode_shutdown,       METH_NOARGS,  "Shut down runtimes"},
+    {"execute",       pymode_execute,        METH_VARARGS, "Execute code: omnivm.execute('javascript', 'code')"},
+    {NULL, NULL, 0, NULL}
+};
+
+static struct PyModuleDef omnivm_pymode_module_def = {
+    PyModuleDef_HEAD_INIT,
+    "omnivm",
+    "OmniVM polyglot runtime — call Go, JavaScript, and other runtimes from Python",
+    -1,
+    omnivm_pymode_methods
+};
+
+// Called by PyImport_AppendInittab registration. This is the init function
+// for "import omnivm" when running in Python interpreter mode.
+PyMODINIT_FUNC PyInit_omnivm(void) {
+    PyObject* mod = PyModule_Create(&omnivm_pymode_module_def);
+    if (!mod) return NULL;
+
+    // Add RuntimeError subclass for omnivm-specific errors
+    PyObject* base = PyExc_RuntimeError;
+    PyObject* exc = PyErr_NewException("omnivm.RuntimeError", base, NULL);
+    if (exc) {
+        PyModule_AddObject(mod, "RuntimeError", exc);
+    }
+
+    return mod;
 }
 */
 import "C"
@@ -505,7 +675,9 @@ func (r *Runtime) Initialize() error {
 
 	// Install fork guard: child processes created by fork() in a polyglot
 	// process with JVM threads will deadlock. Kill them immediately.
+	// In Go-hosted mode, activate immediately (JVM/Ruby may be loaded later).
 	C.omnivm_install_fork_guard()
+	C.omnivm_activate_fork_guard()
 
 	// Force multiprocessing to use 'spawn' instead of 'fork'.
 	// fork() after JVM init leaves dead threads holding mutexes.
@@ -652,4 +824,51 @@ func (r *Runtime) Shutdown() error {
 	// Skip Py_FinalizeEx — process exit reclaims all resources.
 	// See Ruby shutdown strategy in MEMORY.md.
 	return nil
+}
+
+// ActivateForkGuard enables the fork guard (for JVM/Ruby).
+// When only Go+JS are loaded, fork is safe if runtimes are initialized post-fork.
+func ActivateForkGuard() {
+	C.omnivm_activate_fork_guard()
+}
+
+// RegisterAppendInittab registers the "omnivm" built-in module with CPython
+// via PyImport_AppendInittab. Must be called BEFORE Py_Initialize/Py_BytesMain.
+// This is used in Python interpreter mode so "import omnivm" works.
+func RegisterAppendInittab() {
+	cName := C.CString("omnivm")
+	C.PyImport_AppendInittab(cName, (*[0]byte)(C.PyInit_omnivm))
+	// Intentionally leak cName — AppendInittab stores the pointer.
+}
+
+// BytesMain calls Py_BytesMain with the given arguments, running CPython's
+// full CLI (handles -m, -c, script files, interactive REPL, etc.).
+// Returns the exit code from CPython.
+func BytesMain(args []string) int {
+	argc := C.int(len(args))
+	argv := make([]*C.char, len(args))
+	for i, a := range args {
+		argv[i] = C.CString(a)
+	}
+	// Py_BytesMain takes char** — pass pointer to first element.
+	return int(C.Py_BytesMain(argc, &argv[0]))
+}
+
+// SetPyModeCallbacks installs the Go callback function pointers used by the
+// omnivm Python module in interpreter mode. Called from the main binary.
+func SetPyModeCallbacks(initPtr, loadPtr, shutdownPtr, freePtr unsafe.Pointer) {
+	C.omnivm_set_pymode_callbacks(
+		C.omni_init_runtimes_fn(initPtr),
+		C.omni_load_plugin_fn(loadPtr),
+		C.omni_shutdown_fn(shutdownPtr),
+	)
+	// Also set the bridge free function so pymode can free Go-allocated strings
+	C.omnivm_py_set_bridge_free(C.omni_free_fn(freePtr))
+}
+
+// MarkCPythonInitialized marks CPython as already initialized (because
+// Py_BytesMain did it). This prevents double-init if the Go-hosted
+// python.Runtime.Initialize() is called later.
+func MarkCPythonInitialized() {
+	cpythonInitialized = true
 }

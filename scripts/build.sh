@@ -38,3 +38,7 @@ go build -v -o /usr/local/bin/telephone ./cmd/telephone/
 go build -v -o /usr/local/bin/stresstest ./cmd/stresstest/
 go build -v -o /usr/local/bin/express-demo ./cmd/express-demo/
 go build -v -o /usr/local/bin/manifest-runner ./cmd/manifest-runner/
+
+# Build libomnivm.so (c-shared) for pip-installable Python package.
+# This is loaded via dlopen post-fork in Gunicorn workers.
+go build -v -buildmode=c-shared -o /usr/local/lib/libomnivm.so ./cmd/libomnivm/
