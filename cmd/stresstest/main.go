@@ -1068,7 +1068,7 @@ _t14_check("%s", _t14_via_js)
 
 	// Test 15: Sustained mixed workload over 1000 dispatcher cycles
 	// 4 goroutines continuously submit mixed work. Tests for state drift:
-	// reference leaks, Duktape stack growth, Python global corruption.
+	// reference leaks, V8 heap growth, Python global corruption.
 	run("Sustained mixed workload (1000 cycles)", func() error {
 		disp := dispatcher.New()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1282,7 +1282,7 @@ _t16_loop.create_task(_t16_async_task())
 		// Drive the event loop — this triggers the full call chain:
 		// Execute → PyRun_SimpleString → loop.run_forever → async task
 		// → gen.send() → generator body → omnivm.call("javascript", ...)
-		// → OmniCall → jsRuntime.Eval → Duktape throws → returns "ERR:..."
+		// → OmniCall → jsRuntime.Eval → V8 throws → returns "ERR:..."
 		// → Python omnivm.call raises RuntimeError → generator except catches
 		// → yield "caught:..." → async task stores result
 		driveResult := pyRuntime.Execute(`
@@ -1348,7 +1348,7 @@ _t16_loop.run_forever()
 			return fmt.Errorf("python alloc: %v", setupResult.Err)
 		}
 
-		// Build 10MB string via doubling (Duktape strings are immutable, += is O(n²))
+		// Build 10MB string via doubling (JS strings are immutable, += is O(n²))
 		jsSetup := jsRuntime.Execute(`var _t17_big = "B"; while (_t17_big.length < 10 * 1024 * 1024) _t17_big = _t17_big + _t17_big; _t17_big = _t17_big.substring(0, 10 * 1024 * 1024);`)
 		if jsSetup.Err != nil {
 			return fmt.Errorf("js alloc: %v", jsSetup.Err)
@@ -1381,7 +1381,7 @@ _t16_loop.run_forever()
 		// Loop 100x: pass digest through Py → JS → Ruby → Py
 		// Each runtime modifies character at position [iteration] in its 10MB string,
 		// then computes a digest (length + char at position) that gets passed through
-		// the bridge. Python and Ruby have mutable strings. JS (Duktape) has immutable
+		// the bridge. Python and Ruby have mutable strings. JS (V8) has immutable
 		// strings, so we track modifications in a separate array to avoid O(n) copies.
 		jsRuntime.Execute(`var _t17_mods = {};`)
 
@@ -1443,7 +1443,7 @@ $_t17_chain + "|" + $_t17_big.length.to_s + ":" + $_t17_big[%d]
 			return fmt.Errorf("final python: expected 'PPP:10485760', got %q", pyCheck.Value)
 		}
 
-		// JS: check via mods array (Duktape immutable strings — originals unchanged)
+		// JS: check via mods array (JS immutable strings — originals unchanged)
 		jsCheck := jsRuntime.Eval(`(_t17_mods[0] || "?") + (_t17_mods[50] || "?") + (_t17_mods[99] || "?") + ":" + _t17_big.length`)
 		if jsCheck.Err != nil {
 			return fmt.Errorf("final js check: %v", jsCheck.Err)
@@ -1470,7 +1470,7 @@ $_t17_chain + "|" + $_t17_big.length.to_s + ":" + $_t17_big[%d]
 
 	// Test 18: Sleep-Wake Concurrency Torture
 	// Verify that Go time.Sleep (which parks the Goroutine) doesn't deschedule
-	// the Golden Thread in a way that breaks CPython/Duktape thread-local storage.
+	// the Golden Thread in a way that breaks CPython/V8 thread-local storage.
 	// Between RunOnMain calls, the Go scheduler might run other Goroutines on the
 	// main OS thread — if LockOSThread isn't tight enough, TLS would be lost.
 	run("Sleep-wake concurrency torture", func() error {
@@ -2871,7 +2871,7 @@ len(_t32_cycle_results) == 10 and all(v == "42" for v in _t32_cycle_results)
 
 	// Test 33: Recursive cross-runtime depth bomb
 	// Py→JS→Py→JS→... until we hit the stack limit. Each hop adds C stack frames
-	// (cgo, Python eval, Duktape eval). Tests whether the system crashes cleanly
+	// (cgo, Python eval, V8 eval). Tests whether the system crashes cleanly
 	// (recoverable error) or SIGSEGV's. We binary search for the max safe depth.
 	run("Recursive cross-runtime depth bomb", func() error {
 		// Set up Python function that recurses through JS
@@ -2924,7 +2924,7 @@ def _t33_recurse(depth, max_depth):
 	// Test 34: 1MB string through the actual bridge
 	// Previous tests kept big strings within runtimes. This sends a 1MB string
 	// through Python → JS → Python via the C bridge, testing malloc/free,
-	// Duktape string internment, and strdup at scale in one chain.
+	// V8 string internment, and strdup at scale in one chain.
 	run("1MB string through the bridge (Py → JS → Py)", func() error {
 		// Create 1MB string in Python
 		setupResult := pyRuntime.Execute(`_t34_big = "X" * (1024 * 1024)`)
@@ -2998,8 +2998,8 @@ len(_t34_double)
 
 	// Test 35: Chained error recovery cascade
 	// Three serial error-catch-retry cycles. Each failure triggers a cross-runtime
-	// recovery call. Tests that PyErr state, JNI exception state, and Duktape
-	// error stack are all properly cleared between retries.
+	// recovery call. Tests that PyErr state, JNI exception state, and V8
+	// error state are all properly cleared between retries.
 	run("Chained error recovery cascade", func() error {
 		r := pyRuntime.Eval(`
 _t35_log = []
@@ -4068,7 +4068,7 @@ count.to_s
 	})
 
 	// Test 50: JS try/finally where bridge throws, finally does bridge call.
-	// Duktape executes finally after duk_error longjmp; bridge calls in
+	// V8 executes finally after exception; bridge calls in
 	// finally must work correctly.
 	run("JS try/finally with bridge throw + bridge in finally", func() error {
 		// Phase A: Basic — Python 1/0 throws, finally calls Ruby

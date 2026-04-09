@@ -1,6 +1,6 @@
 // Package javascript embeds a JavaScript engine via cgo.
 //
-// In Docker: uses a Duktape-based shim implementing the V8 bridge C API.
+// In Docker: uses Node.js (V8) via v8_bridge_node.cc implementing the v8_bridge.h C API.
 package javascript
 
 /*

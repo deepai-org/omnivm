@@ -61,6 +61,167 @@ docker run --rm omnivm -ruby "puts 'hello'"
 docker run --rm omnivm -go 'fmt.Println("hello")'
 ```
 
+## Python Interpreter Mode
+
+OmniVM can act as a **drop-in Python interpreter**. When the binary is symlinked as `python3` (or invoked as `omnivm python`), it delegates to CPython's `Py_BytesMain()` — the same code path as the stock `python3` binary. Everything works: `-m`, `-c`, script files, pip, interactive REPL, `PYTHONSTARTUP`, `-u`, `-W`, stdin piping.
+
+The difference: `import omnivm` is always available, giving Python code zero-overhead access to Go and JavaScript runtimes.
+
+```bash
+# Use as Python interpreter
+docker run --rm --entrypoint python3-omnivm omnivm -c "print('I am Python')"
+
+# Or via subcommand
+docker run --rm omnivm python -c "print('I am Python')"
+
+# Full CPython CLI works
+docker run --rm --entrypoint python3-omnivm omnivm -m site
+docker run --rm --entrypoint python3-omnivm omnivm -c "import sys; print(sys.version)"
+```
+
+### Calling Go and JavaScript from Python
+
+```python
+import omnivm
+
+# Initialize only the runtimes you need (call in Gunicorn post_fork hook)
+omnivm.init_runtimes(["go", "javascript"])
+
+# Go — same thread, no IPC, no serialization, GIL released during execution
+result = omnivm.call("go", "6 * 7")   # "42"
+
+# JavaScript — full Node.js with require() and npm packages
+html = omnivm.call("javascript", "JSON.stringify({status: 'ok'})")
+
+# Errors become Python exceptions, not process crashes
+try:
+    omnivm.call("go", "invalid!!!")
+except RuntimeError as e:
+    print(f"Caught: {e}")  # Go compilation error, not a segfault
+```
+
+### Pre-compiled Go Plugins
+
+Write Go as Go, not as strings. Compile plugins ahead of time and call exported functions directly:
+
+```python
+# Load pre-compiled Go plugin
+omnivm.load_plugin("go", "/app/plugins/sessvalidator.so")
+
+# Call exported function — no compilation, no overhead
+user_id = omnivm.call("go", 'sessvalidator.ValidateSession("session_key")')
+```
+
+### Django / WSGI Integration (Prefork-Safe)
+
+For Gunicorn/Passenger prefork servers, use `libomnivm.so` — a c-shared library loaded post-fork. The Go runtime starts fresh in each worker, avoiding the fatal "Go runtime doesn't survive fork()" problem.
+
+```dockerfile
+FROM python:3.14-slim
+
+# Install omnivm Python package (pure Python wrapper + libomnivm.so)
+COPY --from=omnivm /usr/local/lib/libomnivm.so /usr/local/lib/
+COPY --from=omnivm /usr/local/lib/python3.14/dist-packages/omnivm/ \
+     /usr/local/lib/python3.14/dist-packages/omnivm/
+RUN ldconfig
+
+# Build Go plugins as c-shared libraries (not -buildmode=plugin)
+COPY go_plugins/ /tmp/go_plugins/
+RUN cd /tmp/go_plugins/sessvalidator && \
+    go build -buildmode=c-shared -o /app/plugins/sessvalidator.so .
+
+# Everything else is standard Django
+COPY . /app
+RUN pip install -r requirements.txt
+CMD ["gunicorn", "myapp.wsgi:application", "--config", "gunicorn.conf.py"]
+```
+
+```python
+# gunicorn.conf.py
+preload_app = True  # Django preloads in master — safe, no Go loaded yet
+
+def post_fork(server, worker):
+    """Each worker loads the Go runtime fresh after fork."""
+    import omnivm
+    omnivm.init_runtimes(["go", "javascript", "java", "ruby"])  # dlopen("libomnivm.so")
+    omnivm.load_plugin("go", "/app/plugins/sessvalidator.so")
+    omnivm.execute("javascript", "global.marked = require('marked')")
+    omnivm.execute("ruby", "require 'json'")
+
+# middleware.py
+from omnivm import call
+
+class GoSessionMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        session_key = request.COOKIES.get("sessionid")
+        if session_key:
+            user_id = call("go", f'sessvalidator.ValidateSession({session_key!r})')
+            if user_id:
+                request._go_validated_user_id = user_id
+        return self.get_response(request)
+
+# views.py
+from omnivm import call
+import json
+
+def my_view(request):
+    # Go for CPU-bound work (GIL released — other threads aren't blocked)
+    hash_result = call("go", f'hasher.ComputeHash({request.path!r})')
+
+    # Node.js for npm ecosystem
+    html = call("javascript", f'marked.parse({json.dumps(markdown_text)})')
+
+    return JsonResponse({"hash": hash_result, "html": html})
+```
+
+**Why c-shared instead of the OmniVM binary?** Go's runtime (GC, scheduler, goroutines) doesn't survive `fork()`. A Go binary is a running Go runtime from the moment it starts — forked children inherit corrupted state. `libomnivm.so` sidesteps this: the master process is pure CPython (no Go), and each worker `dlopen`s the library post-fork, starting a fresh Go runtime.
+
+**Go plugins use `-buildmode=c-shared`**, not `-buildmode=plugin`. Go's plugin system requires the host binary to be a regular executable with plugin metadata tables; a c-shared host can't load plugins. Instead, Go plugins are built as c-shared libraries themselves and loaded via `dlopen`/`dlsym`.
+
+### Observability
+
+Thread-local call timing for Django middleware:
+
+```python
+from omnivm import call, thread_local_total_ms, thread_local_reset
+
+class OmniVMMetricsMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        thread_local_reset()
+        response = self.get_response(request)
+        response["X-OmniVM-Time-Ms"] = f"{thread_local_total_ms():.2f}"
+        return response
+```
+
+### Two Modes: Interpreter vs Library
+
+| | OmniVM as Python interpreter | `libomnivm.so` (c-shared) |
+|---|---|---|
+| **How** | Symlink `python3` → `omnivm` | `import omnivm` + `init_runtimes()` |
+| **Prefork (Gunicorn)** | Not compatible (Go runtime dies on fork) | Works — Go loads post-fork |
+| **Single process** | Works (`gunicorn --workers 1 --threads N`) | Works |
+| **`pip install`** | Not needed — it's the interpreter | `pip install omnivm` |
+| **All 5 runtimes** | Yes (Python, JS, Go, Java, Ruby) | Yes (Python host + JS, Go, Java, Ruby) |
+| **Go plugins** | `-buildmode=plugin` (standard) | `-buildmode=c-shared` (dlopen) |
+
+For most Django deployments (Gunicorn prefork), use the c-shared library.
+
+### Python API Reference
+
+| Function | Description |
+|----------|-------------|
+| `omnivm.init_runtimes(["go", "javascript", "java", "ruby"])` | Initialize specified runtimes (call post-fork) |
+| `omnivm.call(runtime, code)` | Eval expression, return result as string (GIL released) |
+| `omnivm.execute(runtime, code)` | Execute code (for side effects) |
+| `omnivm.load_plugin("go", path)` | Load pre-compiled Go plugin `.so` |
+| `omnivm.shutdown()` | Tear down runtimes (optional — process exit works too) |
+
 ### Lazy Initialization
 
 Only the runtime you need is loaded. Running a Go file skips all embedded runtimes entirely (~60ms). Running a Python script only initializes CPython — no JVM, no Ruby, no V8 startup penalty.
@@ -131,6 +292,44 @@ C pthread watchdog (independent of Go scheduler)
 Node.js is embedded via the C++ Embedder API with manual libuv pumping — `uv_run(loop, UV_RUN_NOWAIT)` gives JavaScript cooperative CPU time without starving other runtimes. This means `require()`, npm packages, `setTimeout`, Promises, and the full Node.js API all work.
 
 On Linux, the dispatcher uses **epoll** with eventfd (task wakeup), timerfd (heartbeat), and the libuv backend fd (V8 I/O) — replacing the 1ms polling ticker with event-driven wakeups. A **C pthread watchdog** independently monitors task execution time and dispatches runtime-specific interrupts (Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby proxy `Thread#raise`).
+
+### How a Cross-Runtime Call Works (Internals)
+
+When Python calls `omnivm.call("javascript", "Math.sqrt(144)")`:
+
+1. **Python bridge** (`py_omnivm_call` in `pkg/python/python.go`): releases the GIL via `PyEval_SaveThread`, calls the C function pointer `g_bridge_call("javascript", "Math.sqrt(144)")`.
+2. **Bridge gateway** (`OmniCall` in the main binary): receives the call on whatever thread invoked it. Looks up the target runtime and calls `jsRuntime.Eval(code)` directly — no dispatcher round-trip for bridge calls.
+3. **V8 entry** (`omnivm_v8_eval` in `scripts/v8_bridge_node.cc`): acquires `v8::Locker`, enters the isolate/context, compiles and runs the code, returns the result as a C string.
+4. **Return path**: `OmniCall` returns the result string. Python bridge re-acquires the GIL via `PyEval_RestoreThread`, converts the C string to a Python object.
+
+No thread ever holds two runtime locks simultaneously — the source lock is always released before acquiring the target lock. This makes deadlocks impossible by construction.
+
+### Thread Model
+
+```
+Main OS thread (Golden Thread):
+  runtime.LockOSThread() — pinned for lifetime of process
+  Runs: dispatcher loop, all scheduled tasks, V8/Python/Java direct calls
+
+Ruby proxy pthread:
+  Holds GVL permanently, processes requests via condvar
+  Ruby 3.3's M:N scheduler can't schedule threads on non-main pthreads
+  All Ruby calls (Golden Thread or foreign) route through this proxy
+
+Foreign threads (JVM threads, Python threads, Go goroutines):
+  Can call any runtime directly via thread-safe entry points
+  Each runtime entry acquires its own lock (GIL/Locker/GVL-proxy/JNI attach)
+  Watchdog timeout protection only applies to Golden Thread tasks
+```
+
+### Watchdog
+
+The C pthread watchdog (`pkg/watchdog/`) runs independently of Go's scheduler using `pthread_cond_timedwait` with `CLOCK_MONOTONIC`. When armed:
+
+1. The dispatcher sets `active_runtime` before each task
+2. If the task exceeds the timeout, the watchdog fires the runtime-specific interrupt
+3. The interrupt fires repeatedly until the task completes or the watchdog is disarmed
+4. A generation counter prevents stale timeouts after rapid arm/disarm cycles
 
 ## Cross-Runtime Calls
 
@@ -427,12 +626,14 @@ All runtime calls serialize through the Golden Thread — Python and JavaScript 
 
 ```
 cmd/
-  omnivm/            Main binary (REPL + CLI + `run` subcommand)
+  omnivm/            Main binary (REPL + CLI + `run` subcommand + Python interpreter mode)
+  libomnivm/         c-shared library for pip-installable Python package (prefork-safe)
   manifest-runner/   JSON manifest executor
   stresstest/        71-test stress suite
   express-demo/      Express + Python/Ruby/Java HTTP demo
   telephone/         Cross-runtime telephone game
 pkg/
+  engine/            Shared runtime management core (used by both omnivm and libomnivm)
   omnivm/            Library API (VM, Config, Call, Execute, Shutdown)
   cli/               CLI parsing, language detection, shebang handling
   errmsg/            Error enhancement (hints, traceback formatting)
@@ -497,4 +698,6 @@ make test-all             # Everything: build + CLI + stress + manifests
 - **Node.js over Duktape**: Duktape was ES5.1 — no `const`/`let`, no arrow functions, no `require()`, no npm. Node.js (via `libnode-dev` / `libnode127`) gives full ES2024+, the npm ecosystem, and built-in modules.
 - **Skip `Py_FinalizeEx`, `ruby_cleanup()`, `V8::Dispose()`**: All crash in a polyglot process. Process exit reclaims resources.
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
-- **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`.
+- **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`. The fork guard is **conditional** — it only fires when JVM or Ruby are loaded. Go+JS-only configurations are fork-safe when runtimes are initialized post-fork (the Gunicorn/Passenger pattern).
+- **Python interpreter mode**: When symlinked as `python3`, OmniVM calls `Py_BytesMain()` — CPython's own entry point. `PyImport_AppendInittab("omnivm", ...)` registers the `omnivm` module before CPython initializes, so `import omnivm` works in any Python code. Best for single-process deployments (dev, `gunicorn --workers 1 --threads N`, uvicorn). Not compatible with prefork — Go's runtime doesn't survive `fork()`.
+- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host — cross-runtime bridge calls back into the already-running CPython). Full epoll dispatcher, watchdog, and cross-runtime bridge — feature parity with the main binary. The master process is pure CPython — no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown — the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.

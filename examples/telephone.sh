@@ -36,7 +36,7 @@ DATA=$(docker run --rm omnivm:latest -js "
 var msg = $DATA;
 msg.chain.push({
     language: 'JavaScript',
-    engine: 'Duktape',
+    engine: 'Node.js',
     said: 'jumps over the lazy dog',
     computed: msg.checksum * 2
 });
