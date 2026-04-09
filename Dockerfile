@@ -121,7 +121,7 @@ FROM builder AS tester
 WORKDIR /build
 
 # Pure Go tests (race detector enabled)
-RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/
+RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/ ./pkg/watchdog/
 
 # Go plugin tests — cannot use -race because the test binary and dynamically
 # compiled plugins must share identical runtime/internal/sys instrumentation.
@@ -132,7 +132,8 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
     go test -v -count=1 ./pkg/python/ 2>&1 && \
     go test -v -count=1 ./pkg/javascript/ 2>&1 && \
-    go test -v -count=1 ./pkg/ruby/ 2>&1; \
+    go test -v -count=1 ./pkg/ruby/ 2>&1 && \
+    go test -v -count=1 ./pkg/engine/ 2>&1; \
     echo "Runtime tests completed"
 
 # ============================================================
