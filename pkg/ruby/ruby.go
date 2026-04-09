@@ -8,6 +8,7 @@ package ruby
 #include <ruby.h>
 #include <ruby/version.h>
 #include <ruby/thread.h>
+#include <ruby/debug.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -74,10 +75,7 @@ static volatile int rb_fproxy_ready = 0;
 // Proxy thread's pthread_t (stored for reference).
 static pthread_t rb_fproxy_tid;
 
-// Pipe-based interrupt mechanism (replaces SIGUSR1).
-// The watchdog writes to the pipe; a Ruby watcher thread reads from it
-// and calls Thread#raise(Interrupt) on the proxy thread.
-static int ruby_interrupt_pipe[2] = {-1, -1};
+// Proxy thread's Ruby thread object (for GC pinning).
 static VALUE ruby_proxy_thread_val = Qnil;
 
 // NOTE: rb_fproxy_serve (Ruby Thread-based proxy) is no longer used.
@@ -185,12 +183,6 @@ static void* ruby_init_thread_func(void* arg) {
 
         omnivm_ruby_register_bridge();
 
-        if (pipe(ruby_interrupt_pipe) != 0) {
-            ruby_init_error = 1;
-            ruby_init_done = 1;
-            return NULL;
-        }
-
         // Install fork guard
         int state = 0;
         rb_eval_string_protect(
@@ -199,6 +191,10 @@ static void* ruby_init_thread_func(void* arg) {
             &state
         );
     }
+
+    // Store the proxy's Ruby thread object for interrupt delivery
+    ruby_proxy_thread_val = rb_thread_current();
+    rb_gc_register_address(&ruby_proxy_thread_val);
 
     // Signal to Go that init/restart is complete
     ruby_init_done = 1;
@@ -241,13 +237,25 @@ static int omnivm_ruby_init_on_thread(void) {
     return 0;
 }
 
-// Write to the interrupt pipe — safe from any thread, no GVL needed.
-// The Ruby watcher thread reads the byte and raises Interrupt on the proxy.
-static void omnivm_ruby_interrupt(void) {
-    char c = 1;
-    if (ruby_interrupt_pipe[1] >= 0) {
-        (void)write(ruby_interrupt_pipe[1], &c, 1);
+// Volatile interrupt flag: set by watchdog (any thread), checked by
+// Ruby trace hook (runs with GVL on proxy pthread).
+static volatile int rb_interrupt_requested = 0;
+
+// Trace hook: fires on every Ruby line event. If the interrupt flag
+// is set, raises Interrupt. This runs with the GVL held on the proxy.
+static void rb_interrupt_trace_hook(rb_event_flag_t event, VALUE data,
+                                     VALUE self, ID mid, VALUE klass) {
+    (void)event; (void)data; (void)self; (void)mid; (void)klass;
+    if (rb_interrupt_requested) {
+        rb_interrupt_requested = 0;
+        rb_raise(rb_eInterrupt, "execution expired");
     }
+}
+
+// Interrupt Ruby execution — safe from any thread, no GVL needed.
+// Sets a volatile flag that the trace hook checks on every Ruby line.
+static void omnivm_ruby_interrupt(void) {
+    rb_interrupt_requested = 1;
 }
 
 // Returns function pointer for the watchdog to call.
@@ -373,10 +381,27 @@ static int omnivm_ruby_init(void) {
             "    end\n"
             "    self\n"
             "  end\n"
+            "end\n"
+            "module Kernel\n"
+            "  def loop\n"
+            "    return to_enum(:loop) unless block_given?\n"
+            "    begin\n"
+            "      while true\n"
+            "        yield\n"
+            "      end\n"
+            "    rescue StopIteration => e\n"
+            "      e.result\n"
+            "    end\n"
+            "  end\n"
+            "  module_function :loop\n"
             "end\n",
             &state
         );
     }
+
+    // Install trace hook for interrupt delivery. The hook fires on every
+    // Ruby line event and checks the volatile interrupt flag.
+    rb_add_event_hook(rb_interrupt_trace_hook, RUBY_EVENT_LINE, Qnil);
 
     // Fix Ruby's signal handlers to include SA_ONSTACK (required by Go)
     fix_signal_handlers_sa_onstack();
@@ -534,14 +559,6 @@ static void omnivm_ruby_shutdown(void) {
         pthread_cond_broadcast(&rb_fproxy_res_cv);
         pthread_mutex_unlock(&rb_fproxy_mtx);
 
-        // Close interrupt pipe
-        if (ruby_interrupt_pipe[0] >= 0) {
-            close(ruby_interrupt_pipe[0]);
-            close(ruby_interrupt_pipe[1]);
-            ruby_interrupt_pipe[0] = -1;
-            ruby_interrupt_pipe[1] = -1;
-        }
-
         // NOTE: We intentionally do NOT call ruby_cleanup() here.
         // In a polyglot process, ruby_cleanup() calls rb_thread_terminate_all()
         // which sends signals to terminate threads. When the JVM is also running,
@@ -607,8 +624,8 @@ func (r *Runtime) Initialize() error {
 }
 
 // InterruptFuncPtr returns a C function pointer that the watchdog can call
-// to interrupt Ruby execution. The function writes to a pipe; a Ruby watcher
-// thread reads from it and raises Interrupt on the proxy thread.
+// to interrupt Ruby execution. Sets a volatile flag that a Ruby trace hook
+// checks on every line event, raising Interrupt when set.
 func (r *Runtime) InterruptFuncPtr() unsafe.Pointer {
 	return unsafe.Pointer(C.omnivm_ruby_get_interrupt_ptr())
 }

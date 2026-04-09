@@ -11,7 +11,7 @@
 // Interrupt mechanisms per runtime:
 //   - Python: pipe write (safe from any thread, no GIL needed)
 //   - JavaScript: v8::Isolate::TerminateExecution() (thread-safe atomic flag)
-//   - Ruby: pipe write → watcher thread raises Interrupt on proxy thread
+//   - Ruby: volatile flag → trace hook raises Interrupt at next line event
 //   - JVM: future (JNI Thread.interrupt())
 package watchdog
 
@@ -82,7 +82,7 @@ static void* watchdog_loop(void* arg) {
 		case 2: // JavaScript — V8 atomic flag (thread-safe)
 			if (v8_terminate_fn) v8_terminate_fn();
 			break;
-		case 3: // Ruby — pipe write (safe from any thread)
+		case 3: // Ruby — sets volatile flag checked by trace hook
 			if (rb_interrupt_fn) rb_interrupt_fn();
 			break;
 		case 4: // JVM — future: JNI Thread.interrupt()
@@ -185,7 +185,7 @@ func SetV8Terminate(fn unsafe.Pointer) {
 }
 
 // SetRubyInterrupt sets the function pointer called to interrupt Ruby execution.
-// The function writes to a pipe; a watcher thread raises Interrupt on the proxy.
+// The function sets a volatile flag checked by a Ruby trace hook.
 func SetRubyInterrupt(fn unsafe.Pointer) {
 	C.omnivm_watchdog_set_rb_interrupt((*[0]byte)(fn))
 }
