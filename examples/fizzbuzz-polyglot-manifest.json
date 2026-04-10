@@ -21,15 +21,15 @@
     },
     {
       "op": "func_def",
-      "name": "rb_buzz",
+      "name": "js_buzz",
       "params": [{"name": "n"}],
       "body": [
         {
           "op": "return",
           "from": {
             "op": "eval",
-            "runtime": "ruby",
-            "code": "n.to_i % 5 == 0 ? 'Buzz' : ''",
+            "runtime": "javascript",
+            "code": "parseInt(n) % 5 === 0 ? 'Buzz' : ''",
             "bind": "__ret",
             "captures": {"n": "n"}
           }
@@ -51,7 +51,7 @@
         {
           "op": "eval",
           "runtime": "javascript",
-          "code": "rb_buzz(n)",
+          "code": "js_buzz(n)",
           "bind": "b",
           "captures": {"n": "n"}
         },
@@ -70,31 +70,15 @@
       "bodyRuntime": "javascript"
     },
     {
-      "op": "func_def",
-      "name": "go_range",
-      "params": [{"name": "n"}],
-      "body": [],
-      "bodyRuntime": "go",
-      "source": "package polyfunc\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc GoRange(n interface{}) interface{} {\n\tcount := n.(int)\n\tnums := make([]string, count)\n\tfor i := 0; i < count; i++ {\n\t\tnums[i] = fmt.Sprintf(\"%d\", i+1)\n\t}\n\treturn strings.Join(nums, \",\")\n}",
-      "exports": ["GoRange"]
-    },
-    {
-      "op": "eval",
-      "runtime": "javascript",
-      "code": "go_range(20)",
-      "bind": "nums"
-    },
-    {
-      "op": "eval",
-      "runtime": "javascript",
-      "code": "nums.split(',')",
+      "op": "declare",
       "bind": "numArr",
-      "captures": {"nums": "nums"}
+      "value": {"kind": "literal", "value": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}
     },
     {
-      "op": "foreach",
-      "items": "numArr",
-      "as": "n",
+      "op": "loop",
+      "mode": "foreach",
+      "variable": "n",
+      "iterable": {"kind": "ref", "name": "numArr"},
       "body": [
         {
           "op": "eval",

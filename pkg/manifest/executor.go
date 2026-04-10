@@ -683,6 +683,10 @@ func (e *Executor) opConcat(op *Op) (interface{}, error) {
 			if !ok {
 				return nil, fmt.Errorf("concat: undefined ref %q", seg.Name)
 			}
+			// Unwrap RuntimeRef to get the actual value
+			if ref, ok := val.(RuntimeRef); ok {
+				val = ref.Value
+			}
 			buf.WriteString(fmt.Sprintf("%v", val))
 		case "eval":
 			rtName := seg.Runtime

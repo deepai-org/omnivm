@@ -57,8 +57,8 @@
           "op": "return",
           "from": {
             "op": "eval",
-            "runtime": "ruby",
-            "code": "name.strip.split(/\\s+/).map(&:capitalize).join(' ')",
+            "runtime": "python",
+            "code": "' '.join(w.capitalize() for w in name.strip().split())",
             "bind": "__ret",
             "captures": {"name": "name"}
           }

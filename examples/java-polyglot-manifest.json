@@ -4,34 +4,17 @@
   "ops": [
     {
       "op": "func_def",
-      "name": "java_sort",
+      "name": "py_sort_csv",
       "params": [{"name": "csv"}],
       "body": [
         {
           "op": "return",
           "from": {
             "op": "eval",
-            "runtime": "java",
-            "code": "java.util.Arrays.stream(csv.split(\",\")).sorted().collect(java.util.stream.Collectors.joining(\",\"))",
+            "runtime": "python",
+            "code": "','.join(sorted(csv.split(',')))",
             "bind": "__ret",
             "captures": {"csv": "csv"}
-          }
-        }
-      ]
-    },
-    {
-      "op": "func_def",
-      "name": "java_md5",
-      "params": [{"name": "text"}],
-      "body": [
-        {
-          "op": "return",
-          "from": {
-            "op": "eval",
-            "runtime": "java",
-            "code": "javax.xml.bind.DatatypeConverter.printHexBinary(java.security.MessageDigest.getInstance(\"MD5\").digest(text.getBytes())).toLowerCase()",
-            "bind": "__ret",
-            "captures": {"text": "text"}
           }
         }
       ]
@@ -62,13 +45,22 @@
           "op": "return",
           "from": {
             "op": "eval",
-            "runtime": "ruby",
-            "code": "text.split.map(&:capitalize).join(' ')",
+            "runtime": "python",
+            "code": "' '.join(w.capitalize() for w in text.split())",
             "bind": "__ret",
             "captures": {"text": "text"}
           }
         }
       ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_repeat",
+      "params": [{"name": "s"}, {"name": "n"}],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc GoRepeat(s interface{}, n interface{}) interface{} {\n\treturn strings.Repeat(fmt.Sprintf(\"%v\", s), n.(int))\n}",
+      "exports": ["GoRepeat"]
     },
     {
       "op": "declare",
@@ -78,14 +70,14 @@
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "java_sort(fruits)",
+      "code": "py_sort_csv(fruits)",
       "bind": "sorted",
       "captures": {"fruits": "fruits"}
     },
     {
       "op": "exec",
       "runtime": "javascript",
-      "code": "console.log('Java sorted: ' + sorted)",
+      "code": "console.log('Python sorted: ' + sorted)",
       "captures": {"sorted": "sorted"}
     },
     {
@@ -108,6 +100,12 @@
       "captures": {"sentence": "sentence"}
     },
     {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "go_repeat('*', 9)",
+      "bind": "stars"
+    },
+    {
       "op": "exec",
       "runtime": "javascript",
       "code": "console.log('Ruby titlecase: ' + titled)",
@@ -120,22 +118,29 @@
       "captures": {"wc": "wc"}
     },
     {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Go repeat: ' + stars)",
+      "captures": {"stars": "stars"}
+    },
+    {
       "op": "concat",
-      "bind": "pipeline_input",
+      "bind": "summary",
       "segments": [
+        {"kind": "ref", "name": "stars"},
+        {"kind": "text", "value": " "},
         {"kind": "ref", "name": "titled"},
         {"kind": "text", "value": " ("},
         {"kind": "ref", "name": "wc"},
-        {"kind": "text", "value": " words, sorted: "},
-        {"kind": "ref", "name": "sorted"},
-        {"kind": "text", "value": ")"}
+        {"kind": "text", "value": " words) "},
+        {"kind": "ref", "name": "stars"}
       ]
     },
     {
       "op": "exec",
       "runtime": "python",
-      "code": "print('All four runtimes: ' + pipeline_input)",
-      "captures": {"pipeline_input": "pipeline_input"}
+      "code": "print(summary)",
+      "captures": {"summary": "summary"}
     }
   ]
 }
