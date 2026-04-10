@@ -994,6 +994,71 @@ func TestYieldDelegate(t *testing.T) {
 	}
 }
 
+// --- Ruby alias prefix tests ---
+
+func TestRubyAliasPrefix(t *testing.T) {
+	e, _ := makeExecutor("ruby")
+	e.setBinding("name", "test")
+	e.setBinding("count", 42)
+
+	prefix := e.rubyAliasPrefix(map[string]string{"name": "name"})
+	if !contains(prefix, "name = $name") {
+		t.Errorf("prefix = %q, want 'name = $name'", prefix)
+	}
+	// Should NOT contain count since we passed explicit captures
+	if contains(prefix, "count") {
+		t.Error("explicit captures should not include other bindings")
+	}
+}
+
+func TestRubyAliasPrefixAutoInject(t *testing.T) {
+	e, _ := makeExecutor("ruby")
+	e.setBinding("x", "hello")
+	e.setBinding("y", 42)
+
+	prefix := e.rubyAliasPrefix(nil)
+	if !contains(prefix, "x = $x") {
+		t.Errorf("prefix = %q, want 'x = $x'", prefix)
+	}
+	if !contains(prefix, "y = $y") {
+		t.Errorf("prefix = %q, want 'y = $y'", prefix)
+	}
+}
+
+func TestRubyAliasPrefixSkipsImportRef(t *testing.T) {
+	e, _ := makeExecutor("ruby")
+	e.setBinding("json", ImportRef{Runtime: "ruby", Name: "json"})
+	e.setBinding("x", 1)
+
+	prefix := e.rubyAliasPrefix(nil)
+	if contains(prefix, "json") {
+		t.Error("should skip ImportRef bindings")
+	}
+}
+
+func TestRubyAliasPrefixSkipsSameRuntime(t *testing.T) {
+	e, _ := makeExecutor("ruby")
+	e.setBinding("rv", RuntimeRef{Runtime: "ruby", VarName: "rv", Value: "x"})
+	e.setBinding("pv", RuntimeRef{Runtime: "python", VarName: "pv", Value: "y"})
+
+	prefix := e.rubyAliasPrefix(nil)
+	if contains(prefix, "rv = $rv") {
+		t.Error("should skip same-runtime RuntimeRef")
+	}
+	if !contains(prefix, "pv = $pv") {
+		t.Error("should include cross-runtime RuntimeRef")
+	}
+}
+
+// --- InjectRubyCaptures tests ---
+
+func TestInjectRubyCapturesUsesGlobals(t *testing.T) {
+	code := injectRubyCaptures(map[string]string{"name": `"alice"`})
+	if !contains(code, "$name") {
+		t.Errorf("should use $global vars, got: %s", code)
+	}
+}
+
 // helper
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))

@@ -397,7 +397,7 @@ docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-conc
 # Showcase examples
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-polyglot-manifest.json
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/data-pipeline-manifest.json
-docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/java-polyglot-manifest.json
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/polyglot-pipeline-manifest.json
 
 # Run the full manifest test suite (11 tests, 6 categories)
 make test-manifests

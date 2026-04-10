@@ -231,6 +231,12 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("exec captures: %w", err)
 		}
+	} else if rt.Name() == "ruby" && autoCode != "" {
+		// Ruby auto-injected $globals need local aliases
+		prefix := e.rubyAliasPrefix(nil)
+		if prefix != "" {
+			code = prefix + code
+		}
 	}
 
 	// Convert Python f-strings to JS template literals when targeting JavaScript
@@ -279,11 +285,13 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 	// Auto-inject current scope bindings so eval code can
 	// reference manifest variables without explicit captures.
 	autoCode := e.autoInjectScope(rt.Name())
+	var autoInjectedRuby bool
 	if autoCode != "" {
 		injectResult := rt.Execute(autoCode)
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("eval auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
+		autoInjectedRuby = rt.Name() == "ruby"
 	}
 
 	// Inject explicit captures (overrides auto-injected values)
@@ -298,6 +306,34 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 	}
 
 	code := op.Code
+
+	// Ruby: captures were injected as $globals. Create local aliases
+	// so user code can reference variables without the $ prefix.
+	if rt.Name() == "ruby" && (len(op.Captures) > 0 || autoInjectedRuby) {
+		prefix := e.rubyAliasPrefix(op.Captures)
+		if prefix != "" {
+			if op.Bind != "" {
+				// Ruby locals don't persist across Execute/Eval boundaries.
+				// Combine aliases + assignment into a single Execute() call.
+				aliasCode := strings.TrimSuffix(prefix, "; ")
+				assignCode := runtimeAssign(rt.Name(), op.Bind, code)
+				combinedCode := aliasCode + "\n" + assignCode
+				execResult := rt.Execute(combinedCode)
+				if execResult.Err != nil {
+					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
+				}
+				valResult := rt.Eval(runtimeVarRef(rt.Name(), op.Bind))
+				val := valResult.Value
+				if val == nil {
+					val = valResult.Output
+				}
+				ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
+				e.setBinding(op.Bind, ref)
+				return val, nil
+			}
+			code = prefix + code
+		}
+	}
 
 	// If bind is set, persist the result in the runtime's global scope
 	// so subsequent ops in the same runtime can reference it directly.
@@ -853,6 +889,10 @@ func (e *Executor) evalCondition(cond *CondExpr) (bool, error) {
 				if injectResult.Err != nil {
 					return false, fmt.Errorf("condition auto-inject [%s]: %w", rtName, injectResult.Err)
 				}
+				// Ruby: create local aliases from $globals
+				if rtName == "ruby" {
+					code = e.rubyAliasPrefix(nil) + code
+				}
 			}
 		}
 
@@ -1063,6 +1103,37 @@ func (e *Executor) opAwait(op *Op) (interface{}, error) {
 		e.setBinding(op.Bind, val)
 	}
 	return val, nil
+}
+
+// rubyAliasPrefix generates Ruby code to create local aliases from $global
+// variables. If explicit captures are provided, only those are aliased.
+// Otherwise, all serializable scope bindings are aliased.
+func (e *Executor) rubyAliasPrefix(captures map[string]string) string {
+	var aliases []string
+	if len(captures) > 0 {
+		for varName := range captures {
+			aliases = append(aliases, fmt.Sprintf("%s = $%s", varName, varName))
+		}
+	} else {
+		for _, scope := range e.scopes {
+			for varName, val := range scope {
+				if _, ok := val.(ImportRef); ok {
+					continue
+				}
+				if _, ok := val.(*ChanRef); ok {
+					continue
+				}
+				if ref, ok := val.(RuntimeRef); ok && ref.Runtime == "ruby" {
+					continue
+				}
+				aliases = append(aliases, fmt.Sprintf("%s = $%s", varName, varName))
+			}
+		}
+	}
+	if len(aliases) == 0 {
+		return ""
+	}
+	return strings.Join(aliases, "; ") + "; "
 }
 
 // Scope operations

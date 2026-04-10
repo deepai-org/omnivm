@@ -121,7 +121,7 @@ FROM builder AS tester
 WORKDIR /build
 
 # Pure Go tests (race detector enabled)
-RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/ ./pkg/watchdog/
+RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/ ./pkg/watchdog/ ./pkg/manifest/
 
 # Go plugin tests — cannot use -race because the test binary and dynamically
 # compiled plugins must share identical runtime/internal/sys instrumentation.

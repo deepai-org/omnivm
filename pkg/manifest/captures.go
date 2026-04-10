@@ -155,7 +155,9 @@ func wrapJavaScriptCaptures(code string, captures map[string]string) string {
 		strings.Join(paramVals, ", "))
 }
 
-// wrapRubyCaptures wraps code with local variable assignments from JSON.
+// wrapRubyCaptures wraps code with global variable assignments from JSON.
+// Uses $globals so captures persist across Execute/Eval boundaries and
+// are accessible in the user's code regardless of scope.
 func wrapRubyCaptures(code string, captures map[string]string) string {
 	if len(captures) == 0 {
 		return code
@@ -164,9 +166,13 @@ func wrapRubyCaptures(code string, captures map[string]string) string {
 	var lines []string
 	lines = append(lines, "require 'json'")
 	for varName, jsonVal := range captures {
-		lines = append(lines, fmt.Sprintf("%s = JSON.parse('%s')",
+		lines = append(lines, fmt.Sprintf("$%s = JSON.parse('%s')",
 			varName,
 			escapeRubyString(jsonVal)))
+	}
+	// Also assign to local aliases so user code can reference without $
+	for varName := range captures {
+		lines = append(lines, fmt.Sprintf("%s = $%s", varName, varName))
 	}
 	lines = append(lines, code)
 	return strings.Join(lines, "\n")
@@ -323,12 +329,15 @@ func injectJSCaptures(captures map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
-// injectRubyCaptures generates Ruby code to set capture variables.
+// injectRubyCaptures generates Ruby code to set capture variables as globals.
+// Ruby local variables are scoped to the eval context and don't persist across
+// separate Execute()/Eval() calls. We use global variables ($var) so they
+// persist, matching how Python uses module globals and JS uses globalThis.
 func injectRubyCaptures(captures map[string]string) string {
 	var lines []string
 	lines = append(lines, "require 'json'")
 	for varName, jsonVal := range captures {
-		lines = append(lines, fmt.Sprintf("%s = JSON.parse('%s')",
+		lines = append(lines, fmt.Sprintf("$%s = JSON.parse('%s')",
 			varName, escapeRubyString(jsonVal)))
 	}
 	return strings.Join(lines, "\n")

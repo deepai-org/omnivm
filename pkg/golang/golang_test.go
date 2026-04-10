@@ -144,3 +144,111 @@ func helper() {}
 		t.Fatal("expected error for missing main()")
 	}
 }
+
+func TestExecuteSnippetUndefinedVar(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Execute(`fmt.Println(undefinedVariable)`)
+	if result.Err == nil {
+		t.Fatal("expected compile error for undefined variable")
+	}
+	if !strings.Contains(result.Err.Error(), "undefined") {
+		t.Errorf("error = %q, expected 'undefined'", result.Err)
+	}
+}
+
+func TestExecuteSyntaxError(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Execute(`if { broken`)
+	if result.Err == nil {
+		t.Fatal("expected compile error for syntax error")
+	}
+}
+
+func TestEvalExpression(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Eval("2 * 21")
+	if result.Err != nil {
+		t.Fatalf("Eval: %v", result.Err)
+	}
+	if result.Value != "42" {
+		t.Errorf("value = %q, want '42'", result.Value)
+	}
+}
+
+func TestEvalStringExpression(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Eval(`"hello" + " " + "world"`)
+	if result.Err != nil {
+		t.Fatalf("Eval: %v", result.Err)
+	}
+	if result.Value != "hello world" {
+		t.Errorf("value = %q, want 'hello world'", result.Value)
+	}
+}
+
+func TestEvalInvalidExpression(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.Eval("undefined_func()")
+	if result.Err == nil {
+		t.Fatal("expected error for undefined function in eval")
+	}
+}
+
+func TestExecuteFileNotFound(t *testing.T) {
+	rt := newInitialized(t)
+	result := rt.ExecuteFile("/nonexistent/path.go", nil, nil)
+	if result.Err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestExecuteMultipleSnippets(t *testing.T) {
+	rt := newInitialized(t)
+	// Each Execute is independent — verify isolation
+	r1 := rt.Execute(`x := 42; fmt.Println(x)`)
+	if r1.Err != nil {
+		t.Fatalf("first Execute: %v", r1.Err)
+	}
+	if strings.TrimSpace(r1.Output) != "42" {
+		t.Errorf("first output = %q", r1.Output)
+	}
+
+	// Second snippet can't see x from first
+	r2 := rt.Execute(`fmt.Println("independent")`)
+	if r2.Err != nil {
+		t.Fatalf("second Execute: %v", r2.Err)
+	}
+	if strings.TrimSpace(r2.Output) != "independent" {
+		t.Errorf("second output = %q", r2.Output)
+	}
+}
+
+func TestExecuteFilePanic(t *testing.T) {
+	rt := newInitialized(t)
+	f := filepath.Join(t.TempDir(), "panic.go")
+	os.WriteFile(f, []byte(`package main
+
+func main() {
+	panic("deliberate panic")
+}
+`), 0644)
+
+	result := rt.ExecuteFile(f, nil, nil)
+	if result.Err == nil {
+		t.Fatal("expected error from panic")
+	}
+	if !strings.Contains(result.Err.Error(), "panic") {
+		t.Errorf("error = %q, expected 'panic'", result.Err)
+	}
+}
+
+// goModVersion is a package-level function — test it returns a valid version
+func TestGoModVersion(t *testing.T) {
+	v := goModVersion()
+	if v == "" {
+		t.Fatal("goModVersion returned empty string")
+	}
+	if !strings.Contains(v, ".") {
+		t.Errorf("goModVersion = %q, expected major.minor format", v)
+	}
+}
