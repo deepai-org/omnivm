@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "json",
+      "runtime": "python",
+      "bind": "json"
+    },
+    {
+      "op": "import",
+      "path": "re",
+      "runtime": "python",
+      "bind": "re"
+    },
+    {
+      "op": "func_def",
+      "name": "parse_csv_row",
+      "params": [{"name": "line"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "json.dumps(line.split(','))",
+            "bind": "__ret",
+            "captures": {"json": "json", "line": "line"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "validate_email",
+      "params": [{"name": "email"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "'true' if re.match(r'^[\\w.+-]+@[\\w-]+\\.[\\w.]+$', email) else 'false'",
+            "bind": "__ret",
+            "captures": {"re": "re", "email": "email"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "normalize_name",
+      "params": [{"name": "name"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "ruby",
+            "code": "name.strip.split(/\\s+/).map(&:capitalize).join(' ')",
+            "bind": "__ret",
+            "captures": {"name": "name"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "go_hash",
+      "params": [{"name": "s"}],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport \"fmt\"\n\nfunc GoHash(s interface{}) interface{} {\n\tstr := fmt.Sprintf(\"%v\", s)\n\tvar h uint32 = 2166136261\n\tfor _, c := range str {\n\t\th ^= uint32(c)\n\t\th *= 16777619\n\t}\n\treturn fmt.Sprintf(\"%08x\", h)\n}",
+      "exports": ["GoHash"]
+    },
+    {
+      "op": "declare",
+      "bind": "row1",
+      "value": {"kind": "literal", "value": "  john doe  ,john@example.com,42"}
+    },
+    {
+      "op": "declare",
+      "bind": "row2",
+      "value": {"kind": "literal", "value": "  jane  smith ,bad-email,29"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "parse_csv_row(row1)",
+      "bind": "fields1",
+      "captures": {"row1": "row1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "JSON.parse(fields1)",
+      "bind": "arr1",
+      "captures": {"fields1": "fields1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "arr1[0]",
+      "bind": "raw_name1",
+      "captures": {"arr1": "arr1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "arr1[1]",
+      "bind": "email1",
+      "captures": {"arr1": "arr1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "normalize_name(raw_name1)",
+      "bind": "clean_name1",
+      "captures": {"raw_name1": "raw_name1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "validate_email(email1)",
+      "bind": "valid1",
+      "captures": {"email1": "email1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "go_hash(clean_name1)",
+      "bind": "hash1",
+      "captures": {"clean_name1": "clean_name1"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Record 1: name=' + clean_name1 + ' email_valid=' + valid1 + ' hash=' + hash1)",
+      "captures": {"clean_name1": "clean_name1", "valid1": "valid1", "hash1": "hash1"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "parse_csv_row(row2)",
+      "bind": "fields2",
+      "captures": {"row2": "row2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "JSON.parse(fields2)",
+      "bind": "arr2",
+      "captures": {"fields2": "fields2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "arr2[0]",
+      "bind": "raw_name2",
+      "captures": {"arr2": "arr2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "arr2[1]",
+      "bind": "email2",
+      "captures": {"arr2": "arr2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "normalize_name(raw_name2)",
+      "bind": "clean_name2",
+      "captures": {"raw_name2": "raw_name2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "validate_email(email2)",
+      "bind": "valid2",
+      "captures": {"email2": "email2"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "go_hash(clean_name2)",
+      "bind": "hash2",
+      "captures": {"clean_name2": "clean_name2"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Record 2: name=' + clean_name2 + ' email_valid=' + valid2 + ' hash=' + hash2)",
+      "captures": {"clean_name2": "clean_name2", "valid2": "valid2", "hash2": "hash2"}
+    }
+  ]
+}

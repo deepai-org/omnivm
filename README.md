@@ -394,6 +394,11 @@ The manifest executor runs structured JSON programs that dispatch ops across all
 # Run a single manifest
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-concurrency.json
 
+# Showcase examples
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-polyglot-manifest.json
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/data-pipeline-manifest.json
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/java-polyglot-manifest.json
+
 # Run the full manifest test suite (11 tests, 6 categories)
 make test-manifests
 ```
@@ -661,7 +666,7 @@ examples/            Manifest JSON files and sample scripts
 Requires Docker. The multi-stage Dockerfile handles all dependencies (Go, CPython, Node.js, JVM, Ruby). Unit tests run during the build. Integration tests run against the final image.
 
 ```bash
-# Build (runs unit tests during build)
+# Build (runs unit + integration tests during build)
 docker build -t omnivm .
 
 # Run ALL tests against the built image
@@ -673,7 +678,7 @@ docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/manifest-te
 docker run -it --rm omnivm
 ```
 
-Always run the full test suite after a Docker build — unit tests in the build verify compilation, but CLI, stress, and manifest tests verify end-to-end behavior in the final image.
+The Docker build runs three test tiers: (1) unit tests with race detector for pure Go packages, (2) cgo-linked runtime tests for Python/JS/Ruby/Engine, and (3) cross-runtime integration tests that verify all runtimes initialize and interoperate correctly. CLI, stress, and manifest tests run against the final image.
 
 Make targets:
 

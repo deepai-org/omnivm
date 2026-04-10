@@ -133,8 +133,14 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     go test -v -count=1 ./pkg/python/ 2>&1 && \
     go test -v -count=1 ./pkg/javascript/ 2>&1 && \
     go test -v -count=1 ./pkg/ruby/ 2>&1 && \
-    go test -v -count=1 ./pkg/engine/ 2>&1; \
+    go test -v -count=1 ./pkg/engine/ 2>&1 && \
     echo "Runtime tests completed"
+
+# Integration tests (cross-runtime, requires all runtimes initialized)
+RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
+    export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
+    go test -v -count=1 -tags=integration . 2>&1 && \
+    echo "Integration tests completed"
 
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)

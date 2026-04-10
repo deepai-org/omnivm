@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "java_sort",
+      "params": [{"name": "csv"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "java",
+            "code": "java.util.Arrays.stream(csv.split(\",\")).sorted().collect(java.util.stream.Collectors.joining(\",\"))",
+            "bind": "__ret",
+            "captures": {"csv": "csv"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "java_md5",
+      "params": [{"name": "text"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "java",
+            "code": "javax.xml.bind.DatatypeConverter.printHexBinary(java.security.MessageDigest.getInstance(\"MD5\").digest(text.getBytes())).toLowerCase()",
+            "bind": "__ret",
+            "captures": {"text": "text"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "py_wordcount",
+      "params": [{"name": "text"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "str(len(text.split()))",
+            "bind": "__ret",
+            "captures": {"text": "text"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "rb_titlecase",
+      "params": [{"name": "text"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "ruby",
+            "code": "text.split.map(&:capitalize).join(' ')",
+            "bind": "__ret",
+            "captures": {"text": "text"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "declare",
+      "bind": "fruits",
+      "value": {"kind": "literal", "value": "banana,apple,cherry,date,elderberry"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "java_sort(fruits)",
+      "bind": "sorted",
+      "captures": {"fruits": "fruits"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Java sorted: ' + sorted)",
+      "captures": {"sorted": "sorted"}
+    },
+    {
+      "op": "declare",
+      "bind": "sentence",
+      "value": {"kind": "literal", "value": "the quick brown fox jumps over the lazy dog"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "rb_titlecase(sentence)",
+      "bind": "titled",
+      "captures": {"sentence": "sentence"}
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "py_wordcount(sentence)",
+      "bind": "wc",
+      "captures": {"sentence": "sentence"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Ruby titlecase: ' + titled)",
+      "captures": {"titled": "titled"}
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log('Python word count: ' + wc)",
+      "captures": {"wc": "wc"}
+    },
+    {
+      "op": "concat",
+      "bind": "pipeline_input",
+      "segments": [
+        {"kind": "ref", "name": "titled"},
+        {"kind": "text", "value": " ("},
+        {"kind": "ref", "name": "wc"},
+        {"kind": "text", "value": " words, sorted: "},
+        {"kind": "ref", "name": "sorted"},
+        {"kind": "text", "value": ")"}
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "print('All four runtimes: ' + pipeline_input)",
+      "captures": {"pipeline_input": "pipeline_input"}
+    }
+  ]
+}

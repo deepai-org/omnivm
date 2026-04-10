@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "py_fizz",
+      "params": [{"name": "n"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "'Fizz' if int(n) % 3 == 0 else ''",
+            "bind": "__ret",
+            "captures": {"n": "n"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "rb_buzz",
+      "params": [{"name": "n"}],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "ruby",
+            "code": "n.to_i % 5 == 0 ? 'Buzz' : ''",
+            "bind": "__ret",
+            "captures": {"n": "n"}
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "fizzbuzz",
+      "params": [{"name": "n"}],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "py_fizz(n)",
+          "bind": "f",
+          "captures": {"n": "n"}
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "rb_buzz(n)",
+          "bind": "b",
+          "captures": {"n": "n"}
+        },
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "(f + b) || String(n)",
+          "bind": "result",
+          "captures": {"f": "f", "b": "b", "n": "n"}
+        },
+        {
+          "op": "return",
+          "value": {"kind": "ref", "name": "result"}
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "func_def",
+      "name": "go_range",
+      "params": [{"name": "n"}],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc GoRange(n interface{}) interface{} {\n\tcount := n.(int)\n\tnums := make([]string, count)\n\tfor i := 0; i < count; i++ {\n\t\tnums[i] = fmt.Sprintf(\"%d\", i+1)\n\t}\n\treturn strings.Join(nums, \",\")\n}",
+      "exports": ["GoRange"]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "go_range(20)",
+      "bind": "nums"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "nums.split(',')",
+      "bind": "numArr",
+      "captures": {"nums": "nums"}
+    },
+    {
+      "op": "foreach",
+      "items": "numArr",
+      "as": "n",
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "fizzbuzz(n)",
+          "bind": "fb",
+          "captures": {"n": "n"}
+        },
+        {
+          "op": "exec",
+          "runtime": "javascript",
+          "code": "console.log(n + ': ' + fb)",
+          "captures": {"n": "n", "fb": "fb"}
+        }
+      ]
+    }
+  ]
+}
