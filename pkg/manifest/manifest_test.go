@@ -1050,6 +1050,105 @@ func TestRubyAliasPrefixSkipsSameRuntime(t *testing.T) {
 	}
 }
 
+// --- Ruby alias integration with opExec/opEval ---
+
+func TestOpExecRubyAutoInjectAlias(t *testing.T) {
+	e, mocks := makeExecutor("ruby")
+	e.setBinding("greeting", "hello")
+
+	mocks["ruby"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Output: ""}
+	}
+
+	manifest := `{
+		"version": 1, "defaultRuntime": "ruby",
+		"ops": [
+			{"op": "declare", "bind": "greeting", "value": {"kind": "literal", "value": "hello"}},
+			{"op": "exec", "runtime": "ruby", "code": "puts greeting"}
+		]
+	}`
+	m, _ := ParseManifest([]byte(manifest))
+	_ = e.Execute(m)
+
+	// The exec call to ruby should contain the alias prefix
+	found := false
+	for _, call := range mocks["ruby"].execCalls {
+		if contains(call, "greeting = $greeting") && contains(call, "puts greeting") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected Ruby exec to include alias prefix, calls: %v", mocks["ruby"].execCalls)
+	}
+}
+
+func TestOpEvalRubyWithBindCombinesAliasAndAssign(t *testing.T) {
+	e, mocks := makeExecutor("ruby")
+
+	mocks["ruby"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Output: ""}
+	}
+	mocks["ruby"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: "HELLO"}
+	}
+
+	manifest := `{
+		"version": 1, "defaultRuntime": "ruby",
+		"ops": [
+			{"op": "declare", "bind": "text", "value": {"kind": "literal", "value": "hello"}},
+			{"op": "eval", "runtime": "ruby", "code": "text.upcase", "bind": "result", "captures": {"text": "text"}}
+		]
+	}`
+	m, _ := ParseManifest([]byte(manifest))
+	_ = e.Execute(m)
+
+	// Ruby eval-with-bind should use Execute (not Eval) for the combined alias+assign
+	found := false
+	for _, call := range mocks["ruby"].execCalls {
+		if contains(call, "text = $text") && contains(call, "$result = text.upcase") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected combined alias+assign in Execute call, exec calls: %v", mocks["ruby"].execCalls)
+	}
+}
+
+func TestOpEvalRubyNoBind(t *testing.T) {
+	e, mocks := makeExecutor("ruby")
+
+	mocks["ruby"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Output: ""}
+	}
+	mocks["ruby"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: "result"}
+	}
+
+	manifest := `{
+		"version": 1, "defaultRuntime": "ruby",
+		"ops": [
+			{"op": "declare", "bind": "x", "value": {"kind": "literal", "value": "val"}},
+			{"op": "eval", "runtime": "ruby", "code": "x.length", "captures": {"x": "x"}}
+		]
+	}`
+	m, _ := ParseManifest([]byte(manifest))
+	_ = e.Execute(m)
+
+	// Without bind, should use Eval with prefix prepended
+	found := false
+	for _, call := range mocks["ruby"].evalCalls {
+		if contains(call, "x = $x") && contains(call, "x.length") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected eval call with alias prefix, eval calls: %v", mocks["ruby"].evalCalls)
+	}
+}
+
 // --- InjectRubyCaptures tests ---
 
 func TestInjectRubyCapturesUsesGlobals(t *testing.T) {

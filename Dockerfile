@@ -142,6 +142,9 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     go test -v -count=1 -tags=integration . 2>&1 && \
     echo "Integration tests completed"
 
+# Python package unit tests (pyomnivm — pure Python, no libomnivm.so needed)
+RUN python3 -m unittest discover -s pyomnivm -p 'test_*.py' -v
+
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)
 # ============================================================
