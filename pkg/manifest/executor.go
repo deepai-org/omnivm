@@ -53,6 +53,7 @@ type Executor struct {
 	funcs           map[string]*FuncDef
 	goFuncs         map[string]interface{}
 	yieldCollectors [][]interface{} // stack of yield collectors for nested generators
+	bridgeOps       map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
 }
 
 // NewExecutor creates an Executor with the given runtimes.
@@ -120,6 +121,12 @@ if 'requests' not in _s.modules:
 // Execute runs all top-level ops in the manifest sequentially.
 func (e *Executor) Execute(m *Manifest) error {
 	e.defaultRuntime = m.DefaultRuntime
+	e.bridgeOps = buildBridgeIndex(m.Bridges)
+
+	if m.TypeSummary != nil && m.TypeSummary.Errors > 0 {
+		fmt.Fprintf(os.Stderr, "warning: manifest has %d type errors that will fail at runtime\n", m.TypeSummary.Errors)
+	}
+
 	e.setupRuntimeBuiltins()
 	_, err := e.executeOps(m.Ops)
 	if _, ok := err.(ErrReturn); ok {

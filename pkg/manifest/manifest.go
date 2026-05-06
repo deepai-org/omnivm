@@ -8,9 +8,30 @@ import "encoding/json"
 
 // Manifest is the top-level structure of a dispatch manifest.
 type Manifest struct {
-	Version        int    `json:"version"`
-	DefaultRuntime string `json:"defaultRuntime"`
-	Ops            []*Op  `json:"ops"`
+	Version        int          `json:"version"`
+	DefaultRuntime string       `json:"defaultRuntime"`
+	Ops            []*Op        `json:"ops"`
+	Bridges        []*BridgeOp  `json:"bridges,omitempty"`
+	TypeSummary    *TypeSummary `json:"typeSummary,omitempty"`
+}
+
+// BridgeOp describes a type-aware transformation at a cross-runtime boundary.
+// Emitted by the PolyScript compiler's type system.
+type BridgeOp struct {
+	Binding string                 `json:"binding"`
+	Op      string                 `json:"op"`
+	From    string                 `json:"from"`
+	To      string                 `json:"to"`
+	Meta    map[string]interface{} `json:"meta,omitempty"`
+}
+
+// TypeSummary is a diagnostic summary of cross-runtime type crossings.
+type TypeSummary struct {
+	Crossings int `json:"crossings"`
+	Safe      int `json:"safe"`
+	Coerce    int `json:"coerce"`
+	Check     int `json:"check"`
+	Errors    int `json:"errors"`
 }
 
 // Op represents a single operation in the manifest.

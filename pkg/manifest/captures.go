@@ -77,6 +77,11 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 					return "", fmt.Errorf("capture %q: marshal RuntimeRef: %w", varName, err)
 				}
 			}
+			// Apply bridge ops for this crossing
+			jsonVal, err = e.applyBridgeOpsJSON(bindingName, ref.Runtime, rtName, jsonVal)
+			if err != nil {
+				return "", fmt.Errorf("capture %q: bridge: %w", varName, err)
+			}
 			resolved[varName] = jsonVal
 			continue
 		}
@@ -222,6 +227,11 @@ func (e *Executor) autoInjectScope(rtName string) string {
 						continue
 					}
 				}
+				// Apply bridge ops for this crossing
+				jsonVal, err = e.applyBridgeOpsJSON(varName, ref.Runtime, rtName, jsonVal)
+				if err != nil {
+					continue
+				}
 				resolved[varName] = jsonVal
 				continue
 			}
@@ -280,6 +290,11 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 				if err != nil {
 					continue
 				}
+			}
+			// Apply bridge ops for this crossing
+			jsonVal, err = e.applyBridgeOpsJSON(bindingName, ref.Runtime, rtName, jsonVal)
+			if err != nil {
+				continue
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -390,6 +405,41 @@ func (e *Executor) crossRuntimeSerialize(ref RuntimeRef) (string, error) {
 	// (strip surrounding quotes if the eval wrapped it as a string)
 	s := fmt.Sprintf("%v", val)
 	return s, nil
+}
+
+// applyBridgeOpsJSON looks up bridge ops for a binding crossing from→to,
+// applies them to the JSON-encoded value, and returns the transformed JSON.
+// If no bridge ops exist for this crossing, returns the value unchanged.
+func (e *Executor) applyBridgeOpsJSON(binding, from, to, jsonVal string) (string, error) {
+	if len(e.bridgeOps) == 0 {
+		return jsonVal, nil
+	}
+
+	key := bridgeKey(binding, from, to)
+	ops, ok := e.bridgeOps[key]
+	if !ok || len(ops) == 0 {
+		return jsonVal, nil
+	}
+
+	// Deserialize, apply bridges, re-serialize
+	var val interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &val); err != nil {
+		return jsonVal, nil // can't parse — pass through
+	}
+
+	for _, op := range ops {
+		var err error
+		val, err = applyBridge(op, val)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	result, err := json.Marshal(val)
+	if err != nil {
+		return "", fmt.Errorf("bridge re-serialize: %w", err)
+	}
+	return string(result), nil
 }
 
 // String escaping helpers
