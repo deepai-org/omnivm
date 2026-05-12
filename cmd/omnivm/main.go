@@ -26,9 +26,24 @@ extern char* OmniInitRuntimes(char* list);
 extern char* OmniLoadPlugin(char* runtime, char* path);
 extern void OmniShutdownRuntimes(void);
 
+// Buffer bridge exports
+#include <stdint.h>
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} omni_buffer_t;
+extern int OmniBufGet(char* name, omni_buffer_t* out);
+extern int OmniBufSet(char* name, omni_buffer_t buf);
+extern void OmniBufRelease(char* name);
+
 // Get function pointers to pass to runtimes
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
+static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
+static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
 
 // Get function pointers for Python interpreter mode callbacks
 static void* get_omni_init_runtimes_ptr() { return (void*)OmniInitRuntimes; }
@@ -95,6 +110,34 @@ func OmniFree(ptr *C.char) {
 	}
 }
 
+//export OmniBufGet
+func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	var data unsafe.Pointer
+	var length int64
+	var dtype int32
+	rc := arrow.BufGet(name, &data, &length, &dtype)
+	if rc != 0 {
+		return -1
+	}
+	out.data = data
+	out.len = C.int64_t(length)
+	out.dtype = C.int32_t(dtype)
+	out.owned = 0
+	return 0
+}
+
+//export OmniBufSet
+func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype)))
+}
+
+//export OmniBufRelease
+func OmniBufRelease(cName *C.char) {
+	arrow.BufRelease(C.GoString(cName))
+}
+
 func main() {
 	// Python interpreter mode: if invoked as "python3" (symlink) or "omnivm python ...",
 	// delegate to Py_BytesMain() with the omnivm module pre-registered.
@@ -120,8 +163,8 @@ func main() {
 	eng.GoldenThreadID = int64(C.get_thread_id())
 	eng.SetupWatchdogAlert()
 
-	// Create shared memory store
-	_ = arrow.NewSharedStore()
+	// Create shared memory store (process-wide singleton)
+	arrow.SetGlobalStore(arrow.NewSharedStore())
 
 	// Create runtimes — only the ones we need
 	allRuntimes := map[string]pkg.Runtime{
@@ -165,6 +208,13 @@ func main() {
 	callPtr := uintptr(C.get_omni_call_ptr())
 	freePtr := uintptr(C.get_omni_free_ptr())
 	eng.SetupBridge(callPtr, freePtr)
+
+	// Install buffer bridge callbacks on Python runtime
+	eng.SetupBufCallbacks(
+		uintptr(C.get_omni_buf_get_ptr()),
+		uintptr(C.get_omni_buf_set_ptr()),
+		uintptr(C.get_omni_buf_release_ptr()),
+	)
 
 	// Set up Go bridge: Go plugins call back via a Go closure (no C needed)
 	if _, ok := eng.Runtimes["go"]; ok {
@@ -514,10 +564,22 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 	freePtr := uintptr(C.get_omni_free_ptr())
 	eng.SetupBridge(callPtr, freePtr)
 
+	// Install buffer bridge callbacks
+	eng.SetupBufCallbacks(
+		uintptr(C.get_omni_buf_get_ptr()),
+		uintptr(C.get_omni_buf_set_ptr()),
+		uintptr(C.get_omni_buf_release_ptr()),
+	)
+
 	// Also set the bridge on the Python side so omnivm.call() works
 	// (Python is the host, not in the runtimes map, but needs the callback)
 	pyRT := python.New()
 	pyRT.SetBridgeCallback(callPtr, freePtr)
+	pyRT.SetBufCallbacks(
+		uintptr(C.get_omni_buf_get_ptr()),
+		uintptr(C.get_omni_buf_set_ptr()),
+		uintptr(C.get_omni_buf_release_ptr()),
+	)
 
 	// Set up Go bridge closure
 	if _, ok := eng.Runtimes["go"]; ok {

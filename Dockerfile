@@ -153,7 +153,7 @@ FROM debian:sid AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Full JDK needed for in-memory Java compilation
-# libnode127 provides libnode.so for the V8 bridge shim at runtime
+# nodejs pulls libnode (libnode127 or libnode137 depending on sid version)
 RUN apt-get update && apt-get install -y \
     python3.14 \
     python3.14-dev \
@@ -161,7 +161,6 @@ RUN apt-get update && apt-get install -y \
     ruby \
     libruby \
     default-jdk \
-    libnode127 \
     nodejs \
     npm \
     build-essential \

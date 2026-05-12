@@ -14,8 +14,23 @@ package main
 extern char* OmniCall(char* runtime, char* code);
 extern void OmniFree(char* ptr);
 
+// Buffer bridge exports
+#include <stdint.h>
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} omni_buffer_t;
+extern int OmniBufGet(char* name, omni_buffer_t* out);
+extern int OmniBufSet(char* name, omni_buffer_t buf);
+extern void OmniBufRelease(char* name);
+
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
+static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
+static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
 static long get_thread_id() { return syscall(SYS_gettid); }
 */
 import "C"
@@ -31,6 +46,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
@@ -109,8 +125,37 @@ func OmniFree(ptr *C.char) {
 	}
 }
 
+//export OmniBufGet
+func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	var data unsafe.Pointer
+	var length int64
+	var dtype int32
+	rc := arrow.BufGet(name, &data, &length, &dtype)
+	if rc != 0 {
+		return -1
+	}
+	out.data = data
+	out.len = C.int64_t(length)
+	out.dtype = C.int32_t(dtype)
+	out.owned = 0
+	return 0
+}
+
+//export OmniBufSet
+func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype)))
+}
+
+//export OmniBufRelease
+func OmniBufRelease(cName *C.char) {
+	arrow.BufRelease(C.GoString(cName))
+}
+
 func main() {
 	goldenThreadID = int64(C.get_thread_id())
+	arrow.SetGlobalStore(arrow.NewSharedStore())
 
 	// Parse args: manifest-runner <manifest.json>
 	if len(os.Args) < 2 {
@@ -160,6 +205,14 @@ func main() {
 	for _, rt := range runtimes {
 		rt.SetBridgeCallback(callPtr, freePtr)
 	}
+
+	// Install buffer bridge callbacks
+	bufGetPtr := uintptr(C.get_omni_buf_get_ptr())
+	bufSetPtr := uintptr(C.get_omni_buf_set_ptr())
+	bufReleasePtr := uintptr(C.get_omni_buf_release_ptr())
+	pyRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+	jsRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+	rbRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 
 	// Create executor
 	executor = manifest.NewExecutor(runtimes)

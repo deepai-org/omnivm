@@ -44,6 +44,11 @@ struct omnivm_v8_context {
 static omnivm_bridge_call_fn g_bridge_call = nullptr;
 static omnivm_bridge_free_fn g_bridge_free = nullptr;
 
+// Buffer bridge callback pointers (types from v8_bridge.h)
+static omni_buf_get_fn g_buf_get = nullptr;
+static omni_buf_set_fn g_buf_set = nullptr;
+static omni_buf_release_fn g_buf_release = nullptr;
+
 // Node.js per-process init result (shared_ptr since Node 24)
 static std::shared_ptr<node::InitializationResult> init_result;
 
@@ -97,6 +102,98 @@ static void OmnivmCallCallback(const v8::FunctionCallbackInfo<v8::Value>& info) 
     info.GetReturnValue().Set(ret);
 }
 
+// omnivm.getBuffer(name) -> ArrayBuffer or null
+static void OmnivmGetBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    if (info.Length() < 1 || !info[0]->IsString()) {
+        isolate->ThrowException(v8::Exception::TypeError(
+            v8::String::NewFromUtf8Literal(isolate, "getBuffer requires a string name")));
+        return;
+    }
+    if (!g_buf_get) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "buffer bridge not initialized")));
+        return;
+    }
+
+    v8::String::Utf8Value name(isolate, info[0]);
+    omni_buffer_t buf;
+    memset(&buf, 0, sizeof(buf));
+
+    {
+        v8::Unlocker unlocker(isolate);
+        int rc = g_buf_get(*name, &buf);
+        if (rc != 0) {
+            // re-lock happens when unlocker goes out of scope
+        }
+    }
+
+    if (buf.data == nullptr || buf.len <= 0) {
+        info.GetReturnValue().Set(v8::Null(isolate));
+        return;
+    }
+
+    // Create an ArrayBuffer backed by a copy of the shared data.
+    // V8 manages its own memory, so we copy here for safety.
+    auto backing = v8::ArrayBuffer::NewBackingStore(isolate, buf.len);
+    memcpy(backing->Data(), buf.data, buf.len);
+    auto ab = v8::ArrayBuffer::New(isolate, std::move(backing));
+    info.GetReturnValue().Set(ab);
+}
+
+// omnivm.setBuffer(name, arrayBuffer, dtype=0)
+static void OmnivmSetBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    if (info.Length() < 2 || !info[0]->IsString() || !info[1]->IsArrayBuffer()) {
+        isolate->ThrowException(v8::Exception::TypeError(
+            v8::String::NewFromUtf8Literal(isolate, "setBuffer(name, arrayBuffer[, dtype])")));
+        return;
+    }
+    if (!g_buf_set) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "buffer bridge not initialized")));
+        return;
+    }
+
+    v8::String::Utf8Value name(isolate, info[0]);
+    v8::Local<v8::ArrayBuffer> ab = info[1].As<v8::ArrayBuffer>();
+    int32_t dtype = 0;
+    if (info.Length() > 2 && info[2]->IsInt32()) {
+        dtype = info[2].As<v8::Int32>()->Value();
+    }
+
+    omni_buffer_t buf;
+    buf.data = ab->GetBackingStore()->Data();
+    buf.len = static_cast<int64_t>(ab->ByteLength());
+    buf.dtype = dtype;
+    buf.owned = 0;
+
+    int rc;
+    {
+        v8::Unlocker unlocker(isolate);
+        rc = g_buf_set(*name, buf);
+    }
+
+    if (rc != 0) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "setBuffer failed")));
+    }
+}
+
+// omnivm.releaseBuffer(name)
+static void OmnivmReleaseBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    if (info.Length() < 1 || !info[0]->IsString()) {
+        isolate->ThrowException(v8::Exception::TypeError(
+            v8::String::NewFromUtf8Literal(isolate, "releaseBuffer requires a string name")));
+        return;
+    }
+    if (!g_buf_release) return;
+
+    v8::String::Utf8Value name(isolate, info[0]);
+    g_buf_release(*name);
+}
+
 // Register globalThis.omnivm.call() on the given context
 static void register_omnivm_bridge(v8::Isolate* isolate,
                                     v8::Local<v8::Context> context) {
@@ -108,6 +205,20 @@ static void register_omnivm_bridge(v8::Isolate* isolate,
     omnivm_obj->Set(context,
         v8::String::NewFromUtf8Literal(isolate, "call"),
         call_tmpl->GetFunction(context).ToLocalChecked()).Check();
+
+    // Buffer bridge methods
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "getBuffer"),
+        v8::FunctionTemplate::New(isolate, OmnivmGetBufferCallback)
+            ->GetFunction(context).ToLocalChecked()).Check();
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "setBuffer"),
+        v8::FunctionTemplate::New(isolate, OmnivmSetBufferCallback)
+            ->GetFunction(context).ToLocalChecked()).Check();
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "releaseBuffer"),
+        v8::FunctionTemplate::New(isolate, OmnivmReleaseBufferCallback)
+            ->GetFunction(context).ToLocalChecked()).Check();
 
     global->Set(context,
         v8::String::NewFromUtf8Literal(isolate, "omnivm"),
@@ -406,6 +517,14 @@ void omnivm_v8_set_bridge_callback(omnivm_bridge_call_fn call_fn,
                                     omnivm_bridge_free_fn free_fn) {
     g_bridge_call = call_fn;
     g_bridge_free = free_fn;
+}
+
+void omnivm_v8_set_buf_callbacks(omni_buf_get_fn get_fn,
+                                  omni_buf_set_fn set_fn,
+                                  omni_buf_release_fn release_fn) {
+    g_buf_get = get_fn;
+    g_buf_set = set_fn;
+    g_buf_release = release_fn;
 }
 
 void omnivm_v8_pump_message_loop(omnivm_v8_isolate* iso_w) {

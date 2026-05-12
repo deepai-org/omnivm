@@ -1249,10 +1249,21 @@ func convertFStringToTemplateLiteral(code string) string {
 	result := code
 	for _, quote := range []string{`"`, `'`} {
 		prefix := "f" + quote
+		searchFrom := 0
 		for {
-			idx := strings.Index(result, prefix)
-			if idx < 0 {
+			rel := strings.Index(result[searchFrom:], prefix)
+			if rel < 0 {
 				break
+			}
+			idx := searchFrom + rel
+			// Only match f"/' at word boundary (not preceded by a letter/digit/underscore)
+			if idx > 0 {
+				prev := result[idx-1]
+				if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+					(prev >= '0' && prev <= '9') || prev == '_' {
+					searchFrom = idx + len(prefix)
+					continue
+				}
 			}
 			// Find the matching closing quote
 			inner := result[idx+len(prefix):]
@@ -1273,6 +1284,7 @@ func convertFStringToTemplateLiteral(code string) string {
 			// Replace f"..." with `...`
 			replacement := "`" + converted.String() + "`"
 			result = result[:idx] + replacement + result[idx+len(prefix)+closeIdx+len(quote):]
+			searchFrom = idx + len(replacement)
 		}
 	}
 	return result

@@ -9,6 +9,7 @@ package ruby
 #include <ruby/version.h>
 #include <ruby/thread.h>
 #include <ruby/debug.h>
+#include <ruby/encoding.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -20,6 +21,30 @@ typedef char* (*omni_call_fn)(const char* runtime, const char* code);
 typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
+
+// Buffer bridge function pointers
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} rb_omni_buffer_t;
+
+typedef int (*omni_buf_get_fn)(const char* name, rb_omni_buffer_t* out);
+typedef int (*omni_buf_set_fn)(const char* name, rb_omni_buffer_t buf);
+typedef void (*omni_buf_release_fn)(const char* name);
+
+static omni_buf_get_fn g_buf_get = NULL;
+static omni_buf_set_fn g_buf_set = NULL;
+static omni_buf_release_fn g_buf_release = NULL;
+
+static void omnivm_ruby_set_buf_callbacks(omni_buf_get_fn get_fn,
+                                           omni_buf_set_fn set_fn,
+                                           omni_buf_release_fn release_fn) {
+    g_buf_get = get_fn;
+    g_buf_set = set_fn;
+    g_buf_release = release_fn;
+}
 
 static int ruby_initialized = 0;
 
@@ -538,10 +563,68 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
     return rb_result;
 }
 
-// Register OmniVM module with call() and _proxy_serve methods
+// OmniVM.get_buffer(name) -> String or nil
+static VALUE rb_omnivm_get_buffer(VALUE self, VALUE rb_name) {
+    const char* name = StringValueCStr(rb_name);
+    if (!g_buf_get) {
+        rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized");
+        return Qnil;
+    }
+
+    rb_omni_buffer_t buf;
+    memset(&buf, 0, sizeof(buf));
+    int rc = g_buf_get(name, &buf);
+    if (rc != 0) return Qnil;
+    if (buf.data == NULL || buf.len <= 0) {
+        return rb_str_new("", 0);
+    }
+    // Return a frozen binary string (copy from shared memory)
+    VALUE str = rb_str_new((const char*)buf.data, (long)buf.len);
+    rb_enc_associate(str, rb_ascii8bit_encoding());
+    return str;
+}
+
+// OmniVM.set_buffer(name, data, dtype=0)
+static VALUE rb_omnivm_set_buffer(int argc, VALUE* argv, VALUE self) {
+    VALUE rb_name, rb_data, rb_dtype;
+    rb_scan_args(argc, argv, "21", &rb_name, &rb_data, &rb_dtype);
+
+    if (!g_buf_set) {
+        rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized");
+        return Qnil;
+    }
+
+    const char* name = StringValueCStr(rb_name);
+    StringValue(rb_data);
+
+    rb_omni_buffer_t buf;
+    buf.data = (void*)RSTRING_PTR(rb_data);
+    buf.len = (int64_t)RSTRING_LEN(rb_data);
+    buf.dtype = NIL_P(rb_dtype) ? 0 : (int32_t)NUM2INT(rb_dtype);
+    buf.owned = 0;
+
+    int rc = g_buf_set(name, buf);
+    if (rc != 0) {
+        rb_raise(rb_eRuntimeError, "OmniVM.set_buffer failed");
+    }
+    return Qnil;
+}
+
+// OmniVM.release_buffer(name)
+static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
+    if (!g_buf_release) return Qnil;
+    const char* name = StringValueCStr(rb_name);
+    g_buf_release(name);
+    return Qnil;
+}
+
+// Register OmniVM module with call() and buffer methods
 static void omnivm_ruby_register_bridge() {
     VALUE mod = rb_define_module("OmniVM");
     rb_define_module_function(mod, "call", rb_omnivm_call, 2);
+    rb_define_module_function(mod, "get_buffer", rb_omnivm_get_buffer, 1);
+    rb_define_module_function(mod, "set_buffer", rb_omnivm_set_buffer, -1);
+    rb_define_module_function(mod, "release_buffer", rb_omnivm_release_buffer, 1);
 }
 
 static void omnivm_ruby_set_bridge_callback(omni_call_fn call_fn, omni_free_fn free_fn) {
@@ -684,6 +767,15 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 	C.omnivm_ruby_set_bridge_callback(
 		C.omni_call_fn(unsafe.Pointer(callPtr)),
 		C.omni_free_fn(unsafe.Pointer(freePtr)),
+	)
+}
+
+// SetBufCallbacks installs the buffer bridge function pointers.
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+	C.omnivm_ruby_set_buf_callbacks(
+		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
+		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
+		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
 	)
 }
 

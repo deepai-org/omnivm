@@ -3,6 +3,7 @@ package arrow
 import (
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 func TestNewSharedStore(t *testing.T) {
@@ -175,5 +176,122 @@ func TestDataReadWrite(t *testing.T) {
 		if retrieved.Data[i] != byte(i*10) {
 			t.Fatalf("byte %d: expected %d, got %d", i, i*10, retrieved.Data[i])
 		}
+	}
+}
+
+func TestSetWithDtype(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3, 4}
+	buf, err := s.SetWithDtype("typed", data, DtypeI32)
+	if err != nil {
+		t.Fatalf("SetWithDtype failed: %v", err)
+	}
+	if buf.Dtype != DtypeI32 {
+		t.Fatalf("expected dtype %d, got %d", DtypeI32, buf.Dtype)
+	}
+
+	// Replace existing
+	data2 := []byte{5, 6}
+	buf2, err := s.SetWithDtype("typed", data2, DtypeF64)
+	if err != nil {
+		t.Fatalf("SetWithDtype replace failed: %v", err)
+	}
+	if buf2.Dtype != DtypeF64 {
+		t.Fatalf("expected dtype %d after replace, got %d", DtypeF64, buf2.Dtype)
+	}
+	if buf2.Len != 2 {
+		t.Fatalf("expected len 2 after replace, got %d", buf2.Len)
+	}
+}
+
+func TestBufGetSet(t *testing.T) {
+	// Set up global store for callback tests
+	store := NewSharedStore()
+	SetGlobalStore(store)
+	// Reset globalOnce for this test
+	globalStore = store
+
+	// BufSet: store 1MB of data
+	size := 1024 * 1024
+	src := make([]byte, size)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+
+	rc := BufSet("test_buf", unsafe.Pointer(&src[0]), int64(size), DtypeBytes)
+	if rc != 0 {
+		t.Fatal("BufSet failed")
+	}
+
+	// BufGet: retrieve it
+	var dataOut unsafe.Pointer
+	var lenOut int64
+	var dtypeOut int32
+	rc = BufGet("test_buf", &dataOut, &lenOut, &dtypeOut)
+	if rc != 0 {
+		t.Fatal("BufGet failed")
+	}
+	if lenOut != int64(size) {
+		t.Fatalf("expected len %d, got %d", size, lenOut)
+	}
+	if dtypeOut != DtypeBytes {
+		t.Fatalf("expected dtype %d, got %d", DtypeBytes, dtypeOut)
+	}
+
+	// Verify data
+	got := unsafe.Slice((*byte)(dataOut), lenOut)
+	for i := 0; i < 100; i++ {
+		if got[i] != byte(i%256) {
+			t.Fatalf("byte %d: expected %d, got %d", i, i%256, got[i])
+		}
+	}
+}
+
+func TestBufGetNotFound(t *testing.T) {
+	globalStore = NewSharedStore()
+	var dataOut unsafe.Pointer
+	var lenOut int64
+	var dtypeOut int32
+	rc := BufGet("nonexistent", &dataOut, &lenOut, &dtypeOut)
+	if rc != -1 {
+		t.Fatal("expected -1 for nonexistent buffer")
+	}
+}
+
+func TestBufRelease(t *testing.T) {
+	globalStore = NewSharedStore()
+	BufSet("rel_test", nil, 0, DtypeBytes)
+
+	// Should not block
+	BufRelease("rel_test")
+
+	// Drain
+	select {
+	case name := <-DeferredRelease:
+		if name != "rel_test" {
+			t.Fatalf("expected rel_test, got %s", name)
+		}
+	default:
+		t.Fatal("expected deferred release")
+	}
+}
+
+func TestDrainDeferred(t *testing.T) {
+	s := NewSharedStore()
+	globalStore = s
+	BufSet("drain1", nil, 0, DtypeBytes)
+	BufSet("drain2", nil, 0, DtypeBytes)
+
+	DeferredRelease <- "drain1"
+	DeferredRelease <- "drain2"
+
+	s.DrainDeferred()
+
+	// Both should be freed
+	if _, err := s.Get("drain1"); err == nil {
+		t.Fatal("drain1 should be freed")
+	}
+	if _, err := s.Get("drain2"); err == nil {
+		t.Fatal("drain2 should be freed")
 	}
 }

@@ -22,6 +22,33 @@ typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
 
+// Buffer bridge function pointers — set via omnivm_py_set_buf_callbacks().
+// get: fill an omni_buffer_t from a named shared buffer. Returns 0 on success.
+// set: register a buffer under a name. Returns 0 on success.
+// release: schedule deferred release (safe from GC threads).
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} py_omni_buffer_t;
+
+typedef int (*omni_buf_get_fn)(const char* name, py_omni_buffer_t* out);
+typedef int (*omni_buf_set_fn)(const char* name, py_omni_buffer_t buf);
+typedef void (*omni_buf_release_fn)(const char* name);
+
+static omni_buf_get_fn g_buf_get = NULL;
+static omni_buf_set_fn g_buf_set = NULL;
+static omni_buf_release_fn g_buf_release = NULL;
+
+static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
+                                         omni_buf_set_fn set_fn,
+                                         omni_buf_release_fn release_fn) {
+    g_buf_get = get_fn;
+    g_buf_set = set_fn;
+    g_buf_release = release_fn;
+}
+
 // Helper to get the value from a StringIO object as a strdup'd C string.
 static char* get_stringio_value(PyObject* sio) {
     PyObject* getvalue = PyObject_GetAttrString(sio, "getvalue");
@@ -286,9 +313,85 @@ static PyObject* py_omnivm_call(PyObject* self, PyObject* args) {
     return py_result;
 }
 
+// py_omnivm_get_buffer(name) -> memoryview or None
+// Returns a memoryview wrapping the shared buffer's data (zero-copy).
+static PyObject* py_omnivm_get_buffer(PyObject* self, PyObject* args) {
+    const char* name;
+    if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
+
+    if (!g_buf_get) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm buffer bridge not initialized");
+        return NULL;
+    }
+
+    py_omni_buffer_t buf;
+    memset(&buf, 0, sizeof(buf));
+    int rc = g_buf_get(name, &buf);
+    if (rc != 0) {
+        Py_RETURN_NONE;
+    }
+
+    if (buf.data == NULL || buf.len <= 0) {
+        // Return empty bytes
+        return PyBytes_FromStringAndSize("", 0);
+    }
+
+    // Return a memoryview over the shared buffer (zero-copy, read-only).
+    // The buffer must remain valid while the memoryview is in use.
+    return PyMemoryView_FromMemory((char*)buf.data, (Py_ssize_t)buf.len, PyBUF_READ);
+}
+
+// py_omnivm_set_buffer(name, data, dtype=0) -> None
+// Copies the buffer-protocol object into the shared store.
+static PyObject* py_omnivm_set_buffer(PyObject* self, PyObject* args) {
+    const char* name;
+    Py_buffer view;
+    int dtype = 0; // default: bytes
+    if (!PyArg_ParseTuple(args, "sy*|i", &name, &view, &dtype)) return NULL;
+
+    if (!g_buf_set) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_RuntimeError, "omnivm buffer bridge not initialized");
+        return NULL;
+    }
+
+    py_omni_buffer_t buf;
+    buf.data = view.buf;
+    buf.len = (int64_t)view.len;
+    buf.dtype = (int32_t)dtype;
+    buf.owned = 0; // Go side will copy
+
+    int rc = g_buf_set(name, buf);
+    PyBuffer_Release(&view);
+
+    if (rc != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm.set_buffer failed");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+// py_omnivm_release_buffer(name) -> None
+// Schedule a deferred release of a named buffer.
+static PyObject* py_omnivm_release_buffer(PyObject* self, PyObject* args) {
+    const char* name;
+    if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
+
+    if (!g_buf_release) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm buffer bridge not initialized");
+        return NULL;
+    }
+
+    g_buf_release(name);
+    Py_RETURN_NONE;
+}
+
 // Method table for the omnivm module
 static PyMethodDef omnivm_methods[] = {
     {"call", py_omnivm_call, METH_VARARGS, "Call another runtime: omnivm.call(runtime, code)"},
+    {"get_buffer", py_omnivm_get_buffer, METH_VARARGS, "Get a shared buffer: omnivm.get_buffer(name) -> memoryview|None"},
+    {"set_buffer", py_omnivm_set_buffer, METH_VARARGS, "Set a shared buffer: omnivm.set_buffer(name, data, dtype=0)"},
+    {"release_buffer", py_omnivm_release_buffer, METH_VARARGS, "Release a shared buffer: omnivm.release_buffer(name)"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -760,6 +863,15 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 	C.omnivm_py_set_bridge_callback(
 		C.omni_call_fn(unsafe.Pointer(callPtr)),
 		C.omni_free_fn(unsafe.Pointer(freePtr)),
+	)
+}
+
+// SetBufCallbacks installs the buffer bridge function pointers.
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+	C.omnivm_py_set_buf_callbacks(
+		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
+		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
+		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
 	)
 }
 

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "import omnivm\ndata = bytes(range(256)) * 4096\nomnivm.set_buffer('megabuf', data, 0)\nprint(f'Python: set {len(data)} byte buffer')"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "var buf = omnivm.getBuffer(\"megabuf\"); var arr = new Uint8Array(buf); var sum = 0; for (var i = 0; i < arr.length; i++) sum += arr[i]; console.log(\"JS: got \" + arr.length + \" bytes, checksum=\" + sum);"
+    },
+    {
+      "op": "exec",
+      "runtime": "ruby",
+      "code": "buf = OmniVM.get_buffer('megabuf')\nputs \"Ruby: got #{buf.length} bytes, checksum=#{buf.bytes.sum}\""
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "var ab = new ArrayBuffer(8); new Float64Array(ab)[0] = 3.14159265; omnivm.setBuffer(\"pi\", ab, 4); console.log(\"JS: set pi buffer (f64)\");"
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "import omnivm, struct\nv = omnivm.get_buffer('pi')\nprint(f'Python: pi = {struct.unpack(\"d\", bytes(v))[0]}')"
+    },
+    {
+      "op": "exec",
+      "runtime": "ruby",
+      "code": "buf = OmniVM.get_buffer('pi')\nputs \"Ruby: got pi buffer, \" + buf.length.to_s + \" bytes\""
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "import omnivm\nomnivm.release_buffer('megabuf')\nomnivm.release_buffer('pi')\nprint('Buffers released')"
+    }
+  ]
+}

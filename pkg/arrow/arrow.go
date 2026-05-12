@@ -15,11 +15,12 @@ import (
 // Buffer is a named, reference-counted Arrow-compatible memory buffer
 // that can be shared across runtimes via raw pointer.
 type Buffer struct {
-	Name string
-	Data []byte
-	Len  int
-	refs int
-	mu   sync.Mutex
+	Name  string
+	Data  []byte
+	Len   int
+	Dtype int32 // element type (DtypeBytes, DtypeI32, DtypeF64, etc.)
+	refs  int
+	mu    sync.Mutex
 }
 
 // SharedStore manages named Arrow buffers accessible to all runtimes.

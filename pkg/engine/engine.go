@@ -56,6 +56,26 @@ func (e *Engine) SetupBridge(callPtr, freePtr uintptr) {
 	}
 }
 
+// SetupBufCallbacks installs buffer bridge callbacks on runtimes that support them.
+func (e *Engine) SetupBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+	if rt, ok := e.Runtimes["python"]; ok {
+		if pyRT, ok := rt.(*python.Runtime); ok {
+			pyRT.SetBufCallbacks(getPtr, setPtr, releasePtr)
+		}
+	}
+	if rt, ok := e.Runtimes["javascript"]; ok {
+		if jsRT, ok := rt.(*javascript.Runtime); ok {
+			jsRT.SetBufCallbacks(getPtr, setPtr, releasePtr)
+		}
+	}
+	if rt, ok := e.Runtimes["ruby"]; ok {
+		if rbRT, ok := rt.(*ruby.Runtime); ok {
+			rbRT.SetBufCallbacks(getPtr, setPtr, releasePtr)
+		}
+	}
+	// TODO: Add Java buffer callbacks here when implemented
+}
+
 // SetupWatchdog registers each runtime's interrupt function pointer with the
 // watchdog so it can terminate runaway code.
 func (e *Engine) SetupWatchdog() {
