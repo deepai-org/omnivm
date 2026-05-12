@@ -168,11 +168,12 @@ func FreeCValue(cv C.omni_value_t) {
 	FreeCValueRaw(unsafe.Pointer(&cv))
 }
 
-// ToGoString converts any Value to its string representation (for fallback).
+// ToGoString converts any Value to a source-code representation suitable for
+// embedding in an eval() call. Strings are quoted, booleans use lowercase.
 func (v Value) ToGoString() string {
 	switch v.Tag {
 	case TagNull:
-		return ""
+		return "null"
 	case TagBool:
 		if v.Int != 0 {
 			return "true"
@@ -183,7 +184,7 @@ func (v Value) ToGoString() string {
 	case TagF64:
 		return strconv.FormatFloat(v.Float, 'g', -1, 64)
 	case TagString:
-		return v.Str
+		return strconv.Quote(v.Str)
 	case TagError:
 		return "ERR:" + v.Str
 	case TagBytes:

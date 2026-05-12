@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
 // v8Initialized guards against double Node.js/V8 init per process.
@@ -108,6 +109,21 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: value, Output: value}
+}
+
+// EvalTyped evaluates JavaScript code and returns a typed polyglot.Value.
+func (r *Runtime) EvalTyped(code string) polyglot.Value {
+	if !r.initialized {
+		return polyglot.Error("javascript: not initialized")
+	}
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+
+	cResult := C.omnivm_v8_eval_typed(r.context, cCode)
+	ptr := unsafe.Pointer(&cResult)
+	val := polyglot.FromCValueRaw(ptr)
+	polyglot.FreeCValueRaw(ptr)
+	return val
 }
 
 // SetBridgeCallback installs the cross-runtime callback function pointer.

@@ -83,6 +83,9 @@ typedef omni_value_t (*omni_call_typed_fn)(const char* runtime,
                                             int32_t nargs);
 void omnivm_v8_set_typed_callback(omni_call_typed_fn fn);
 
+// Eval typed — returns expression as omni_value_t preserving native JS types
+omni_value_t omnivm_v8_eval_typed(omnivm_v8_context* ctx, const char* code);
+
 // Buffer bridge callback types and registration
 typedef struct {
     void*   data;

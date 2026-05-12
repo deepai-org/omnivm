@@ -225,13 +225,21 @@ func (e *Engine) CallTyped(rtName, funcName string, args []polyglot.Value) polyg
 	}
 	code += ")"
 
+	// Use typed eval if the runtime supports it
+	if te, ok := rt.(TypedEvaler); ok {
+		return te.EvalTyped(code)
+	}
+
 	evalResult := rt.Eval(code)
 	if evalResult.Err != nil {
 		return polyglot.Error(evalResult.Err.Error())
 	}
-
-	// Try to parse the result as a typed value
 	return parseEvalResult(evalResult)
+}
+
+// TypedEvaler is implemented by runtimes that support typed eval results.
+type TypedEvaler interface {
+	EvalTyped(code string) polyglot.Value
 }
 
 // parseEvalResult converts an eval Result to a typed Value.

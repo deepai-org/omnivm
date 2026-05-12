@@ -368,6 +368,95 @@ static char* omnivm_py_eval_inner(const char* code) {
     return strdup("None");
 }
 
+// Typed eval inner: returns py_omni_value_t preserving native Python types.
+static py_omni_value_t omnivm_py_eval_typed_inner(const char* code) {
+    py_omni_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+
+    PyObject* main_module = PyImport_AddModule("__main__");
+    if (!main_module) {
+        py_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = PY_OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("failed to get __main__");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+    PyObject* globals = PyModule_GetDict(main_module);
+
+    // Try as single expression first
+    PyObject* result = PyRun_String(code, Py_eval_input, globals, globals);
+    if (result) {
+        py_omni_value_t val = py_to_omni_value(result);
+        Py_DECREF(result);
+        return val;
+    }
+    PyErr_Clear();
+
+    // Multi-line: same split logic as omnivm_py_eval_inner
+    const char* end = code + strlen(code);
+    while (end > code && (end[-1] == '\n' || end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
+        end--;
+    if (end == code) return null_val;
+
+    const char* last_start = end;
+    while (last_start > code && last_start[-1] != '\n')
+        last_start--;
+
+    if (last_start[0] == ' ' || last_start[0] == '\t' || last_start == code) {
+        result = PyRun_String(code, Py_file_input, globals, globals);
+        if (!result) {
+            py_omni_value_t err;
+            memset(&err, 0, sizeof(err));
+            err.tag = PY_OMNI_TAG_ERROR;
+            err.v.s.ptr = strdup("python eval error");
+            err.v.s.len = strlen(err.v.s.ptr);
+            return err;
+        }
+        Py_DECREF(result);
+        return null_val;
+    }
+
+    size_t head_len = last_start - code;
+    size_t tail_len = end - last_start;
+    char* head = (char*)malloc(head_len + 1);
+    if (!head) return null_val;
+    memcpy(head, code, head_len);
+    head[head_len] = '\0';
+    char* tail = (char*)malloc(tail_len + 1);
+    if (!tail) { free(head); return null_val; }
+    memcpy(tail, last_start, tail_len);
+    tail[tail_len] = '\0';
+
+    result = PyRun_String(head, Py_file_input, globals, globals);
+    free(head);
+    if (!result) { free(tail); return null_val; }
+    Py_DECREF(result);
+
+    result = PyRun_String(tail, Py_eval_input, globals, globals);
+    if (result) {
+        free(tail);
+        py_omni_value_t val = py_to_omni_value(result);
+        Py_DECREF(result);
+        return val;
+    }
+    PyErr_Clear();
+
+    result = PyRun_String(tail, Py_file_input, globals, globals);
+    free(tail);
+    if (!result) return null_val;
+    Py_DECREF(result);
+    return null_val;
+}
+
+// Thread-safe typed eval: acquires GIL, evaluates, releases GIL.
+static py_omni_value_t omnivm_py_eval_typed(const char* code) {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    py_omni_value_t result = omnivm_py_eval_typed_inner(code);
+    PyGILState_Release(gstate);
+    return result;
+}
+
 // Thread-safe eval: acquires GIL, delegates to inner, releases GIL.
 static char* omnivm_py_eval(const char* code) {
     PyGILState_STATE gstate = PyGILState_Ensure();
@@ -886,6 +975,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
 // Pre-allocated C strings to avoid repeated malloc in hot paths.
@@ -1045,6 +1135,21 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	value := C.GoString(cOutput)
 	C.free(unsafe.Pointer(cOutput))
 	return pkg.Result{Value: value, Output: value}
+}
+
+// EvalTyped evaluates Python code and returns a typed polyglot.Value.
+func (r *Runtime) EvalTyped(code string) polyglot.Value {
+	if !r.initialized {
+		return polyglot.Error("python: not initialized")
+	}
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+
+	cResult := C.omnivm_py_eval_typed(cCode)
+	ptr := unsafe.Pointer(&cResult)
+	val := polyglot.FromCValueRaw(ptr)
+	polyglot.FreeCValueRaw(ptr)
+	return val
 }
 
 // SetBridgeCallback installs the cross-runtime callback function pointer.

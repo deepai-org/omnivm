@@ -113,12 +113,12 @@ func TestToGoString(t *testing.T) {
 		v    Value
 		want string
 	}{
-		{Null(), ""},
+		{Null(), "null"},
 		{Bool(true), "true"},
 		{Bool(false), "false"},
 		{I64(42), "42"},
 		{F64(3.14), "3.14"},
-		{String("hello"), "hello"},
+		{String("hello"), `"hello"`},
 		{Error("oops"), "ERR:oops"},
 	}
 	for _, tt := range tests {

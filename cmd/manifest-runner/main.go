@@ -199,6 +199,18 @@ func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, n
 			code += arg.ToGoString()
 		}
 		code += ")"
+
+		// Use typed eval if the runtime supports it
+		type typedEvaler interface {
+			EvalTyped(code string) polyglot.Value
+		}
+		if te, ok := rt.(typedEvaler); ok {
+			result = te.EvalTyped(code)
+			var cv C.omni_value_t
+			result.ToCValueRaw(unsafe.Pointer(&cv))
+			return cv
+		}
+
 		evalResult := rt.Eval(code)
 		if evalResult.Err != nil {
 			var cv C.omni_value_t

@@ -675,6 +675,84 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
     return result;
 }
 
+omni_value_t omnivm_v8_eval_typed(omnivm_v8_context* ctx_w, const char* code) {
+    omni_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+
+    if (!ctx_w || !ctx_w->isolate) {
+        omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("JS context not initialized");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    v8::Locker locker(ctx_w->isolate);
+    v8::Isolate::Scope isolate_scope(ctx_w->isolate);
+    v8::HandleScope handle_scope(ctx_w->isolate);
+    v8::Local<v8::Context> context =
+        v8::Local<v8::Context>::New(ctx_w->isolate, ctx_w->context);
+    v8::Context::Scope context_scope(context);
+    node::CallbackScope callback_scope(ctx_w->isolate,
+        v8::Object::New(ctx_w->isolate), {0, 0});
+
+    ctx_w->isolate->CancelTerminateExecution();
+    register_omnivm_bridge(ctx_w->isolate, context);
+
+    v8::TryCatch try_catch(ctx_w->isolate);
+    v8::Local<v8::String> source =
+        v8::String::NewFromUtf8(ctx_w->isolate, code).ToLocalChecked();
+
+    v8::MaybeLocal<v8::Script> maybe_script =
+        v8::Script::Compile(context, source);
+
+    if (maybe_script.IsEmpty()) {
+        omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = OMNI_TAG_ERROR;
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            err.v.s.ptr = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            err.v.s.ptr = strdup(*err_str ? *err_str : "compilation error");
+        }
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    v8::MaybeLocal<v8::Value> maybe_result =
+        maybe_script.ToLocalChecked()->Run(context);
+
+    if (try_catch.HasCaught()) {
+        omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = OMNI_TAG_ERROR;
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            err.v.s.ptr = strdup("execution terminated (timeout)");
+        } else {
+            v8::Local<v8::Value> exception = try_catch.Exception();
+            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
+            err.v.s.ptr = strdup(*err_str ? *err_str : "runtime error");
+        }
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    if (maybe_result.IsEmpty()) {
+        return null_val;
+    }
+
+    v8::Local<v8::Value> val = maybe_result.ToLocalChecked();
+    omni_value_t typed_result = js_to_omni_value(ctx_w->isolate, context, val);
+
+    ctx_w->isolate->PerformMicrotaskCheckpoint();
+    return typed_result;
+}
+
 void omnivm_v8_set_bridge_callback(omnivm_bridge_call_fn call_fn,
                                     omnivm_bridge_free_fn free_fn) {
     g_bridge_call = call_fn;

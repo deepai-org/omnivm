@@ -621,6 +621,62 @@ static char* omnivm_ruby_eval(const char* code) {
     return strdup(cstr);
 }
 
+// Typed eval: returns rb_omni_value_t preserving native Ruby types.
+static rb_omni_value_t omnivm_ruby_eval_typed(const char* code) {
+    rb_omni_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+
+    if (!ruby_initialized) {
+        rb_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = RB_OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("ruby not initialized");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    int state = 0;
+    VALUE result = rb_eval_string_protect(code, &state);
+
+    if (state) {
+        VALUE exception = rb_errinfo();
+        rb_set_errinfo(Qnil);
+        rb_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = RB_OMNI_TAG_ERROR;
+        if (exception != Qnil) {
+            char* msg = omnivm_ruby_safe_error_msg(exception);
+            err.v.s.ptr = msg ? msg : strdup("ruby error");
+        } else {
+            err.v.s.ptr = strdup("ruby eval error");
+        }
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    return rb_to_omni_value(result);
+}
+
+// GVL wrapper for typed eval
+typedef struct {
+    const char* code;
+    rb_omni_value_t result;
+} ruby_typed_eval_args;
+
+static void* omnivm_ruby_eval_typed_with_gvl(void* raw) {
+    ruby_typed_eval_args* a = (ruby_typed_eval_args*)raw;
+    a->result = omnivm_ruby_eval_typed(a->code);
+    return NULL;
+}
+
+static rb_omni_value_t omnivm_ruby_eval_typed_safe(const char* code) {
+    if (tls_holds_gvl) return omnivm_ruby_eval_typed(code);
+    ruby_typed_eval_args args = { .code = code };
+    memset(&args.result, 0, sizeof(args.result));
+    rb_thread_call_with_gvl(omnivm_ruby_eval_typed_with_gvl, &args);
+    return args.result;
+}
+
 // Bridge args for rb_thread_call_without_gvl
 typedef struct {
     const char* runtime;
@@ -833,6 +889,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
 // Runtime implements pkg.Runtime for MRI Ruby.
@@ -931,6 +988,21 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: output, Output: output}
+}
+
+// EvalTyped evaluates Ruby code and returns a typed polyglot.Value.
+func (r *Runtime) EvalTyped(code string) polyglot.Value {
+	if !r.initialized {
+		return polyglot.Error("ruby: not initialized")
+	}
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+
+	cResult := C.omnivm_ruby_eval_typed_safe(cCode)
+	ptr := unsafe.Pointer(&cResult)
+	val := polyglot.FromCValueRaw(ptr)
+	polyglot.FreeCValueRaw(ptr)
+	return val
 }
 
 // SetBridgeCallback installs the cross-runtime callback function pointer.
