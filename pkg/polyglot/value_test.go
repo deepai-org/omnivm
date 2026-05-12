@@ -129,6 +129,40 @@ func TestToGoString(t *testing.T) {
 	}
 }
 
+func TestBuiltins(t *testing.T) {
+	RegisterBuiltins()
+
+	tests := []struct {
+		fn   string
+		args []Value
+		want Value
+	}{
+		{"math.abs", []Value{I64(-42)}, I64(42)},
+		{"math.abs", []Value{F64(-3.14)}, F64(3.14)},
+		{"math.sqrt", []Value{I64(25)}, F64(5)},
+		{"math.pow", []Value{I64(2), I64(10)}, F64(1024)},
+		{"math.floor", []Value{F64(3.7)}, I64(3)},
+		{"math.ceil", []Value{F64(3.2)}, I64(4)},
+		{"math.min", []Value{I64(3), I64(7), I64(1)}, I64(1)},
+		{"math.max", []Value{I64(3), I64(7), I64(1)}, I64(7)},
+		{"str.len", []Value{String("hello")}, I64(5)},
+		{"str.upper", []Value{String("hello")}, String("HELLO")},
+		{"str.lower", []Value{String("HELLO")}, String("hello")},
+		{"str.contains", []Value{String("hello world"), String("world")}, Bool(true)},
+		{"str.replace", []Value{String("hello"), String("l"), String("r")}, String("herro")},
+		{"int", []Value{F64(3.14)}, I64(3)},
+		{"float", []Value{I64(42)}, F64(42)},
+		{"echo", []Value{I64(99)}, I64(99)},
+	}
+
+	for _, tt := range tests {
+		got := GlobalRegistry.Call("go", tt.fn, tt.args)
+		if got.Tag != tt.want.Tag || got.Int != tt.want.Int || got.Float != tt.want.Float || got.Str != tt.want.Str {
+			t.Errorf("go.%s: expected %+v, got %+v", tt.fn, tt.want, got)
+		}
+	}
+}
+
 func TestEmptyBytesRoundtrip(t *testing.T) {
 	v := BytesVal(nil)
 	cv := v.ToCValue()

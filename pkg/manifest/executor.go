@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
 // ErrReturn is a sentinel used to unwind the call stack on return ops.
@@ -193,6 +194,8 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opExecCompiled(op)
 	case "eval_compiled":
 		return e.opEvalCompiled(op)
+	case "call_typed":
+		return e.opCallTyped(op)
 	default:
 		return nil, fmt.Errorf("unknown op type: %q", op.OpType)
 	}
@@ -403,6 +406,117 @@ func runtimeVarRef(rtName, varName string) string {
 }
 
 // opImport generates runtime-specific import code and executes it.
+// opCallTyped calls a function via the typed bridge.
+// JSON: {"op":"call_typed", "runtime":"go", "func":"math.sqrt", "args":[25], "bind":"result"}
+func (e *Executor) opCallTyped(op *Op) (interface{}, error) {
+	if op.Func == "" {
+		return nil, fmt.Errorf("call_typed: missing 'func' field")
+	}
+	if op.Runtime == "" {
+		return nil, fmt.Errorf("call_typed: missing 'runtime' field")
+	}
+
+	// Convert JSON args to polyglot.Value
+	goArgs := make([]polyglot.Value, len(op.Args))
+	for i, arg := range op.Args {
+		goArgs[i] = jsonToPolyglot(arg)
+	}
+
+	result := polyglot.GlobalRegistry.Call(op.Runtime, op.Func, goArgs)
+	if result.IsError() {
+		// Not in registry — try eval fallback through engine
+		// Build code: funcName(arg1, arg2, ...)
+		code := op.Func + "("
+		for i, arg := range goArgs {
+			if i > 0 {
+				code += ", "
+			}
+			code += arg.ToGoString()
+		}
+		code += ")"
+
+		rt, ok := e.runtimes[op.Runtime]
+		if !ok {
+			return nil, fmt.Errorf("call_typed: unknown runtime %q", op.Runtime)
+		}
+
+		// Use EvalTyped if available
+		type typedEvaler interface {
+			EvalTyped(code string) polyglot.Value
+		}
+		if te, ok := rt.(typedEvaler); ok {
+			result = te.EvalTyped(code)
+		} else {
+			evalResult := rt.Eval(code)
+			if evalResult.Err != nil {
+				return nil, fmt.Errorf("call_typed [%s]: %w", op.Runtime, evalResult.Err)
+			}
+			s := ""
+			if evalResult.Value != nil {
+				s = fmt.Sprintf("%v", evalResult.Value)
+			} else {
+				s = evalResult.Output
+			}
+			result = polyglot.String(s)
+		}
+	}
+
+	if result.IsError() {
+		return nil, fmt.Errorf("call_typed [%s.%s]: %s", op.Runtime, op.Func, result.Str)
+	}
+
+	// Convert result to Go interface for manifest scope
+	var goResult interface{}
+	switch result.Tag {
+	case polyglot.TagNull:
+		goResult = nil
+	case polyglot.TagBool:
+		goResult = result.Int != 0
+	case polyglot.TagI64:
+		goResult = result.Int
+	case polyglot.TagF64:
+		goResult = result.Float
+	case polyglot.TagString:
+		goResult = result.Str
+	default:
+		goResult = result.Str
+	}
+
+	if op.Bind != "" {
+		e.setBinding(op.Bind, goResult)
+	}
+
+	return goResult, nil
+}
+
+// jsonToPolyglot converts a JSON-decoded value to a polyglot.Value.
+func jsonToPolyglot(v interface{}) polyglot.Value {
+	switch val := v.(type) {
+	case nil:
+		return polyglot.Null()
+	case bool:
+		return polyglot.Bool(val)
+	case float64:
+		// JSON numbers are float64; use I64 for exact integers
+		if val == float64(int64(val)) {
+			return polyglot.I64(int64(val))
+		}
+		return polyglot.F64(val)
+	case string:
+		return polyglot.String(val)
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return polyglot.I64(i)
+		}
+		if f, err := val.Float64(); err == nil {
+			return polyglot.F64(f)
+		}
+		return polyglot.String(string(val))
+	default:
+		return polyglot.String(fmt.Sprintf("%v", v))
+	}
+}
+
 func (e *Executor) opImport(op *Op) (interface{}, error) {
 	rt, err := e.resolveRuntime(op)
 	if err != nil {

@@ -235,6 +235,7 @@ func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, n
 func main() {
 	goldenThreadID = int64(C.get_thread_id())
 	arrow.SetGlobalStore(arrow.NewSharedStore())
+	polyglot.RegisterBuiltins()
 
 	// Parse args: manifest-runner <manifest.json>
 	if len(os.Args) < 2 {

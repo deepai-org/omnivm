@@ -41,6 +41,8 @@ func New() *Engine {
 	disp.TaskTimeout = 30 * time.Second
 	disp.WatchdogTimeout = 5 * time.Second
 
+	polyglot.RegisterBuiltins()
+
 	return &Engine{
 		Runtimes:      make(map[string]pkg.Runtime),
 		Disp:          disp,
