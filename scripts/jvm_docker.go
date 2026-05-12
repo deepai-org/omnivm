@@ -8,6 +8,7 @@ package jvm
 /*
 #include <jni.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -16,6 +17,46 @@ typedef char* (*omni_call_fn)(const char* runtime, const char* code);
 typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
+
+// Buffer bridge function pointers
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} jvm_omni_buffer_t;
+typedef int (*jvm_buf_get_fn)(const char* name, jvm_omni_buffer_t* out);
+typedef int (*jvm_buf_set_fn)(const char* name, jvm_omni_buffer_t buf);
+typedef void (*jvm_buf_release_fn)(const char* name);
+static jvm_buf_get_fn g_buf_get = NULL;
+static jvm_buf_set_fn g_buf_set = NULL;
+static jvm_buf_release_fn g_buf_release = NULL;
+
+// Typed value bridge
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} jvm_omni_value_t;
+
+#define JVM_OMNI_TAG_NULL    0
+#define JVM_OMNI_TAG_BOOL    1
+#define JVM_OMNI_TAG_I64     2
+#define JVM_OMNI_TAG_F64     3
+#define JVM_OMNI_TAG_STRING  4
+#define JVM_OMNI_TAG_BYTES   5
+#define JVM_OMNI_TAG_REF     6
+#define JVM_OMNI_TAG_ERROR   7
+
+typedef jvm_omni_value_t (*jvm_call_typed_fn)(const char* runtime,
+                                               const char* func_name,
+                                               jvm_omni_value_t* args,
+                                               int32_t nargs);
+static jvm_call_typed_fn g_call_typed = NULL;
 
 static JavaVM* jvm_ptr = NULL;
 static JNIEnv* env_ptr = NULL;  // Initial thread's env (used during init only)
@@ -89,6 +130,358 @@ static jstring JNICALL Java_omnivm_OmniVM_nativeCall(JNIEnv* env, jclass cls,
     return (jstring)(*env)->PopLocalFrame(env, j_result);
 }
 
+// JNI: OmniVM.nativeGetBuffer(name) -> byte[] or null
+static jbyteArray JNICALL Java_omnivm_OmniVM_nativeGetBuffer(JNIEnv* env, jclass cls,
+                                                               jstring j_name) {
+    if (!g_buf_get) return NULL;
+    const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
+    jvm_omni_buffer_t buf;
+    memset(&buf, 0, sizeof(buf));
+    int rc = g_buf_get(name, &buf);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
+    if (rc != 0 || !buf.data || buf.len <= 0) return NULL;
+
+    jbyteArray arr = (*env)->NewByteArray(env, (jsize)buf.len);
+    if (arr) {
+        (*env)->SetByteArrayRegion(env, arr, 0, (jsize)buf.len, (jbyte*)buf.data);
+    }
+    return arr;
+}
+
+// JNI: OmniVM.nativeGetBufferDtype(name) -> int
+static jint JNICALL Java_omnivm_OmniVM_nativeGetBufferDtype(JNIEnv* env, jclass cls,
+                                                              jstring j_name) {
+    if (!g_buf_get) return -1;
+    const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
+    jvm_omni_buffer_t buf;
+    memset(&buf, 0, sizeof(buf));
+    int rc = g_buf_get(name, &buf);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
+    if (rc != 0) return -1;
+    return (jint)buf.dtype;
+}
+
+// JNI: OmniVM.nativeSetBuffer(name, data, dtype) -> void
+static void JNICALL Java_omnivm_OmniVM_nativeSetBuffer(JNIEnv* env, jclass cls,
+                                                         jstring j_name, jbyteArray j_data,
+                                                         jint j_dtype) {
+    if (!g_buf_set) {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        (*env)->ThrowNew(env, exc, "buffer bridge not initialized");
+        return;
+    }
+    const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
+    jsize len = (*env)->GetArrayLength(env, j_data);
+    jbyte* data = (*env)->GetByteArrayElements(env, j_data, NULL);
+
+    jvm_omni_buffer_t buf;
+    buf.data = (void*)data;
+    buf.len = (int64_t)len;
+    buf.dtype = (int32_t)j_dtype;
+    buf.owned = 0;
+    g_buf_set(name, buf);
+
+    (*env)->ReleaseByteArrayElements(env, j_data, data, JNI_ABORT);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
+}
+
+// JNI: OmniVM.nativeReleaseBuffer(name) -> void
+static void JNICALL Java_omnivm_OmniVM_nativeReleaseBuffer(JNIEnv* env, jclass cls,
+                                                              jstring j_name) {
+    if (!g_buf_release) return;
+    const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
+    g_buf_release(name);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
+}
+
+// Convert a Java Object to jvm_omni_value_t
+static jvm_omni_value_t java_to_omni_value(JNIEnv* env, jobject obj) {
+    jvm_omni_value_t val;
+    memset(&val, 0, sizeof(val));
+
+    if (!obj) {
+        val.tag = JVM_OMNI_TAG_NULL;
+        return val;
+    }
+
+    // Check types: Integer, Long, Double, Float, Boolean, String
+    jclass int_class = (*env)->FindClass(env, "java/lang/Integer");
+    jclass long_class = (*env)->FindClass(env, "java/lang/Long");
+    jclass double_class = (*env)->FindClass(env, "java/lang/Double");
+    jclass float_class = (*env)->FindClass(env, "java/lang/Float");
+    jclass bool_class = (*env)->FindClass(env, "java/lang/Boolean");
+    jclass str_class = (*env)->FindClass(env, "java/lang/String");
+
+    if ((*env)->IsInstanceOf(env, obj, bool_class)) {
+        jmethodID m = (*env)->GetMethodID(env, bool_class, "booleanValue", "()Z");
+        val.tag = JVM_OMNI_TAG_BOOL;
+        val.v.i = (*env)->CallBooleanMethod(env, obj, m) ? 1 : 0;
+    } else if ((*env)->IsInstanceOf(env, obj, int_class)) {
+        jmethodID m = (*env)->GetMethodID(env, int_class, "intValue", "()I");
+        val.tag = JVM_OMNI_TAG_I64;
+        val.v.i = (int64_t)(*env)->CallIntMethod(env, obj, m);
+    } else if ((*env)->IsInstanceOf(env, obj, long_class)) {
+        jmethodID m = (*env)->GetMethodID(env, long_class, "longValue", "()J");
+        val.tag = JVM_OMNI_TAG_I64;
+        val.v.i = (int64_t)(*env)->CallLongMethod(env, obj, m);
+    } else if ((*env)->IsInstanceOf(env, obj, double_class)) {
+        jmethodID m = (*env)->GetMethodID(env, double_class, "doubleValue", "()D");
+        val.tag = JVM_OMNI_TAG_F64;
+        val.v.f = (*env)->CallDoubleMethod(env, obj, m);
+    } else if ((*env)->IsInstanceOf(env, obj, float_class)) {
+        jmethodID m = (*env)->GetMethodID(env, float_class, "floatValue", "()F");
+        val.tag = JVM_OMNI_TAG_F64;
+        val.v.f = (double)(*env)->CallFloatMethod(env, obj, m);
+    } else if ((*env)->IsInstanceOf(env, obj, str_class)) {
+        const char* utf = (*env)->GetStringUTFChars(env, (jstring)obj, NULL);
+        val.tag = JVM_OMNI_TAG_STRING;
+        val.v.s.len = strlen(utf);
+        val.v.s.ptr = strdup(utf);
+        (*env)->ReleaseStringUTFChars(env, (jstring)obj, utf);
+    } else {
+        // Fallback: toString()
+        jclass obj_class = (*env)->GetObjectClass(env, obj);
+        jmethodID to_str = (*env)->GetMethodID(env, obj_class, "toString", "()Ljava/lang/String;");
+        jstring str = (jstring)(*env)->CallObjectMethod(env, obj, to_str);
+        if (str) {
+            const char* utf = (*env)->GetStringUTFChars(env, str, NULL);
+            val.tag = JVM_OMNI_TAG_STRING;
+            val.v.s.len = strlen(utf);
+            val.v.s.ptr = strdup(utf);
+            (*env)->ReleaseStringUTFChars(env, str, utf);
+        } else {
+            val.tag = JVM_OMNI_TAG_NULL;
+        }
+    }
+
+    (*env)->DeleteLocalRef(env, int_class);
+    (*env)->DeleteLocalRef(env, long_class);
+    (*env)->DeleteLocalRef(env, double_class);
+    (*env)->DeleteLocalRef(env, float_class);
+    (*env)->DeleteLocalRef(env, bool_class);
+    (*env)->DeleteLocalRef(env, str_class);
+    return val;
+}
+
+// Convert jvm_omni_value_t to Java Object
+static jobject omni_value_to_java(JNIEnv* env, jvm_omni_value_t val) {
+    switch (val.tag) {
+    case JVM_OMNI_TAG_NULL:
+        return NULL;
+    case JVM_OMNI_TAG_BOOL: {
+        jclass cls = (*env)->FindClass(env, "java/lang/Boolean");
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "valueOf", "(Z)Ljava/lang/Boolean;");
+        jobject r = (*env)->CallStaticObjectMethod(env, cls, m, val.v.i ? JNI_TRUE : JNI_FALSE);
+        (*env)->DeleteLocalRef(env, cls);
+        return r;
+    }
+    case JVM_OMNI_TAG_I64: {
+        jclass cls = (*env)->FindClass(env, "java/lang/Long");
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "valueOf", "(J)Ljava/lang/Long;");
+        jobject r = (*env)->CallStaticObjectMethod(env, cls, m, (jlong)val.v.i);
+        (*env)->DeleteLocalRef(env, cls);
+        return r;
+    }
+    case JVM_OMNI_TAG_F64: {
+        jclass cls = (*env)->FindClass(env, "java/lang/Double");
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "valueOf", "(D)Ljava/lang/Double;");
+        jobject r = (*env)->CallStaticObjectMethod(env, cls, m, val.v.f);
+        (*env)->DeleteLocalRef(env, cls);
+        return r;
+    }
+    case JVM_OMNI_TAG_STRING:
+        if (val.v.s.ptr)
+            return (*env)->NewStringUTF(env, val.v.s.ptr);
+        return (*env)->NewStringUTF(env, "");
+    case JVM_OMNI_TAG_BYTES:
+        if (val.v.s.ptr && val.v.s.len > 0) {
+            jbyteArray arr = (*env)->NewByteArray(env, (jsize)val.v.s.len);
+            (*env)->SetByteArrayRegion(env, arr, 0, (jsize)val.v.s.len, (jbyte*)val.v.s.ptr);
+            return arr;
+        }
+        return (*env)->NewByteArray(env, 0);
+    case JVM_OMNI_TAG_ERROR: {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        (*env)->ThrowNew(env, exc, val.v.s.ptr ? val.v.s.ptr : "unknown error");
+        return NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
+static void jvm_free_omni_value(jvm_omni_value_t* val) {
+    if (val->tag == JVM_OMNI_TAG_STRING || val->tag == JVM_OMNI_TAG_BYTES ||
+        val->tag == JVM_OMNI_TAG_ERROR) {
+        free(val->v.s.ptr);
+        val->v.s.ptr = NULL;
+    }
+}
+
+// JNI: OmniVM.nativeCallTyped(runtime, funcName, args) -> Object
+static jobject JNICALL Java_omnivm_OmniVM_nativeCallTyped(JNIEnv* env, jclass cls,
+                                                            jstring j_runtime,
+                                                            jstring j_func,
+                                                            jobjectArray j_args) {
+    if (!g_call_typed) {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        (*env)->ThrowNew(env, exc, "typed bridge not initialized");
+        return NULL;
+    }
+
+    const char* runtime = (*env)->GetStringUTFChars(env, j_runtime, NULL);
+    const char* func_name = (*env)->GetStringUTFChars(env, j_func, NULL);
+
+    int32_t nargs = j_args ? (int32_t)(*env)->GetArrayLength(env, j_args) : 0;
+    jvm_omni_value_t* c_args = NULL;
+    if (nargs > 0) {
+        c_args = (jvm_omni_value_t*)calloc(nargs, sizeof(jvm_omni_value_t));
+        for (int32_t i = 0; i < nargs; i++) {
+            jobject item = (*env)->GetObjectArrayElement(env, j_args, i);
+            c_args[i] = java_to_omni_value(env, item);
+            if (item) (*env)->DeleteLocalRef(env, item);
+        }
+    }
+
+    jvm_omni_value_t result = g_call_typed(runtime, func_name, c_args, nargs);
+
+    (*env)->ReleaseStringUTFChars(env, j_runtime, runtime);
+    (*env)->ReleaseStringUTFChars(env, j_func, func_name);
+
+    if (c_args) {
+        for (int32_t i = 0; i < nargs; i++) {
+            jvm_free_omni_value(&c_args[i]);
+        }
+        free(c_args);
+    }
+
+    jobject j_result = omni_value_to_java(env, result);
+    jvm_free_omni_value(&result);
+    return j_result;
+}
+
+// Typed eval: evaluate Java code and return omni_value_t
+static jvm_omni_value_t omnivm_jvm_eval_typed(const char* code) {
+    jvm_omni_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env || !runner_class || !eval_method_id) {
+        jvm_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = JVM_OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("JVM not available");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    if ((*env)->PushLocalFrame(env, 16) < 0) {
+        omnivm_jvm_maybe_detach(did_attach);
+        jvm_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = JVM_OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("PushLocalFrame failed");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    jstring jcode = (*env)->NewStringUTF(env, code);
+    if (!jcode) {
+        (*env)->ExceptionClear(env);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        jvm_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = JVM_OMNI_TAG_ERROR;
+        err.v.s.ptr = strdup("Failed to create Java string");
+        err.v.s.len = strlen(err.v.s.ptr);
+        return err;
+    }
+
+    jstring result = (jstring)(*env)->CallStaticObjectMethod(
+        env, runner_class, eval_method_id, jcode);
+
+    if ((*env)->ExceptionCheck(env)) {
+        jthrowable exc = (*env)->ExceptionOccurred(env);
+        (*env)->ExceptionClear(env);
+        jclass throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+        jmethodID to_string = (*env)->GetMethodID(env, throwable_class, "toString", "()Ljava/lang/String;");
+        jstring msg = (jstring)(*env)->CallObjectMethod(env, exc, to_string);
+
+        jvm_omni_value_t err;
+        memset(&err, 0, sizeof(err));
+        err.tag = JVM_OMNI_TAG_ERROR;
+        if (msg) {
+            const char* utf = (*env)->GetStringUTFChars(env, msg, NULL);
+            err.v.s.ptr = strdup(utf);
+            err.v.s.len = strlen(err.v.s.ptr);
+            (*env)->ReleaseStringUTFChars(env, msg, utf);
+        } else {
+            err.v.s.ptr = strdup("Unknown JNI exception");
+            err.v.s.len = strlen(err.v.s.ptr);
+        }
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return err;
+    }
+
+    if (!result) {
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return null_val;
+    }
+
+    // OmniVMRunner.eval returns String — try to parse as typed
+    const char* utf = (*env)->GetStringUTFChars(env, result, NULL);
+    jvm_omni_value_t typed;
+    memset(&typed, 0, sizeof(typed));
+
+    // Try parsing as integer
+    char* endptr;
+    long long ll = strtoll(utf, &endptr, 10);
+    if (*endptr == '\0' && endptr != utf) {
+        typed.tag = JVM_OMNI_TAG_I64;
+        typed.v.i = (int64_t)ll;
+    } else {
+        // Try parsing as double
+        double d = strtod(utf, &endptr);
+        if (*endptr == '\0' && endptr != utf) {
+            typed.tag = JVM_OMNI_TAG_F64;
+            typed.v.f = d;
+        } else if (strcmp(utf, "true") == 0) {
+            typed.tag = JVM_OMNI_TAG_BOOL;
+            typed.v.i = 1;
+        } else if (strcmp(utf, "false") == 0) {
+            typed.tag = JVM_OMNI_TAG_BOOL;
+            typed.v.i = 0;
+        } else if (strcmp(utf, "null") == 0) {
+            typed.tag = JVM_OMNI_TAG_NULL;
+        } else {
+            typed.tag = JVM_OMNI_TAG_STRING;
+            typed.v.s.len = strlen(utf);
+            typed.v.s.ptr = strdup(utf);
+        }
+    }
+
+    (*env)->ReleaseStringUTFChars(env, result, utf);
+    (*env)->PopLocalFrame(env, NULL);
+    omnivm_jvm_maybe_detach(did_attach);
+    return typed;
+}
+
+static void omnivm_jvm_set_buf_callbacks(jvm_buf_get_fn get_fn,
+                                          jvm_buf_set_fn set_fn,
+                                          jvm_buf_release_fn release_fn) {
+    g_buf_get = get_fn;
+    g_buf_set = set_fn;
+    g_buf_release = release_fn;
+}
+
+static void omnivm_jvm_set_typed_callback(jvm_call_typed_fn fn) {
+    g_call_typed = fn;
+}
+
 static int omnivm_jvm_init(const char* classpath) {
     JavaVMInitArgs vm_args;
     JavaVMOption options[4];
@@ -146,14 +539,24 @@ static int omnivm_jvm_init(const char* classpath) {
         (*env_ptr)->ExceptionClear(env_ptr);
     }
 
-    // Register native method for OmniVM.call
+    // Register native methods for OmniVM
     jclass omnivm_class = (*env_ptr)->FindClass(env_ptr, "omnivm/OmniVM");
     if (omnivm_class) {
         JNINativeMethod methods[] = {
             {"nativeCall", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-             (void*)Java_omnivm_OmniVM_nativeCall}
+             (void*)Java_omnivm_OmniVM_nativeCall},
+            {"nativeGetBuffer", "(Ljava/lang/String;)[B",
+             (void*)Java_omnivm_OmniVM_nativeGetBuffer},
+            {"nativeGetBufferDtype", "(Ljava/lang/String;)I",
+             (void*)Java_omnivm_OmniVM_nativeGetBufferDtype},
+            {"nativeSetBuffer", "(Ljava/lang/String;[BI)V",
+             (void*)Java_omnivm_OmniVM_nativeSetBuffer},
+            {"nativeReleaseBuffer", "(Ljava/lang/String;)V",
+             (void*)Java_omnivm_OmniVM_nativeReleaseBuffer},
+            {"nativeCallTyped", "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;",
+             (void*)Java_omnivm_OmniVM_nativeCallTyped},
         };
-        (*env_ptr)->RegisterNatives(env_ptr, omnivm_class, methods, 1);
+        (*env_ptr)->RegisterNatives(env_ptr, omnivm_class, methods, 6);
         (*env_ptr)->ExceptionClear(env_ptr);
         (*env_ptr)->DeleteLocalRef(env_ptr, omnivm_class);
     } else {
@@ -405,6 +808,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
 // ClasspathDir is where OmniVMRunner.class lives (set during Docker build).
@@ -536,6 +940,35 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 		C.omni_call_fn(unsafe.Pointer(callPtr)),
 		C.omni_free_fn(unsafe.Pointer(freePtr)),
 	)
+}
+
+// SetBufCallbacks installs the buffer bridge function pointers.
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+	C.omnivm_jvm_set_buf_callbacks(
+		C.jvm_buf_get_fn(unsafe.Pointer(getPtr)),
+		C.jvm_buf_set_fn(unsafe.Pointer(setPtr)),
+		C.jvm_buf_release_fn(unsafe.Pointer(releasePtr)),
+	)
+}
+
+// SetTypedCallback installs the typed call bridge function pointer.
+func (r *Runtime) SetTypedCallback(ptr uintptr) {
+	C.omnivm_jvm_set_typed_callback(C.jvm_call_typed_fn(unsafe.Pointer(ptr)))
+}
+
+// EvalTyped evaluates Java code and returns a typed polyglot.Value.
+func (r *Runtime) EvalTyped(code string) polyglot.Value {
+	if !r.initialized {
+		return polyglot.Error("jvm: not initialized")
+	}
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+
+	cResult := C.omnivm_jvm_eval_typed(cCode)
+	ptr := unsafe.Pointer(&cResult)
+	val := polyglot.FromCValueRaw(ptr)
+	polyglot.FreeCValueRaw(ptr)
+	return val
 }
 
 func (r *Runtime) Pump() {}

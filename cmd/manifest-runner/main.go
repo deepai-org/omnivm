@@ -292,12 +292,14 @@ func main() {
 	pyRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 	jsRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 	rbRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+	jvmRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 
 	// Install typed call bridge
 	typedPtr := uintptr(C.get_omni_call_typed_ptr())
 	pyRuntime.SetTypedCallback(typedPtr)
 	jsRuntime.SetTypedCallback(typedPtr)
 	rbRuntime.SetTypedCallback(typedPtr)
+	jvmRuntime.SetTypedCallback(typedPtr)
 
 	// Create executor
 	executor = manifest.NewExecutor(runtimes)

@@ -15,6 +15,7 @@ import (
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
 	"github.com/omnivm/omnivm/pkg/javascript"
+	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
@@ -74,7 +75,11 @@ func (e *Engine) SetupBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 			rbRT.SetBufCallbacks(getPtr, setPtr, releasePtr)
 		}
 	}
-	// TODO: Add Java buffer callbacks here when implemented
+	if rt, ok := e.Runtimes["java"]; ok {
+		if jvmRT, ok := rt.(*jvm.Runtime); ok {
+			jvmRT.SetBufCallbacks(getPtr, setPtr, releasePtr)
+		}
+	}
 }
 
 // SetupTypedCallback installs the typed call bridge callback on runtimes.
@@ -92,6 +97,11 @@ func (e *Engine) SetupTypedCallback(typedPtr uintptr) {
 	if rt, ok := e.Runtimes["ruby"]; ok {
 		if rbRT, ok := rt.(*ruby.Runtime); ok {
 			rbRT.SetTypedCallback(typedPtr)
+		}
+	}
+	if rt, ok := e.Runtimes["java"]; ok {
+		if jvmRT, ok := rt.(*jvm.Runtime); ok {
+			jvmRT.SetTypedCallback(typedPtr)
 		}
 	}
 }
