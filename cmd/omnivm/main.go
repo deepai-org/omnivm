@@ -38,12 +38,26 @@ extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
 
+// Typed value bridge exports
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} omni_value_t;
+extern omni_value_t OmniCallTyped(char* runtime, char* func_name,
+                                   omni_value_t* args, int32_t nargs);
+
 // Get function pointers to pass to runtimes
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
 static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
+static void* get_omni_call_typed_ptr()  { return (void*)OmniCallTyped; }
 
 // Get function pointers for Python interpreter mode callbacks
 static void* get_omni_init_runtimes_ptr() { return (void*)OmniInitRuntimes; }
@@ -67,6 +81,7 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/cli"
 	"github.com/omnivm/omnivm/pkg/engine"
 	"github.com/omnivm/omnivm/pkg/errmsg"
@@ -136,6 +151,27 @@ func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
 //export OmniBufRelease
 func OmniBufRelease(cName *C.char) {
 	arrow.BufRelease(C.GoString(cName))
+}
+
+//export OmniCallTyped
+func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
+	rtName := C.GoString(cRuntime)
+	funcName := C.GoString(cFuncName)
+
+	// Convert C args to Go values
+	n := int(nargs)
+	goArgs := make([]polyglot.Value, n)
+	if n > 0 && cArgs != nil {
+		for i := 0; i < n; i++ {
+			argPtr := unsafe.Pointer(uintptr(unsafe.Pointer(cArgs)) + uintptr(i)*polyglot.CValueSize)
+			goArgs[i] = polyglot.FromCValueRaw(argPtr)
+		}
+	}
+
+	result := eng.CallTyped(rtName, funcName, goArgs)
+	var cv C.omni_value_t
+	result.ToCValueRaw(unsafe.Pointer(&cv))
+	return cv
 }
 
 func main() {
@@ -215,6 +251,9 @@ func main() {
 		uintptr(C.get_omni_buf_set_ptr()),
 		uintptr(C.get_omni_buf_release_ptr()),
 	)
+
+	// Install typed call bridge
+	eng.SetupTypedCallback(uintptr(C.get_omni_call_typed_ptr()))
 
 	// Set up Go bridge: Go plugins call back via a Go closure (no C needed)
 	if _, ok := eng.Runtimes["go"]; ok {
@@ -571,10 +610,14 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 		uintptr(C.get_omni_buf_release_ptr()),
 	)
 
+	// Install typed call bridge
+	eng.SetupTypedCallback(uintptr(C.get_omni_call_typed_ptr()))
+
 	// Also set the bridge on the Python side so omnivm.call() works
 	// (Python is the host, not in the runtimes map, but needs the callback)
 	pyRT := python.New()
 	pyRT.SetBridgeCallback(callPtr, freePtr)
+	pyRT.SetTypedCallback(uintptr(C.get_omni_call_typed_ptr()))
 	pyRT.SetBufCallbacks(
 		uintptr(C.get_omni_buf_get_ptr()),
 		uintptr(C.get_omni_buf_set_ptr()),

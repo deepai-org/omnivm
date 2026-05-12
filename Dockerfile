@@ -130,6 +130,7 @@ RUN go test -v -count=1 ./pkg/golang/
 # cgo-linked runtime tests
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
+    go test -v -count=1 ./pkg/polyglot/ 2>&1 && \
     go test -v -count=1 ./pkg/python/ 2>&1 && \
     go test -v -count=1 ./pkg/javascript/ 2>&1 && \
     go test -v -count=1 ./pkg/ruby/ 2>&1 && \

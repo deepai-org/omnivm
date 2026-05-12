@@ -26,11 +26,25 @@ extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
 
+// Typed value bridge
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} omni_value_t;
+extern omni_value_t OmniCallTyped(char* runtime, char* func_name,
+                                   omni_value_t* args, int32_t nargs);
+
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
 static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
+static void* get_omni_call_typed_ptr()  { return (void*)OmniCallTyped; }
 static long get_thread_id() { return syscall(SYS_gettid); }
 */
 import "C"
@@ -47,6 +61,7 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
@@ -153,6 +168,58 @@ func OmniBufRelease(cName *C.char) {
 	arrow.BufRelease(C.GoString(cName))
 }
 
+//export OmniCallTyped
+func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
+	rtName := C.GoString(cRuntime)
+	funcName := C.GoString(cFuncName)
+
+	n := int(nargs)
+	goArgs := make([]polyglot.Value, n)
+	if n > 0 && cArgs != nil {
+		for i := 0; i < n; i++ {
+			argPtr := unsafe.Pointer(uintptr(unsafe.Pointer(cArgs)) + uintptr(i)*polyglot.CValueSize)
+			goArgs[i] = polyglot.FromCValueRaw(argPtr)
+		}
+	}
+
+	// Try typed registry first, fall back to eval
+	result := polyglot.GlobalRegistry.Call(rtName, funcName, goArgs)
+	if result.IsError() {
+		rt, ok := runtimes[rtName]
+		if !ok {
+			var cv C.omni_value_t
+			polyglot.Error("unknown runtime: " + rtName).ToCValueRaw(unsafe.Pointer(&cv))
+			return cv
+		}
+		code := funcName + "("
+		for i, arg := range goArgs {
+			if i > 0 {
+				code += ", "
+			}
+			code += arg.ToGoString()
+		}
+		code += ")"
+		evalResult := rt.Eval(code)
+		if evalResult.Err != nil {
+			var cv C.omni_value_t
+			polyglot.Error(evalResult.Err.Error()).ToCValueRaw(unsafe.Pointer(&cv))
+			return cv
+		}
+		s := ""
+		if evalResult.Value != nil {
+			s = fmt.Sprintf("%v", evalResult.Value)
+		} else {
+			s = evalResult.Output
+		}
+		var cv C.omni_value_t
+		polyglot.String(s).ToCValueRaw(unsafe.Pointer(&cv))
+		return cv
+	}
+	var cv C.omni_value_t
+	result.ToCValueRaw(unsafe.Pointer(&cv))
+	return cv
+}
+
 func main() {
 	goldenThreadID = int64(C.get_thread_id())
 	arrow.SetGlobalStore(arrow.NewSharedStore())
@@ -213,6 +280,10 @@ func main() {
 	pyRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 	jsRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
 	rbRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+
+	// Install typed call bridge
+	typedPtr := uintptr(C.get_omni_call_typed_ptr())
+	pyRuntime.SetTypedCallback(typedPtr)
 
 	// Create executor
 	executor = manifest.NewExecutor(runtimes)

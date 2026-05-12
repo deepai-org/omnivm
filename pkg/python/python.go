@@ -49,6 +49,142 @@ static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
     g_buf_release = release_fn;
 }
 
+// ---- Typed value bridge (Tier 2) ----
+
+#define PY_OMNI_TAG_NULL    0
+#define PY_OMNI_TAG_BOOL    1
+#define PY_OMNI_TAG_I64     2
+#define PY_OMNI_TAG_F64     3
+#define PY_OMNI_TAG_STRING  4
+#define PY_OMNI_TAG_BYTES   5
+#define PY_OMNI_TAG_REF     6
+#define PY_OMNI_TAG_ERROR   7
+
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} py_omni_value_t;
+
+typedef py_omni_value_t (*omni_call_typed_fn)(
+    const char* runtime,
+    const char* func_name,
+    py_omni_value_t* args,
+    int32_t nargs
+);
+
+static omni_call_typed_fn g_call_typed = NULL;
+
+static void omnivm_py_set_typed_callback(omni_call_typed_fn fn) {
+    g_call_typed = fn;
+}
+
+// Convert a Python object to omni_value_t (best-effort type detection)
+static py_omni_value_t py_to_omni_value(PyObject* obj) {
+    py_omni_value_t val;
+    memset(&val, 0, sizeof(val));
+
+    if (obj == Py_None) {
+        val.tag = PY_OMNI_TAG_NULL;
+    } else if (PyBool_Check(obj)) {
+        val.tag = PY_OMNI_TAG_BOOL;
+        val.v.i = (obj == Py_True) ? 1 : 0;
+    } else if (PyLong_Check(obj)) {
+        val.tag = PY_OMNI_TAG_I64;
+        val.v.i = PyLong_AsLongLong(obj);
+        if (PyErr_Occurred()) {
+            // Overflow — fall back to string
+            PyErr_Clear();
+            val.tag = PY_OMNI_TAG_STRING;
+            PyObject* str = PyObject_Str(obj);
+            if (str) {
+                const char* utf8 = PyUnicode_AsUTF8(str);
+                val.v.s.ptr = strdup(utf8 ? utf8 : "");
+                val.v.s.len = utf8 ? (int64_t)strlen(utf8) : 0;
+                Py_DECREF(str);
+            }
+        }
+    } else if (PyFloat_Check(obj)) {
+        val.tag = PY_OMNI_TAG_F64;
+        val.v.f = PyFloat_AsDouble(obj);
+    } else if (PyUnicode_Check(obj)) {
+        val.tag = PY_OMNI_TAG_STRING;
+        Py_ssize_t len;
+        const char* utf8 = PyUnicode_AsUTF8AndSize(obj, &len);
+        val.v.s.ptr = utf8 ? strndup(utf8, len) : strdup("");
+        val.v.s.len = utf8 ? (int64_t)len : 0;
+    } else if (PyBytes_Check(obj)) {
+        val.tag = PY_OMNI_TAG_BYTES;
+        char* data;
+        Py_ssize_t len;
+        PyBytes_AsStringAndSize(obj, &data, &len);
+        val.v.s.ptr = (char*)malloc(len);
+        memcpy(val.v.s.ptr, data, len);
+        val.v.s.len = (int64_t)len;
+    } else {
+        // Fallback: convert to string via str()
+        val.tag = PY_OMNI_TAG_STRING;
+        PyObject* str = PyObject_Str(obj);
+        if (str) {
+            const char* utf8 = PyUnicode_AsUTF8(str);
+            val.v.s.ptr = strdup(utf8 ? utf8 : "");
+            val.v.s.len = utf8 ? (int64_t)strlen(utf8) : 0;
+            Py_DECREF(str);
+        } else {
+            val.v.s.ptr = strdup("");
+            val.v.s.len = 0;
+        }
+    }
+    return val;
+}
+
+// Convert omni_value_t to a Python object (new reference)
+static PyObject* omni_value_to_py(py_omni_value_t val) {
+    switch (val.tag) {
+    case PY_OMNI_TAG_NULL:
+        Py_RETURN_NONE;
+    case PY_OMNI_TAG_BOOL:
+        if (val.v.i) Py_RETURN_TRUE;
+        Py_RETURN_FALSE;
+    case PY_OMNI_TAG_I64:
+        return PyLong_FromLongLong(val.v.i);
+    case PY_OMNI_TAG_F64:
+        return PyFloat_FromDouble(val.v.f);
+    case PY_OMNI_TAG_STRING:
+        if (val.v.s.ptr)
+            return PyUnicode_FromStringAndSize(val.v.s.ptr, (Py_ssize_t)val.v.s.len);
+        return PyUnicode_FromString("");
+    case PY_OMNI_TAG_BYTES:
+        if (val.v.s.ptr)
+            return PyBytes_FromStringAndSize(val.v.s.ptr, (Py_ssize_t)val.v.s.len);
+        return PyBytes_FromStringAndSize("", 0);
+    case PY_OMNI_TAG_ERROR:
+        if (val.v.s.ptr) {
+            PyErr_SetString(PyExc_RuntimeError, val.v.s.ptr);
+        } else {
+            PyErr_SetString(PyExc_RuntimeError, "unknown error");
+        }
+        return NULL;
+    default:
+        Py_RETURN_NONE;
+    }
+}
+
+// Free C-allocated data in an omni_value_t
+static void free_omni_value(py_omni_value_t* val) {
+    if (val->tag == PY_OMNI_TAG_STRING || val->tag == PY_OMNI_TAG_BYTES ||
+        val->tag == PY_OMNI_TAG_ERROR) {
+        if (val->v.s.ptr) {
+            free(val->v.s.ptr);
+            val->v.s.ptr = NULL;
+        }
+    }
+}
+
 // Helper to get the value from a StringIO object as a strdup'd C string.
 static char* get_stringio_value(PyObject* sio) {
     PyObject* getvalue = PyObject_GetAttrString(sio, "getvalue");
@@ -387,8 +523,61 @@ static PyObject* py_omnivm_release_buffer(PyObject* self, PyObject* args) {
 }
 
 // Method table for the omnivm module
+// py_omnivm_call_typed(runtime, func_name, *args) -> value
+// Calls a function in another runtime using typed values (no JSON).
+static PyObject* py_omnivm_call_typed(PyObject* self, PyObject* args) {
+    const char* runtime;
+    const char* func_name;
+    PyObject* py_args_tuple;
+
+    // Parse: (str, str, tuple)
+    if (!PyArg_ParseTuple(args, "ssO", &runtime, &func_name, &py_args_tuple)) {
+        return NULL;
+    }
+
+    if (!g_call_typed) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm typed bridge not initialized");
+        return NULL;
+    }
+
+    if (!PyTuple_Check(py_args_tuple) && !PyList_Check(py_args_tuple)) {
+        PyErr_SetString(PyExc_TypeError, "third argument must be a tuple or list");
+        return NULL;
+    }
+
+    Py_ssize_t nargs = PySequence_Size(py_args_tuple);
+    py_omni_value_t* c_args = NULL;
+    if (nargs > 0) {
+        c_args = (py_omni_value_t*)calloc(nargs, sizeof(py_omni_value_t));
+        for (Py_ssize_t i = 0; i < nargs; i++) {
+            PyObject* item = PySequence_GetItem(py_args_tuple, i);
+            c_args[i] = py_to_omni_value(item);
+            Py_DECREF(item);
+        }
+    }
+
+    // Release GIL while calling into other runtime
+    PyThreadState* _save = PyEval_SaveThread();
+    py_omni_value_t result = g_call_typed(runtime, func_name, c_args, (int32_t)nargs);
+    PyEval_RestoreThread(_save);
+
+    // Free args
+    if (c_args) {
+        for (int32_t i = 0; i < nargs; i++) {
+            free_omni_value(&c_args[i]);
+        }
+        free(c_args);
+    }
+
+    // Convert result to Python
+    PyObject* py_result = omni_value_to_py(result);
+    free_omni_value(&result);
+    return py_result;
+}
+
 static PyMethodDef omnivm_methods[] = {
     {"call", py_omnivm_call, METH_VARARGS, "Call another runtime: omnivm.call(runtime, code)"},
+    {"call_typed", py_omnivm_call_typed, METH_VARARGS, "Call a function with typed args: omnivm.call_typed(runtime, func, (args,))"},
     {"get_buffer", py_omnivm_get_buffer, METH_VARARGS, "Get a shared buffer: omnivm.get_buffer(name) -> memoryview|None"},
     {"set_buffer", py_omnivm_set_buffer, METH_VARARGS, "Set a shared buffer: omnivm.set_buffer(name, data, dtype=0)"},
     {"release_buffer", py_omnivm_release_buffer, METH_VARARGS, "Release a shared buffer: omnivm.release_buffer(name)"},
@@ -872,6 +1061,13 @@ func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
+	)
+}
+
+// SetTypedCallback installs the typed call bridge function pointer.
+func (r *Runtime) SetTypedCallback(ptr uintptr) {
+	C.omnivm_py_set_typed_callback(
+		C.omni_call_typed_fn(unsafe.Pointer(ptr)),
 	)
 }
 

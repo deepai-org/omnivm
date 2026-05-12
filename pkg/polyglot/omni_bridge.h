@@ -51,4 +51,57 @@ typedef int (*omni_buf_get_fn)(const char* name, omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
 
+// ---- Typed value bridge (Tier 2) ----
+
+// Value type tags. int64_t so union is always at offset 8.
+#define OMNI_TAG_NULL    0
+#define OMNI_TAG_BOOL    1
+#define OMNI_TAG_I64     2
+#define OMNI_TAG_F64     3
+#define OMNI_TAG_STRING  4
+#define OMNI_TAG_BYTES   5
+#define OMNI_TAG_REF     6
+#define OMNI_TAG_ERROR   7
+
+// Tagged value type for cross-runtime function calls without serialization.
+// Layout: 8-byte tag + 24-byte union = 32 bytes total.
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;       // TAG_BOOL (0/1), TAG_I64
+        double   f;       // TAG_F64
+        struct { char* ptr; int64_t len; } s;  // TAG_STRING, TAG_BYTES, TAG_ERROR
+        uint64_t ref;     // TAG_REF: opaque handle into HandleTable
+    } v;
+} omni_value_t;
+
+// Typed call: invoke a named function in another runtime with typed args.
+// Returns a typed value (TAG_ERROR on failure).
+typedef omni_value_t (*omni_call_typed_fn)(
+    const char* runtime,
+    const char* func_name,
+    omni_value_t* args,
+    int32_t nargs
+);
+
+// Convenience constructors (inline for C/C++ compatibility)
+static inline omni_value_t omni_null(void) {
+    omni_value_t v; v.tag = OMNI_TAG_NULL; v.v.i = 0; return v;
+}
+static inline omni_value_t omni_bool(int b) {
+    omni_value_t v; v.tag = OMNI_TAG_BOOL; v.v.i = b ? 1 : 0; return v;
+}
+static inline omni_value_t omni_i64(int64_t i) {
+    omni_value_t v; v.tag = OMNI_TAG_I64; v.v.i = i; return v;
+}
+static inline omni_value_t omni_f64(double f) {
+    omni_value_t v; v.tag = OMNI_TAG_F64; v.v.f = f; return v;
+}
+static inline omni_value_t omni_string(char* ptr, int64_t len) {
+    omni_value_t v; v.tag = OMNI_TAG_STRING; v.v.s.ptr = ptr; v.v.s.len = len; return v;
+}
+static inline omni_value_t omni_error(char* ptr, int64_t len) {
+    omni_value_t v; v.tag = OMNI_TAG_ERROR; v.v.s.ptr = ptr; v.v.s.len = len; return v;
+}
+
 #endif // OMNIVM_BRIDGE_H

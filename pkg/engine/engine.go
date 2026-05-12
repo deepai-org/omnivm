@@ -15,6 +15,7 @@ import (
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
 	"github.com/omnivm/omnivm/pkg/javascript"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
 	"github.com/omnivm/omnivm/pkg/watchdog"
@@ -74,6 +75,16 @@ func (e *Engine) SetupBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 		}
 	}
 	// TODO: Add Java buffer callbacks here when implemented
+}
+
+// SetupTypedCallback installs the typed call bridge callback on runtimes.
+func (e *Engine) SetupTypedCallback(typedPtr uintptr) {
+	if rt, ok := e.Runtimes["python"]; ok {
+		if pyRT, ok := rt.(*python.Runtime); ok {
+			pyRT.SetTypedCallback(typedPtr)
+		}
+	}
+	// TODO: Add JS, Ruby typed callbacks here
 }
 
 // SetupWatchdog registers each runtime's interrupt function pointer with the
@@ -178,6 +189,51 @@ func (e *Engine) Call(rtName, code string, threadID int64) (string, error) {
 		return fmt.Sprintf("%v", result.Value), nil
 	}
 	return result.Output, nil
+}
+
+// CallTyped invokes a named function in a runtime with typed values.
+// First checks the typed function registry (Go-backed functions),
+// then falls back to eval through the string bridge.
+func (e *Engine) CallTyped(rtName, funcName string, args []polyglot.Value) polyglot.Value {
+	// Check the typed function registry first
+	result := polyglot.GlobalRegistry.Call(rtName, funcName, args)
+	if !result.IsError() {
+		return result
+	}
+
+	// Fall back to string-based eval: construct "funcName(arg1, arg2, ...)"
+	rt, ok := e.Runtimes[rtName]
+	if !ok {
+		return polyglot.Error(fmt.Sprintf("unknown runtime: %s", rtName))
+	}
+
+	code := funcName + "("
+	for i, arg := range args {
+		if i > 0 {
+			code += ", "
+		}
+		code += arg.ToGoString()
+	}
+	code += ")"
+
+	evalResult := rt.Eval(code)
+	if evalResult.Err != nil {
+		return polyglot.Error(evalResult.Err.Error())
+	}
+
+	// Try to parse the result as a typed value
+	return parseEvalResult(evalResult)
+}
+
+// parseEvalResult converts an eval Result to a typed Value.
+func parseEvalResult(r pkg.Result) polyglot.Value {
+	s := ""
+	if r.Value != nil {
+		s = fmt.Sprintf("%v", r.Value)
+	} else {
+		s = r.Output
+	}
+	return polyglot.String(s)
 }
 
 // Exec executes code in a runtime (for side effects), managing watchdog state.
