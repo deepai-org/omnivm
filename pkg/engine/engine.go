@@ -84,7 +84,16 @@ func (e *Engine) SetupTypedCallback(typedPtr uintptr) {
 			pyRT.SetTypedCallback(typedPtr)
 		}
 	}
-	// TODO: Add JS, Ruby typed callbacks here
+	if rt, ok := e.Runtimes["javascript"]; ok {
+		if jsRT, ok := rt.(*javascript.Runtime); ok {
+			jsRT.SetTypedCallback(typedPtr)
+		}
+	}
+	if rt, ok := e.Runtimes["ruby"]; ok {
+		if rbRT, ok := rt.(*ruby.Runtime); ok {
+			rbRT.SetTypedCallback(typedPtr)
+		}
+	}
 }
 
 // SetupWatchdog registers each runtime's interrupt function pointer with the

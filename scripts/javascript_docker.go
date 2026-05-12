@@ -127,6 +127,11 @@ func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 	)
 }
 
+// SetTypedCallback installs the typed call bridge function pointer.
+func (r *Runtime) SetTypedCallback(ptr uintptr) {
+	C.omnivm_v8_set_typed_callback(C.omni_call_typed_fn(unsafe.Pointer(ptr)))
+}
+
 func (r *Runtime) Pump() {
 	if !r.initialized || r.isolate == nil {
 		return

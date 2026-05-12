@@ -38,6 +38,114 @@ static omni_buf_get_fn g_buf_get = NULL;
 static omni_buf_set_fn g_buf_set = NULL;
 static omni_buf_release_fn g_buf_release = NULL;
 
+// Typed value bridge
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} rb_omni_value_t;
+
+#define RB_OMNI_TAG_NULL    0
+#define RB_OMNI_TAG_BOOL    1
+#define RB_OMNI_TAG_I64     2
+#define RB_OMNI_TAG_F64     3
+#define RB_OMNI_TAG_STRING  4
+#define RB_OMNI_TAG_BYTES   5
+#define RB_OMNI_TAG_REF     6
+#define RB_OMNI_TAG_ERROR   7
+
+typedef rb_omni_value_t (*rb_omni_call_typed_fn)(const char* runtime,
+                                                  const char* func_name,
+                                                  rb_omni_value_t* args,
+                                                  int32_t nargs);
+static rb_omni_call_typed_fn g_call_typed = NULL;
+
+static void omnivm_ruby_set_typed_callback(rb_omni_call_typed_fn fn) {
+    g_call_typed = fn;
+}
+
+// Convert a Ruby VALUE to rb_omni_value_t
+static rb_omni_value_t rb_to_omni_value(VALUE val) {
+    rb_omni_value_t out;
+    memset(&out, 0, sizeof(out));
+
+    if (NIL_P(val)) {
+        out.tag = RB_OMNI_TAG_NULL;
+    } else if (val == Qtrue) {
+        out.tag = RB_OMNI_TAG_BOOL;
+        out.v.i = 1;
+    } else if (val == Qfalse) {
+        out.tag = RB_OMNI_TAG_BOOL;
+        out.v.i = 0;
+    } else if (RB_FIXNUM_P(val)) {
+        out.tag = RB_OMNI_TAG_I64;
+        out.v.i = FIX2LONG(val);
+    } else if (RB_TYPE_P(val, T_BIGNUM)) {
+        out.tag = RB_OMNI_TAG_I64;
+        out.v.i = NUM2LL(val);
+    } else if (RB_FLOAT_TYPE_P(val)) {
+        out.tag = RB_OMNI_TAG_F64;
+        out.v.f = RFLOAT_VALUE(val);
+    } else if (RB_TYPE_P(val, T_STRING)) {
+        out.tag = RB_OMNI_TAG_STRING;
+        out.v.s.len = RSTRING_LEN(val);
+        out.v.s.ptr = (char*)malloc(out.v.s.len + 1);
+        memcpy(out.v.s.ptr, RSTRING_PTR(val), out.v.s.len);
+        out.v.s.ptr[out.v.s.len] = '\0';
+    } else {
+        // Fallback: to_s
+        VALUE str = rb_funcall(val, rb_intern("to_s"), 0);
+        out.tag = RB_OMNI_TAG_STRING;
+        out.v.s.len = RSTRING_LEN(str);
+        out.v.s.ptr = (char*)malloc(out.v.s.len + 1);
+        memcpy(out.v.s.ptr, RSTRING_PTR(str), out.v.s.len);
+        out.v.s.ptr[out.v.s.len] = '\0';
+    }
+    return out;
+}
+
+// Convert rb_omni_value_t to a Ruby VALUE
+static VALUE omni_value_to_rb(rb_omni_value_t val) {
+    switch (val.tag) {
+    case RB_OMNI_TAG_NULL:
+        return Qnil;
+    case RB_OMNI_TAG_BOOL:
+        return val.v.i ? Qtrue : Qfalse;
+    case RB_OMNI_TAG_I64:
+        return LL2NUM(val.v.i);
+    case RB_OMNI_TAG_F64:
+        return DBL2NUM(val.v.f);
+    case RB_OMNI_TAG_STRING:
+        if (val.v.s.ptr)
+            return rb_str_new(val.v.s.ptr, (long)val.v.s.len);
+        return rb_str_new("", 0);
+    case RB_OMNI_TAG_BYTES:
+        if (val.v.s.ptr) {
+            VALUE str = rb_str_new(val.v.s.ptr, (long)val.v.s.len);
+            rb_enc_associate(str, rb_ascii8bit_encoding());
+            return str;
+        }
+        return rb_str_new("", 0);
+    case RB_OMNI_TAG_ERROR:
+        rb_raise(rb_eRuntimeError, "%s", val.v.s.ptr ? val.v.s.ptr : "unknown error");
+        return Qnil;
+    default:
+        return Qnil;
+    }
+}
+
+static void rb_free_omni_value(rb_omni_value_t* val) {
+    if (val->tag == RB_OMNI_TAG_STRING || val->tag == RB_OMNI_TAG_BYTES ||
+        val->tag == RB_OMNI_TAG_ERROR) {
+        free(val->v.s.ptr);
+        val->v.s.ptr = NULL;
+    }
+}
+
 static void omnivm_ruby_set_buf_callbacks(omni_buf_get_fn get_fn,
                                            omni_buf_set_fn set_fn,
                                            omni_buf_release_fn release_fn) {
@@ -563,6 +671,68 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
     return rb_result;
 }
 
+// Typed call bridge args for GVL release
+typedef struct {
+    const char* runtime;
+    const char* func_name;
+    rb_omni_value_t* args;
+    int32_t nargs;
+    rb_omni_value_t result;
+} ruby_typed_bridge_args;
+
+static void* ruby_typed_bridge_no_gvl(void* raw) {
+    tls_holds_gvl = 0;
+    ruby_typed_bridge_args* a = (ruby_typed_bridge_args*)raw;
+    a->result = g_call_typed(a->runtime, a->func_name, a->args, a->nargs);
+    tls_holds_gvl = 1;
+    return NULL;
+}
+
+// OmniVM.call_typed(runtime, func_name, *args) -> typed value
+static VALUE rb_omnivm_call_typed(int argc, VALUE* argv, VALUE self) {
+    if (argc < 2) {
+        rb_raise(rb_eArgError, "call_typed requires at least 2 arguments (runtime, func_name)");
+        return Qnil;
+    }
+    if (!g_call_typed) {
+        rb_raise(rb_eRuntimeError, "omnivm typed bridge not initialized");
+        return Qnil;
+    }
+
+    const char* runtime = StringValueCStr(argv[0]);
+    const char* func_name = StringValueCStr(argv[1]);
+
+    int32_t nargs = argc - 2;
+    rb_omni_value_t* c_args = NULL;
+    if (nargs > 0) {
+        c_args = (rb_omni_value_t*)calloc(nargs, sizeof(rb_omni_value_t));
+        for (int32_t i = 0; i < nargs; i++) {
+            c_args[i] = rb_to_omni_value(argv[i + 2]);
+        }
+    }
+
+    ruby_typed_bridge_args bargs;
+    bargs.runtime = runtime;
+    bargs.func_name = func_name;
+    bargs.args = c_args;
+    bargs.nargs = nargs;
+    memset(&bargs.result, 0, sizeof(bargs.result));
+
+    rb_thread_call_without_gvl(ruby_typed_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
+
+    // Free args
+    if (c_args) {
+        for (int32_t i = 0; i < nargs; i++) {
+            rb_free_omni_value(&c_args[i]);
+        }
+        free(c_args);
+    }
+
+    VALUE result = omni_value_to_rb(bargs.result);
+    rb_free_omni_value(&bargs.result);
+    return result;
+}
+
 // OmniVM.get_buffer(name) -> String or nil
 static VALUE rb_omnivm_get_buffer(VALUE self, VALUE rb_name) {
     const char* name = StringValueCStr(rb_name);
@@ -622,6 +792,7 @@ static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
 static void omnivm_ruby_register_bridge() {
     VALUE mod = rb_define_module("OmniVM");
     rb_define_module_function(mod, "call", rb_omnivm_call, 2);
+    rb_define_module_function(mod, "call_typed", rb_omnivm_call_typed, -1);
     rb_define_module_function(mod, "get_buffer", rb_omnivm_get_buffer, 1);
     rb_define_module_function(mod, "set_buffer", rb_omnivm_set_buffer, -1);
     rb_define_module_function(mod, "release_buffer", rb_omnivm_release_buffer, 1);
@@ -777,6 +948,11 @@ func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
 	)
+}
+
+// SetTypedCallback installs the typed call bridge function pointer.
+func (r *Runtime) SetTypedCallback(ptr uintptr) {
+	C.omnivm_ruby_set_typed_callback(C.rb_omni_call_typed_fn(unsafe.Pointer(ptr)))
 }
 
 // Pump is a no-op for Ruby (no cooperative event loop).

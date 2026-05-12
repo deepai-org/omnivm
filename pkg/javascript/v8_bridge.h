@@ -57,6 +57,32 @@ void omnivm_v8_terminate_execution(omnivm_v8_context* ctx);
 void omnivm_v8_set_terminate_context(omnivm_v8_context* ctx);
 void* omnivm_v8_get_terminate_ptr(void);
 
+// Typed value bridge
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} omni_value_t;
+
+#define OMNI_TAG_NULL    0
+#define OMNI_TAG_BOOL    1
+#define OMNI_TAG_I64     2
+#define OMNI_TAG_F64     3
+#define OMNI_TAG_STRING  4
+#define OMNI_TAG_BYTES   5
+#define OMNI_TAG_REF     6
+#define OMNI_TAG_ERROR   7
+
+typedef omni_value_t (*omni_call_typed_fn)(const char* runtime,
+                                            const char* func_name,
+                                            omni_value_t* args,
+                                            int32_t nargs);
+void omnivm_v8_set_typed_callback(omni_call_typed_fn fn);
+
 // Buffer bridge callback types and registration
 typedef struct {
     void*   data;

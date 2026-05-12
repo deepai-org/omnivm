@@ -44,6 +44,9 @@ struct omnivm_v8_context {
 static omnivm_bridge_call_fn g_bridge_call = nullptr;
 static omnivm_bridge_free_fn g_bridge_free = nullptr;
 
+// Typed call bridge callback pointer
+static omni_call_typed_fn g_call_typed = nullptr;
+
 // Buffer bridge callback pointers (types from v8_bridge.h)
 static omni_buf_get_fn g_buf_get = nullptr;
 static omni_buf_set_fn g_buf_set = nullptr;
@@ -194,6 +197,159 @@ static void OmnivmReleaseBufferCallback(const v8::FunctionCallbackInfo<v8::Value
     g_buf_release(*name);
 }
 
+// Convert a JS value to omni_value_t
+static omni_value_t js_to_omni_value(v8::Isolate* isolate,
+                                      v8::Local<v8::Context> context,
+                                      v8::Local<v8::Value> val) {
+    omni_value_t out;
+    memset(&out, 0, sizeof(out));
+
+    if (val->IsNullOrUndefined()) {
+        out.tag = OMNI_TAG_NULL;
+    } else if (val->IsBoolean()) {
+        out.tag = OMNI_TAG_BOOL;
+        out.v.i = val->BooleanValue(isolate) ? 1 : 0;
+    } else if (val->IsInt32()) {
+        out.tag = OMNI_TAG_I64;
+        out.v.i = val.As<v8::Int32>()->Value();
+    } else if (val->IsNumber()) {
+        double d = val.As<v8::Number>()->Value();
+        // Use I64 for exact integers
+        if (d == static_cast<double>(static_cast<int64_t>(d)) &&
+            d >= -9007199254740992.0 && d <= 9007199254740992.0) {
+            out.tag = OMNI_TAG_I64;
+            out.v.i = static_cast<int64_t>(d);
+        } else {
+            out.tag = OMNI_TAG_F64;
+            out.v.f = d;
+        }
+    } else if (val->IsString()) {
+        v8::String::Utf8Value utf8(isolate, val);
+        out.tag = OMNI_TAG_STRING;
+        out.v.s.len = utf8.length();
+        out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len + 1));
+        memcpy(out.v.s.ptr, *utf8, out.v.s.len);
+        out.v.s.ptr[out.v.s.len] = '\0';
+    } else if (val->IsArrayBuffer()) {
+        auto ab = val.As<v8::ArrayBuffer>();
+        out.tag = OMNI_TAG_BYTES;
+        out.v.s.len = static_cast<int64_t>(ab->ByteLength());
+        out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len));
+        memcpy(out.v.s.ptr, ab->GetBackingStore()->Data(), out.v.s.len);
+    } else {
+        // Fallback: stringify
+        v8::Local<v8::String> str;
+        if (val->ToString(context).ToLocal(&str)) {
+            v8::String::Utf8Value utf8(isolate, str);
+            out.tag = OMNI_TAG_STRING;
+            out.v.s.len = utf8.length();
+            out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len + 1));
+            memcpy(out.v.s.ptr, *utf8, out.v.s.len);
+            out.v.s.ptr[out.v.s.len] = '\0';
+        } else {
+            out.tag = OMNI_TAG_NULL;
+        }
+    }
+    return out;
+}
+
+// Convert omni_value_t to a JS value
+static v8::Local<v8::Value> omni_value_to_js(v8::Isolate* isolate,
+                                               const omni_value_t& val) {
+    switch (val.tag) {
+    case OMNI_TAG_NULL:
+        return v8::Null(isolate);
+    case OMNI_TAG_BOOL:
+        return v8::Boolean::New(isolate, val.v.i != 0);
+    case OMNI_TAG_I64:
+        return v8::Number::New(isolate, static_cast<double>(val.v.i));
+    case OMNI_TAG_F64:
+        return v8::Number::New(isolate, val.v.f);
+    case OMNI_TAG_STRING:
+        if (val.v.s.ptr && val.v.s.len > 0)
+            return v8::String::NewFromUtf8(isolate, val.v.s.ptr,
+                       v8::NewStringType::kNormal,
+                       static_cast<int>(val.v.s.len)).ToLocalChecked();
+        return v8::String::Empty(isolate);
+    case OMNI_TAG_BYTES:
+        if (val.v.s.ptr && val.v.s.len > 0) {
+            auto backing = v8::ArrayBuffer::NewBackingStore(isolate, val.v.s.len);
+            memcpy(backing->Data(), val.v.s.ptr, val.v.s.len);
+            return v8::ArrayBuffer::New(isolate, std::move(backing));
+        }
+        return v8::ArrayBuffer::New(isolate, 0);
+    case OMNI_TAG_ERROR:
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8(isolate,
+                val.v.s.ptr ? val.v.s.ptr : "unknown error").ToLocalChecked()));
+        return v8::Undefined(isolate);
+    default:
+        return v8::Null(isolate);
+    }
+}
+
+static void free_omni_value(omni_value_t* val) {
+    if (val->tag == OMNI_TAG_STRING || val->tag == OMNI_TAG_BYTES ||
+        val->tag == OMNI_TAG_ERROR) {
+        free(val->v.s.ptr);
+        val->v.s.ptr = nullptr;
+    }
+}
+
+// omnivm.callTyped(runtime, funcName, ...args) -> typed value
+static void OmnivmCallTypedCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+    if (info.Length() < 2 || !info[0]->IsString() || !info[1]->IsString()) {
+        isolate->ThrowException(v8::Exception::TypeError(
+            v8::String::NewFromUtf8Literal(isolate,
+                "omnivm.callTyped requires (runtime, funcName, ...args)")));
+        return;
+    }
+
+    if (!g_call_typed) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate,
+                "omnivm typed bridge not initialized")));
+        return;
+    }
+
+    v8::String::Utf8Value runtime(isolate, info[0]);
+    v8::String::Utf8Value func_name(isolate, info[1]);
+
+    int32_t nargs = info.Length() - 2;
+    omni_value_t* c_args = nullptr;
+    if (nargs > 0) {
+        c_args = static_cast<omni_value_t*>(calloc(nargs, sizeof(omni_value_t)));
+        for (int32_t i = 0; i < nargs; i++) {
+            c_args[i] = js_to_omni_value(isolate, context, info[i + 2]);
+        }
+    }
+
+    omni_value_t result;
+    {
+        v8::Unlocker unlocker(isolate);
+        result = g_call_typed(*runtime, *func_name, c_args, nargs);
+    }
+
+    // Free args
+    if (c_args) {
+        for (int32_t i = 0; i < nargs; i++) {
+            free_omni_value(&c_args[i]);
+        }
+        free(c_args);
+    }
+
+    v8::Local<v8::Value> js_result = omni_value_to_js(isolate, result);
+    free_omni_value(&result);
+
+    // If omni_value_to_js threw (TAG_ERROR), don't set return value
+    if (!isolate->IsExecutionTerminating()) {
+        info.GetReturnValue().Set(js_result);
+    }
+}
+
 // Register globalThis.omnivm.call() on the given context
 static void register_omnivm_bridge(v8::Isolate* isolate,
                                     v8::Local<v8::Context> context) {
@@ -205,6 +361,12 @@ static void register_omnivm_bridge(v8::Isolate* isolate,
     omnivm_obj->Set(context,
         v8::String::NewFromUtf8Literal(isolate, "call"),
         call_tmpl->GetFunction(context).ToLocalChecked()).Check();
+
+    // Typed call bridge
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "callTyped"),
+        v8::FunctionTemplate::New(isolate, OmnivmCallTypedCallback)
+            ->GetFunction(context).ToLocalChecked()).Check();
 
     // Buffer bridge methods
     omnivm_obj->Set(context,
@@ -525,6 +687,10 @@ void omnivm_v8_set_buf_callbacks(omni_buf_get_fn get_fn,
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
+}
+
+void omnivm_v8_set_typed_callback(omni_call_typed_fn fn) {
+    g_call_typed = fn;
 }
 
 void omnivm_v8_pump_message_loop(omnivm_v8_isolate* iso_w) {

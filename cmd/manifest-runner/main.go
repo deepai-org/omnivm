@@ -284,6 +284,8 @@ func main() {
 	// Install typed call bridge
 	typedPtr := uintptr(C.get_omni_call_typed_ptr())
 	pyRuntime.SetTypedCallback(typedPtr)
+	jsRuntime.SetTypedCallback(typedPtr)
+	rbRuntime.SetTypedCallback(typedPtr)
 
 	// Create executor
 	executor = manifest.NewExecutor(runtimes)
