@@ -32,6 +32,7 @@ import threading
 __all__ = [
     "init_runtimes",
     "call",
+    "call_typed",
     "execute",
     "load_plugin",
     "shutdown",
@@ -127,8 +128,103 @@ def _load_lib():
         lib.OmniFree.argtypes = [ctypes.c_char_p]
         lib.OmniFree.restype = None
 
+        # Typed call bridge
+        lib.OmniCallTyped.argtypes = [
+            ctypes.c_char_p,  # runtime
+            ctypes.c_char_p,  # func_name
+            ctypes.POINTER(_OmniValue),  # args
+            ctypes.c_int32,   # nargs
+        ]
+        lib.OmniCallTyped.restype = _OmniValue
+
         _lib = lib
         return _lib
+
+
+# omni_value_t tag constants
+_TAG_NULL = 0
+_TAG_BOOL = 1
+_TAG_I64 = 2
+_TAG_F64 = 3
+_TAG_STRING = 4
+_TAG_BYTES = 5
+_TAG_REF = 6
+_TAG_ERROR = 7
+
+
+class _OmniValueUnionStr(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.c_char_p), ("len", ctypes.c_int64)]
+
+
+class _OmniValueUnion(ctypes.Union):
+    _fields_ = [
+        ("i", ctypes.c_int64),
+        ("f", ctypes.c_double),
+        ("s", _OmniValueUnionStr),
+        ("ref", ctypes.c_uint64),
+    ]
+
+
+class _OmniValue(ctypes.Structure):
+    _fields_ = [("tag", ctypes.c_int64), ("v", _OmniValueUnion)]
+
+
+def _py_to_omni_value(val):
+    """Convert a Python value to an _OmniValue."""
+    ov = _OmniValue()
+    if val is None:
+        ov.tag = _TAG_NULL
+    elif isinstance(val, bool):
+        ov.tag = _TAG_BOOL
+        ov.v.i = 1 if val else 0
+    elif isinstance(val, int):
+        ov.tag = _TAG_I64
+        ov.v.i = val
+    elif isinstance(val, float):
+        ov.tag = _TAG_F64
+        ov.v.f = val
+    elif isinstance(val, str):
+        ov.tag = _TAG_STRING
+        encoded = val.encode("utf-8")
+        ov.v.s.ptr = encoded
+        ov.v.s.len = len(encoded)
+    elif isinstance(val, (bytes, bytearray)):
+        ov.tag = _TAG_BYTES
+        ov.v.s.ptr = bytes(val)
+        ov.v.s.len = len(val)
+    else:
+        # Fallback: stringify
+        s = str(val).encode("utf-8")
+        ov.tag = _TAG_STRING
+        ov.v.s.ptr = s
+        ov.v.s.len = len(s)
+    return ov
+
+
+def _omni_value_to_py(ov):
+    """Convert an _OmniValue to a Python value."""
+    if ov.tag == _TAG_NULL:
+        return None
+    elif ov.tag == _TAG_BOOL:
+        return bool(ov.v.i)
+    elif ov.tag == _TAG_I64:
+        return ov.v.i
+    elif ov.tag == _TAG_F64:
+        return ov.v.f
+    elif ov.tag == _TAG_STRING:
+        if ov.v.s.ptr and ov.v.s.len > 0:
+            return ov.v.s.ptr[:ov.v.s.len].decode("utf-8")
+        return ""
+    elif ov.tag == _TAG_BYTES:
+        if ov.v.s.ptr and ov.v.s.len > 0:
+            return ov.v.s.ptr[:ov.v.s.len]
+        return b""
+    elif ov.tag == _TAG_ERROR:
+        msg = ""
+        if ov.v.s.ptr and ov.v.s.len > 0:
+            msg = ov.v.s.ptr[:ov.v.s.len].decode("utf-8")
+        raise RuntimeError(msg)
+    return None
 
 
 def _check_result(result, runtime=None):
@@ -199,6 +295,53 @@ def call(runtime, code):
     _local.total_call_duration_ns += elapsed
 
     return _check_result(result, runtime=runtime)
+
+
+def call_typed(runtime, func_name, args=()):
+    """
+    Call a function in a runtime with typed arguments, returning a typed result.
+
+    Unlike call(), this preserves native types (int, float, bool, str, bytes)
+    through the bridge without string serialization.
+
+    Args:
+        runtime: Runtime name ("go", "javascript", "python", "ruby", "java")
+        func_name: Function name to call (e.g., "Math.sqrt", "math.abs")
+        args: Tuple or list of typed arguments
+
+    Returns:
+        Typed result (int, float, bool, str, bytes, or None).
+
+    Raises:
+        RuntimeError: On evaluation error.
+    """
+    if _lib is None:
+        raise RuntimeError(
+            "omnivm not initialized — call init_runtimes() first",
+            runtime=runtime,
+        )
+
+    # Convert args to omni_value_t array
+    n = len(args)
+    c_args = (_OmniValue * n)() if n > 0 else None
+    # Keep references to encoded strings alive
+    _refs = []
+    for i, arg in enumerate(args):
+        c_args[i] = _py_to_omni_value(arg)
+        # Keep encoded bytes alive so ctypes doesn't GC them
+        if isinstance(arg, str):
+            _refs.append(arg.encode("utf-8"))
+        elif isinstance(arg, (bytes, bytearray)):
+            _refs.append(bytes(arg))
+
+    result = _lib.OmniCallTyped(
+        runtime.encode("utf-8"),
+        func_name.encode("utf-8"),
+        c_args,
+        ctypes.c_int32(n),
+    )
+
+    return _omni_value_to_py(result)
 
 
 def execute(runtime, code):

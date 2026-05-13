@@ -30,13 +30,28 @@ package main
 #include <string.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <stdint.h>
 
 // Forward declarations of exported Go functions
 extern char* OmniCall(char* runtime, char* code);
 extern void OmniFree(char* ptr);
 
+// Typed value bridge
+typedef struct {
+    int64_t tag;
+    union {
+        int64_t  i;
+        double   f;
+        struct { char* ptr; int64_t len; } s;
+        uint64_t ref;
+    } v;
+} omni_value_t;
+extern omni_value_t OmniCallTyped(char* runtime, char* func_name,
+                                   omni_value_t* args, int32_t nargs);
+
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+static void* get_omni_call_typed_ptr() { return (void*)OmniCallTyped; }
 
 // Get the current OS thread ID (Linux-specific).
 static long get_thread_id() { return syscall(SYS_gettid); }
@@ -79,6 +94,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/engine"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
 )
@@ -161,6 +177,14 @@ func OmniInit(cList *C.char) *C.char {
 	callPtr := uintptr(C.get_omni_call_ptr())
 	freePtr := uintptr(C.get_omni_free_ptr())
 	eng.SetupBridge(callPtr, freePtr)
+
+	// Typed call bridge
+	typedPtr := uintptr(C.get_omni_call_typed_ptr())
+	eng.SetupTypedCallback(typedPtr)
+	pyRT.SetTypedCallback(typedPtr)
+
+	// Go-backed typed functions
+	polyglot.RegisterBuiltins()
 
 	eng.ActivateForkGuard()
 	eng.StartDispatcher()
@@ -312,6 +336,26 @@ func OmniFree(ptr *C.char) {
 	if ptr != nil {
 		C.free(unsafe.Pointer(ptr))
 	}
+}
+
+//export OmniCallTyped
+func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
+	rtName := C.GoString(cRuntime)
+	funcName := C.GoString(cFuncName)
+
+	n := int(nargs)
+	goArgs := make([]polyglot.Value, n)
+	if n > 0 && cArgs != nil {
+		for i := 0; i < n; i++ {
+			argPtr := unsafe.Pointer(uintptr(unsafe.Pointer(cArgs)) + uintptr(i)*polyglot.CValueSize)
+			goArgs[i] = polyglot.FromCValueRaw(argPtr)
+		}
+	}
+
+	result := eng.CallTyped(rtName, funcName, goArgs)
+	var cv C.omni_value_t
+	result.ToCValueRaw(unsafe.Pointer(&cv))
+	return cv
 }
 
 // main is required for c-shared but never called.
