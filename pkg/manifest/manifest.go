@@ -8,11 +8,27 @@ import "encoding/json"
 
 // Manifest is the top-level structure of a dispatch manifest.
 type Manifest struct {
-	Version        int          `json:"version"`
-	DefaultRuntime string       `json:"defaultRuntime"`
-	Ops            []*Op        `json:"ops"`
-	Bridges        []*BridgeOp  `json:"bridges,omitempty"`
-	TypeSummary    *TypeSummary `json:"typeSummary,omitempty"`
+	Version        int           `json:"version"`
+	DefaultRuntime string        `json:"defaultRuntime"`
+	Ops            []*Op         `json:"ops"`
+	Bridges        []*BridgeOp   `json:"bridges,omitempty"`
+	TypeSummary    *TypeSummary  `json:"typeSummary,omitempty"`
+	Diagnostics    []*Diagnostic `json:"diagnostics,omitempty"`
+}
+
+// Diagnostic is a non-fatal compiler diagnostic carried through the manifest.
+type Diagnostic struct {
+	Severity string          `json:"severity"`
+	Code     string          `json:"code"`
+	Message  string          `json:"message"`
+	Span     *DiagnosticSpan `json:"span,omitempty"`
+}
+
+type DiagnosticSpan struct {
+	Start  int `json:"start"`
+	End    int `json:"end"`
+	Line   int `json:"line,omitempty"`
+	Column int `json:"column,omitempty"`
 }
 
 // BridgeOp describes a type-aware transformation at a cross-runtime boundary.
@@ -111,7 +127,7 @@ type Op struct {
 	Lang string `json:"lang,omitempty"`
 
 	// eval with runtime:"go"
-	Func string `json:"func,omitempty"`
+	Func string        `json:"func,omitempty"`
 	Args []interface{} `json:"args,omitempty"`
 }
 
@@ -179,6 +195,9 @@ type ValueExpr struct {
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if err := ValidateManifest(&m); err != nil {
 		return nil, err
 	}
 	return &m, nil

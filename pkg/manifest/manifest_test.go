@@ -91,6 +91,30 @@ func TestParseManifestInvalid(t *testing.T) {
 	}
 }
 
+func TestParseManifestValidationUnknownOp(t *testing.T) {
+	data := `{"version":1,"defaultRuntime":"javascript","ops":[{"op":"bogus"}]}`
+	_, err := ParseManifest([]byte(data))
+	if err == nil {
+		t.Fatal("expected validation error for unknown op")
+	}
+}
+
+func TestParseManifestValidationSpawnRequiresCode(t *testing.T) {
+	data := `{"version":1,"defaultRuntime":"javascript","ops":[{"op":"spawn","runtime":"go","bind":"h"}]}`
+	_, err := ParseManifest([]byte(data))
+	if err == nil {
+		t.Fatal("expected validation error for spawn without code")
+	}
+}
+
+func TestParseManifestValidationChanSendRequiresValue(t *testing.T) {
+	data := `{"version":1,"defaultRuntime":"javascript","ops":[{"op":"chan","action":"send","runtime":"go","channel":"ch"}]}`
+	_, err := ParseManifest([]byte(data))
+	if err == nil {
+		t.Fatal("expected validation error for chan send without value")
+	}
+}
+
 // --- Scope tests ---
 
 func TestScopeBasic(t *testing.T) {

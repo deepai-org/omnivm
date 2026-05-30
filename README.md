@@ -430,6 +430,8 @@ make test-manifests
 Channel, spawn, and `wait()` semantics are defined in
 [`docs/manifest-channel-contract.md`](docs/manifest-channel-contract.md).
 
+Manifests are validated when parsed. The validator checks the stable executor contract: supported runtimes and op names, required fields for ops such as `spawn`, `chan`, `select`, `func_def`, and nested control-flow bodies. It intentionally does not reject dynamic binding-liveness cases that only execution can know.
+
 ### Channels and Spawn Handles
 
 Manifest channels are shared executor values, not runtime-local queues. `chan` ops create them, send/recv/close ops mutate them, and captures inject iterable/readable wrappers into runtimes such as JavaScript and Python. The Go manifest helpers `recv(ch)` and `send(ch, value)` expose the same channel values to compiled Go worker functions.
