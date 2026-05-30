@@ -65,6 +65,9 @@ import (
 // task wakeup and timerfd for heartbeat pumping. uvBackendFD is libuv's
 // backend fd for V8 I/O events (-1 to disable).
 func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
+	if !d.beginRun() {
+		return
+	}
 	defer close(d.stopped)
 
 	taskFD := int(C.omnivm_create_eventfd())
@@ -86,9 +89,10 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 	}
 
 	// Install wakeup function so RunOnMain/RunAsync can signal new tasks
-	d.wakeupFunc = func() {
+	d.setWakeupFunc(func() {
 		C.omnivm_eventfd_write(C.int(taskFD))
-	}
+	})
+	defer d.setWakeupFunc(nil)
 
 	go func() {
 		<-ctx.Done()

@@ -3,6 +3,7 @@ package python
 import (
 	"runtime"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -134,4 +135,40 @@ func TestPythonPump(t *testing.T) {
 
 	// Pump should not crash even with no event loop
 	r.Pump()
+}
+
+func TestPythonPumpCompletesScheduledCoroutine(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+import asyncio
+__omnivm_pump_done = False
+async def __omnivm_pump_task():
+    global __omnivm_pump_done
+    __omnivm_pump_done = True
+__omnivm_pump_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(__omnivm_pump_loop)
+asyncio.ensure_future(__omnivm_pump_task(), loop=__omnivm_pump_loop)
+`)
+	if result.Err != nil {
+		t.Fatalf("schedule coroutine: %v", result.Err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		r.Pump()
+		check := r.Eval("__omnivm_pump_done")
+		if check.Err == nil && check.Value == "True" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("scheduled coroutine did not complete after pumping")
 }

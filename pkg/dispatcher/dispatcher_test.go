@@ -172,6 +172,27 @@ func TestDispatcherShutdown(t *testing.T) {
 	}
 }
 
+func TestDispatcherRepeatedRunReturnsAfterStop(t *testing.T) {
+	d := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d.Run(ctx)
+	d.WaitForStop()
+
+	done := make(chan struct{})
+	go func() {
+		d.Run(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second Run call did not return")
+	}
+}
+
 func TestDispatcherWatchdog(t *testing.T) {
 	d := New()
 	d.WatchdogTimeout = 50 * time.Millisecond
@@ -304,6 +325,44 @@ func TestDispatcherRunAsyncFast(t *testing.T) {
 	}
 	if result.Value.(string) != "priority" {
 		t.Errorf("got %v, want priority", result.Value)
+	}
+}
+
+func TestDispatcherShutdownDrainsQueuedAsyncResults(t *testing.T) {
+	d := New()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	normal := d.RunAsync(func() (interface{}, error) {
+		t.Fatal("normal async task should have been drained, not executed")
+		return "unexpected", nil
+	})
+	fast := d.RunAsyncFast(func() (interface{}, error) {
+		t.Fatal("fast async task should have been drained, not executed")
+		return "unexpected", nil
+	})
+
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		d.Run(ctx)
+		close(done)
+	}()
+
+	for name, ch := range map[string]<-chan AsyncResult{"normal": normal, "fast": fast} {
+		select {
+		case result := <-ch:
+			if result.Err != ErrShutdown {
+				t.Fatalf("%s async result error = %v, want ErrShutdown", name, result.Err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("%s async result was not signaled during shutdown", name)
+		}
+	}
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("dispatcher did not stop after draining queued async tasks")
 	}
 }
 

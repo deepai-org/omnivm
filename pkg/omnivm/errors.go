@@ -74,6 +74,9 @@ var ErrAlreadyStarted = fmt.Errorf("omnivm: VM already started")
 // ErrShutdown is returned when Call/Execute is invoked after Shutdown().
 var ErrShutdown = fmt.Errorf("omnivm: VM shut down")
 
+// ErrDrainTimeout is returned when Shutdown times out waiting for the dispatcher.
+var ErrDrainTimeout = fmt.Errorf("omnivm: dispatcher drain timed out")
+
 // ErrUnknownRuntime is returned when Call/Execute references an unregistered runtime.
 type ErrUnknownRuntime struct {
 	Name string

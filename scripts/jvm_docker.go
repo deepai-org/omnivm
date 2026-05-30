@@ -483,6 +483,8 @@ static void omnivm_jvm_set_typed_callback(jvm_call_typed_fn fn) {
 }
 
 static int omnivm_jvm_init(const char* classpath) {
+    if (jvm_ptr && env_ptr) return 0;
+
     JavaVMInitArgs vm_args;
     JavaVMOption options[4];
 
@@ -785,17 +787,9 @@ static void omnivm_jvm_set_bridge_callback(omni_call_fn call_fn, omni_free_fn fr
 }
 
 static void omnivm_jvm_shutdown(void) {
-    if (env_ptr && runner_class) {
-        (*env_ptr)->DeleteGlobalRef(env_ptr, runner_class);
-        runner_class = NULL;
-        execute_method = NULL;
-        eval_method_id = NULL;
-    }
-    if (jvm_ptr) {
-        (*jvm_ptr)->DestroyJavaVM(jvm_ptr);
-        jvm_ptr = NULL;
-        env_ptr = NULL;
-    }
+    // DestroyJavaVM can block indefinitely in embedded, multi-runtime hosts
+    // when JVM-managed threads or JNI-attached native threads are still live.
+    // Treat the JVM as process-lifetime and let OS teardown reclaim it.
 }
 */
 import "C"

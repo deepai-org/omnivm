@@ -7,12 +7,46 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ChanRef wraps a Go channel for use as a manifest binding.
 type ChanRef struct {
+	mu     sync.Mutex
 	ch     chan interface{}
 	closed bool
+}
+
+func (ch *ChanRef) sendNonBlocking(val interface{}) bool {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.closed {
+		return false
+	}
+	select {
+	case ch.ch <- val:
+		return true
+	default:
+		return false
+	}
+}
+
+func (ch *ChanRef) close() error {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.closed {
+		return fmt.Errorf("already closed")
+	}
+	close(ch.ch)
+	ch.closed = true
+	return nil
+}
+
+func (ch *ChanRef) isClosed() bool {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	return ch.closed
 }
 
 // registerChannelBuiltins registers Go channel builtins in the goFuncs registry.
@@ -37,11 +71,10 @@ func (e *Executor) registerChannelBuiltins() {
 	}
 	e.goFuncs["send"] = func(chArg interface{}, val interface{}) interface{} {
 		ch, ok := e.channelFromArg(chArg)
-		if !ok || ch.closed {
+		if !ok {
 			return false
 		}
-		ch.ch <- val
-		return true
+		return ch.sendNonBlocking(val)
 	}
 	e.goFuncs["wait"] = func(args []interface{}) interface{} {
 		return e.waitSpawns(args)
@@ -168,10 +201,7 @@ func (e *Executor) opChan(op *Op) (interface{}, error) {
 		}
 		// Non-blocking send to prevent deadlocks in single-threaded executor.
 		// Buffered channels with capacity accept the value; full/unbuffered channels drop it.
-		select {
-		case chRef.ch <- val:
-		default:
-		}
+		chRef.sendNonBlocking(val)
 		return nil, nil
 
 	case "recv":
@@ -189,11 +219,9 @@ func (e *Executor) opChan(op *Op) (interface{}, error) {
 		return val, nil
 
 	case "close":
-		if chRef.closed {
+		if err := chRef.close(); err != nil {
 			return nil, fmt.Errorf("chan close: channel %q already closed", op.Channel)
 		}
-		close(chRef.ch)
-		chRef.closed = true
 		return nil, nil
 
 	default:
@@ -222,6 +250,9 @@ func (e *Executor) opSelect(op *Op) (interface{}, error) {
 				Chan: reflect.ValueOf(chRef.ch),
 			})
 		case "send":
+			if chRef.isClosed() {
+				return nil, fmt.Errorf("select send: channel %q is closed", sc.Channel)
+			}
 			val, err := e.resolveValueExpr(sc.Value)
 			if err != nil {
 				return nil, fmt.Errorf("select send: %w", err)
@@ -242,11 +273,19 @@ func (e *Executor) opSelect(op *Op) (interface{}, error) {
 		}
 	}
 
-	// Only add default case when defaultBody is present (standard blocking otherwise)
+	// Only add default case when defaultBody is present. Without an explicit
+	// default, add a bounded timeout case so a manifest cannot wedge the
+	// single-threaded executor forever on an empty select.
 	hasDefault := len(op.DefaultBody) > 0
 	if hasDefault {
 		cases = append(cases, reflect.SelectCase{
 			Dir: reflect.SelectDefault,
+		})
+	} else {
+		timeout := time.After(100 * time.Millisecond)
+		cases = append(cases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(timeout),
 		})
 	}
 
@@ -254,6 +293,9 @@ func (e *Executor) opSelect(op *Op) (interface{}, error) {
 
 	if hasDefault && chosen == len(op.Cases) {
 		return e.executeOps(op.DefaultBody)
+	}
+	if !hasDefault && chosen == len(op.Cases) {
+		return nil, fmt.Errorf("select: no case ready")
 	}
 
 	return e.executeOps(op.Cases[chosen].Body)

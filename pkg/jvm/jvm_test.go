@@ -33,6 +33,22 @@ func TestJVMDoubleInitialize(t *testing.T) {
 	}
 }
 
+func TestJVMReinitializeAfterShutdown(t *testing.T) {
+	r1 := New()
+	if err := r1.Initialize(); err != nil {
+		t.Fatalf("first Initialize failed: %v", err)
+	}
+	if err := r1.Shutdown(); err != nil {
+		t.Fatalf("first Shutdown failed: %v", err)
+	}
+
+	r2 := New()
+	if err := r2.Initialize(); err != nil {
+		t.Fatalf("second Initialize failed: %v", err)
+	}
+	defer r2.Shutdown()
+}
+
 func TestJVMExecuteSimple(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

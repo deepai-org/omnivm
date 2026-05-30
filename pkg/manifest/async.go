@@ -2,7 +2,15 @@ package manifest
 
 import (
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/omnivm/omnivm/pkg"
+)
+
+var (
+	asyncPumpTimeout  = 30 * time.Second
+	asyncPumpInterval = 1 * time.Millisecond
 )
 
 // execAsync handles exec ops with async:true.
@@ -62,13 +70,22 @@ func (e *Executor) execAsyncPython(op *Op) (interface{}, error) {
 import asyncio as __aio
 __omni_async_done = False
 __omni_async_result = None
+__omni_async_error = None
 async def __omni_async_task():
-    global __omni_async_done, __omni_async_result
-    %s
-    __omni_async_done = True
-__omni_loop = __aio.get_event_loop() if __aio.get_event_loop().is_running() else __aio.new_event_loop()
+    global __omni_async_done, __omni_async_result, __omni_async_error
+    try:
+%s
+    except BaseException as e:
+        __omni_async_error = type(e).__name__ + ": " + str(e)
+    finally:
+        __omni_async_done = True
+try:
+    __omni_loop = __aio.get_event_loop()
+except RuntimeError:
+    __omni_loop = __aio.new_event_loop()
+    __aio.set_event_loop(__omni_loop)
 __aio.ensure_future(__omni_async_task(), loop=__omni_loop)
-`, indentCode(code, "    "))
+`, indentCode(code, "        "))
 
 	result := rt.Execute(wrapper)
 	if result.Err != nil {
@@ -76,10 +93,15 @@ __aio.ensure_future(__omni_async_task(), loop=__omni_loop)
 	}
 
 	// Pump until the flag is set
-	e.pumpUntilDone(func() bool {
+	if err := e.pumpUntilDone(func() bool {
 		check := rt.Eval("__omni_async_done")
 		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
-	})
+	}); err != nil {
+		return nil, err
+	}
+	if err := e.asyncPythonError(rt, "__omni_async_error"); err != nil {
+		return nil, err
+	}
 
 	output := result.Output
 	if op.Bind != "" {
@@ -105,11 +127,20 @@ func (e *Executor) evalAsyncPython(op *Op) (interface{}, error) {
 import asyncio as __aio
 __omni_async_done = False
 __omni_async_result = None
+__omni_async_error = None
 async def __omni_async_eval():
-    global __omni_async_done, __omni_async_result
-    __omni_async_result = %s
-    __omni_async_done = True
-__omni_loop = __aio.get_event_loop() if __aio.get_event_loop().is_running() else __aio.new_event_loop()
+    global __omni_async_done, __omni_async_result, __omni_async_error
+    try:
+        __omni_async_result = %s
+    except BaseException as e:
+        __omni_async_error = type(e).__name__ + ": " + str(e)
+    finally:
+        __omni_async_done = True
+try:
+    __omni_loop = __aio.get_event_loop()
+except RuntimeError:
+    __omni_loop = __aio.new_event_loop()
+    __aio.set_event_loop(__omni_loop)
 __aio.ensure_future(__omni_async_eval(), loop=__omni_loop)
 `, code)
 
@@ -118,10 +149,15 @@ __aio.ensure_future(__omni_async_eval(), loop=__omni_loop)
 		return nil, fmt.Errorf("async eval [python]: %w", result.Err)
 	}
 
-	e.pumpUntilDone(func() bool {
+	if err := e.pumpUntilDone(func() bool {
 		check := rt.Eval("__omni_async_done")
 		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
-	})
+	}); err != nil {
+		return nil, err
+	}
+	if err := e.asyncPythonError(rt, "__omni_async_error"); err != nil {
+		return nil, err
+	}
 
 	valResult := rt.Eval("__omni_async_result")
 	val := valResult.Value
@@ -148,10 +184,14 @@ func (e *Executor) execAsyncJS(op *Op) (interface{}, error) {
 	wrapper := fmt.Sprintf(`
 globalThis.__omni_async_done = false;
 globalThis.__omni_async_result = undefined;
+globalThis.__omni_async_error = undefined;
 (async function() {
   %s
   globalThis.__omni_async_done = true;
-})().catch(function(e) { globalThis.__omni_async_done = true; });
+})().catch(function(e) {
+  globalThis.__omni_async_error = e && e.message ? e.message : String(e);
+  globalThis.__omni_async_done = true;
+});
 `, code)
 
 	result := rt.Execute(wrapper)
@@ -159,10 +199,15 @@ globalThis.__omni_async_result = undefined;
 		return nil, fmt.Errorf("async exec [javascript]: %w", result.Err)
 	}
 
-	e.pumpUntilDone(func() bool {
+	if err := e.pumpUntilDone(func() bool {
 		check := rt.Eval("globalThis.__omni_async_done")
 		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "true"
-	})
+	}); err != nil {
+		return nil, err
+	}
+	if err := e.asyncJSError(rt, "globalThis.__omni_async_error"); err != nil {
+		return nil, err
+	}
 
 	output := result.Output
 	if op.Bind != "" {
@@ -187,11 +232,12 @@ func (e *Executor) evalAsyncJS(op *Op) (interface{}, error) {
 	wrapper := fmt.Sprintf(`
 globalThis.__omni_async_done = false;
 globalThis.__omni_async_result = undefined;
+globalThis.__omni_async_error = undefined;
 Promise.resolve(%s).then(function(v) {
   globalThis.__omni_async_result = v;
   globalThis.__omni_async_done = true;
 }).catch(function(e) {
-  globalThis.__omni_async_result = "ERR:" + e.message;
+  globalThis.__omni_async_error = e && e.message ? e.message : String(e);
   globalThis.__omni_async_done = true;
 });
 `, code)
@@ -201,10 +247,15 @@ Promise.resolve(%s).then(function(v) {
 		return nil, fmt.Errorf("async eval [javascript]: %w", result.Err)
 	}
 
-	e.pumpUntilDone(func() bool {
+	if err := e.pumpUntilDone(func() bool {
 		check := rt.Eval("globalThis.__omni_async_done")
 		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "true"
-	})
+	}); err != nil {
+		return nil, err
+	}
+	if err := e.asyncJSError(rt, "globalThis.__omni_async_error"); err != nil {
+		return nil, err
+	}
 
 	valResult := rt.Eval("globalThis.__omni_async_result")
 	val := valResult.Value
@@ -259,7 +310,7 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 
 	// Pump until all async branches complete
 	if len(asyncBranches) > 0 {
-		e.pumpUntilDone(func() bool {
+		if err := e.pumpUntilDone(func() bool {
 			for _, ab := range asyncBranches {
 				rtName := ab.op.Runtime
 				if rtName == "" {
@@ -282,18 +333,33 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 				}
 			}
 			return true
-		})
+		}); err != nil {
+			return nil, err
+		}
 
 		// Collect results and bind
 		for _, ab := range asyncBranches {
-			if ab.op.Bind == "" {
-				continue
-			}
 			rtName := ab.op.Runtime
 			if rtName == "" {
 				rtName = e.defaultRuntime
 			}
 			rt := e.runtimes[rtName]
+
+			errVar := fmt.Sprintf("__omni_parallel_%d_error", ab.idx)
+			switch rtName {
+			case "python":
+				if err := e.asyncPythonError(rt, errVar); err != nil {
+					return nil, fmt.Errorf("parallel branch %d [%s]: %w", ab.idx, rtName, err)
+				}
+			case "javascript":
+				if err := e.asyncJSError(rt, "globalThis."+errVar); err != nil {
+					return nil, fmt.Errorf("parallel branch %d [%s]: %w", ab.idx, rtName, err)
+				}
+			}
+
+			if ab.op.Bind == "" {
+				continue
+			}
 
 			resultVar := fmt.Sprintf("__omni_parallel_%d_result", ab.idx)
 			var evalCode string
@@ -316,6 +382,7 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int) error {
 	rt := e.runtimes[rtName]
 	resultVar := fmt.Sprintf("__omni_parallel_%d_result", idx)
+	errorVar := fmt.Sprintf("__omni_parallel_%d_error", idx)
 
 	// Auto-inject scope bindings so branch code can reference manifest variables
 	autoCode := e.autoInjectScope(rtName)
@@ -342,26 +409,36 @@ func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int)
 import asyncio as __aio
 %s = False
 %s = None
+%s = None
 async def __omni_parallel_task_%d():
-    global %s, %s
-    %s = %s
-    %s = True
-__omni_loop = __aio.get_event_loop() if __aio.get_event_loop().is_running() else __aio.new_event_loop()
+    global %s, %s, %s
+    try:
+        %s = %s
+    except BaseException as e:
+        %s = type(e).__name__ + ": " + str(e)
+    finally:
+        %s = True
+try:
+    __omni_loop = __aio.get_event_loop()
+except RuntimeError:
+    __omni_loop = __aio.new_event_loop()
+    __aio.set_event_loop(__omni_loop)
 __aio.ensure_future(__omni_parallel_task_%d(), loop=__omni_loop)
-`, flagVar, resultVar, idx, flagVar, resultVar, resultVar, code, flagVar, idx)
+`, flagVar, resultVar, errorVar, idx, flagVar, resultVar, errorVar, resultVar, code, errorVar, flagVar, idx)
 
 	case "javascript":
 		wrapper = fmt.Sprintf(`
 globalThis.%s = false;
 globalThis.%s = undefined;
+globalThis.%s = undefined;
 Promise.resolve(%s).then(function(v) {
   globalThis.%s = v;
   globalThis.%s = true;
 }).catch(function(e) {
-  globalThis.%s = "ERR:" + e.message;
+  globalThis.%s = e && e.message ? e.message : String(e);
   globalThis.%s = true;
 });
-`, flagVar, resultVar, code, resultVar, flagVar, resultVar, flagVar)
+`, flagVar, resultVar, errorVar, code, resultVar, flagVar, errorVar, flagVar)
 	}
 
 	result := rt.Execute(wrapper)
@@ -372,17 +449,51 @@ Promise.resolve(%s).then(function(v) {
 }
 
 // pumpUntilDone calls Pump() on all runtimes until checkDone returns true.
-func (e *Executor) pumpUntilDone(checkDone func() bool) {
-	const maxPumps = 30000 // 30 seconds at 1ms/pump
-	for i := 0; i < maxPumps; i++ {
+func (e *Executor) pumpUntilDone(checkDone func() bool) error {
+	deadline := time.Now().Add(asyncPumpTimeout)
+	for time.Now().Before(deadline) {
 		if checkDone() {
-			return
+			return nil
 		}
 		for _, rt := range e.runtimes {
 			rt.Pump()
 		}
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(asyncPumpInterval)
 	}
+	return fmt.Errorf("async operation timed out after %s", asyncPumpTimeout)
+}
+
+func (e *Executor) asyncPythonError(rt pkg.Runtime, name string) error {
+	res := rt.Eval(name)
+	if res.Err != nil {
+		return res.Err
+	}
+	if res.Value == nil {
+		return nil
+	}
+	msg := fmt.Sprintf("%v", res.Value)
+	if msg == "" || msg == "None" || msg == "<nil>" {
+		return nil
+	}
+	return fmt.Errorf("async python error: %s", msg)
+}
+
+func (e *Executor) asyncJSError(rt pkg.Runtime, name string) error {
+	res := rt.Eval(name)
+	if res.Err != nil {
+		return res.Err
+	}
+	if res.Value == nil {
+		return nil
+	}
+	msg := fmt.Sprintf("%v", res.Value)
+	if msg == "" || msg == "undefined" || msg == "<nil>" {
+		return nil
+	}
+	if strings.HasPrefix(msg, "ERR:") {
+		msg = strings.TrimPrefix(msg, "ERR:")
+	}
+	return fmt.Errorf("async javascript error: %s", msg)
 }
 
 // indentCode adds a prefix to each line of code (for embedding in wrappers).

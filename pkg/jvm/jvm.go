@@ -22,6 +22,8 @@ static JNIEnv* env = NULL;
 
 // Initialize the JVM with reduced signal handling (-Xrs)
 static int omnivm_jvm_init(void) {
+    if (jvm && env) return 0;
+
     JavaVMInitArgs vm_args;
     JavaVMOption options[3];
 
@@ -110,11 +112,9 @@ static void omnivm_jvm_set_bridge_callback(omni_call_fn call_fn, omni_free_fn fr
 }
 
 static void omnivm_jvm_shutdown(void) {
-    if (jvm) {
-        (*jvm)->DestroyJavaVM(jvm);
-        jvm = NULL;
-        env = NULL;
-    }
+    // DestroyJavaVM can block indefinitely in embedded, multi-runtime hosts
+    // when JVM-managed threads or JNI-attached native threads are still live.
+    // Treat the JVM as process-lifetime and let OS teardown reclaim it.
 }
 
 static int omnivm_jvm_is_initialized(void) {

@@ -62,6 +62,9 @@ type VM struct {
 	drainHooks []func()
 	onCallDone func(CallMetrics)
 
+	activeMu        sync.Mutex
+	activeInterrupt func()
+
 	ctx      context.Context
 	cancel   context.CancelFunc
 	started  bool
@@ -71,12 +74,16 @@ type VM struct {
 
 // New creates a new VM with the given configuration.
 func New(cfg Config) *VM {
-	return &VM{
+	disp := dispatcher.New()
+	disp.TaskTimeout = cfg.TaskTimeout
+	vm := &VM{
 		cfg:       cfg,
-		disp:      dispatcher.New(),
+		disp:      disp,
 		runtimes:  make(map[string]pkg.Runtime),
 		afterCall: make(map[string]string),
 	}
+	disp.OnTaskTimeout = vm.interruptActiveRuntime
+	return vm
 }
 
 // Register adds a runtime to the VM. Must be called before Start().
@@ -168,13 +175,16 @@ func (vm *VM) callInternal(ctx context.Context, runtime, code, requestID string,
 	rt := vm.runtimes[runtime]
 
 	dispatchFn := func() (interface{}, error) {
+		vm.setActiveRuntime(rt)
+		defer vm.clearActiveRuntime()
+
 		execStart := time.Now()
 		queueWait := execStart.Sub(enqueueTime)
 
 		result := rt.Eval(code)
 
 		// Run afterCall regardless of error.
-		afterCode, hasAfter := vm.afterCall[runtime]
+		afterCode, hasAfter, onCallDone := vm.callHooks(runtime)
 		if hasAfter {
 			afterResult := rt.Eval(afterCode)
 			if afterResult.Err != nil {
@@ -185,12 +195,12 @@ func (vm *VM) callInternal(ctx context.Context, runtime, code, requestID string,
 		execDuration := time.Since(execStart)
 
 		// Fire onCallDone callback with metrics
-		if vm.onCallDone != nil {
+		if onCallDone != nil {
 			resultStr := ""
 			if result.Value != nil {
 				resultStr = fmt.Sprintf("%v", result.Value)
 			}
-			vm.onCallDone(CallMetrics{
+			onCallDone(CallMetrics{
 				Runtime:   runtime,
 				Result:    resultStr,
 				Err:       result.Err,
@@ -289,6 +299,9 @@ func (vm *VM) CallBatchWithContext(ctx context.Context, runtime string, items []
 	rt := vm.runtimes[runtime]
 
 	ch := vm.disp.RunAsync(func() (interface{}, error) {
+		vm.setActiveRuntime(rt)
+		defer vm.clearActiveRuntime()
+
 		execStart := time.Now()
 		queueWait := execStart.Sub(enqueueTime)
 
@@ -307,7 +320,7 @@ func (vm *VM) CallBatchWithContext(ctx context.Context, runtime string, items []
 		}
 
 		// AfterCall once for the whole batch
-		afterCode, hasAfter := vm.afterCall[runtime]
+		afterCode, hasAfter, onCallDone := vm.callHooks(runtime)
 		if hasAfter {
 			afterResult := rt.Eval(afterCode)
 			if afterResult.Err != nil {
@@ -317,8 +330,8 @@ func (vm *VM) CallBatchWithContext(ctx context.Context, runtime string, items []
 
 		execDuration := time.Since(execStart)
 
-		if vm.onCallDone != nil {
-			vm.onCallDone(CallMetrics{
+		if onCallDone != nil {
+			onCallDone(CallMetrics{
 				Runtime:   runtime,
 				Duration:  execDuration,
 				QueueWait: queueWait,
@@ -368,12 +381,15 @@ func (vm *VM) ExecuteWithContext(ctx context.Context, runtime, code string) (str
 	enqueueTime := time.Now()
 	rt := vm.runtimes[runtime]
 	ch := vm.disp.RunAsync(func() (interface{}, error) {
+		vm.setActiveRuntime(rt)
+		defer vm.clearActiveRuntime()
+
 		execStart := time.Now()
 		queueWait := execStart.Sub(enqueueTime)
 
 		result := rt.Execute(code)
 
-		afterCode, hasAfter := vm.afterCall[runtime]
+		afterCode, hasAfter, onCallDone := vm.callHooks(runtime)
 		if hasAfter {
 			afterResult := rt.Execute(afterCode)
 			if afterResult.Err != nil {
@@ -383,8 +399,8 @@ func (vm *VM) ExecuteWithContext(ctx context.Context, runtime, code string) (str
 
 		execDuration := time.Since(execStart)
 
-		if vm.onCallDone != nil {
-			vm.onCallDone(CallMetrics{
+		if onCallDone != nil {
+			onCallDone(CallMetrics{
 				Runtime:   runtime,
 				Result:    result.Output,
 				Err:       result.Err,
@@ -487,7 +503,9 @@ func (vm *VM) Shutdown() error {
 	if vm.cancel != nil {
 		vm.cancel()
 	}
-	vm.disp.WaitForStop()
+	if !vm.disp.WaitForStopTimeout(vm.cfg.DrainTimeout) {
+		return ErrDrainTimeout
+	}
 
 	// Run drain hooks directly on the Golden Thread.
 	// The dispatcher is stopped, so we call runtimes directly — no dispatch needed.
@@ -504,6 +522,43 @@ func (vm *VM) Shutdown() error {
 	}
 
 	return nil
+}
+
+func (vm *VM) callHooks(runtime string) (afterCode string, hasAfter bool, onCallDone func(CallMetrics)) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	afterCode, hasAfter = vm.afterCall[runtime]
+	onCallDone = vm.onCallDone
+	return afterCode, hasAfter, onCallDone
+}
+
+type interruptibleRuntime interface {
+	Interrupt()
+}
+
+func (vm *VM) setActiveRuntime(rt pkg.Runtime) {
+	vm.activeMu.Lock()
+	defer vm.activeMu.Unlock()
+	if interruptible, ok := rt.(interruptibleRuntime); ok {
+		vm.activeInterrupt = interruptible.Interrupt
+	} else {
+		vm.activeInterrupt = nil
+	}
+}
+
+func (vm *VM) clearActiveRuntime() {
+	vm.activeMu.Lock()
+	defer vm.activeMu.Unlock()
+	vm.activeInterrupt = nil
+}
+
+func (vm *VM) interruptActiveRuntime() {
+	vm.activeMu.Lock()
+	fn := vm.activeInterrupt
+	vm.activeMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // drainExecute runs code on a runtime during the drain phase.

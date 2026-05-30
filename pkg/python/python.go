@@ -981,10 +981,10 @@ import (
 // Pre-allocated C strings to avoid repeated malloc in hot paths.
 // These are allocated once and never freed (process-lifetime).
 var (
-	cImportOmnivm    *C.char
-	cSetupInterrupt  *C.char
-	cPumpCode        *C.char
-	cForceSpawnMode  *C.char
+	cImportOmnivm   *C.char
+	cSetupInterrupt *C.char
+	cPumpCode       *C.char
+	cForceSpawnMode *C.char
 )
 
 func init() {
@@ -1001,6 +1001,8 @@ try:
     if loop.is_running():
         loop.call_soon(loop.stop)
         loop.run_forever()
+    else:
+        loop.run_until_complete(asyncio.sleep(0))
 except RuntimeError:
     pass
 `)

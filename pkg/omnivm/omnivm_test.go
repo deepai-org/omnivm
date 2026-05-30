@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	pkg "github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/dispatcher"
 )
 
 // startedVM creates a VM with the given mocks, starts it, and runs the dispatcher.
@@ -36,6 +38,16 @@ func TestNew_Defaults(t *testing.T) {
 	vm := New(Config{})
 	if vm == nil {
 		t.Fatal("New returned nil")
+	}
+}
+
+func TestNew_AppliesDispatcherTimeoutConfig(t *testing.T) {
+	vm := New(Config{TaskTimeout: 25 * time.Millisecond})
+	if vm.disp.TaskTimeout != 25*time.Millisecond {
+		t.Fatalf("dispatcher TaskTimeout = %s, want 25ms", vm.disp.TaskTimeout)
+	}
+	if vm.disp.OnTaskTimeout == nil {
+		t.Fatal("dispatcher OnTaskTimeout was not wired")
 	}
 }
 
@@ -201,6 +213,49 @@ func TestCall_RuntimeError_Structured(t *testing.T) {
 	}
 }
 
+type interruptMockRuntime struct {
+	*MockRuntime
+	release   chan struct{}
+	releaseMu sync.Once
+	count     atomic.Int64
+}
+
+func newInterruptMockRuntime(name string) *interruptMockRuntime {
+	return &interruptMockRuntime{
+		MockRuntime: newMock(name),
+		release:     make(chan struct{}),
+	}
+}
+
+func (m *interruptMockRuntime) Eval(code string) pkg.Result {
+	<-m.release
+	return pkg.Result{Value: "interrupted"}
+}
+
+func (m *interruptMockRuntime) Interrupt() {
+	m.count.Add(1)
+	m.releaseMu.Do(func() { close(m.release) })
+}
+
+func TestTaskTimeoutInterruptsActiveRuntime(t *testing.T) {
+	py := newInterruptMockRuntime("python")
+	vm, cancel := startedVM(t, py.MockRuntime)
+	defer func() { cancel(); vm.Shutdown() }()
+	vm.runtimes["python"] = py
+	vm.disp.TaskTimeout = 5 * time.Millisecond
+
+	result, err := vm.Call("python", "while True: pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "interrupted" {
+		t.Fatalf("result = %q, want interrupted", result)
+	}
+	if py.count.Load() == 0 {
+		t.Fatal("runtime Interrupt was not called")
+	}
+}
+
 // --- Phase 5: AfterCall & Hooks ---
 
 func TestSetAfterCall_RunsCleanupCode(t *testing.T) {
@@ -294,6 +349,28 @@ func TestSetAfterCall_UsesEvalNotExecute(t *testing.T) {
 	if len(execs) != 0 {
 		t.Errorf("expected 0 exec calls for afterCall, got %d: %v", len(execs), execs)
 	}
+}
+
+func TestHooksConcurrentSettersAndCallers(t *testing.T) {
+	py := newMock("python")
+	py.evalResult = pkg.Result{Value: "ok"}
+	vm, cancel := startedVM(t, py)
+	defer func() { cancel(); vm.Shutdown() }()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			vm.SetAfterCall("python", "cleanup()")
+			vm.SetOnCallDone(func(CallMetrics) {})
+		}(i)
+		go func() {
+			defer wg.Done()
+			_, _ = vm.Call("python", "work()")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestOnCallDone_Fires(t *testing.T) {
@@ -575,6 +652,65 @@ func TestShutdown_DrainHookCanExecute(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("drain hook Execute not dispatched, execs = %v", execs)
+	}
+}
+
+func TestShutdown_UsesDrainTimeout(t *testing.T) {
+	vm := New(Config{DrainTimeout: 5 * time.Millisecond})
+	vm.Register("python", newMock("python"))
+	if err := vm.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := vm.Shutdown()
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("Shutdown error = %v, want ErrDrainTimeout", err)
+	}
+}
+
+func TestQueuedCallReceivesShutdownWhenDispatcherDrains(t *testing.T) {
+	py := newMock("python")
+	py.evalResult = pkg.Result{Value: "should-not-run"}
+	vm := New(Config{})
+	vm.Register("python", py)
+	if err := vm.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := vm.Call("python", "queued()")
+		callDone <- err
+	}()
+	time.Sleep(5 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runDone := make(chan struct{})
+	go func() {
+		vm.Run(ctx)
+		close(runDone)
+	}()
+
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, dispatcher.ErrShutdown) {
+			t.Fatalf("queued call error = %v, want dispatcher ErrShutdown", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("queued call did not receive shutdown result")
+	}
+
+	select {
+	case <-runDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("dispatcher run did not stop")
+	}
+	if err := vm.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if evals := py.getEvalCalls(); len(evals) != 0 {
+		t.Fatalf("queued call executed unexpectedly: %v", evals)
 	}
 }
 

@@ -2,7 +2,9 @@ package manifest
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/omnivm/omnivm/pkg"
 )
@@ -529,6 +531,91 @@ func TestOpUnknownType(t *testing.T) {
 	}
 }
 
+func TestAwaitExecutesFromOpAndBindsResult(t *testing.T) {
+	e, _ := makeExecutor()
+	val, err := e.executeOp(&Op{
+		OpType: "await",
+		Bind:   "answer",
+		From: &Op{
+			OpType:  "declare",
+			Bind:    "__inner",
+			Mutable: false,
+			Value:   &ValueExpr{Kind: "literal", Value: 42},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != 42 {
+		t.Fatalf("await value = %v, want 42", val)
+	}
+	if got, _ := e.getBinding("answer"); got != 42 {
+		t.Fatalf("await binding = %v, want 42", got)
+	}
+}
+
+func TestPumpUntilDoneTimeoutReturnsError(t *testing.T) {
+	oldTimeout := asyncPumpTimeout
+	oldInterval := asyncPumpInterval
+	asyncPumpTimeout = 5 * time.Millisecond
+	asyncPumpInterval = time.Millisecond
+	defer func() {
+		asyncPumpTimeout = oldTimeout
+		asyncPumpInterval = oldInterval
+	}()
+
+	e, _ := makeExecutor("javascript")
+	err := e.pumpUntilDone(func() bool { return false })
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("pumpUntilDone error = %v, want timeout", err)
+	}
+}
+
+func TestEvalAsyncJSReturnsPromiseError(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	js := mocks["javascript"]
+	js.evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__omni_async_done"):
+			return pkg.Result{Value: true}
+		case strings.Contains(code, "__omni_async_error"):
+			return pkg.Result{Value: "boom"}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+	_, err := e.evalAsyncJS(&Op{OpType: "eval", Runtime: "javascript", Async: true, Code: "Promise.reject(new Error('boom'))"})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("evalAsyncJS error = %v, want boom", err)
+	}
+}
+
+func TestParallelAsyncBranchErrorPropagates(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	js := mocks["javascript"]
+	js.evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__omni_parallel_0_done"):
+			return pkg.Result{Value: true}
+		case strings.Contains(code, "__omni_parallel_0_error"):
+			return pkg.Result{Value: "branch failed"}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+	_, err := e.opParallel(&Op{
+		OpType: "parallel",
+		Branches: []*Op{{
+			Runtime: "javascript",
+			Code:    "Promise.reject(new Error('branch failed'))",
+			Bind:    "result",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "branch failed") {
+		t.Fatalf("parallel error = %v, want branch failed", err)
+	}
+}
+
 // --- Channel tests ---
 
 func TestChanMakeSendRecv(t *testing.T) {
@@ -589,6 +676,149 @@ func TestChanUndefined(t *testing.T) {
 	_, err := e.executeOp(&Op{OpType: "chan", Action: "send", Channel: "nope"})
 	if err == nil {
 		t.Error("expected error for undefined channel")
+	}
+}
+
+func TestChanSendFullBufferedDropsWithoutBlocking(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "send", Channel: "ch", Value: &ValueExpr{Kind: "literal", Value: "first"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "send", Channel: "ch", Value: &ValueExpr{Kind: "literal", Value: "second"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "recv", Channel: "ch", Bind: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.getBinding("one"); got != "first" {
+		t.Fatalf("first recv = %v, want first", got)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "recv", Channel: "ch", Bind: "two"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.getBinding("two"); got != nil {
+		t.Fatalf("second recv = %v, want nil dropped send", got)
+	}
+}
+
+func TestChanBuiltinSendUnbufferedDoesNotBlock(t *testing.T) {
+	e, _ := makeExecutor()
+	ch := &ChanRef{ch: make(chan interface{})}
+	done := make(chan interface{}, 1)
+	go func() {
+		done <- e.goFuncs["send"].(func(interface{}, interface{}) interface{})(ch, "value")
+	}()
+	select {
+	case got := <-done:
+		if got != false {
+			t.Fatalf("unbuffered helper send = %v, want false", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("unbuffered helper send blocked")
+	}
+}
+
+func TestChanSendAfterCloseDoesNotPanic(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "close", Channel: "ch"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "send", Channel: "ch", Value: &ValueExpr{Kind: "literal", Value: "late"}}); err != nil {
+		t.Fatalf("send after close should be a dropped no-op, got %v", err)
+	}
+}
+
+func TestChanConcurrentHelperSendCloseNoPanic(t *testing.T) {
+	e, _ := makeExecutor()
+	for i := 0; i < 100; i++ {
+		ch := &ChanRef{ch: make(chan interface{}, 1)}
+		start := make(chan struct{})
+		done := make(chan interface{}, 1)
+		go func() {
+			<-start
+			done <- e.goFuncs["send"].(func(interface{}, interface{}) interface{})(ch, "value")
+		}()
+		close(start)
+		_ = ch.close()
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("helper send racing close blocked")
+		}
+	}
+}
+
+func TestSelectWithoutDefaultTimesOut(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(0)}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := e.executeOp(&Op{
+		OpType: "select",
+		Cases:  []*SelectCase{{Action: "recv", Channel: "ch"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no case ready") {
+		t.Fatalf("select error = %v, want no case ready", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("select took %s, expected bounded timeout", elapsed)
+	}
+}
+
+func TestSelectSendOnClosedChannelErrors(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "close", Channel: "ch"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.executeOp(&Op{
+		OpType: "select",
+		Cases: []*SelectCase{{
+			Action:  "send",
+			Channel: "ch",
+			Value:   &ValueExpr{Kind: "literal", Value: "late"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("select send closed error = %v, want closed", err)
+	}
+}
+
+func TestSelectClosedChannelRecvRunsCase(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "chan", Action: "close", Channel: "ch"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.executeOp(&Op{
+		OpType: "select",
+		Cases: []*SelectCase{{
+			Action:  "recv",
+			Channel: "ch",
+			Body: []*Op{{
+				OpType:  "declare",
+				Bind:    "selected",
+				Mutable: false,
+				Value:   &ValueExpr{Kind: "literal", Value: "closed"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.getBinding("selected"); got != "closed" {
+		t.Fatalf("selected = %v, want closed", got)
 	}
 }
 

@@ -14,12 +14,12 @@ type MockRuntime struct {
 	execResult pkg.Result
 	evalResult pkg.Result
 
-	mu          sync.Mutex
-	initCalled  int
-	execCalls   []string
-	evalCalls   []string
-	shutCalled  int
-	pumpCalled  int
+	mu         sync.Mutex
+	initCalled int
+	execCalls  []string
+	evalCalls  []string
+	shutCalled int
+	pumpCalled int
 
 	// Shared slice to record init order across multiple mocks.
 	initOrder *[]string

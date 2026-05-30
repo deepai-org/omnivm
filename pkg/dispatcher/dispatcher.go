@@ -21,8 +21,9 @@ type AsyncResult struct {
 
 // task is an internal envelope for work items sent to the Golden Thread.
 type task struct {
-	fn   func() error
-	done chan error
+	fn     func() error
+	done   chan error
+	reject func(error)
 }
 
 // PumpFunc is a callback that pumps a guest runtime's event loop.
@@ -64,7 +65,11 @@ type Dispatcher struct {
 
 	// wakeupFunc is called after enqueuing a task to wake the epoll loop.
 	// Set by RunEpoll during init; nil when using ticker-based Run().
+	wakeupMu   sync.RWMutex
 	wakeupFunc func()
+
+	runMu sync.Mutex
+	ran   bool
 
 	shutdownOnce sync.Once
 
@@ -105,12 +110,22 @@ func (d *Dispatcher) UnregisterPumpCallback(name string) {
 // Run blocks until ctx is cancelled. On cancellation it drains remaining
 // tasks from the channel before returning.
 func (d *Dispatcher) Run(ctx context.Context) {
+	if !d.beginRun() {
+		return
+	}
 	defer close(d.stopped)
 
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
+		select {
+		case <-ctx.Done():
+			d.drain()
+			return
+		default:
+		}
+
 		// Always drain fast channel first (priority tasks)
 		if d.drainFast() {
 			d.pumpAll()
@@ -130,6 +145,16 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		}
 		d.pumpAll()
 	}
+}
+
+func (d *Dispatcher) beginRun() bool {
+	d.runMu.Lock()
+	defer d.runMu.Unlock()
+	if d.ran {
+		return false
+	}
+	d.ran = true
+	return true
 }
 
 // drainFast executes all pending fast tasks. Returns true if any were executed.
@@ -153,6 +178,23 @@ func (d *Dispatcher) WaitForStop() {
 	<-d.stopped
 }
 
+// WaitForStopTimeout waits for Run to return, bounded by timeout.
+// A non-positive timeout preserves WaitForStop's unbounded behavior.
+func (d *Dispatcher) WaitForStopTimeout(timeout time.Duration) bool {
+	if timeout <= 0 {
+		d.WaitForStop()
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-d.stopped:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 // ErrShutdown is returned when a task is submitted to a stopped dispatcher.
 var ErrShutdown = fmt.Errorf("dispatcher shutting down")
 
@@ -167,9 +209,7 @@ func (d *Dispatcher) RunOnMain(fn func() error) error {
 	case <-d.stopped:
 		return ErrShutdown
 	}
-	if d.wakeupFunc != nil {
-		d.wakeupFunc()
-	}
+	d.wakeup()
 	select {
 	case err := <-done:
 		return err
@@ -195,9 +235,7 @@ func (d *Dispatcher) RunOnMainFast(fn func() error) error {
 	case <-d.stopped:
 		return ErrShutdown
 	}
-	if d.wakeupFunc != nil {
-		d.wakeupFunc()
-	}
+	d.wakeup()
 	select {
 	case err := <-done:
 		return err
@@ -222,6 +260,9 @@ func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncRe
 			return err
 		},
 		done: make(chan error, 1),
+		reject: func(err error) {
+			ch <- AsyncResult{Err: err}
+		},
 	}
 	select {
 	case d.fastChan <- t:
@@ -229,9 +270,7 @@ func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncRe
 		ch <- AsyncResult{Err: ErrShutdown}
 		return ch
 	}
-	if d.wakeupFunc != nil {
-		d.wakeupFunc()
-	}
+	d.wakeup()
 	return ch
 }
 
@@ -246,6 +285,9 @@ func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult
 			return err
 		},
 		done: make(chan error, 1),
+		reject: func(err error) {
+			ch <- AsyncResult{Err: err}
+		},
 	}
 	select {
 	case d.taskChan <- t:
@@ -253,10 +295,23 @@ func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult
 		ch <- AsyncResult{Err: ErrShutdown}
 		return ch
 	}
-	if d.wakeupFunc != nil {
-		d.wakeupFunc()
-	}
+	d.wakeup()
 	return ch
+}
+
+func (d *Dispatcher) setWakeupFunc(fn func()) {
+	d.wakeupMu.Lock()
+	defer d.wakeupMu.Unlock()
+	d.wakeupFunc = fn
+}
+
+func (d *Dispatcher) wakeup() {
+	d.wakeupMu.RLock()
+	fn := d.wakeupFunc
+	d.wakeupMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // executeTask runs a single task with panic recovery and watchdog monitoring.
@@ -356,11 +411,18 @@ func (d *Dispatcher) drain() {
 	for {
 		select {
 		case t := <-d.fastChan:
-			t.done <- ErrShutdown
+			d.rejectTask(t, ErrShutdown)
 		case t := <-d.taskChan:
-			t.done <- ErrShutdown
+			d.rejectTask(t, ErrShutdown)
 		default:
 			return
 		}
+	}
+}
+
+func (d *Dispatcher) rejectTask(t task, err error) {
+	t.done <- err
+	if t.reject != nil {
+		t.reject(err)
 	}
 }
