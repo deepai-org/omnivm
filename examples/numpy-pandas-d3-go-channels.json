@@ -69,7 +69,13 @@
       "op": "spawn",
       "runtime": "go",
       "code": "chart_worker(1)",
-      "bind": "worker"
+      "bind": "w1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "chart_worker(2)",
+      "bind": "w2"
     },
     {
       "op": "chan",
@@ -120,7 +126,7 @@
     {
       "op": "eval",
       "runtime": "go",
-      "code": "wait(worker)",
+      "code": "wait(w1, w2)",
       "bind": "joined"
     },
     {
@@ -147,7 +153,7 @@
     {
       "op": "native",
       "runtime": "python",
-      "code": "print(f\"NumPy/Pandas/D3/Go chart points={len(chart_points)} series={series_count} worker={joined} path={chart_path}\")"
+      "code": "print(f\"NumPy/Pandas/D3/Go chart points={len(chart_points)} series={series_count} workers={len(joined)} path={chart_path}\")"
     }
   ],
   "bridges": [],
