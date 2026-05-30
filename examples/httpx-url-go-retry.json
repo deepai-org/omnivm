@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "httpx",
+      "runtime": "python",
+      "bind": "httpx"
+    },
+    {
+      "op": "import",
+      "path": "url",
+      "runtime": "javascript",
+      "defaultImport": "url"
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "retry_in",
+      "size": 4
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "retry_out",
+      "size": 4
+    },
+    {
+      "op": "func_def",
+      "name": "retry_worker",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar recv func(interface{}) interface{}\nvar send func(interface{}, interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"recv\"].(func(interface{}) interface{}); ok {\n\t\trecv = fn\n\t}\n\tif fn, ok := deps[\"send\"].(func(interface{}, interface{}) interface{}); ok {\n\t\tsend = fn\n\t}\n}\n\nfunc RetryWorker(id interface{}) interface{} {\n\tfor true {\n\titem := recv(\"retry_in\")\n\tif item == nil {\n\t\treturn id\n\t}\n\tsend(\"retry_out\", item)\n}\n\treturn id\n}",
+      "exports": [
+        "RetryWorker"
+      ],
+      "requires": [
+        "recv",
+        "send"
+      ]
+    },
+    {
+      "op": "declare",
+      "bind": "endpoint",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "https://api.example.test/v1/items?b=2&a=1"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "httpx.Response(200).status_code",
+      "bind": "status"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "url.parse(endpoint)",
+      "bind": "parsed"
+    },
+    {
+      "op": "declare",
+      "bind": "resource",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "/v1/items"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "(((parsed.protocol + \"//\") + parsed.host) + resource)",
+      "bind": "normalized"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "retry_worker(1)",
+      "bind": "h1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "retry_worker(2)",
+      "bind": "h2"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "retry_in",
+      "value": {
+        "kind": "ref",
+        "name": "status"
+      },
+      "captures": {
+        "status": "status"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "retry_in",
+      "value": {
+        "kind": "literal",
+        "value": 202
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "retry_in"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(h1, h2)",
+      "bind": "joined"
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "retry_out"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Array.from(retry_out)",
+      "bind": "attempts",
+      "captures": {
+        "retry_out": "retry_out"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`HTTPX/URL/Go aggregator endpoint=${normalized} attempts=${attempts.length} workers=${joined.length}`)"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

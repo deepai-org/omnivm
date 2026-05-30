@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "nokogiri",
+      "runtime": "ruby",
+      "defaultImport": "Nokogiri"
+    },
+    {
+      "op": "import",
+      "path": "pandas",
+      "runtime": "python",
+      "bind": "pandas"
+    },
+    {
+      "op": "declare",
+      "bind": "feed",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "<root><item><name>Ada</name><qty>2</qty></item><item><name>Grace</name><qty>3</qty></item></root>"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri.XML(feed).at_xpath(\"//item[1]/name\").text",
+      "bind": "first_name",
+      "captures": {
+        "feed": "feed"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri.XML(feed).at_xpath(\"//item[1]/qty\").text.to_i",
+      "bind": "first_qty",
+      "captures": {
+        "feed": "feed"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri.XML(feed).at_xpath(\"//item[2]/name\").text",
+      "bind": "second_name",
+      "captures": {
+        "feed": "feed"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri.XML(feed).at_xpath(\"//item[2]/qty\").text.to_i",
+      "bind": "second_qty",
+      "captures": {
+        "feed": "feed"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pandas.DataFrame([{\"name\": first_name, \"qty\": first_qty}, {\"name\": second_name, \"qty\": second_qty}]).to_dict(\"records\")",
+      "bind": "totals",
+      "captures": {
+        "first_name": "first_name",
+        "first_qty": "first_qty",
+        "second_name": "second_name",
+        "second_qty": "second_qty"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "totals.map((row) => `${row.name}:${row.qty}`).join(\"|\")",
+      "bind": "formatted",
+      "captures": {
+        "totals": "totals"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "(\"Nokogiri/Pandas/JS legacy feed \" + formatted)",
+      "bind": "output"
+    },
+    {
+      "op": "native",
+      "runtime": "javascript",
+      "code": "console.log(output)"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 9,
+    "safe": 9,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

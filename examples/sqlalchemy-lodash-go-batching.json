@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "sqlalchemy",
+      "runtime": "python",
+      "bind": "sqlalchemy"
+    },
+    {
+      "op": "import",
+      "path": "lodash",
+      "runtime": "javascript",
+      "defaultImport": "lodash"
+    },
+    {
+      "op": "func_def",
+      "name": "batch_label",
+      "params": [
+        {
+          "name": "name"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc BatchLabel(name interface{}) interface{} {\n\treturn name\n}",
+      "exports": [
+        "BatchLabel"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "sqlalchemy.table(\"users\", sqlalchemy.column(\"id\"), sqlalchemy.column(\"role\"), sqlalchemy.column(\"active\"))",
+      "bind": "users_table"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "str(sqlalchemy.select(users_table).where((users_table.c.active == True)))",
+      "bind": "query"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "lodash.concat([], [{\"id\": 1, \"role\": \"admin\", \"active\": true}, {\"id\": 2, \"role\": \"editor\", \"active\": true}, {\"id\": 3, \"role\": \"admin\", \"active\": true}])",
+      "bind": "rows"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "batch_label(\"admin\")",
+      "bind": "b1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "batch_label(\"editor\")",
+      "bind": "b2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(b1, b2)",
+      "bind": "batches"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "lodash.mapValues(lodash.groupBy(rows, \"role\"), (items) => items.length)",
+      "bind": "grouped"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Object.keys(grouped).length",
+      "bind": "role_count"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "(\"users\" in query)",
+      "bind": "query_has_users"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"SQLAlchemy/Lodash/Go admin endpoint roles={role_count} batches=2 sql={str(query_has_users).lower()}\")"
+    }
+  ]
+}

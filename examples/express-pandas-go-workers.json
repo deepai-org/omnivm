@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "bind": "express"
+    },
+    {
+      "op": "import",
+      "path": "pandas",
+      "runtime": "python",
+      "bind": "pandas"
+    },
+    {
+      "op": "import",
+      "path": "lodash",
+      "runtime": "javascript",
+      "defaultImport": "lodash"
+    },
+    {
+      "op": "func_def",
+      "name": "enrich_region",
+      "params": [
+        {
+          "name": "region"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc EnrichRegion(region interface{}) interface{} {\n\treturn region\n}",
+      "exports": [
+        "EnrichRegion"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "[{\"region\": \"west\", \"amount\": 32}, {\"region\": \"east\", \"amount\": 18}, {\"region\": \"west\", \"amount\": 8}, {\"region\": \"north\", \"amount\": 12}]",
+      "bind": "raw_orders"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pandas.DataFrame(raw_orders).groupby(\"region\")[\"amount\"].sum().reset_index().to_dict(\"records\")",
+      "bind": "summary",
+      "captures": {
+        "raw_orders": "raw_orders"
+      }
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "enrich_region(\"west\")",
+      "bind": "w1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "enrich_region(\"east\")",
+      "bind": "w2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(w1, w2)",
+      "bind": "workers"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "lodash.orderBy(summary, [\"amount\"], [\"desc\"])",
+      "bind": "ranked",
+      "captures": {
+        "summary": "summary"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "{\"route\": \"/reports/orders\", \"regions\": ranked.length, \"workers\": workers.length, \"top\": ranked[0].region}",
+      "bind": "response",
+      "captures": {
+        "workers": "workers"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/reports/orders\", (req, res) => res.json(response))"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`Express/Pandas/Go report ${response.regions} regions top=${response.top} workers=${response.workers}`)"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 2,
+    "safe": 2,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

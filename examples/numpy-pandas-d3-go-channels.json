@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "numpy",
+      "runtime": "python",
+      "bind": "numpy"
+    },
+    {
+      "op": "import",
+      "path": "pandas",
+      "runtime": "python",
+      "bind": "pandas"
+    },
+    {
+      "op": "import",
+      "path": "d3-shape",
+      "runtime": "javascript",
+      "defaultImport": "d3_shape"
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "metric_in",
+      "size": 8
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "metric_out",
+      "size": 8
+    },
+    {
+      "op": "func_def",
+      "name": "chart_worker",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar recv func(interface{}) interface{}\nvar send func(interface{}, interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"recv\"].(func(interface{}) interface{}); ok {\n\t\trecv = fn\n\t}\n\tif fn, ok := deps[\"send\"].(func(interface{}, interface{}) interface{}); ok {\n\t\tsend = fn\n\t}\n}\n\nfunc ChartWorker(id interface{}) interface{} {\n\tfor true {\n\titem := recv(\"metric_in\")\n\tif item == nil {\n\t\treturn id\n\t}\n\tsend(\"metric_out\", item)\n}\n\treturn id\n}",
+      "exports": [
+        "ChartWorker"
+      ],
+      "requires": [
+        "recv",
+        "send"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pandas.Series(numpy.array([3, 5, 8, 13])).rolling(2).mean().fillna(0).tolist()",
+      "bind": "series"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(series)",
+      "bind": "series_count"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "chart_worker(1)",
+      "bind": "worker"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "metric_in",
+      "value": {
+        "kind": "literal",
+        "value": 0
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "metric_in",
+      "value": {
+        "kind": "literal",
+        "value": 4
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "metric_in",
+      "value": {
+        "kind": "literal",
+        "value": 6.5
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "metric_in",
+      "value": {
+        "kind": "literal",
+        "value": 10.5
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "metric_in"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(worker)",
+      "bind": "joined"
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "metric_out"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Array.from(metric_out).map((y) => y)",
+      "bind": "chart_points",
+      "captures": {
+        "metric_out": "metric_out"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "d3_shape.line().x((d, i) => i).y((d) => d)(chart_points)",
+      "bind": "chart_path"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"NumPy/Pandas/D3/Go chart points={len(chart_points)} series={series_count} worker={joined} path={chart_path}\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

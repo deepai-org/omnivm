@@ -156,6 +156,14 @@ static void omnivm_ruby_set_buf_callbacks(omni_buf_get_fn get_fn,
 
 static int ruby_initialized = 0;
 
+static VALUE omnivm_ruby_object_class(VALUE self) {
+    return rb_obj_class(self);
+}
+
+static VALUE omnivm_ruby_object_clone(VALUE self) {
+    return rb_obj_clone(self);
+}
+
 // Forward declarations (defined later in this file)
 static char* omnivm_ruby_exec(const char* code);
 static char* omnivm_ruby_eval(const char* code);
@@ -477,6 +485,9 @@ static int omnivm_ruby_init(void) {
 
     ruby_init();
     ruby_init_loadpath();
+    rb_define_method(rb_mKernel, "class", omnivm_ruby_object_class, 0);
+    rb_define_method(rb_mKernel, "clone", omnivm_ruby_object_clone, 0);
+    rb_define_method(rb_mKernel, "dup", omnivm_ruby_object_clone, 0);
 
     // Load internal preludes so core methods like Integer#times exist.
     // Ruby 3.3 defines many core methods in <internal:numeric> etc.
@@ -515,7 +526,53 @@ static int omnivm_ruby_init(void) {
             "    self\n"
             "  end\n"
             "end\n"
+            "class Array\n"
+            "  def last(n = nil)\n"
+            "    if n.nil?\n"
+            "      self[length - 1]\n"
+            "    else\n"
+            "      start = length - n\n"
+            "      start = 0 if start < 0\n"
+            "      self[start, n]\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+            "class Set\n"
+            "  def initialize(enum = [])\n"
+            "    @values = []\n"
+            "    i = 0\n"
+            "    while i < enum.length\n"
+            "      @values << enum[i]\n"
+            "      i += 1\n"
+            "    end\n"
+            "  end\n"
+            "  def include?(value)\n"
+            "    i = 0\n"
+            "    while i < @values.length\n"
+            "      return true if @values[i] == value\n"
+            "      i += 1\n"
+            "    end\n"
+            "    false\n"
+            "  end\n"
+            "end unless defined?(Set)\n"
+            "class Symbol\n"
+            "  def to_sym\n"
+            "    self\n"
+            "  end\n"
+            "end\n"
+            "if defined?(Ractor)\n"
+            "  class Ractor\n"
+            "    def self.make_shareable(obj, copy: false)\n"
+            "      obj\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+            "RUBY_DESCRIPTION = \"ruby #{RUBY_VERSION}\" unless defined?(RUBY_DESCRIPTION)\n"
             "module Kernel\n"
+            "  def tap\n"
+            "    yield self if block_given?\n"
+            "    self\n"
+            "  end\n"
             "  def loop\n"
             "    return to_enum(:loop) unless block_given?\n"
             "    begin\n"
@@ -527,6 +584,18 @@ static int omnivm_ruby_init(void) {
             "    end\n"
             "  end\n"
             "  module_function :loop\n"
+            "end\n",
+            &state
+        );
+    }
+
+    {
+        int state = 0;
+        rb_eval_string_protect(
+            "begin\n"
+            "  require 'rubygems'\n"
+            "  require 'set'\n"
+            "rescue LoadError\n"
             "end\n",
             &state
         );

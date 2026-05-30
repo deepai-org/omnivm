@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "pydantic",
+      "runtime": "python",
+      "bind": "pydantic"
+    },
+    {
+      "op": "import",
+      "path": "zod",
+      "runtime": "javascript",
+      "defaultImport": "zod"
+    },
+    {
+      "op": "func_def",
+      "name": "stable_event_id",
+      "params": [
+        {
+          "name": "source"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc StableEventId(source interface{}) interface{} {\n\treturn source\n}",
+      "exports": [
+        "StableEventId"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "{\"provider\": \"stripe\", \"amount\": 42, \"email\": \"Ada@Example.COM\"}",
+      "bind": "raw_event"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pydantic.TypeAdapter(dict).validate_python(raw_event)",
+      "bind": "validated",
+      "captures": {
+        "raw_event": "raw_event"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "stable_event_id(validated[\"provider\"])",
+      "bind": "event_id",
+      "captures": {
+        "validated": "validated"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "zod.z.object({\"provider\": zod.z.string(), \"amount\": zod.z.number(), \"email\": zod.z.string()})",
+      "bind": "Schema",
+      "captures": {
+        "zod": "zod"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "shape_client_event",
+      "params": [
+        {
+          "name": "event"
+        }
+      ],
+      "body": [
+        {
+          "op": "eval",
+          "runtime": "javascript",
+          "code": "Schema.parse(event)",
+          "bind": "parsed",
+          "captures": {
+            "Schema": "Schema",
+            "event": "event"
+          }
+        },
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "{\"provider\": parsed.provider, \"amount\": parsed.amount, \"email\": parsed.email.toLowerCase()}",
+            "bind": "__ret",
+            "captures": {
+              "parsed": "parsed"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "shape_client_event(validated)",
+      "bind": "client_event",
+      "captures": {
+        "validated": "validated"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`Pydantic/Zod/Go event ${event_id} ${client_event.email} amount=${client_event.amount}`)"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 3,
+    "safe": 3,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

@@ -43,7 +43,8 @@ RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -r
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
 # ---- Ruby dev ----
-RUN apt-get update && apt-get install -y ruby-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri && rm -rf /var/lib/apt/lists/*
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri.rb"), File.join(site, "nokogiri.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri"), File.join(site, "nokogiri")); FileUtils.ln_sf(File.join(spec.extension_dir, "nokogiri", "nokogiri.so"), File.join(site, "nokogiri", "nokogiri.so"))'
 
 # ---- JDK (full — needed for javax.tools.JavaCompiler) ----
 RUN apt-get update && apt-get install -y default-jdk && rm -rf /var/lib/apt/lists/*
@@ -66,9 +67,26 @@ RUN apt-get update && apt-get install -y \
 # Debian disables ensurepip for system Python, so keep Python packages isolated
 # while exposing them to the embedded interpreter via PYTHONPATH.
 RUN python3.14 -m venv /opt/omnivm-python && \
-    /opt/omnivm-python/bin/pip install --no-cache-dir "Django>=5,<6"
+    /opt/omnivm-python/bin/pip install --no-cache-dir \
+      "Django>=5,<6" \
+      pandas \
+      numpy \
+      beautifulsoup4 \
+      pydantic \
+      SQLAlchemy \
+      Jinja2 \
+      Markdown \
+      httpx \
+      requests
 ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
-RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
+RUN cd /usr/local/lib && npm install \
+      express \
+      zod \
+      cheerio \
+      lodash \
+      d3-shape@2 \
+      marked@4 \
+      2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Build the Node.js + V8 bridge shim as a shared library
@@ -184,6 +202,7 @@ RUN apt-get update && apt-get install -y \
     python3.14-dev \
     python3.14-venv \
     ruby \
+    ruby-nokogiri \
     libruby \
     default-jdk \
     nodejs \
@@ -203,8 +222,19 @@ COPY --from=builder /usr/local/lib/libv8_libplatform.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libv8_libbase.so /usr/local/lib/
 RUN ldconfig
 
-# Install Express.js for the express-demo (never changes)
-RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
+# Python ecosystem libraries used by manifest examples.
+COPY --from=builder /opt/omnivm-python /opt/omnivm-python
+ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
+
+# JavaScript ecosystem libraries used by manifest examples.
+RUN cd /usr/local/lib && npm install \
+      express \
+      zod \
+      cheerio \
+      lodash \
+      d3-shape@2 \
+      marked@4 \
+      2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Ensure libjvm is findable at runtime

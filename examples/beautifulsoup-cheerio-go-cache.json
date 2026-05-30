@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "bs4",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "BeautifulSoup",
+          "local": "BeautifulSoup"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "cheerio",
+      "runtime": "javascript",
+      "defaultImport": "cheerio"
+    },
+    {
+      "op": "func_def",
+      "name": "cache_key",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc CacheKey(url interface{}) interface{} {\n\treturn url\n}",
+      "exports": [
+        "CacheKey"
+      ]
+    },
+    {
+      "op": "declare",
+      "bind": "url",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "https://example.test/articles/poly"
+      }
+    },
+    {
+      "op": "declare",
+      "bind": "html",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "<html><body><article><h1>Polyglot Runtime</h1><a href='/docs'>Docs</a><a href='/api'>API</a></article></body></html>"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "cache_key(url)",
+      "bind": "key",
+      "captures": {
+        "url": "url"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "BeautifulSoup(html, \"html.parser\")",
+      "bind": "soup",
+      "captures": {
+        "html": "html"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "[{\"text\": a.get_text(), \"href\": a.get(\"href\")} for a in soup.select(\"a\")]",
+      "bind": "links"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "cheerio.load(html)",
+      "bind": "dom"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "dom(\"article h1\").text().toUpperCase()",
+      "bind": "title"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "links.map((l) => l.href).join(\",\")",
+      "bind": "hrefs",
+      "captures": {
+        "links": "links"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`BeautifulSoup/Cheerio/Go scrape ${title} links=${links.length} key=${key} hrefs=${hrefs}`)"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 3,
+    "safe": 3,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

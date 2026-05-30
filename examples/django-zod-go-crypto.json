@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "django",
+      "runtime": "python",
+      "bind": "django"
+    },
+    {
+      "op": "import",
+      "path": "django.conf",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "settings",
+          "local": "settings"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "django.http",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "JsonResponse",
+          "local": "JsonResponse"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "django.test",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "RequestFactory",
+          "local": "RequestFactory"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "zod",
+      "runtime": "javascript",
+      "defaultImport": "zod"
+    },
+    {
+      "op": "func_def",
+      "name": "verify_session",
+      "params": [
+        {
+          "name": "token"
+        },
+        {
+          "name": "signature"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport (\n\t\"crypto/hmac\"\n\t\"crypto/sha256\"\n\t\"encoding/hex\"\n)\n\nfunc VerifySession(token interface{}, signature interface{}) interface{} {\n\ttoken_string := token.(string)\n\tsignature_string := signature.(string)\n\tsecret_string := \"poly-secret\"\n\tmac := hmac.New(sha256.New, []byte(secret_string))\n\tmac.Write([]byte(token_string))\n\texpected := hex.EncodeToString(mac.Sum(nil))\n\tif hmac.Equal([]byte(signature_string), []byte(expected)) {\n\treturn \"user-42\"\n}\n\treturn \"\"\n}",
+      "exports": [
+        "VerifySession"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "zod.z.object({\"ok\": zod.z.boolean(), \"path\": zod.z.string(), \"user\": zod.z.string()})",
+      "bind": "Schema",
+      "captures": {
+        "zod": "zod"
+      }
+    },
+    {
+      "op": "func_def",
+      "name": "validate_response",
+      "params": [
+        {
+          "name": "payload"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "Schema.parse(payload)",
+            "bind": "__ret",
+            "captures": {
+              "Schema": "Schema",
+              "payload": "payload"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "javascript"
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "settings.configure(SECRET_KEY = \"poly\", DEFAULT_CHARSET = \"utf-8\", ALLOWED_HOSTS = [\"*\"])"
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "django.setup()"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "RequestFactory().get(\"/secure/orders\", HTTP_X_SESSION = \"session:poly\")",
+      "bind": "request"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "request.path",
+      "bind": "request_path"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "request.headers.get(\"X-Session\")",
+      "bind": "session_token"
+    },
+    {
+      "op": "declare",
+      "bind": "signature",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "a9bc7561581d6a3681924dc0839e3b91806ed7e7ba4e0c66c0247087043b582f"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "verify_session(session_token, signature)",
+      "bind": "user_id",
+      "captures": {
+        "session_token": "session_token",
+        "signature": "signature"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "validate_response({\"ok\": true, \"path\": request_path, \"user\": user_id})",
+      "bind": "dto",
+      "captures": {
+        "request_path": "request_path",
+        "user_id": "user_id"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "JsonResponse(dto)",
+      "bind": "response",
+      "captures": {
+        "dto": "dto"
+      }
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Django/Zod/Go secure endpoint {response.status_code} {dto['user']} {dto['path']}\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 3,
+    "safe": 3,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

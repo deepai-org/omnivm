@@ -23,7 +23,7 @@ test-docker: build
 test-cli: build
 	docker run --rm --entrypoint /bin/bash $(IMAGE_NAME):$(IMAGE_TAG) /omnivm/scripts/test-cli.sh
 
-# Run manifest test suite (12 manifests across 6 categories)
+# Run manifest test suite (22 manifests across 7 categories)
 test-manifests: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh
 

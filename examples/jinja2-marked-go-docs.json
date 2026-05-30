@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "jinja2",
+      "runtime": "python",
+      "bind": "jinja2"
+    },
+    {
+      "op": "import",
+      "path": "marked",
+      "runtime": "javascript",
+      "defaultImport": "marked"
+    },
+    {
+      "op": "func_def",
+      "name": "content_key",
+      "params": [
+        {
+          "name": "slug"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc ContentKey(slug interface{}) interface{} {\n\treturn slug\n}",
+      "exports": [
+        "ContentKey"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "jinja2.Template(\"# Poly Docs\\\\n\\\\nThis page is rendered through multiple runtimes.\").render()",
+      "bind": "markdown_source"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "marked.parse(markdown_source)",
+      "bind": "html",
+      "captures": {
+        "markdown_source": "markdown_source"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "content_key(\"poly-docs\")",
+      "bind": "key"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Jinja2/Marked/Go docs key={key} length={len(html)}\")"
+    }
+  ]
+}

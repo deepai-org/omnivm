@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "bind": "express"
+    },
+    {
+      "op": "import",
+      "path": "numpy",
+      "runtime": "python",
+      "bind": "numpy"
+    },
+    {
+      "op": "func_def",
+      "name": "allow_request",
+      "params": [
+        {
+          "name": "route"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc AllowRequest(route interface{}) interface{} {\n\tif route == \"/predict\" {\n\treturn true\n}\n\treturn false\n}",
+      "exports": [
+        "AllowRequest"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "numpy.array([0.2, 0.4, 0.9])",
+      "bind": "features"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "numpy.array([1.0, 0.5, 2.0])",
+      "bind": "weights"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "float(features.dot(weights))",
+      "bind": "score"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "allow_request(\"/predict\")",
+      "bind": "allowed"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "{\"route\": \"/predict\", \"allowed\": allowed, \"score\": score}",
+      "bind": "prediction",
+      "captures": {
+        "allowed": "allowed"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.post(\"/predict\", (req, res) => res.json(prediction))",
+      "captures": {
+        "prediction": "prediction"
+      }
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Express/NumPy/Go scoring allowed={str(prediction['allowed']).lower()} score={prediction['score']}\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 2,
+    "safe": 2,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}
