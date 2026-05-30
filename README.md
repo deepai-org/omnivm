@@ -388,11 +388,14 @@ Body:   {"fibonacci_50":"12586269025","ruby_reverse":"MVinmO"}
 
 ## Manifest Executor
 
-The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target for a hypothetical PolyScript compiler — each op specifies a runtime, code, captures, and control flow.
+The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target produced by Garbage/PolyScript — each op specifies a runtime, code, captures, bindings, and control flow.
 
 ```bash
 # Run a single manifest
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-concurrency.json
+
+# Run the focused spawn/channel contract regression
+docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/spawn-channel-contract.json
 
 # Showcase examples
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-polyglot-manifest.json
@@ -420,12 +423,40 @@ make test-manifests
 | `parallel` | Concurrent branch execution |
 | `chan` | Go channel operations (make/send/recv/close) |
 | `select` | Go-style select on channels |
-| `spawn` | Launch Go functions or manifest func_defs |
+| `spawn` | Launch Go functions or manifest func_defs, optionally binding a spawn handle |
 | `yield` | Generator yield (with delegate support) |
 | `await` | Async/await semantics |
 
 Channel, spawn, and `wait()` semantics are defined in
 [`docs/manifest-channel-contract.md`](docs/manifest-channel-contract.md).
+
+### Channels and Spawn Handles
+
+Manifest channels are shared executor values, not runtime-local queues. `chan` ops create them, send/recv/close ops mutate them, and captures inject iterable/readable wrappers into runtimes such as JavaScript and Python. The Go manifest helpers `recv(ch)` and `send(ch, value)` expose the same channel values to compiled Go worker functions.
+
+`spawn` returns a manifest-visible handle when the op has a `bind` field:
+
+```json
+{ "op": "spawn", "runtime": "go", "code": "worker(1)", "bind": "w1" }
+```
+
+The `wait` helper has three forms:
+
+| Form | Result |
+|------|--------|
+| `wait()` | Waits for every spawned worker and returns the total spawn count |
+| `wait(handle)` | Waits for one handle and returns that worker's result |
+| `wait(h1, h2, ...)` | Waits in argument order and returns an array of worker results |
+
+This is what lets a `.poly` source file express real worker joins:
+
+```polyscript
+const w1 = go worker(1)
+const w2 = go worker(2)
+const joined = wait(w1, w2)
+```
+
+The `spawn-channel-contract.json` example is the small regression manifest for this behavior. `cursed-concurrency.json` is the larger end-to-end example that combines Go workers, shared channels, JavaScript channel iteration, and Python aggregation.
 
 ## Stress Tests
 
@@ -662,6 +693,7 @@ scripts/
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
+docs/                Manifest contracts and design notes
 ```
 
 ## Building & Testing
