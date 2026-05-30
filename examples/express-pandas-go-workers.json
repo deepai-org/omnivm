@@ -10,6 +10,12 @@
     },
     {
       "op": "import",
+      "path": "io",
+      "runtime": "python",
+      "bind": "io"
+    },
+    {
+      "op": "import",
       "path": "pandas",
       "runtime": "python",
       "bind": "pandas"
@@ -42,19 +48,33 @@
       "bind": "app"
     },
     {
-      "op": "eval",
-      "runtime": "javascript",
-      "code": "[{\"region\": \"west\", \"amount\": 32}, {\"region\": \"east\", \"amount\": 18}, {\"region\": \"west\", \"amount\": 8}, {\"region\": \"north\", \"amount\": 12}]",
-      "bind": "raw_orders"
+      "op": "assign",
+      "target": "csv_upload",
+      "operator": "=",
+      "value": {
+        "kind": "literal",
+        "value": "region,amount\\n west ,32\\n east ,18\\n west ,8\\n north ,12"
+      }
     },
     {
       "op": "eval",
       "runtime": "python",
-      "code": "pandas.DataFrame(raw_orders).groupby(\"region\")[\"amount\"].sum().reset_index().to_dict(\"records\")",
-      "bind": "summary",
+      "code": "pandas.read_csv(io.StringIO(str(csv_upload).replace(\"\\\\n\", chr(10))))",
+      "bind": "orders",
       "captures": {
-        "raw_orders": "raw_orders"
+        "csv_upload": "csv_upload"
       }
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "orders[\"region\"] = orders[\"region\"].str.strip()"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "orders.groupby(\"region\")[\"amount\"].sum().reset_index().to_dict(\"records\")",
+      "bind": "summary"
     },
     {
       "op": "spawn",
@@ -105,8 +125,8 @@
   ],
   "bridges": [],
   "typeSummary": {
-    "crossings": 2,
-    "safe": 2,
+    "crossings": 1,
+    "safe": 1,
     "coerce": 0,
     "check": 0,
     "errors": 0
