@@ -79,6 +79,41 @@ docker run --rm --entrypoint python3-omnivm omnivm -m site
 docker run --rm --entrypoint python3-omnivm omnivm -c "import sys; print(sys.version)"
 ```
 
+### PolyScript Python Mode
+
+`python3-polyscript` is the progressive-migration entrypoint for existing Python applications. It is a small wrapper around stock `python3`, so the process starts as real CPython rather than the Go-hosted OmniVM binary. That matters for Passenger and Gunicorn prefork modes: the Go runtime is not loaded in the master process.
+
+The wrapper preserves normal CPython behavior for `.py` code, preloads the `polyscript` package, and automatically installs a `.poly` import hook. A Passenger or Django app can swap its Python command first, then convert individual modules or call sites to PolyScript over time.
+
+```bash
+docker run --rm --entrypoint python3-polyscript omnivm \
+  -c "import polyscript, sys; print(polyscript.is_enabled(), sys.version)"
+```
+
+The hook compiles `.poly` files with `POLYSCRIPT_COMPILER` (default: `polyc`) and runs the generated manifest with `POLYSCRIPT_MANIFEST_RUNNER` (default: `manifest-runner`). Existing Python imports keep using CPython; only `.poly` files enter the manifest runner. If you want in-process OmniVM calls, call `omnivm.init_runtimes(...)` after fork, inside the worker.
+
+```bash
+export POLYSCRIPT_COMPILER="polyc"
+export POLYSCRIPT_MANIFEST_RUNNER="manifest-runner"
+export POLYSCRIPT_CACHE_DIR="/tmp/polyscript-cache"
+python3-polyscript manage.py runserver
+```
+
+For prefork servers, keep the master process clean and initialize runtime-heavy work in each worker after fork. Passenger can use `python3-polyscript` as the Python interpreter while `passenger_wsgi.py` remains ordinary Python during the first migration step.
+
+```python
+# passenger_wsgi.py
+import os
+
+os.environ.setdefault("POLYSCRIPT_CACHE_DIR", "/tmp/polyscript-cache")
+
+from mysite.wsgi import application
+```
+
+As modules are converted, `import billing_rules` can resolve `billing_rules.poly` automatically. Side-effect modules work today; returning Python symbols from `.poly` modules needs an explicit exported-symbol contract before it should be used for model/view modules that define import-time Python objects.
+
+`python3-omnivm` is still available for single-process tools and development. It is Go-hosted CPython and therefore loads the Go runtime before Python starts; use `python3-polyscript` for prefork deployments.
+
 ### Calling Go and JavaScript from Python
 
 ```python
@@ -402,7 +437,7 @@ docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-po
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/data-pipeline-manifest.json
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/polyglot-pipeline-manifest.json
 
-# Run the full manifest test suite (29 tests, 8 categories)
+# Run the full manifest test suite
 make test-manifests
 ```
 
@@ -425,6 +460,7 @@ make test-manifests
 | `select` | Go-style select on channels |
 | `spawn` | Launch Go functions or manifest func_defs, optionally binding a spawn handle |
 | `resource` | Open/close opaque runtime-owned resources with explicit disposer metadata |
+| `table` | Export/release runtime-owned table or buffer handles, preferably Arrow C Data Interface |
 | `job` | Enqueue, complete, and wait on manifest-visible background job handles |
 | `yield` | Generator yield (with delegate support) |
 | `await` | Async/await semantics |
@@ -692,8 +728,9 @@ pkg/
   arrow/             Shared memory primitives
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
-  test-manifests.sh    Manifest test suite runner (29 tests)
-  test-cli.sh          CLI integration tests (27 tests)
+  test-manifests.sh    Manifest test suite runner (31 tests)
+  test-cli.sh          CLI integration tests (29 tests)
+  test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
@@ -709,7 +746,7 @@ Requires Docker. The multi-stage Dockerfile handles all dependencies (Go, CPytho
 docker build -t omnivm .
 
 # Run ALL tests against the built image
-docker run --rm --entrypoint /bin/bash omnivm /omnivm/scripts/test-cli.sh  # 27 CLI tests
+docker run --rm --entrypoint /bin/bash omnivm /omnivm/scripts/test-cli.sh  # 29 CLI tests
 docker run --rm --entrypoint stresstest omnivm                             # 71 stress tests
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/manifest-test.json
 
@@ -723,10 +760,12 @@ Make targets:
 
 ```bash
 make build                # Build Docker image
-make test-cli             # CLI integration tests (27 tests in Docker)
+make test-cli             # CLI integration tests (29 tests in Docker)
 make test-manifests       # Run manifest examples and edge contract fixtures
+make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
+make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
 make test-stress          # Run 71 stress tests
-make test-all             # Everything: build + CLI + stress + manifests
+make test-all             # Everything: build + CLI + stress + manifests + libomnivm
 ```
 
 ## Key Design Decisions
@@ -744,4 +783,4 @@ make test-all             # Everything: build + CLI + stress + manifests
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
 - **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`. The fork guard is **conditional** — it only fires when JVM or Ruby are loaded. Go+JS-only configurations are fork-safe when runtimes are initialized post-fork (the Gunicorn/Passenger pattern).
 - **Python interpreter mode**: When symlinked as `python3`, OmniVM calls `Py_BytesMain()` — CPython's own entry point. `PyImport_AppendInittab("omnivm", ...)` registers the `omnivm` module before CPython initializes, so `import omnivm` works in any Python code. Best for single-process deployments (dev, `gunicorn --workers 1 --threads N`, uvicorn). Not compatible with prefork — Go's runtime doesn't survive `fork()`.
-- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host — cross-runtime bridge calls back into the already-running CPython). Full epoll dispatcher, watchdog, and cross-runtime bridge — feature parity with the main binary. The master process is pure CPython — no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown — the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.
+- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Direct calls and manifest execution run on the calling Python worker thread; the background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. All example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork checks are covered by `make test-libomnivm-stress`. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.

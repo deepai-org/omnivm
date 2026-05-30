@@ -424,6 +424,28 @@ else
     fail "go inline execution" "got: $OUT"
 fi
 
+# --- Test 28: python3-polyscript keeps CPython CLI semantics ---
+echo "--- Test: python3-polyscript CLI compatibility ---"
+OUT=$(python3-polyscript -c 'import polyscript, sys; print(polyscript.is_enabled(), sys.argv[0])' 2>/dev/null)
+if [ "$OUT" = "True -c" ]; then
+    pass "python3-polyscript CLI compatibility"
+else
+    fail "python3-polyscript CLI compatibility" "got: $OUT"
+fi
+
+# --- Test 29: python3-polyscript auto-installs .poly import hook ---
+echo "--- Test: python3-polyscript .poly import hook ---"
+cat > /tmp/import_hook_check.py << 'EOF'
+import sys
+print(any(type(f).__name__ == "PolyScriptFinder" for f in sys.meta_path))
+EOF
+OUT=$(python3-polyscript /tmp/import_hook_check.py 2>/dev/null)
+if [ "$OUT" = "True" ]; then
+    pass "python3-polyscript import hook"
+else
+    fail "python3-polyscript import hook" "got: $OUT"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

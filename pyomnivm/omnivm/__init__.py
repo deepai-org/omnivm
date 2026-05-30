@@ -34,6 +34,10 @@ __all__ = [
     "call",
     "call_typed",
     "execute",
+    "run_manifest",
+    "get_buffer",
+    "set_buffer",
+    "release_buffer",
     "load_plugin",
     "shutdown",
     "RuntimeError",
@@ -119,6 +123,21 @@ def _load_lib():
         lib.OmniExec.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         lib.OmniExec.restype = ctypes.c_char_p
 
+        lib.OmniRunManifestFile.argtypes = [ctypes.c_char_p]
+        lib.OmniRunManifestFile.restype = ctypes.c_char_p
+
+        lib.OmniBufGet.argtypes = [
+            ctypes.c_char_p,
+            ctypes.POINTER(_OmniBuffer),
+        ]
+        lib.OmniBufGet.restype = ctypes.c_int
+
+        lib.OmniBufSet.argtypes = [ctypes.c_char_p, _OmniBuffer]
+        lib.OmniBufSet.restype = ctypes.c_int
+
+        lib.OmniBufRelease.argtypes = [ctypes.c_char_p]
+        lib.OmniBufRelease.restype = None
+
         lib.OmniLoadPlugin.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         lib.OmniLoadPlugin.restype = ctypes.c_char_p
 
@@ -167,6 +186,14 @@ class _OmniValueUnion(ctypes.Union):
 
 class _OmniValue(ctypes.Structure):
     _fields_ = [("tag", ctypes.c_int64), ("v", _OmniValueUnion)]
+
+
+class _OmniBuffer(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p),
+        ("len", ctypes.c_int64),
+        ("dtype", ctypes.c_int32),
+    ]
 
 
 def _py_to_omni_value(val):
@@ -368,6 +395,64 @@ def execute(runtime, code):
         code.encode("utf-8"),
     )
     return _check_result(result, runtime=runtime)
+
+
+def run_manifest(path):
+    """
+    Run an OmniVM dispatch manifest in this process through libomnivm.so.
+
+    Call init_runtimes(["javascript", "java", "ruby"]) first for manifests
+    that may use the full example-suite surface. Python is always the host
+    runtime; Go manifest functions use the manifest executor's Go registry.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    result = _lib.OmniRunManifestFile(os.fsencode(path))
+    return _check_result(result)
+
+
+def get_buffer(name):
+    """
+    Return a shared OmniVM buffer as a Python memoryview, or None if missing.
+
+    The current libomnivm bridge copies the buffer into Python-owned memory for
+    host safety. Guest runtimes can still exchange the named buffer through the
+    shared OmniVM buffer store.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    out = _OmniBuffer()
+    rc = _lib.OmniBufGet(str(name).encode("utf-8"), ctypes.byref(out))
+    if rc != 0 or not out.data or out.len <= 0:
+        return None
+    return memoryview(ctypes.string_at(out.data, out.len))
+
+
+def set_buffer(name, data, dtype=0):
+    """
+    Store bytes-like data in the shared OmniVM buffer store.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    view = memoryview(data).cast("B")
+    backing = ctypes.create_string_buffer(view.tobytes())
+    buf = _OmniBuffer(
+        ctypes.cast(backing, ctypes.c_void_p),
+        len(view),
+        int(dtype),
+    )
+    rc = _lib.OmniBufSet(str(name).encode("utf-8"), buf)
+    if rc != 0:
+        raise RuntimeError("omnivm.set_buffer failed")
+
+
+def release_buffer(name):
+    """
+    Release a named shared OmniVM buffer.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    _lib.OmniBufRelease(str(name).encode("utf-8"))
 
 
 def load_plugin(runtime, path):

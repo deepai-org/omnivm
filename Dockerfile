@@ -40,7 +40,8 @@ ENV GOFLAGS="-buildvcs=false"
 
 # ---- Python 3.14 dev ----
 RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -rf /var/lib/apt/lists/* && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
+    ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 
 # ---- Ruby dev ----
 RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri && rm -rf /var/lib/apt/lists/*
@@ -49,6 +50,7 @@ RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); sit
 # ---- JDK (full — needed for javax.tools.JavaCompiler) ----
 RUN apt-get update && apt-get install -y default-jdk && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV LD_PRELOAD=/usr/lib/jvm/default-java/lib/libjsig.so
 
 # ---- Compile OmniVMRunner.java and OmniVM.java (JVM helpers) ----
 COPY runtime/java/ /tmp/java-src/
@@ -119,6 +121,8 @@ COPY pkg/ pkg/
 COPY cmd/ cmd/
 COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
+RUN chmod +x scripts/python3-polyscript && \
+    ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript
 
 # ---- Prepare Docker-specific source files ----
 # Replace the JS package with the Docker-compatible version (no C++)
@@ -226,7 +230,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     binutils-gold \
     && rm -rf /var/lib/apt/lists/* && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
+    ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go
@@ -291,6 +296,14 @@ RUN ln -sf /usr/local/bin/omnivm /usr/local/bin/python3-omnivm
 # their own image (FROM omnivm/python:3.14-slim) would set:
 #   RUN ln -sf /usr/local/bin/omnivm /usr/local/bin/python3
 
+# PolyScript Python mode keeps the process as stock CPython. That makes it
+# safe for Passenger/Gunicorn prefork modes because the Go runtime is not
+# loaded until explicit post-fork OmniVM initialization or an external
+# manifest-runner process is used.
+COPY --from=builder /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript
+RUN chmod +x /usr/local/bin/python3-polyscript
+ENV POLYSCRIPT_PYTHON_BIN=python3.14
+
 # libomnivm.so — c-shared library for pip-installable Python package.
 # Loaded via ctypes.CDLL post-fork in Gunicorn workers.
 COPY --from=builder /usr/local/lib/libomnivm.so /usr/local/lib/libomnivm.so
@@ -298,6 +311,8 @@ RUN ldconfig
 
 # Install the omnivm Python package (pure Python, lazy-loads libomnivm.so)
 COPY --from=builder /build/pyomnivm/omnivm/ /usr/local/lib/python3.14/dist-packages/omnivm/
+COPY --from=builder /build/pyomnivm/polyscript/ /usr/local/lib/python3.14/dist-packages/polyscript/
+COPY --from=builder /build/pyomnivm/sitecustomize.py /usr/local/lib/python3.14/dist-packages/sitecustomize.py
 
 # Test data for manifest demos
 RUN mkdir -p /var/data && \

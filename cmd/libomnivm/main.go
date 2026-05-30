@@ -6,15 +6,17 @@
 // no dead GC threads, no scheduler corruption.
 //
 // Build:
-//   go build -buildmode=c-shared -o libomnivm.so ./cmd/libomnivm/
+//
+//	go build -buildmode=c-shared -o libomnivm.so ./cmd/libomnivm/
 //
 // Exports:
-//   OmniInit(runtimes *C.char) *C.char
-//   OmniCall(runtime, code *C.char) *C.char
-//   OmniExec(runtime, code *C.char) *C.char
-//   OmniLoadPlugin(runtime, path *C.char) *C.char
-//   OmniShutdown()
-//   OmniFree(ptr *C.char)
+//
+//	OmniInit(runtimes *C.char) *C.char
+//	OmniCall(runtime, code *C.char) *C.char
+//	OmniExec(runtime, code *C.char) *C.char
+//	OmniLoadPlugin(runtime, path *C.char) *C.char
+//	OmniShutdown()
+//	OmniFree(ptr *C.char)
 //
 // All 5 runtimes are supported: Python (host — already running),
 // JavaScript, Java (JVM), Ruby, and Go (via dlopen-based plugins).
@@ -36,6 +38,17 @@ package main
 extern char* OmniCall(char* runtime, char* code);
 extern void OmniFree(char* ptr);
 
+// Buffer bridge exports
+typedef struct {
+    void*   data;
+    int64_t len;
+    int32_t dtype;
+    int8_t  owned;
+} omni_buffer_t;
+extern int OmniBufGet(char* name, omni_buffer_t* out);
+extern int OmniBufSet(char* name, omni_buffer_t buf);
+extern void OmniBufRelease(char* name);
+
 // Typed value bridge
 typedef struct {
     int64_t tag;
@@ -51,6 +64,9 @@ extern omni_value_t OmniCallTyped(char* runtime, char* func_name,
 
 static void* get_omni_call_ptr() { return (void*)OmniCall; }
 static void* get_omni_free_ptr() { return (void*)OmniFree; }
+static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
+static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
+static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
 static void* get_omni_call_typed_ptr() { return (void*)OmniCallTyped; }
 
 // Get the current OS thread ID (Linux-specific).
@@ -85,15 +101,18 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/engine"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
+	"github.com/omnivm/omnivm/pkg/manifest"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
@@ -108,6 +127,7 @@ func init() {
 
 // eng is the shared engine managing all runtimes.
 var eng *engine.Engine
+var manifestExecutor *manifest.Executor
 
 // goPlugins maps plugin names to dlopen handles for c-shared Go plugins.
 type goPlugin struct {
@@ -131,6 +151,7 @@ func OmniInit(cList *C.char) *C.char {
 
 	eng = engine.New()
 	eng.GoldenThreadID = int64(C.get_thread_id())
+	arrow.SetGlobalStore(arrow.NewSharedStore())
 
 	// Python is the host process — mark CPython as already initialized
 	// so the python.Runtime wraps it instead of calling Py_Initialize.
@@ -178,6 +199,12 @@ func OmniInit(cList *C.char) *C.char {
 	freePtr := uintptr(C.get_omni_free_ptr())
 	eng.SetupBridge(callPtr, freePtr)
 
+	// Buffer bridge
+	bufGetPtr := uintptr(C.get_omni_buf_get_ptr())
+	bufSetPtr := uintptr(C.get_omni_buf_set_ptr())
+	bufReleasePtr := uintptr(C.get_omni_buf_release_ptr())
+	eng.SetupBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+
 	// Typed call bridge
 	typedPtr := uintptr(C.get_omni_call_typed_ptr())
 	eng.SetupTypedCallback(typedPtr)
@@ -187,7 +214,11 @@ func OmniInit(cList *C.char) *C.char {
 	polyglot.RegisterBuiltins()
 
 	eng.ActivateForkGuard()
-	eng.StartDispatcher()
+	// Do not start the background dispatcher in c-shared mode. CPython is the
+	// host runtime here; pumping it from a Go-created background thread can
+	// violate Python thread-state ownership while the caller is executing Java
+	// or Ruby. Manifest execution and direct calls run on the calling Python
+	// worker thread and pump async runtimes cooperatively where needed.
 
 	initialized = true
 	return C.CString("OK")
@@ -201,6 +232,17 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 
 	rtName := C.GoString(cRuntime)
 	code := C.GoString(cCode)
+
+	if rtName == "__manifest" {
+		if manifestExecutor == nil {
+			return C.CString("ERR:manifest executor not active")
+		}
+		res, err := manifestExecutor.HandleCall(code)
+		if err != nil {
+			return C.CString("ERR:" + err.Error())
+		}
+		return C.CString(res)
+	}
 
 	// Go plugins use dlopen/dlsym (not the standard runtime interface)
 	if rtName == "go" {
@@ -292,6 +334,39 @@ func OmniExec(cRuntime *C.char, cCode *C.char) *C.char {
 	return C.CString(out)
 }
 
+//export OmniRunManifestFile
+func OmniRunManifestFile(cPath *C.char) *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+
+	path := C.GoString(cPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return C.CString("ERR:read manifest: " + err.Error())
+	}
+
+	m, err := manifest.ParseManifest(data)
+	if err != nil {
+		return C.CString("ERR:parse manifest: " + err.Error())
+	}
+
+	executor := manifest.NewExecutor(eng.Runtimes)
+	manifestExecutor = executor
+	prevGoSourceFallback := manifest.UseGoSourceFallback
+	manifest.UseGoSourceFallback = true
+	defer func() {
+		manifestExecutor = nil
+		manifest.UseGoSourceFallback = prevGoSourceFallback
+	}()
+
+	if err := executor.Execute(m); err != nil {
+		return C.CString("ERR:execute manifest: " + err.Error())
+	}
+
+	return C.CString("OK")
+}
+
 //export OmniLoadPlugin
 func OmniLoadPlugin(cRuntime *C.char, cPath *C.char) *C.char {
 	rtName := C.GoString(cRuntime)
@@ -336,6 +411,34 @@ func OmniFree(ptr *C.char) {
 	if ptr != nil {
 		C.free(unsafe.Pointer(ptr))
 	}
+}
+
+//export OmniBufGet
+func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	var data unsafe.Pointer
+	var length int64
+	var dtype int32
+	rc := arrow.BufGet(name, &data, &length, &dtype)
+	if rc != 0 {
+		return -1
+	}
+	out.data = data
+	out.len = C.int64_t(length)
+	out.dtype = C.int32_t(dtype)
+	out.owned = 0
+	return 0
+}
+
+//export OmniBufSet
+func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
+	name := C.GoString(cName)
+	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype)))
+}
+
+//export OmniBufRelease
+func OmniBufRelease(cName *C.char) {
+	arrow.BufRelease(C.GoString(cName))
 }
 
 //export OmniCallTyped

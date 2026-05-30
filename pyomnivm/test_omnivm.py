@@ -5,6 +5,7 @@ without requiring libomnivm.so to be present.
 """
 
 import builtins
+import ctypes
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -202,6 +203,47 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniExec.return_value = None
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.execute("go", "code")
+
+    def test_run_manifest_calls_lib(self):
+        self.mock_lib.OmniRunManifestFile.return_value = b"OK"
+        result = omnivm_mod.run_manifest("/tmp/app.manifest.json")
+        assert result == "OK"
+        self.mock_lib.OmniRunManifestFile.assert_called_once_with(b"/tmp/app.manifest.json")
+
+    def test_run_manifest_error_propagation(self):
+        self.mock_lib.OmniRunManifestFile.return_value = b"ERR:execute manifest: bad op"
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.run_manifest("/tmp/bad.manifest.json")
+        assert "bad op" in str(ctx.exception)
+
+    def test_set_buffer_calls_lib(self):
+        self.mock_lib.OmniBufSet.return_value = 0
+        omnivm_mod.set_buffer("payload", b"abc", 7)
+        name, buf = self.mock_lib.OmniBufSet.call_args.args
+        assert name == b"payload"
+        assert buf.len == 3
+        assert buf.dtype == 7
+
+    def test_get_buffer_copies_bytes(self):
+        backing = ctypes.create_string_buffer(b"abc")
+
+        def fill_buffer(_name, out):
+            buf = ctypes.cast(
+                out,
+                ctypes.POINTER(omnivm_mod._OmniBuffer),
+            ).contents
+            buf.data = ctypes.cast(backing, ctypes.c_void_p)
+            buf.len = 3
+            buf.dtype = 0
+            return 0
+
+        self.mock_lib.OmniBufGet.side_effect = fill_buffer
+        result = omnivm_mod.get_buffer("payload")
+        assert bytes(result) == b"abc"
+
+    def test_release_buffer_calls_lib(self):
+        omnivm_mod.release_buffer("payload")
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
 
 
 class TestShutdown(unittest.TestCase):

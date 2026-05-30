@@ -771,6 +771,7 @@ static void* omnivm_py_get_interrupt_ptr(void) {
 // Conditional: only fires if JVM or Ruby were loaded (Go+JS are fork-safe
 // when initialized post-fork).
 static int fork_guard_active = 0;
+static int fork_guard_installed = 0;
 
 static void omnivm_fork_child_handler(void) {
     if (!fork_guard_active) return;
@@ -805,7 +806,9 @@ static void omnivm_fork_child_handler(void) {
 }
 
 static void omnivm_install_fork_guard(void) {
+    if (fork_guard_installed) return;
     pthread_atfork(NULL, NULL, omnivm_fork_child_handler);
+    fork_guard_installed = 1;
 }
 
 static void omnivm_activate_fork_guard(void) {
@@ -1039,7 +1042,9 @@ func (r *Runtime) Initialize() error {
 
 	if cpythonInitialized {
 		// CPython was already initialized (and never truly finalized).
-		// Just mark this Runtime as initialized — the interpreter is still live.
+		// Install the fork guard hook for c-shared hosts, then mark this
+		// Runtime as initialized - the interpreter is still live.
+		C.omnivm_install_fork_guard()
 		r.initialized = true
 		return nil
 	}

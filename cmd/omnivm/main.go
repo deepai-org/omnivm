@@ -81,13 +81,13 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
-	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/cli"
 	"github.com/omnivm/omnivm/pkg/engine"
 	"github.com/omnivm/omnivm/pkg/errmsg"
 	golangrt "github.com/omnivm/omnivm/pkg/golang"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
 	"github.com/omnivm/omnivm/pkg/signals"
@@ -549,7 +549,7 @@ func runPythonInterpreter() int {
 	args := os.Args
 	base := filepath.Base(args[0])
 	if !strings.HasPrefix(base, "python") {
-		// Invoked as "omnivm python [args...]" — shift past "python"
+		// Invoked as "omnivm python [args...]" - shift past the subcommand.
 		if len(args) > 1 && args[1] == "python" {
 			args = append([]string{args[0]}, args[2:]...)
 		}

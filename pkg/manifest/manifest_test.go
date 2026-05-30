@@ -745,6 +745,57 @@ func TestResourceCloseRunsFromFinallyBody(t *testing.T) {
 	}
 }
 
+func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.setBinding("orders", RuntimeRef{Runtime: "python", VarName: "orders", Value: "arrow-array"})
+
+	_, err := e.executeOp(&Op{
+		OpType:    "table",
+		Action:    "export",
+		Runtime:   "python",
+		Bind:      "orders_view",
+		Format:    "arrow_c_data",
+		Ownership: "borrowed",
+		Release:   "producer",
+		Value:     &ValueExpr{Kind: "ref", Name: "orders"},
+	})
+	if err != nil {
+		t.Fatalf("table export: %v", err)
+	}
+	val, ok := e.getBinding("orders_view")
+	if !ok {
+		t.Fatal("orders_view binding missing")
+	}
+	ref, ok := val.(*TableRef)
+	if !ok {
+		t.Fatalf("orders_view = %T, want TableRef", val)
+	}
+	if ref.Format != "arrow_c_data" || ref.Ownership != "borrowed" || ref.Released {
+		t.Fatalf("unexpected table ref: %+v", ref)
+	}
+	jsonVal, err := marshalForCapture(ref)
+	if err != nil {
+		t.Fatalf("marshal table: %v", err)
+	}
+	if !strings.Contains(jsonVal, `"__omnivm_table__":true`) {
+		t.Fatalf("table proxy missing marker: %s", jsonVal)
+	}
+	if _, err := e.executeOp(&Op{
+		OpType: "table",
+		Action: "release",
+		Target: "orders_view",
+		Code:   "release_log.append('orders_view')",
+	}); err != nil {
+		t.Fatalf("table release: %v", err)
+	}
+	if !ref.Released {
+		t.Fatal("table should be released")
+	}
+	if !containsExecCall(mocks["python"].execCalls, "release_log.append('orders_view')") {
+		t.Fatalf("release hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+}
+
 func containsExecCall(calls []string, want string) bool {
 	for _, call := range calls {
 		if strings.Contains(call, want) {

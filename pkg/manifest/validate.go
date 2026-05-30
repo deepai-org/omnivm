@@ -34,6 +34,7 @@ var supportedOps = map[string]bool{
 	"yield":         true,
 	"await":         true,
 	"resource":      true,
+	"table":         true,
 	"job":           true,
 	"exec_compiled": true,
 	"eval_compiled": true,
@@ -286,6 +287,24 @@ func validateOp(path string, op *Op) error {
 			}
 		default:
 			return fmt.Errorf("%s.action: unknown resource action %q", path, op.Action)
+		}
+	case "table":
+		switch op.Action {
+		case "export":
+			if op.Bind == "" {
+				return fmt.Errorf("%s.bind: table export requires bind", path)
+			}
+			if op.Value != nil {
+				if err := validateValueExpr(path+".value", op.Value); err != nil {
+					return err
+				}
+			}
+		case "release":
+			if op.Target == "" {
+				return fmt.Errorf("%s.target: table release requires target", path)
+			}
+		default:
+			return fmt.Errorf("%s.action: unknown table action %q", path, op.Action)
 		}
 	case "job":
 		switch op.Action {

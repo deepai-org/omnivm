@@ -50,6 +50,19 @@ type ResourceRef struct {
 	Closed   bool        `json:"closed"`
 }
 
+// TableRef is a zero-copy-oriented table/buffer handle. The table data remains
+// owned by the source runtime or Arrow memory producer; captures receive a
+// descriptor, not JSON rows.
+type TableRef struct {
+	ID        int         `json:"id"`
+	Runtime   string      `json:"runtime"`
+	Format    string      `json:"format"`
+	Ownership string      `json:"ownership"`
+	Release   string      `json:"release,omitempty"`
+	Value     interface{} `json:"value,omitempty"`
+	Released  bool        `json:"released"`
+}
+
 // SpawnHandle is a manifest-visible handle returned by a spawn op.
 // Closing done synchronizes result visibility for wait(handle).
 type SpawnHandle struct {
@@ -92,6 +105,8 @@ type Executor struct {
 	nextSpawnID      int
 	resources        map[int]*ResourceRef
 	nextResourceID   int
+	tables           map[int]*TableRef
+	nextTableID      int
 	jobs             map[int]*JobHandle
 	nextJobID        int
 	yieldCollectors  [][]interface{}        // stack of yield collectors for nested generators
@@ -109,6 +124,7 @@ func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
 		goFuncs:   make(map[string]interface{}),
 		channels:  make(map[string]*ChanRef),
 		resources: make(map[int]*ResourceRef),
+		tables:    make(map[int]*TableRef),
 		jobs:      make(map[int]*JobHandle),
 	}
 	e.registerChannelBuiltins()
@@ -238,6 +254,8 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opAwait(op)
 	case "resource":
 		return e.opResource(op)
+	case "table":
+		return e.opTable(op)
 	case "job":
 		return e.opJob(op)
 	case "exec_compiled":
@@ -1321,6 +1339,69 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 	}
 }
 
+func (e *Executor) opTable(op *Op) (interface{}, error) {
+	switch op.Action {
+	case "export":
+		if op.Bind == "" {
+			return nil, fmt.Errorf("table export: bind is required")
+		}
+		runtime := op.Runtime
+		if runtime == "" {
+			runtime = e.defaultRuntime
+		}
+		format := op.Format
+		if format == "" {
+			format = "arrow_c_data"
+		}
+		ownership := op.Ownership
+		if ownership == "" {
+			ownership = "borrowed"
+		}
+		e.nextTableID++
+		ref := &TableRef{
+			ID:        e.nextTableID,
+			Runtime:   runtime,
+			Format:    format,
+			Ownership: ownership,
+			Release:   op.Release,
+		}
+		if op.Value != nil {
+			val, err := e.resolveValueExpr(op.Value)
+			if err != nil {
+				return nil, fmt.Errorf("table export value: %w", err)
+			}
+			ref.Value = val
+		}
+		e.tables[ref.ID] = ref
+		e.setBinding(op.Bind, ref)
+		return ref, nil
+	case "release":
+		ref, err := e.tableFromTarget(op.Target)
+		if err != nil {
+			return nil, err
+		}
+		if ref.Released {
+			return ref, nil
+		}
+		if op.Code != "" {
+			runtime := op.Runtime
+			if runtime == "" {
+				runtime = ref.Runtime
+			}
+			if runtime == "" {
+				runtime = e.defaultRuntime
+			}
+			if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+				return nil, fmt.Errorf("table release cleanup: %w", err)
+			}
+		}
+		ref.Released = true
+		return ref, nil
+	default:
+		return nil, fmt.Errorf("table: unknown action %q", op.Action)
+	}
+}
+
 func (e *Executor) opJob(op *Op) (interface{}, error) {
 	switch op.Action {
 	case "enqueue":
@@ -1379,6 +1460,21 @@ func (e *Executor) opJob(op *Op) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("job: unknown action %q", op.Action)
 	}
+}
+
+func (e *Executor) tableFromTarget(name string) (*TableRef, error) {
+	if name == "" {
+		return nil, fmt.Errorf("table release: target is required")
+	}
+	val, ok := e.getBinding(name)
+	if !ok {
+		return nil, fmt.Errorf("table release: undefined binding %q", name)
+	}
+	ref, ok := val.(*TableRef)
+	if !ok {
+		return nil, fmt.Errorf("table release: %q is not a table (got %T)", name, val)
+	}
+	return ref, nil
 }
 
 func (e *Executor) jobFromTarget(name string) (*JobHandle, error) {
@@ -1761,6 +1857,8 @@ func marshalForCapture(val interface{}) (string, error) {
 	switch v := val.(type) {
 	case *ResourceRef:
 		return marshalResourceProxy(v)
+	case *TableRef:
+		return marshalTableProxy(v)
 	case *JobHandle:
 		return marshalJobProxy(v)
 	}
@@ -1779,6 +1877,22 @@ func marshalResourceProxy(ref *ResourceRef) (string, error) {
 		"kind":                ref.Kind,
 		"disposer":            ref.Disposer,
 		"closed":              ref.Closed,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func marshalTableProxy(ref *TableRef) (string, error) {
+	b, err := json.Marshal(map[string]interface{}{
+		"__omnivm_table__": true,
+		"id":               ref.ID,
+		"runtime":          ref.Runtime,
+		"format":           ref.Format,
+		"ownership":        ref.Ownership,
+		"release":          ref.Release,
+		"released":         ref.Released,
 	})
 	if err != nil {
 		return "", err

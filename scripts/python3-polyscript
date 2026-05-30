@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+export POLYSCRIPT_PYTHON=1
+if [ "${POLYSCRIPT_AUTO_IMPORT+x}" = "" ]; then
+    export POLYSCRIPT_AUTO_IMPORT=1
+fi
+
+if [ -d /build/pyomnivm ]; then
+    export PYTHONPATH="/build/pyomnivm${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+exec "${POLYSCRIPT_PYTHON_BIN:-python3}" "$@"

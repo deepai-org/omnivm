@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-all run clean
+.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -31,6 +31,12 @@ test-cli: build
 test-manifests: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh
 
+test-libomnivm-manifests: build
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-manifests.sh
+
+test-libomnivm-stress: build
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-stress.sh
+
 # Run manifest tests in quick mode (skip Express/pastebin)
 test-manifests-quick: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh --quick
@@ -43,7 +49,7 @@ test-stress: build
 test: test-all
 
 # Run everything: unit/integration tests, smoke tests, CLI tests, stress tests, manifest tests
-test-all: test-unit test-docker test-cli test-stress test-manifests
+test-all: test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress
 
 # Start the REPL
 run: build

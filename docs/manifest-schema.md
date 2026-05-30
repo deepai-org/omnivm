@@ -13,7 +13,7 @@ The schema covers:
 - every manifest op consumed by OmniVM: `exec`, `eval`, `exec_compiled`,
   `eval_compiled`, `declare`, `assign`, `func_def`, `return`, `if`, `loop`,
   `try`, `throw`, `parallel`, `concat`, `import`, `native`, `chan`, `select`,
-  `spawn`, `yield`, and `await`;
+  `spawn`, `resource`, `table`, `job`, `yield`, and `await`;
 - bridge metadata and diagnostic records.
 
 Conformance is intentionally split:

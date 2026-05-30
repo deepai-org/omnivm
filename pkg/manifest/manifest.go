@@ -56,13 +56,16 @@ type Op struct {
 	Runtime string `json:"runtime"`
 
 	// exec/eval/native
-	Code     string            `json:"code,omitempty"`
-	Bind     string            `json:"bind,omitempty"`
-	Captures map[string]string `json:"captures,omitempty"`
-	Async    bool              `json:"async,omitempty"`
-	Kind     string            `json:"kind,omitempty"`
-	Disposer string            `json:"disposer,omitempty"`
-	Payload  *ValueExpr        `json:"payload,omitempty"`
+	Code      string            `json:"code,omitempty"`
+	Bind      string            `json:"bind,omitempty"`
+	Captures  map[string]string `json:"captures,omitempty"`
+	Async     bool              `json:"async,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
+	Disposer  string            `json:"disposer,omitempty"`
+	Payload   *ValueExpr        `json:"payload,omitempty"`
+	Format    string            `json:"format,omitempty"`
+	Ownership string            `json:"ownership,omitempty"`
+	Release   string            `json:"release,omitempty"`
 
 	// import
 	Path          string `json:"path,omitempty"`

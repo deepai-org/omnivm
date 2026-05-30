@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "table",
+      "action": "export",
+      "runtime": "python",
+      "bind": "orders",
+      "format": "arrow_c_data",
+      "ownership": "borrowed",
+      "release": "producer",
+      "value": {
+        "kind": "literal",
+        "value": "arrow:orders"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(\"zero-copy table boundary\", orders)",
+      "captures": {
+        "orders": "orders"
+      }
+    }
+  ],
+  "bridges": [
+    {
+      "binding": "orders",
+      "from": "python",
+      "to": "javascript",
+      "op": "share_memory",
+      "meta": {
+        "format": "arrow_c_data",
+        "ownership": "borrowed"
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'orders' from python to javascript. Source binding: python (inferred; scope: manifest binding recorded during lowering). Target expression: javascript (inferred; scope: inherited from callee: javascript; scope: inherited from object: javascript; builtin: global: console).",
+      "span": {
+        "start": 128,
+        "end": 175,
+        "line": 4,
+        "column": 1
+      }
+    }
+  ]
+}
