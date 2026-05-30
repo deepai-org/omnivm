@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "resource",
+      "action": "open",
+      "runtime": "python",
+      "bind": "tx",
+      "kind": "sqlalchemy.transaction",
+      "disposer": "rollback"
+    },
+    {
+      "op": "try",
+      "body": [
+        {
+          "op": "job",
+          "action": "enqueue",
+          "runtime": "ruby",
+          "kind": "sidekiq",
+          "bind": "job",
+          "payload": {"kind": "literal", "value": {"user": "ada", "task": "receipt"}}
+        },
+        {
+          "op": "exec",
+          "runtime": "javascript",
+          "captures": {"tx": "tx", "job": "job"},
+          "code": "console.log(`Edge handle proxy tx=${tx.kind} closed=${tx.closed} job=${job.kind} done=${job.done}`)"
+        },
+        {
+          "op": "job",
+          "action": "complete",
+          "target": "job",
+          "value": {"kind": "literal", "value": "receipt-ok"}
+        },
+        {
+          "op": "job",
+          "action": "wait",
+          "target": "job",
+          "bind": "job_result"
+        }
+      ],
+      "catches": [],
+      "finallyBody": [
+        {
+          "op": "resource",
+          "action": "close",
+          "target": "tx"
+        }
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "captures": {"tx": "tx", "job_result": "job_result"},
+      "code": "console.log(`Edge resource closed=${tx.closed} result=${job_result}`)"
+    }
+  ]
+}

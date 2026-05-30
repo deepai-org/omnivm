@@ -33,6 +33,8 @@ var supportedOps = map[string]bool{
 	"spawn":         true,
 	"yield":         true,
 	"await":         true,
+	"resource":      true,
+	"job":           true,
 	"exec_compiled": true,
 	"eval_compiled": true,
 	"call_typed":    true,
@@ -271,6 +273,46 @@ func validateOp(path string, op *Op) error {
 		}
 		if err := validateOp(path+".from", op.From); err != nil {
 			return err
+		}
+	case "resource":
+		switch op.Action {
+		case "open":
+			if op.Bind == "" {
+				return fmt.Errorf("%s.bind: resource open requires bind", path)
+			}
+		case "close":
+			if op.Target == "" && op.Bind == "" {
+				return fmt.Errorf("%s.target: resource close requires target", path)
+			}
+		default:
+			return fmt.Errorf("%s.action: unknown resource action %q", path, op.Action)
+		}
+	case "job":
+		switch op.Action {
+		case "enqueue":
+			if op.Bind == "" {
+				return fmt.Errorf("%s.bind: job enqueue requires bind", path)
+			}
+			if op.Payload != nil {
+				if err := validateValueExpr(path+".payload", op.Payload); err != nil {
+					return err
+				}
+			}
+		case "complete":
+			if op.Target == "" {
+				return fmt.Errorf("%s.target: job complete requires target", path)
+			}
+			if op.Value != nil {
+				if err := validateValueExpr(path+".value", op.Value); err != nil {
+					return err
+				}
+			}
+		case "wait":
+			if op.Target == "" {
+				return fmt.Errorf("%s.target: job wait requires target", path)
+			}
+		default:
+			return fmt.Errorf("%s.action: unknown job action %q", path, op.Action)
 		}
 	case "concat":
 		if op.Bind == "" {

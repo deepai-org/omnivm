@@ -39,6 +39,17 @@ type RuntimeRef struct {
 	Value   interface{} // last known value (for cross-runtime capture)
 }
 
+// ResourceRef is an opaque runtime-owned handle. Other runtimes may receive a
+// proxy descriptor, but the live object itself is not serialized.
+type ResourceRef struct {
+	ID       int         `json:"id"`
+	Runtime  string      `json:"runtime"`
+	Kind     string      `json:"kind"`
+	Disposer string      `json:"disposer,omitempty"`
+	Value    interface{} `json:"value,omitempty"`
+	Closed   bool        `json:"closed"`
+}
+
 // SpawnHandle is a manifest-visible handle returned by a spawn op.
 // Closing done synchronizes result visibility for wait(handle).
 type SpawnHandle struct {
@@ -46,6 +57,17 @@ type SpawnHandle struct {
 	done   chan struct{}
 	result interface{}
 	err    error
+}
+
+// JobHandle models delayed/background work. It is a manifest-visible handle:
+// payload/result values may cross, while scheduler internals stay in OmniVM.
+type JobHandle struct {
+	ID      int         `json:"id"`
+	Runtime string      `json:"runtime"`
+	Kind    string      `json:"kind"`
+	Payload interface{} `json:"payload,omitempty"`
+	Result  interface{} `json:"result,omitempty"`
+	Done    bool        `json:"done"`
 }
 
 // FuncDef stores a manifest-level function definition.
@@ -68,6 +90,10 @@ type Executor struct {
 	spawns           []*SpawnHandle
 	spawnsMu         sync.Mutex
 	nextSpawnID      int
+	resources        map[int]*ResourceRef
+	nextResourceID   int
+	jobs             map[int]*JobHandle
+	nextJobID        int
 	yieldCollectors  [][]interface{}        // stack of yield collectors for nested generators
 	bridgeOps        map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
 	boundaryWarnings map[string]struct{}
@@ -77,11 +103,13 @@ type Executor struct {
 // NewExecutor creates an Executor with the given runtimes.
 func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
 	e := &Executor{
-		runtimes: runtimes,
-		scopes:   []map[string]interface{}{make(map[string]interface{})},
-		funcs:    make(map[string]*FuncDef),
-		goFuncs:  make(map[string]interface{}),
-		channels: make(map[string]*ChanRef),
+		runtimes:  runtimes,
+		scopes:    []map[string]interface{}{make(map[string]interface{})},
+		funcs:     make(map[string]*FuncDef),
+		goFuncs:   make(map[string]interface{}),
+		channels:  make(map[string]*ChanRef),
+		resources: make(map[int]*ResourceRef),
+		jobs:      make(map[int]*JobHandle),
 	}
 	e.registerChannelBuiltins()
 	return e
@@ -208,6 +236,10 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 		return e.opYield(op)
 	case "await":
 		return e.opAwait(op)
+	case "resource":
+		return e.opResource(op)
+	case "job":
+		return e.opJob(op)
 	case "exec_compiled":
 		return e.opExecCompiled(op)
 	case "eval_compiled":
@@ -1224,6 +1256,131 @@ func (e *Executor) resolveValueExpr(v *ValueExpr) (interface{}, error) {
 	}
 }
 
+func (e *Executor) opResource(op *Op) (interface{}, error) {
+	switch op.Action {
+	case "open":
+		if op.Bind == "" {
+			return nil, fmt.Errorf("resource open: bind is required")
+		}
+		runtime := op.Runtime
+		if runtime == "" {
+			runtime = e.defaultRuntime
+		}
+		e.nextResourceID++
+		ref := &ResourceRef{
+			ID:       e.nextResourceID,
+			Runtime:  runtime,
+			Kind:     op.Kind,
+			Disposer: op.Disposer,
+		}
+		if op.Value != nil {
+			val, err := e.resolveValueExpr(op.Value)
+			if err != nil {
+				return nil, fmt.Errorf("resource open value: %w", err)
+			}
+			ref.Value = val
+		}
+		e.resources[ref.ID] = ref
+		e.setBinding(op.Bind, ref)
+		return ref, nil
+	case "close":
+		name := op.Target
+		if name == "" {
+			name = op.Bind
+		}
+		if name == "" {
+			return nil, fmt.Errorf("resource close: target is required")
+		}
+		val, ok := e.getBinding(name)
+		if !ok {
+			return nil, fmt.Errorf("resource close: undefined binding %q", name)
+		}
+		ref, ok := val.(*ResourceRef)
+		if !ok {
+			return nil, fmt.Errorf("resource close: %q is not a resource (got %T)", name, val)
+		}
+		ref.Closed = true
+		return ref, nil
+	default:
+		return nil, fmt.Errorf("resource: unknown action %q", op.Action)
+	}
+}
+
+func (e *Executor) opJob(op *Op) (interface{}, error) {
+	switch op.Action {
+	case "enqueue":
+		if op.Bind == "" {
+			return nil, fmt.Errorf("job enqueue: bind is required")
+		}
+		runtime := op.Runtime
+		if runtime == "" {
+			runtime = e.defaultRuntime
+		}
+		var payload interface{}
+		if op.Payload != nil {
+			val, err := e.resolveValueExpr(op.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("job enqueue payload: %w", err)
+			}
+			payload = val
+		}
+		e.nextJobID++
+		job := &JobHandle{
+			ID:      e.nextJobID,
+			Runtime: runtime,
+			Kind:    op.Kind,
+			Payload: payload,
+		}
+		e.jobs[job.ID] = job
+		e.setBinding(op.Bind, job)
+		return job, nil
+	case "complete":
+		job, err := e.jobFromTarget(op.Target)
+		if err != nil {
+			return nil, err
+		}
+		var result interface{}
+		if op.Value != nil {
+			result, err = e.resolveValueExpr(op.Value)
+			if err != nil {
+				return nil, fmt.Errorf("job complete value: %w", err)
+			}
+		}
+		job.Result = result
+		job.Done = true
+		return job, nil
+	case "wait":
+		job, err := e.jobFromTarget(op.Target)
+		if err != nil {
+			return nil, err
+		}
+		if !job.Done {
+			return nil, fmt.Errorf("job wait: job %d is not complete", job.ID)
+		}
+		if op.Bind != "" {
+			e.setBinding(op.Bind, job.Result)
+		}
+		return job.Result, nil
+	default:
+		return nil, fmt.Errorf("job: unknown action %q", op.Action)
+	}
+}
+
+func (e *Executor) jobFromTarget(name string) (*JobHandle, error) {
+	if name == "" {
+		return nil, fmt.Errorf("job: target is required")
+	}
+	val, ok := e.getBinding(name)
+	if !ok {
+		return nil, fmt.Errorf("job: undefined binding %q", name)
+	}
+	job, ok := val.(*JobHandle)
+	if !ok {
+		return nil, fmt.Errorf("job: %q is not a job handle (got %T)", name, val)
+	}
+	return job, nil
+}
+
 // opYield appends a value to the current generator's yield collector.
 // All manifest op execution runs single-threaded on the Golden Thread;
 // spawned goroutines only call pure Go functions and never access yieldCollectors.
@@ -1586,7 +1743,44 @@ func (e *Executor) evalRuntimeIterable(rtName, expr string) ([]interface{}, erro
 
 // marshalForCapture serializes a value to JSON for injection into a runtime.
 func marshalForCapture(val interface{}) (string, error) {
+	switch v := val.(type) {
+	case *ResourceRef:
+		return marshalResourceProxy(v)
+	case *JobHandle:
+		return marshalJobProxy(v)
+	}
 	b, err := json.Marshal(val)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func marshalResourceProxy(ref *ResourceRef) (string, error) {
+	b, err := json.Marshal(map[string]interface{}{
+		"__omnivm_resource__": true,
+		"id":                  ref.ID,
+		"runtime":             ref.Runtime,
+		"kind":                ref.Kind,
+		"disposer":            ref.Disposer,
+		"closed":              ref.Closed,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func marshalJobProxy(job *JobHandle) (string, error) {
+	b, err := json.Marshal(map[string]interface{}{
+		"__omnivm_job__": true,
+		"id":             job.ID,
+		"runtime":        job.Runtime,
+		"kind":           job.Kind,
+		"done":           job.Done,
+		"payload":        job.Payload,
+		"result":         job.Result,
+	})
 	if err != nil {
 		return "", err
 	}

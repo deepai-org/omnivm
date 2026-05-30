@@ -80,6 +80,25 @@ Iterators and generators need an explicit crossing mode:
 - `copy`: target drains the iterator into an array/list.
 - `ref`: target receives an opaque iterator handle.
 
+`stream_proxy` bridge ops now carry an explicit stream marker into JavaScript
+captures. The materialized target value is iterable, exposes a strict `toArray()`
+snapshot, and has cancellation metadata. This is still a proxy contract, not an
+implicit JSON array contract.
+
+## Opaque Resources And Jobs
+
+Runtime-owned handles such as transactions, request/response objects, database
+connections, and job scheduler internals should not cross as JSON copies.
+
+- `resource open` creates a manifest-owned opaque handle with runtime, kind, and
+  disposer metadata.
+- `resource close` marks that handle closed and is intended for `finallyBody`
+  cleanup paths.
+- Capturing a resource into another runtime injects a proxy descriptor, not the
+  live object.
+- `job enqueue` creates a delayed-work handle; `job complete` records its
+  eventual result; `job wait` materializes that result into a normal binding.
+
 ## Callbacks
 
 Callbacks cross as refs to callable values.

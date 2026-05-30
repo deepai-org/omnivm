@@ -355,6 +355,38 @@ func jsChannelMaterializer() string {
       [Symbol.iterator]: function() { return values[Symbol.iterator](); }
     };
   }
+  if (value && value.__omnivm_stream__ === true) {
+    var streamValues = Array.isArray(value.values) ? value.values : [];
+    return {
+      get length() { return streamValues.length; },
+      backpressure: value.backpressure,
+      cancel: function(reason) { this.cancelled = reason || true; return true; },
+      toArray: function() { return streamValues.slice(); },
+      [Symbol.iterator]: function() { return streamValues[Symbol.iterator](); }
+    };
+  }
+  if (value && value.__omnivm_resource__ === true) {
+    return {
+      id: value.id,
+      runtime: value.runtime,
+      kind: value.kind,
+      closed: value.closed === true,
+      toJSON: function() { return {id: value.id, runtime: value.runtime, kind: value.kind, closed: value.closed === true}; }
+    };
+  }
+  if (value && value.__omnivm_job__ === true) {
+    return {
+      id: value.id,
+      runtime: value.runtime,
+      kind: value.kind,
+      done: value.done === true,
+      payload: value.payload,
+      result: value.result
+    };
+  }
+  if (value && (value.__omnivm_proxy__ === true || value.__omnivm_disposable__ === true)) {
+    return value;
+  }
   return value;
 };`
 }
@@ -433,7 +465,9 @@ func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref R
 			return "", fmt.Errorf("marshal fallback after serialize error %v: %w", err, fallbackErr)
 		}
 		jsonVal = fallback
-		e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, "source runtime serialization failed; using cached manifest value")
+		if !e.hasBridgeOps(binding, ref.Runtime, targetRuntime) {
+			e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, "source runtime serialization failed; using cached manifest value")
+		}
 	} else if e.isAmbiguousBoundary(binding, ref.Runtime, targetRuntime, jsonVal) {
 		e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, "no bridge op for complex or opaque value; using JSON copy fallback")
 	}

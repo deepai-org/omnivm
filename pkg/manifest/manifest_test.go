@@ -644,6 +644,79 @@ func TestChanMakeSendRecv(t *testing.T) {
 	}
 }
 
+func TestResourceOpenCloseAndCaptureProxy(t *testing.T) {
+	e, _ := makeExecutor()
+	_, err := e.executeOp(&Op{
+		OpType:   "resource",
+		Action:   "open",
+		Runtime:  "python",
+		Bind:     "tx",
+		Kind:     "sqlalchemy.transaction",
+		Disposer: "rollback",
+	})
+	if err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, ok := e.getBinding("tx")
+	if !ok {
+		t.Fatal("tx binding missing")
+	}
+	ref, ok := val.(*ResourceRef)
+	if !ok {
+		t.Fatalf("tx = %T, want ResourceRef", val)
+	}
+	if ref.Closed {
+		t.Fatal("new resource should be open")
+	}
+	jsonVal, err := marshalForCapture(ref)
+	if err != nil {
+		t.Fatalf("marshal resource: %v", err)
+	}
+	if !strings.Contains(jsonVal, `"__omnivm_resource__":true`) {
+		t.Fatalf("resource proxy missing marker: %s", jsonVal)
+	}
+	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "tx"}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+	if !ref.Closed {
+		t.Fatal("resource should be closed")
+	}
+}
+
+func TestJobEnqueueCompleteWait(t *testing.T) {
+	e, _ := makeExecutor()
+	_, err := e.executeOp(&Op{
+		OpType:  "job",
+		Action:  "enqueue",
+		Runtime: "ruby",
+		Kind:    "sidekiq",
+		Bind:    "job",
+		Payload: &ValueExpr{Kind: "literal", Value: map[string]interface{}{"user": "ada"}},
+	})
+	if err != nil {
+		t.Fatalf("job enqueue: %v", err)
+	}
+	if _, err := e.executeOp(&Op{
+		OpType: "job",
+		Action: "complete",
+		Target: "job",
+		Value:  &ValueExpr{Kind: "literal", Value: "ok"},
+	}); err != nil {
+		t.Fatalf("job complete: %v", err)
+	}
+	result, err := e.executeOp(&Op{OpType: "job", Action: "wait", Target: "job", Bind: "job_result"})
+	if err != nil {
+		t.Fatalf("job wait: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("job result = %#v, want ok", result)
+	}
+	bound, _ := e.getBinding("job_result")
+	if bound != "ok" {
+		t.Fatalf("job_result binding = %#v", bound)
+	}
+}
+
 func TestChanClose(t *testing.T) {
 	e, _ := makeExecutor()
 	e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(1)})

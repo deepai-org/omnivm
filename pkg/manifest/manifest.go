@@ -60,6 +60,9 @@ type Op struct {
 	Bind     string            `json:"bind,omitempty"`
 	Captures map[string]string `json:"captures,omitempty"`
 	Async    bool              `json:"async,omitempty"`
+	Kind     string            `json:"kind,omitempty"`
+	Disposer string            `json:"disposer,omitempty"`
+	Payload  *ValueExpr        `json:"payload,omitempty"`
 
 	// import
 	Path          string `json:"path,omitempty"`

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "eval",
+      "runtime": "python",
+      "bind": "chunks",
+      "code": "[\"alpha\", \"beta\", \"gamma\"]"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "bind": "labels",
+      "captures": {"chunks": "chunks"},
+      "code": "Array.from(chunks).map(chunk => chunk.toUpperCase()).join('|')"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`Edge stream proxy labels=${labels} length=${labels.split('|').length}`)"
+    }
+  ],
+  "bridges": [
+    {
+      "binding": "chunks",
+      "op": "stream_proxy",
+      "from": "python",
+      "to": "javascript",
+      "meta": {"backpressure": true}
+    }
+  ],
+  "typeSummary": {"crossings": 1, "safe": 0, "coerce": 1, "check": 0, "errors": 0}
+}

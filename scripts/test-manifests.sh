@@ -129,6 +129,12 @@ run "Java Commons CSV + Pydantic + Go"       java-commons-csv-pydantic-go-batchi
 run "Java Jsoup + BeautifulSoup + Cheerio"   java-jsoup-bs4-cheerio.json false "Java/Jsoup/BeautifulSoup/Cheerio title=Poly Feed javaLinks=2 pyLinks=2 js=ALPHA\\|BETA"
 run "Java OkHttp + HTTPX + Go retry"         java-okhttp-httpx-go-retry.json false "Java/OkHttp/HTTPX/Go host=api.example.test path=/v1/items attempts=2 workers=2 backoff=75ms"
 
+# ── Category 8: Edge Runtime Contracts ───────────────────────────
+echo "── Edge Runtime Contracts ──"
+run "Stream proxy bridge"                    edge-stream-proxy.json false "Edge stream proxy labels=ALPHA\\|BETA\\|GAMMA length=3"
+run "Opaque resource and job handles"        edge-resource-job-handles.json false "Edge resource closed=true result=receipt-ok"
+run "Table copy and validation error bridges" edge-table-validation-bridges.json false "Edge table bridge west=30 errors=1"
+
 # ── Summary ────────────────────────────────────────────────────
 echo
 total=$((passed + failed))

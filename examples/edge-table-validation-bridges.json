@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "eval",
+      "runtime": "python",
+      "bind": "table",
+      "code": "[{\"region\":\"west\",\"amount\":12},{\"region\":\"west\",\"amount\":18},{\"region\":\"east\",\"amount\":9}]"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "bind": "summary",
+      "captures": {"table": "table"},
+      "code": "table.reduce((acc, row) => { acc[row.region] = (acc[row.region] || 0) + row.amount; return acc; }, {})"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "bind": "typed_errors",
+      "code": "[{\"path\":[\"customer\",\"email\"],\"code\":\"email\",\"message\":\"invalid\"}]"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "captures": {"summary": "summary", "typed_errors": "typed_errors"},
+      "code": "console.log(`Edge table bridge west=${summary.west} errors=${typed_errors.length}`)"
+    }
+  ],
+  "bridges": [
+    {
+      "binding": "table",
+      "op": "copy_array",
+      "from": "python",
+      "to": "javascript"
+    },
+    {
+      "binding": "table",
+      "op": "copy_array",
+      "from": "python",
+      "to": "ruby"
+    },
+    {
+      "binding": "summary",
+      "op": "identity",
+      "from": "javascript",
+      "to": "ruby"
+    },
+    {
+      "binding": "typed_errors",
+      "op": "struct_reshape",
+      "from": "ruby",
+      "to": "javascript",
+      "meta": {"fieldMap": {"message": "detail"}}
+    }
+  ],
+  "typeSummary": {"crossings": 2, "safe": 0, "coerce": 2, "check": 0, "errors": 0}
+}

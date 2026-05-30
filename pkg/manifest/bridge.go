@@ -105,16 +105,13 @@ func applyBridge(b *BridgeOp, val interface{}) (interface{}, error) {
 		return val, nil
 
 	case "proxy_with_finalizer":
-		// Future: register release hook. Passthrough for now.
-		return val, nil
+		return applyProxyMarker(b, val, "__omnivm_proxy__"), nil
 
 	case "attach_disposer":
-		// Future: wrap with disposer. Passthrough for now.
-		return val, nil
+		return applyProxyMarker(b, val, "__omnivm_disposable__"), nil
 
 	case "stream_proxy", "channel_bridge":
-		// Future: async stream/channel bridging. Passthrough for now.
-		return val, nil
+		return applyStreamProxy(b, val), nil
 
 	case "await_resolve":
 		// Handled at executor level (pump event loops). Passthrough here.
@@ -136,6 +133,55 @@ func applyBridge(b *BridgeOp, val interface{}) (interface{}, error) {
 
 	default:
 		return nil, &BridgeError{Op: b.Op, Binding: b.Binding, Detail: "unknown bridge op"}
+	}
+}
+
+func applyProxyMarker(b *BridgeOp, val interface{}, marker string) interface{} {
+	out := map[string]interface{}{
+		marker:    true,
+		"runtime": b.From,
+		"target":  b.To,
+		"value":   val,
+	}
+	if b.Meta != nil {
+		for k, v := range b.Meta {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func applyStreamProxy(b *BridgeOp, val interface{}) interface{} {
+	if m, ok := val.(map[string]interface{}); ok {
+		if _, already := m["__omnivm_stream__"]; already {
+			return val
+		}
+	}
+	out := map[string]interface{}{
+		"__omnivm_stream__": true,
+		"values":            streamValues(val),
+	}
+	if b.Meta != nil {
+		for k, v := range b.Meta {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func streamValues(val interface{}) interface{} {
+	switch v := val.(type) {
+	case []interface{}:
+		return v
+	case map[string]interface{}:
+		if values, ok := v["values"]; ok {
+			return values
+		}
+		return []interface{}{v}
+	case nil:
+		return []interface{}{}
+	default:
+		return []interface{}{v}
 	}
 }
 

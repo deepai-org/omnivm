@@ -466,6 +466,58 @@ func TestManifestParseBridges(t *testing.T) {
 	}
 }
 
+func TestStreamProxyBridgeWrapsValues(t *testing.T) {
+	b := &BridgeOp{
+		Op:      "stream_proxy",
+		Binding: "chunks",
+		From:    "python",
+		To:      "javascript",
+		Meta:    map[string]interface{}{"backpressure": true},
+	}
+	val, err := applyBridge(b, []interface{}{"a", "b"})
+	if err != nil {
+		t.Fatalf("applyBridge: %v", err)
+	}
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		t.Fatalf("stream proxy = %T, want map", val)
+	}
+	if m["__omnivm_stream__"] != true {
+		t.Fatalf("missing stream marker: %#v", m)
+	}
+	if m["backpressure"] != true {
+		t.Fatalf("missing backpressure metadata: %#v", m)
+	}
+	values, ok := m["values"].([]interface{})
+	if !ok || len(values) != 2 {
+		t.Fatalf("values = %#v", m["values"])
+	}
+}
+
+func TestAttachDisposerBridgeMarksDisposableProxy(t *testing.T) {
+	b := &BridgeOp{
+		Op:      "attach_disposer",
+		Binding: "tx",
+		From:    "python",
+		To:      "javascript",
+		Meta:    map[string]interface{}{"disposer": "rollback"},
+	}
+	val, err := applyBridge(b, map[string]interface{}{"id": 7})
+	if err != nil {
+		t.Fatalf("applyBridge: %v", err)
+	}
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		t.Fatalf("disposable proxy = %T, want map", val)
+	}
+	if m["__omnivm_disposable__"] != true {
+		t.Fatalf("missing disposable marker: %#v", m)
+	}
+	if m["disposer"] != "rollback" {
+		t.Fatalf("missing disposer metadata: %#v", m)
+	}
+}
+
 func TestSerializeMsgpackUnsupported(t *testing.T) {
 	b := &BridgeOp{Op: "serialize", Binding: "x", Meta: map[string]interface{}{"format": "msgpack"}}
 	_, err := applyBridge(b, "hello")
