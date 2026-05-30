@@ -20,11 +20,14 @@
       "params": [
         {
           "name": "slug"
+        },
+        {
+          "name": "html"
         }
       ],
       "body": [],
       "bodyRuntime": "go",
-      "source": "package polyfunc\n\nfunc ContentKey(slug interface{}) interface{} {\n\treturn slug\n}",
+      "source": "package polyfunc\n\nimport (\n\t\"crypto/sha256\"\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc ContentKey(slug interface{}, html interface{}) interface{} {\n\tslug_string := slug.(string)\n\thtml_string := html.(string)\n\tsanitized := strings.ReplaceAll(html_string, \"<script\", \"&lt;script\")\n\tsum := sha256.Sum256([]byte(slug_string + \":\" + sanitized))\n\tprefix := fmt.Sprintf(\"%.6x\", sum)\n\treturn slug_string + \"-\" + prefix\n}",
       "exports": [
         "ContentKey"
       ]
@@ -47,13 +50,24 @@
     {
       "op": "eval",
       "runtime": "go",
-      "code": "content_key(\"poly-docs\")",
-      "bind": "key"
+      "code": "content_key(\"poly-docs\", html)",
+      "bind": "key",
+      "captures": {
+        "html": "html"
+      }
     },
     {
       "op": "native",
       "runtime": "python",
       "code": "print(f\"Jinja2/Marked/Go docs key={key} length={len(html)}\")"
     }
-  ]
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
 }

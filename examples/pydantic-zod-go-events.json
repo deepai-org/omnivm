@@ -24,7 +24,7 @@
       ],
       "body": [],
       "bodyRuntime": "go",
-      "source": "package polyfunc\n\nfunc StableEventId(source interface{}) interface{} {\n\treturn source\n}",
+      "source": "package polyfunc\n\nimport (\n\t\"crypto/sha256\"\n\t\"fmt\"\n)\n\nfunc StableEventId(source interface{}) interface{} {\n\tsource_string := source.(string)\n\tsum := sha256.Sum256([]byte(source_string))\n\tprefix := fmt.Sprintf(\"%.6x\", sum)\n\tbucket := int(sum[0]) % 16\n\treturn fmt.Sprintf(\"evt_%s_b%d\", prefix, bucket)\n}",
       "exports": [
         "StableEventId"
       ]
@@ -46,11 +46,17 @@
     },
     {
       "op": "eval",
+      "runtime": "python",
+      "code": "((validated[\"provider\"] + \":\") + validated[\"email\"])",
+      "bind": "event_source"
+    },
+    {
+      "op": "eval",
       "runtime": "go",
-      "code": "stable_event_id(validated[\"provider\"])",
+      "code": "stable_event_id(event_source)",
       "bind": "event_id",
       "captures": {
-        "validated": "validated"
+        "event_source": "event_source"
       }
     },
     {
@@ -113,8 +119,8 @@
   ],
   "bridges": [],
   "typeSummary": {
-    "crossings": 3,
-    "safe": 3,
+    "crossings": 2,
+    "safe": 2,
     "coerce": 0,
     "check": 0,
     "errors": 0
