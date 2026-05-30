@@ -1299,6 +1299,21 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 		if !ok {
 			return nil, fmt.Errorf("resource close: %q is not a resource (got %T)", name, val)
 		}
+		if ref.Closed {
+			return ref, nil
+		}
+		if op.Code != "" {
+			runtime := op.Runtime
+			if runtime == "" {
+				runtime = ref.Runtime
+			}
+			if runtime == "" {
+				runtime = e.defaultRuntime
+			}
+			if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+				return nil, fmt.Errorf("resource close cleanup: %w", err)
+			}
+		}
 		ref.Closed = true
 		return ref, nil
 	default:

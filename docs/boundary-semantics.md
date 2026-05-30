@@ -27,6 +27,7 @@ by a manifest bridge operation or when a runtime cannot expose a usable `ref`.
 | floats | `copy` | none | none | Precision loss must be explicit or diagnosed. |
 | strings | `copy` | none | none | UTF-8 text; runtimes may store internally however they need. |
 | bytes | `copy` unless explicitly shared | source owns original | no | Shared buffers must use the Arrow/shared-buffer path. |
+| columnar tables | `ref` to a shared Arrow handle | producer owns until released | schema-dependent | Prefer Arrow C Data Interface in-process; Arrow IPC is a fallback, not the default. |
 | arrays/lists | `copy` by default | target owns copy | no | Elements cross recursively using this matrix. |
 | maps/objects/structs | `copy` by default | target owns copy | no | Opaque host objects may cross as `ref` instead. |
 | functions/callbacks | `ref` | defining runtime | yes, via calls | Calls marshal arguments/results through this contract. |
@@ -98,6 +99,44 @@ connections, and job scheduler internals should not cross as JSON copies.
   live object.
 - `job enqueue` creates a delayed-work handle; `job complete` records its
   eventual result; `job wait` materializes that result into a normal binding.
+
+## Zero-Copy Tables And Buffers
+
+The preferred table/buffer boundary should be a handle contract, not JSON rows.
+For in-process runtimes, OmniVM should use the Arrow C Data Interface as the
+primary representation because it carries schema, buffers, offsets, validity
+bitmaps, and release callbacks without copying column data. Arrow IPC is the
+portable fallback for out-of-process runtimes or runtimes that cannot safely
+consume C pointers.
+
+The long-term manifest shape should distinguish the logical table from the
+transport:
+
+```json
+{
+  "op": "table",
+  "action": "export",
+  "runtime": "python",
+  "bind": "orders_view",
+  "format": "arrow_c_data",
+  "source": { "kind": "ref", "name": "orders" },
+  "ownership": "borrowed",
+  "release": "producer"
+}
+```
+
+Open design choices before implementation:
+
+- `owned` handles transfer release responsibility to OmniVM; `borrowed` handles
+  must keep the producer alive until all consumers release the view.
+- Mutable buffers require an explicit `mutable: true` contract. The default is
+  read-only sharing.
+- A table handle must include schema identity and nullability, not infer it from
+  target-runtime objects.
+- JSON row materialization should remain an explicit user action or fallback
+  bridge with diagnostics, never the default table boundary.
+- DataFrame libraries should lower to this table handle when they expose Arrow
+  memory directly; otherwise they should lower to Arrow IPC or a diagnosed copy.
 
 ## Callbacks
 

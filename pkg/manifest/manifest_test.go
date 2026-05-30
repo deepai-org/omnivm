@@ -683,6 +683,77 @@ func TestResourceOpenCloseAndCaptureProxy(t *testing.T) {
 	}
 }
 
+func TestResourceCloseExecutesCleanupHook(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	_, err := e.executeOp(&Op{
+		OpType:   "resource",
+		Action:   "open",
+		Runtime:  "python",
+		Bind:     "tx",
+		Kind:     "sqlalchemy.transaction",
+		Disposer: "rollback",
+	})
+	if err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	if _, err := e.executeOp(&Op{
+		OpType: "resource",
+		Action: "close",
+		Target: "tx",
+		Code:   "cleanup_log.append('rollback')",
+	}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+	if !containsExecCall(mocks["python"].execCalls, "cleanup_log.append('rollback')") {
+		t.Fatalf("cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+}
+
+func TestResourceCloseRunsFromFinallyBody(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	m := &Manifest{
+		Version:        1,
+		DefaultRuntime: "javascript",
+		Ops: []*Op{
+			{
+				OpType: "try",
+				Body: []*Op{
+					{OpType: "resource", Action: "open", Runtime: "python", Bind: "tx", Kind: "sqlalchemy.transaction"},
+				},
+				FinallyBody: []*Op{
+					{OpType: "resource", Action: "close", Target: "tx", Code: "cleanup_log.append('finally')"},
+				},
+			},
+		},
+	}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	val, ok := e.getBinding("tx")
+	if !ok {
+		t.Fatal("tx binding missing")
+	}
+	ref, ok := val.(*ResourceRef)
+	if !ok {
+		t.Fatalf("tx = %T, want ResourceRef", val)
+	}
+	if !ref.Closed {
+		t.Fatal("resource should be closed by finallyBody")
+	}
+	if !containsExecCall(mocks["python"].execCalls, "cleanup_log.append('finally')") {
+		t.Fatalf("finally cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+}
+
+func containsExecCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if strings.Contains(call, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestJobEnqueueCompleteWait(t *testing.T) {
 	e, _ := makeExecutor()
 	_, err := e.executeOp(&Op{
