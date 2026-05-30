@@ -206,7 +206,7 @@ fi
 # --- Test 14: error messages with hints (Python) ---
 echo "--- Test: error messages with hints ---"
 cat > /tmp/importerr.py << 'EOF'
-import requests
+import definitely_missing_omnivm_dependency
 EOF
 set +e
 ERR=$(omnivm run /tmp/importerr.py 2>&1)
