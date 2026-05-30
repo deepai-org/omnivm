@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-docker test-cli test-manifests test-all run clean
+.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -11,6 +11,10 @@ build:
 test-local:
 	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/cli/ ./pkg/errmsg/
 	go test -v -count=1 ./pkg/golang/
+
+# Run Go, cgo runtime, integration, and Python package tests inside Docker.
+test-unit:
+	docker build --target tester -t $(IMAGE_NAME):tester .
 
 # Run full test suite inside Docker
 test-docker: build
@@ -35,11 +39,11 @@ test-manifests-quick: build
 test-stress: build
 	docker run --rm --entrypoint stresstest $(IMAGE_NAME):$(IMAGE_TAG)
 
-# Run full test suite
-test: test-local test-docker
+# Run the canonical full test suite.
+test: test-all
 
-# Run everything: unit tests, smoke tests, CLI tests, stress tests, manifest tests
-test-all: test test-cli test-stress test-manifests
+# Run everything: unit/integration tests, smoke tests, CLI tests, stress tests, manifest tests
+test-all: test-unit test-docker test-cli test-stress test-manifests
 
 # Start the REPL
 run: build
