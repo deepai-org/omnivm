@@ -10,11 +10,11 @@ import (
 // mockRuntime is a minimal mock of pkg.Runtime for testing the manifest executor
 // without real runtimes (no cgo dependency).
 type mockRuntime struct {
-	name       string
-	execFn     func(code string) pkg.Result
-	evalFn     func(code string) pkg.Result
-	execCalls  []string
-	evalCalls  []string
+	name      string
+	execFn    func(code string) pkg.Result
+	evalFn    func(code string) pkg.Result
+	execCalls []string
+	evalCalls []string
 }
 
 func newMockRuntime(name string) *mockRuntime {
@@ -29,11 +29,11 @@ func newMockRuntime(name string) *mockRuntime {
 	}
 }
 
-func (m *mockRuntime) Name() string                             { return m.name }
-func (m *mockRuntime) Initialize() error                        { return nil }
+func (m *mockRuntime) Name() string                               { return m.name }
+func (m *mockRuntime) Initialize() error                          { return nil }
 func (m *mockRuntime) SetBridgeCallback(callPtr, freePtr uintptr) {}
-func (m *mockRuntime) Pump()                                    {}
-func (m *mockRuntime) Shutdown() error                          { return nil }
+func (m *mockRuntime) Pump()                                      {}
+func (m *mockRuntime) Shutdown() error                            { return nil }
 
 func (m *mockRuntime) Execute(code string) pkg.Result {
 	m.execCalls = append(m.execCalls, code)
@@ -647,16 +647,36 @@ func TestNormalizeArgs(t *testing.T) {
 
 // --- marshalResult tests ---
 
+func decodeResultEnvelopeForTest(t *testing.T, raw string) bridgeResultEnvelope {
+	t.Helper()
+	var env bridgeResultEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("result envelope is not JSON: %v; raw=%q", err, raw)
+	}
+	if !env.Marker {
+		t.Fatalf("result envelope missing marker: %#v", env)
+	}
+	return env
+}
+
+func jsonEqual(a, b interface{}) bool {
+	ab, aerr := json.Marshal(a)
+	bb, berr := json.Marshal(b)
+	return aerr == nil && berr == nil && string(ab) == string(bb)
+}
+
 func TestMarshalResult(t *testing.T) {
 	cases := []struct {
-		val  interface{}
-		want string
+		val      interface{}
+		want     interface{}
+		wantKind string
 	}{
-		{nil, ""},
-		{42, "42"},
-		{"hello", "hello"},
-		{RuntimeRef{Value: "unwrapped"}, "unwrapped"},
-		{RuntimeRef{Value: nil}, ""},
+		{nil, nil, "null"},
+		{42, float64(42), "number"},
+		{"hello", "hello", "string"},
+		{map[string]interface{}{"ok": true}, map[string]interface{}{"ok": true}, "json"},
+		{RuntimeRef{Value: "unwrapped"}, "unwrapped", "string"},
+		{RuntimeRef{Value: nil}, nil, "null"},
 	}
 	for _, tc := range cases {
 		got, err := marshalResult(tc.val)
@@ -664,8 +684,12 @@ func TestMarshalResult(t *testing.T) {
 			t.Errorf("marshalResult(%v) error: %v", tc.val, err)
 			continue
 		}
-		if got != tc.want {
-			t.Errorf("marshalResult(%v) = %q, want %q", tc.val, got, tc.want)
+		env := decodeResultEnvelopeForTest(t, got)
+		if env.Kind != tc.wantKind {
+			t.Errorf("marshalResult(%v) kind = %q, want %q", tc.val, env.Kind, tc.wantKind)
+		}
+		if !jsonEqual(env.Value, tc.want) {
+			t.Errorf("marshalResult(%v) value = %#v, want %#v", tc.val, env.Value, tc.want)
 		}
 	}
 }
@@ -698,8 +722,9 @@ func TestHandleCallGoFunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCall: %v", err)
 	}
-	if result != "42" {
-		t.Errorf("HandleCall = %q, want 42", result)
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "number" || env.Value != float64(42) {
+		t.Errorf("HandleCall envelope = %#v, want number 42", env)
 	}
 }
 
@@ -717,8 +742,9 @@ func TestHandleCallFuncDef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCall: %v", err)
 	}
-	if result != "world" {
-		t.Errorf("HandleCall = %q, want world", result)
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "string" || env.Value != "world" {
+		t.Errorf("HandleCall envelope = %#v, want string world", env)
 	}
 }
 
@@ -739,8 +765,9 @@ func TestHandleCallGenerator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCall generator: %v", err)
 	}
-	if result != "[1,2,3]" {
-		t.Errorf("generator = %q, want [1,2,3]", result)
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "json" || !jsonEqual(env.Value, []interface{}{float64(1), float64(2), float64(3)}) {
+		t.Errorf("generator envelope = %#v, want json [1,2,3]", env)
 	}
 }
 
@@ -758,8 +785,9 @@ func TestHandleCallSpread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCall spread: %v", err)
 	}
-	if result != "a" {
-		t.Errorf("spread = %q, want a", result)
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "string" || env.Value != "a" {
+		t.Errorf("spread envelope = %#v, want string a", env)
 	}
 }
 
@@ -769,6 +797,9 @@ func TestJSStub(t *testing.T) {
 	code := jsStub("add", []string{"a", "b"})
 	if !contains(code, "globalThis.add") {
 		t.Error("JS stub should set globalThis.add")
+	}
+	if !contains(code, "__omnivm_decode_result") {
+		t.Error("JS stub should decode manifest result envelopes")
 	}
 	if !contains(code, `"add"`) {
 		t.Error("JS stub should reference function name")
@@ -783,6 +814,9 @@ func TestPythonStub(t *testing.T) {
 	if !contains(code, "omnivm.call") {
 		t.Error("Python stub should call omnivm")
 	}
+	if !contains(code, "__omnivm_decode_result") {
+		t.Error("Python stub should decode manifest result envelopes")
+	}
 }
 
 func TestRubyStub(t *testing.T) {
@@ -792,6 +826,9 @@ func TestRubyStub(t *testing.T) {
 	}
 	if !contains(code, "OmniVM.call") {
 		t.Error("Ruby stub should call OmniVM")
+	}
+	if !contains(code, "__omnivm_decode_result") {
+		t.Error("Ruby stub should decode manifest result envelopes")
 	}
 }
 

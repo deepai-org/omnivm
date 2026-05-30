@@ -33,9 +33,9 @@ type ImportRef struct {
 // global scope. Captures for the same runtime skip injection (already in scope).
 // Cross-runtime captures serialize the value via JSON.
 type RuntimeRef struct {
-	Runtime  string      // which runtime owns this variable
-	VarName  string      // variable name in that runtime
-	Value    interface{} // last known value (for cross-runtime capture)
+	Runtime string      // which runtime owns this variable
+	VarName string      // variable name in that runtime
+	Value   interface{} // last known value (for cross-runtime capture)
 }
 
 // FuncDef stores a manifest-level function definition.
@@ -53,7 +53,7 @@ type Executor struct {
 	scopes          []map[string]interface{}
 	funcs           map[string]*FuncDef
 	goFuncs         map[string]interface{}
-	yieldCollectors [][]interface{} // stack of yield collectors for nested generators
+	yieldCollectors [][]interface{}        // stack of yield collectors for nested generators
 	bridgeOps       map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
 }
 
@@ -332,10 +332,10 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 				if execResult.Err != nil {
 					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
 				}
-				valResult := rt.Eval(runtimeVarRef(rt.Name(), op.Bind))
-				val := valResult.Value
-				if val == nil {
-					val = valResult.Output
+				valResult := rt.Eval(runtimeSerializeExpr(rt.Name(), runtimeVarRef(rt.Name(), op.Bind)))
+				val, decodeErr := decodeRuntimeValue(rt.Name(), valResult)
+				if decodeErr != nil {
+					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
 				}
 				ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
 				e.setBinding(op.Bind, ref)
@@ -354,11 +354,11 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
 		}
 
-		// Read back the value
-		valResult := rt.Eval(runtimeVarRef(rt.Name(), op.Bind))
-		val := valResult.Value
-		if val == nil {
-			val = valResult.Output
+		// Read back a JSON-safe snapshot of the value for cross-runtime use.
+		valResult := rt.Eval(runtimeSerializeExpr(rt.Name(), runtimeVarRef(rt.Name(), op.Bind)))
+		val, decodeErr := decodeRuntimeValue(rt.Name(), valResult)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
 		}
 
 		ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
@@ -366,14 +366,14 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 		return val, nil
 	}
 
-	result := rt.Eval(code)
+	result := rt.Eval(runtimeSerializeExpr(rt.Name(), code))
 	if result.Err != nil {
 		return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), result.Err)
 	}
 
-	val := result.Value
-	if val == nil {
-		val = result.Output
+	val, decodeErr := decodeRuntimeValue(rt.Name(), result)
+	if decodeErr != nil {
+		return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
 	}
 
 	return val, nil
@@ -391,6 +391,38 @@ func runtimeAssign(rtName, varName, expr string) string {
 	default:
 		return fmt.Sprintf("%s = %s", varName, expr)
 	}
+}
+
+// runtimeSerializeExpr wraps an eval expression so structured values cross the
+// manifest bridge as JSON. This keeps JSON encoding out of user-level .poly.
+func runtimeSerializeExpr(rtName, expr string) string {
+	switch rtName {
+	case "javascript":
+		return fmt.Sprintf(`(function(){ var __v = (%s); var __s = JSON.stringify(__v); return typeof __s === "undefined" ? JSON.stringify(String(__v)) : __s; })()`, expr)
+	case "python":
+		return fmt.Sprintf(`__import__("json").dumps((%s), default=str)`, expr)
+	case "ruby":
+		return fmt.Sprintf(`begin; require 'json'; JSON.generate(begin; %s; end); rescue; JSON.generate((begin; %s; end).to_s); end`, expr, expr)
+	default:
+		return expr
+	}
+}
+
+func decodeRuntimeValue(rtName string, result pkg.Result) (interface{}, error) {
+	if result.Err != nil {
+		return nil, result.Err
+	}
+	raw := result.Output
+	if result.Value != nil {
+		raw = fmt.Sprintf("%v", result.Value)
+	}
+	if rtName == "javascript" || rtName == "python" || rtName == "ruby" {
+		var val interface{}
+		if err := json.Unmarshal([]byte(raw), &val); err == nil {
+			return val, nil
+		}
+	}
+	return raw, nil
 }
 
 // runtimeVarRef generates code to reference a variable in a runtime.

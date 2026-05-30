@@ -38,7 +38,8 @@ func (e *Executor) registerStubs(fd *FuncDef) error {
 }
 
 // jsStub generates a JavaScript function that calls back into the manifest executor.
-// Returns the raw string result — caller decides whether to JSON.parse.
+// The bridge itself returns a string, but manifest return values are enveloped
+// as JSON and decoded here so guest code receives native JS values.
 func jsStub(funcName string, params []string) string {
 	paramList := strings.Join(params, ", ")
 
@@ -48,14 +49,22 @@ func jsStub(funcName string, params []string) string {
 	}
 	argsArray := "[" + strings.Join(argEntries, ", ") + "]"
 
-	return fmt.Sprintf(`globalThis.%s = function(%s) {
+	return fmt.Sprintf(`globalThis.__omnivm_decode_result = globalThis.__omnivm_decode_result || function(raw) {
+  try {
+    var env = JSON.parse(raw);
+    if (env && env.__omnivm_result__ === true) return env.value;
+  } catch (e) {}
+  return raw;
+};
+globalThis.%s = function(%s) {
   var __req = JSON.stringify({func: "%s", args: %s});
-  return omnivm.call("__manifest", __req);
+  return globalThis.__omnivm_decode_result(omnivm.call("__manifest", __req));
 };`, funcName, paramList, funcName, argsArray)
 }
 
 // pythonStub generates a Python function that calls back into the manifest executor.
-// Returns the raw string result — caller decides whether to json.loads.
+// The bridge itself returns a string, but manifest return values are enveloped
+// as JSON and decoded here so guest code receives native Python values.
 func pythonStub(funcName string, params []string) string {
 	paramList := strings.Join(params, ", ")
 
@@ -65,9 +74,19 @@ func pythonStub(funcName string, params []string) string {
 	}
 	argsArray := "[" + strings.Join(argEntries, ", ") + "]"
 
-	return fmt.Sprintf(`def %s(%s):
+	return fmt.Sprintf(`def __omnivm_decode_result(raw):
     import json as __j
-    return omnivm.call('__manifest', __j.dumps({'func': '%s', 'args': %s}))`, funcName, paramList, funcName, argsArray)
+    try:
+        env = __j.loads(raw)
+        if isinstance(env, dict) and env.get('__omnivm_result__') is True:
+            return env.get('value')
+    except Exception:
+        pass
+    return raw
+
+def %s(%s):
+    import json as __j
+    return __omnivm_decode_result(omnivm.call('__manifest', __j.dumps({'func': '%s', 'args': %s})))`, funcName, paramList, funcName, argsArray)
 }
 
 // rubyReserved is the set of Ruby keywords that cannot be used as parameter names.
@@ -81,7 +100,8 @@ var rubyReserved = map[string]bool{
 }
 
 // rubyStub generates a Ruby function that calls back into the manifest executor.
-// Returns the raw string result — caller decides whether to JSON.parse.
+// The bridge itself returns a string, but manifest return values are enveloped
+// as JSON and decoded here so guest code receives native Ruby values.
 // Parameter names that collide with Ruby keywords are suffixed with _ in the
 // function signature, then mapped back to the original names in the args array.
 func rubyStub(funcName string, params []string) string {
@@ -98,9 +118,19 @@ func rubyStub(funcName string, params []string) string {
 	paramList := strings.Join(safeParams, ", ")
 	argsArray := "[" + strings.Join(safeParams, ", ") + "]"
 
-	return fmt.Sprintf(`def %s(%s)
+	return fmt.Sprintf(`def __omnivm_decode_result(raw)
   require 'json'
-  OmniVM.call('__manifest', JSON.generate({func: "%s", args: %s}))
+  begin
+    env = JSON.parse(raw)
+    return env["value"] if env.is_a?(Hash) && env["__omnivm_result__"] == true
+  rescue
+  end
+  raw
+end
+
+def %s(%s)
+  require 'json'
+  __omnivm_decode_result(OmniVM.call('__manifest', JSON.generate({func: "%s", args: %s})))
 end`, funcName, paramList, funcName, argsArray)
 }
 
@@ -174,11 +204,7 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 			}
 		}
 
-		b, merr := json.Marshal(collected)
-		if merr != nil {
-			return "", merr
-		}
-		return string(b), nil
+		return marshalResult(collected)
 	}
 
 	// Execute the function body
@@ -190,7 +216,7 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 		return "", err
 	}
 
-	return "", nil
+	return marshalResult(nil)
 }
 
 // callGoFuncFromBridge invokes a Go plugin function from a bridge call.
@@ -281,18 +307,55 @@ func normalizeArg(arg interface{}) interface{} {
 	}
 }
 
-// marshalResult converts a value to a string suitable for bridge return.
-// The bridge always returns strings, so we format the value as a string.
+type bridgeResultEnvelope struct {
+	Marker bool        `json:"__omnivm_result__"`
+	Kind   string      `json:"kind"`
+	Value  interface{} `json:"value"`
+}
+
+// marshalResult converts a value to an enveloped JSON string suitable for a
+// bridge return. Runtime stubs decode the envelope back into native values,
+// which keeps JSON serialization out of user-level PolyScript code.
 func marshalResult(val interface{}) (string, error) {
-	if val == nil {
-		return "", nil
-	}
 	// Unwrap RuntimeRef to get the actual value
 	if ref, ok := val.(RuntimeRef); ok {
 		val = ref.Value
 	}
-	if val == nil {
-		return "", nil
+	kind := resultKind(val)
+	env := bridgeResultEnvelope{
+		Marker: true,
+		Kind:   kind,
+		Value:  val,
 	}
-	return fmt.Sprintf("%v", val), nil
+	b, err := json.Marshal(env)
+	if err == nil {
+		return string(b), nil
+	}
+
+	// Last-resort fallback for non-JSON-marshalable values.
+	env.Kind = "string"
+	env.Value = fmt.Sprintf("%v", val)
+	b, err = json.Marshal(env)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func resultKind(val interface{}) string {
+	if val == nil {
+		return "null"
+	}
+	switch val.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number:
+		return "number"
+	default:
+		return "json"
+	}
 }
