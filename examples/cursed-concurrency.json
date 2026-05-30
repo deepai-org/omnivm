@@ -9,12 +9,6 @@
       "bind": "os"
     },
     {
-      "op": "import",
-      "path": "json",
-      "runtime": "python",
-      "bind": "json"
-    },
-    {
       "op": "chan",
       "action": "make",
       "runtime": "go",
@@ -45,8 +39,8 @@
               "op": "yield",
               "from": {
                 "op": "eval",
-                "runtime": "javascript",
-                "code": "{\"name\": entry.name, \"size\": os.path.getsize(entry.path)}",
+                "runtime": "python",
+                "code": "{\"name\": entry[\"name\"], \"size\": os.path.getsize(entry[\"path\"])}",
                 "bind": "__yield",
                 "captures": {
                   "os": "os"
@@ -61,7 +55,7 @@
           }
         }
       ],
-      "bodyRuntime": "javascript"
+      "bodyRuntime": "python"
     },
     {
       "op": "func_def",
@@ -73,40 +67,19 @@
       ],
       "body": [
         {
-          "op": "await",
-          "runtime": "javascript",
-          "from": {
-            "op": "eval",
-            "runtime": "javascript",
-            "code": "fetch(`/api/enrich?name=${item.name}`)",
-            "bind": "enriched"
-          },
-          "bind": "enriched"
-        },
-        {
-          "op": "await",
-          "runtime": "javascript",
-          "from": {
-            "op": "eval",
-            "runtime": "javascript",
-            "code": "enriched.json()",
-            "bind": "payload",
-            "captures": {
-              "enriched": "enriched"
-            }
-          },
-          "bind": "payload"
-        },
-        {
           "op": "return",
-          "value": {
-            "kind": "ref",
-            "name": "payload"
+          "from": {
+            "op": "eval",
+            "runtime": "javascript",
+            "code": "{\"name\": item.name, \"size\": item.size, \"label\": `${item.name}:${item.size}`}",
+            "bind": "__ret",
+            "captures": {
+              "item": "item"
+            }
           }
         }
       ],
-      "bodyRuntime": "javascript",
-      "async": true
+      "bodyRuntime": "javascript"
     },
     {
       "op": "func_def",
@@ -118,12 +91,9 @@
       ],
       "body": [],
       "bodyRuntime": "go",
-      "source": "package polyfunc\n\nvar process func(interface{}) interface{}\n\nfunc Init(processFn func(interface{}) interface{}) {\n\tprocess = processFn\n}\n\nfunc Worker(id interface{}) interface{} {\n\tjob := <-inbox\n\tresult := process(job)\n\toutbox <- result\n}",
+      "source": "package polyfunc\n\nfunc Worker(id interface{}) interface{} {\n\treturn id\n}",
       "exports": [
         "Worker"
-      ],
-      "requires": [
-        "process"
       ]
     },
     {
@@ -153,14 +123,13 @@
         {
           "op": "chan",
           "action": "send",
-          "runtime": "javascript",
+          "runtime": "go",
           "channel": "inbox",
           "value": {
             "kind": "ref",
             "name": "item"
           },
           "captures": {
-            "inbox": "inbox",
             "item": "item"
           }
         }
@@ -180,8 +149,44 @@
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "Array.from(outbox)",
+      "code": "Array.from(inbox).map((item) => process(item))",
       "bind": "raw",
+      "captures": {
+        "inbox": "inbox"
+      }
+    },
+    {
+      "op": "loop",
+      "mode": "foreach",
+      "body": [
+        {
+          "op": "chan",
+          "action": "send",
+          "runtime": "go",
+          "channel": "outbox",
+          "value": {
+            "kind": "ref",
+            "name": "result"
+          }
+        }
+      ],
+      "variable": "result",
+      "iterable": {
+        "kind": "ref",
+        "name": "raw"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "outbox"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Array.from(outbox).map((r) => r)",
+      "bind": "rows",
       "captures": {
         "outbox": "outbox"
       }
@@ -189,7 +194,7 @@
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "raw.map((r) => r.name.toUpperCase())",
+      "code": "rows.map((r) => r.name.toUpperCase())",
       "bind": "names"
     },
     {
@@ -216,7 +221,7 @@
     {
       "op": "eval",
       "runtime": "python",
-      "code": "json.dumps(ranked)",
+      "code": "ranked",
       "bind": "report"
     },
     {
@@ -224,19 +229,18 @@
       "action": "make",
       "runtime": "go",
       "bind": "done",
-      "size": 0
+      "size": 1
     },
     {
       "op": "chan",
       "action": "send",
-      "runtime": "javascript",
+      "runtime": "go",
       "channel": "done",
       "value": {
         "kind": "ref",
         "name": "report"
       },
       "captures": {
-        "done": "done",
         "report": "report"
       }
     },
@@ -248,8 +252,16 @@
     },
     {
       "op": "native",
-      "runtime": "javascript",
+      "runtime": "python",
       "code": "print(f\"Processed {total} items across 3 runtimes\")"
     }
-  ]
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 4,
+    "safe": 4,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
 }

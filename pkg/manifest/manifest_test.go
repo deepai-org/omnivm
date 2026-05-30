@@ -870,6 +870,21 @@ func TestDrainChannelClosed(t *testing.T) {
 	}
 }
 
+func TestDrainChannelClosedWithBufferedData(t *testing.T) {
+	ch := &ChanRef{ch: make(chan interface{}, 5)}
+	ch.ch <- "a"
+	ch.ch <- "b"
+	close(ch.ch)
+	ch.closed = true
+	result := drainChannel(ch)
+	if len(result) != 2 {
+		t.Fatalf("drain closed buffered = %d items, want 2", len(result))
+	}
+	if result[0] != "a" || result[1] != "b" {
+		t.Errorf("drain closed buffered = %v, want [a b]", result)
+	}
+}
+
 // --- String escaping tests ---
 
 func TestEscapePythonString(t *testing.T) {

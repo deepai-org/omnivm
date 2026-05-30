@@ -11,9 +11,6 @@ import (
 // Handles closed channels safely by checking the ok flag.
 func drainChannel(ch *ChanRef) []interface{} {
 	result := make([]interface{}, 0)
-	if ch.closed {
-		return result
-	}
 	for {
 		select {
 		case v, ok := <-ch.ch:

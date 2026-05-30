@@ -31,6 +31,7 @@ run() {
   local name="$1"
   local file="$2"
   local expect_error="${3:-false}"
+  local expect_pattern="${4:-}"
 
   printf "  [TEST] %-45s " "$name"
 
@@ -39,6 +40,12 @@ run() {
 
   # Check for manifest completion marker
   if echo "$output" | grep -q "Manifest execution complete."; then
+    if [ -n "$expect_pattern" ] && ! echo "$output" | grep -Eq "$expect_pattern"; then
+      printf "\033[31mFAIL\033[0m (output mismatch)\n"
+      errors+=("$name: output did not match /$expect_pattern/")
+      ((failed++))
+      return
+    fi
     printf "\033[32mPASS\033[0m\n"
     ((passed++))
   elif [ "$expect_error" = "true" ] && echo "$output" | grep -q "Manifest execution error:"; then
@@ -92,7 +99,7 @@ run "Channels, generators, spawn workers"      stress-test-5.json
 
 # ── Category 5: Concurrency & Edge Cases ───────────────────────
 echo "── Concurrency & Edge Cases ──"
-run "Cursed concurrency (full channel+spawn)"  cursed-concurrency.json
+run "Cursed concurrency (full channel+spawn)"  cursed-concurrency.json false "Processed [1-9][0-9]* items across 3 runtimes"
 
 # ── Category 6: Application Manifests ──────────────────────────
 echo "── Application Manifests ──"
