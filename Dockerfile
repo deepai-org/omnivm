@@ -136,10 +136,26 @@ RUN chmod +x scripts/build.sh && scripts/build.sh
 
 # Create libs directory for user JARs and bundled CLI-test dependencies.
 ARG GSON_VERSION=2.10.1
+ARG COMMONS_CSV_VERSION=1.10.0
+ARG JSOUP_VERSION=1.17.2
+ARG OKHTTP_VERSION=3.14.9
+ARG OKIO_VERSION=1.17.5
 RUN mkdir -p /omnivm/libs && \
     curl -fsSL \
         "https://repo1.maven.org/maven2/com/google/code/gson/gson/${GSON_VERSION}/gson-${GSON_VERSION}.jar" \
-        -o "/omnivm/libs/gson-${GSON_VERSION}.jar"
+        -o "/omnivm/libs/gson-${GSON_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/org/apache/commons/commons-csv/${COMMONS_CSV_VERSION}/commons-csv-${COMMONS_CSV_VERSION}.jar" \
+        -o "/omnivm/libs/commons-csv-${COMMONS_CSV_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/org/jsoup/jsoup/${JSOUP_VERSION}/jsoup-${JSOUP_VERSION}.jar" \
+        -o "/omnivm/libs/jsoup-${JSOUP_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/squareup/okhttp3/okhttp/${OKHTTP_VERSION}/okhttp-${OKHTTP_VERSION}.jar" \
+        -o "/omnivm/libs/okhttp-${OKHTTP_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/squareup/okio/okio/${OKIO_VERSION}/okio-${OKIO_VERSION}.jar" \
+        -o "/omnivm/libs/okio-${OKIO_VERSION}.jar"
 
 # 5. Examples AFTER build (most frequent changes, no rebuild needed)
 COPY examples/ examples/

@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "httpx",
+      "runtime": "python",
+      "bind": "httpx"
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "retry_in",
+      "size": 4
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "retry_out",
+      "size": 4
+    },
+    {
+      "op": "func_def",
+      "name": "retry_worker",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar recv func(interface{}) interface{}\nvar send func(interface{}, interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"recv\"].(func(interface{}) interface{}); ok {\n\t\trecv = fn\n\t}\n\tif fn, ok := deps[\"send\"].(func(interface{}, interface{}) interface{}); ok {\n\t\tsend = fn\n\t}\n}\n\nfunc RetryWorker(id interface{}) interface{} {\n\tfor true {\n\titem := recv(\"retry_in\")\n\tif item == nil {\n\t\treturn id\n\t}\n\tsend(\"retry_out\", item)\n}\n\treturn id\n}",
+      "exports": [
+        "RetryWorker"
+      ],
+      "requires": [
+        "recv",
+        "send"
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "retry_backoff",
+      "params": [
+        {
+          "name": "attempts"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc RetryBackoff(attempts interface{}) interface{} {\n\tif attempts == nil {\n\treturn 0\n}\n\treturn 75\n}",
+      "exports": [
+        "RetryBackoff"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new okhttp3.Request.Builder().url(\"https://api.example.test/v1/items?b=2&a=1\").build().url().host()",
+      "bind": "okhttp_host"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new okhttp3.Request.Builder().url(\"https://api.example.test/v1/items?b=2&a=1\").build().url().encodedPath()",
+      "bind": "okhttp_path"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "httpx.Response(200).status_code",
+      "bind": "status"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "retry_worker(1)",
+      "bind": "w1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "retry_worker(2)",
+      "bind": "w2"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "retry_in",
+      "value": {
+        "kind": "ref",
+        "name": "status"
+      },
+      "captures": {
+        "status": "status"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "retry_in",
+      "value": {
+        "kind": "literal",
+        "value": 503
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "retry_in"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(w1, w2)",
+      "bind": "workers"
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "retry_out"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Array.from(retry_out)",
+      "bind": "attempts",
+      "captures": {
+        "retry_out": "retry_out"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "retry_backoff(2)",
+      "bind": "backoff"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java/OkHttp/HTTPX/Go host={okhttp_host} path={okhttp_path} attempts={len(attempts)} workers={len(workers)} backoff={backoff}ms\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

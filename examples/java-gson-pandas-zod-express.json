@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "pandas",
+      "runtime": "python",
+      "bind": "pandas"
+    },
+    {
+      "op": "import",
+      "path": "io",
+      "runtime": "python",
+      "bind": "io"
+    },
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "defaultImport": "express"
+    },
+    {
+      "op": "import",
+      "path": "zod",
+      "runtime": "javascript",
+      "defaultImport": "zod"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new com.google.gson.Gson().toJson(java.util.List.of(java.util.Map.of(\"region\", \"west\", \"amount\", 32), java.util.Map.of(\"region\", \"east\", \"amount\", 18), java.util.Map.of(\"region\", \"west\", \"amount\", 8)))",
+      "bind": "orders_json"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pandas.read_json(io.StringIO(orders_json))",
+      "bind": "orders",
+      "captures": {
+        "orders_json": "orders_json"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "orders.groupby(\"region\")[\"amount\"].sum().reset_index().to_dict(\"records\")",
+      "bind": "summary"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "zod.z.array(zod.z.object({\"region\": zod.z.string(), \"amount\": zod.z.number()}))",
+      "bind": "SummarySchema"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "SummarySchema.parse(summary)",
+      "bind": "checked",
+      "captures": {
+        "summary": "summary"
+      }
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/orders/summary\", (req, res) => res.json({\"regions\": checked.length, \"top\": checked[1].region}))"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java/Gson/Pandas/Zod/Express regions={len(checked)} top={checked[1]['region']} amount={checked[1]['amount']}\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 2,
+    "safe": 2,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

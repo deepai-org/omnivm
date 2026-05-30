@@ -365,6 +365,20 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 	// If bind is set, persist the result in the runtime's global scope
 	// so subsequent ops in the same runtime can reference it directly.
 	if op.Bind != "" {
+		if rt.Name() == "java" {
+			result := rt.Eval(runtimeSerializeExpr(rt.Name(), code))
+			if result.Err != nil {
+				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), result.Err)
+			}
+			val, decodeErr := decodeRuntimeValue(rt.Name(), result)
+			if decodeErr != nil {
+				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
+			}
+			ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
+			e.setBinding(op.Bind, ref)
+			return val, nil
+		}
+
 		assignCode := runtimeAssign(rt.Name(), op.Bind, code)
 		execResult := rt.Execute(assignCode)
 		if execResult.Err != nil {

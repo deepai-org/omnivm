@@ -825,7 +825,7 @@ func New() *Runtime {
 	return &Runtime{}
 }
 
-func (r *Runtime) Name() string { return "jvm" }
+func (r *Runtime) Name() string { return "java" }
 
 func (r *Runtime) Initialize() error {
 	if r.initialized {

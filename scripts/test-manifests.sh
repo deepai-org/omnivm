@@ -124,6 +124,10 @@ run "Jinja2 + Marked + Go docs"             jinja2-marked-go-docs.json false "Ji
 run "Express + NumPy + Go rate limit"       express-numpy-go-rate-limit.json false "Express/NumPy/Go scoring allowed=true bucket=3 score=2.2"
 run "HTTPX + URL + Go retry workers"        httpx-url-go-retry.json false "HTTPX/URL/Go aggregator endpoint=https://api.example.test/v1/items attempts=2 workers=2 backoff=50ms"
 run "Nokogiri + Pandas + JS formatting"     nokogiri-pandas-js-format.json false "Nokogiri/Pandas/JS legacy feed Ada:2\\|Grace:3"
+run "Java Gson + Pandas + Zod + Express"    java-gson-pandas-zod-express.json false "Java/Gson/Pandas/Zod/Express regions=2 top=west amount=40"
+run "Java Commons CSV + Pydantic + Go"       java-commons-csv-pydantic-go-batching.json false "Java/CommonsCSV/Pydantic/Go rows=3 javaRecords=3 batches=2"
+run "Java Jsoup + BeautifulSoup + Cheerio"   java-jsoup-bs4-cheerio.json false "Java/Jsoup/BeautifulSoup/Cheerio title=Poly Feed javaLinks=2 pyLinks=2 js=ALPHA\\|BETA"
+run "Java OkHttp + HTTPX + Go retry"         java-okhttp-httpx-go-retry.json false "Java/OkHttp/HTTPX/Go host=api.example.test path=/v1/items attempts=2 workers=2 backoff=75ms"
 
 # ── Summary ────────────────────────────────────────────────────
 echo

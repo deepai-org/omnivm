@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "bs4",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "BeautifulSoup",
+          "local": "BeautifulSoup"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "cheerio",
+      "runtime": "javascript",
+      "defaultImport": "cheerio"
+    },
+    {
+      "op": "declare",
+      "bind": "html_doc",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "<html><head><title>Poly Feed</title></head><body><a href='/a'>Alpha</a><a href='/b'>Beta</a></body></html>"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "org.jsoup.Jsoup.parse(\"<html><head><title>Poly Feed</title></head><body><a href='/a'>Alpha</a><a href='/b'>Beta</a></body></html>\").select(\"a\").size()",
+      "bind": "java_links"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "BeautifulSoup(html_doc, \"html.parser\")",
+      "bind": "soup",
+      "captures": {
+        "html_doc": "html_doc"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "[a.get_text() for a in soup.select(\"a\")]",
+      "bind": "py_links"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "cheerio.load(html_doc)",
+      "bind": "dom"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "dom(\"a\").map((i, el) => dom(el).text().toUpperCase()).get().join(\"|\")",
+      "bind": "js_links"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java/Jsoup/BeautifulSoup/Cheerio title={soup.title.string} javaLinks={java_links} pyLinks={len(py_links)} js={js_links}\")"
+    }
+  ],
+  "bridges": [],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  }
+}

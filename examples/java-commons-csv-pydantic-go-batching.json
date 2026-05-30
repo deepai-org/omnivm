@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "csv",
+      "runtime": "python",
+      "bind": "csv"
+    },
+    {
+      "op": "import",
+      "path": "io",
+      "runtime": "python",
+      "bind": "io"
+    },
+    {
+      "op": "import",
+      "path": "pydantic",
+      "runtime": "python",
+      "bind": "pydantic"
+    },
+    {
+      "op": "func_def",
+      "name": "batch_label",
+      "params": [
+        {
+          "name": "name"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc BatchLabel(name interface{}) interface{} {\n\treturn name\n}",
+      "exports": [
+        "BatchLabel"
+      ]
+    },
+    {
+      "op": "declare",
+      "bind": "csv_text",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "sku,qty\\nA,2\\nB,3\\nC,5"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "org.apache.commons.csv.CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(new java.io.StringReader(\"sku,qty\\nA,2\\nB,3\\nC,5\")).getRecords().size()",
+      "bind": "java_records"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "list(csv.DictReader(io.StringIO(str(csv_text).replace(\"\\\\n\", chr(10)))))",
+      "bind": "rows"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pydantic.TypeAdapter(list[dict]).validate_python(rows)",
+      "bind": "validated"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "batch_label(\"inventory\")",
+      "bind": "b1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "batch_label(\"reorder\")",
+      "bind": "b2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(b1, b2)",
+      "bind": "batches"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java/CommonsCSV/Pydantic/Go rows={len(validated)} javaRecords={java_records} batches={len(batches)}\")"
+    }
+  ]
+}

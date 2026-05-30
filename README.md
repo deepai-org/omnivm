@@ -402,7 +402,7 @@ docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-po
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/data-pipeline-manifest.json
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/polyglot-pipeline-manifest.json
 
-# Run the full manifest test suite (22 tests, 7 categories)
+# Run the full manifest test suite (26 tests, 7 categories)
 make test-manifests
 ```
 
@@ -690,7 +690,7 @@ pkg/
   arrow/             Shared memory primitives
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
-  test-manifests.sh    Manifest test suite runner (22 tests)
+  test-manifests.sh    Manifest test suite runner (26 tests)
   test-cli.sh          CLI integration tests (27 tests)
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)

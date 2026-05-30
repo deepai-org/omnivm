@@ -456,7 +456,8 @@ public class OmniVMRunner {
                 return execute(code);
             }
 
-            InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses());
+            URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
+            InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
             Class<?> clazz = classLoader.loadClass(className);
             Method run = clazz.getMethod("run");
             Object result = run.invoke(null);
@@ -561,7 +562,8 @@ public class OmniVMRunner {
             return errors.toString();
         }
 
-        InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses());
+        URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
+        InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
         Class<?> clazz = classLoader.loadClass(className);
 
         try {
@@ -594,13 +596,21 @@ public class OmniVMRunner {
         }
 
         StringBuilder cp = new StringBuilder(System.getProperty("java.class.path", "."));
+        appendJars(cp, libDir);
+        appendJars(cp, new File("/omnivm/libs"));
+        return cp.toString();
+    }
+
+    private static void appendJars(StringBuilder cp, File libDir) {
+        if (!libDir.exists() || !libDir.isDirectory()) {
+            return;
+        }
         File[] jars = libDir.listFiles((dir, name) -> name.endsWith(".jar"));
         if (jars != null) {
             for (File jar : jars) {
                 cp.append(File.pathSeparator).append(jar.getAbsolutePath());
             }
         }
-        return cp.toString();
     }
 
     // ---- In-memory compilation infrastructure ----

@@ -140,7 +140,7 @@ func New() *Runtime {
 	return &Runtime{}
 }
 
-func (r *Runtime) Name() string { return "jvm" }
+func (r *Runtime) Name() string { return "java" }
 
 // Initialize creates the JVM with reduced signal handling.
 // Must be called on the Golden Thread.
