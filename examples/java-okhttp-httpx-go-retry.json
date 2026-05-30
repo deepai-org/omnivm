@@ -139,7 +139,10 @@
     {
       "op": "eval",
       "runtime": "go",
-      "code": "retry_backoff(2)",
+      "func": "retry_backoff",
+      "args": [
+        "2"
+      ],
       "bind": "backoff"
     },
     {
