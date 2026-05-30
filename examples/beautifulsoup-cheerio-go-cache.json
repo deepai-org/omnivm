@@ -35,6 +35,24 @@
       ]
     },
     {
+      "op": "func_def",
+      "name": "cache_fetch",
+      "params": [
+        {
+          "name": "url"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar cache_key func(interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"cache_key\"].(func(interface{}) interface{}); ok {\n\t\tcache_key = fn\n\t}\n}\n\nfunc CacheFetch(url interface{}) interface{} {\n\treturn cache_key(url)\n}",
+      "exports": [
+        "CacheFetch"
+      ],
+      "requires": [
+        "cache_key"
+      ]
+    },
+    {
       "op": "declare",
       "bind": "url",
       "mutable": false,
@@ -53,13 +71,31 @@
       }
     },
     {
-      "op": "eval",
+      "op": "spawn",
       "runtime": "go",
-      "code": "cache_key(url)",
-      "bind": "key",
+      "code": "cache_fetch(url)",
+      "bind": "c1",
       "captures": {
         "url": "url"
       }
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "cache_fetch(\"https://example.test/sitemap\")",
+      "bind": "c2"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(c1, c2)",
+      "bind": "cache_workers"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "url",
+      "bind": "key"
     },
     {
       "op": "eval",
@@ -100,7 +136,7 @@
     {
       "op": "exec",
       "runtime": "javascript",
-      "code": "console.log(`BeautifulSoup/Cheerio/Go scrape ${title} links=${links.length} key=${key} hrefs=${hrefs}`)"
+      "code": "console.log(`BeautifulSoup/Cheerio/Go scrape ${title} links=${links.length} workers=${cache_workers.length} key=${key} hrefs=${hrefs}`)"
     }
   ],
   "bridges": [],

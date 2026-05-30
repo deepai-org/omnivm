@@ -48,6 +48,21 @@
       ]
     },
     {
+      "op": "func_def",
+      "name": "retry_backoff",
+      "params": [
+        {
+          "name": "attempt"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nfunc RetryBackoff(attempt interface{}) interface{} {\n\tif attempt == nil {\n\treturn 0\n}\n\treturn 50\n}",
+      "exports": [
+        "RetryBackoff"
+      ]
+    },
+    {
       "op": "declare",
       "bind": "endpoint",
       "mutable": false,
@@ -146,15 +161,24 @@
       }
     },
     {
-      "op": "exec",
-      "runtime": "javascript",
-      "code": "console.log(`HTTPX/URL/Go aggregator endpoint=${normalized} attempts=${attempts.length} workers=${joined.length}`)"
+      "op": "eval",
+      "runtime": "go",
+      "code": "retry_backoff(attempts.length)",
+      "bind": "backoff",
+      "captures": {
+        "attempts": "attempts"
+      }
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"HTTPX/URL/Go aggregator endpoint={normalized} attempts={len(attempts)} workers={len(joined)} backoff={backoff}ms\")"
     }
   ],
   "bridges": [],
   "typeSummary": {
-    "crossings": 1,
-    "safe": 1,
+    "crossings": 2,
+    "safe": 2,
     "coerce": 0,
     "check": 0,
     "errors": 0

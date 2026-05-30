@@ -116,13 +116,13 @@ fi
 echo "── Popular Ecosystem Libraries ──"
 run "Django + Zod + Go HMAC endpoint"       django-zod-go-crypto.json false "Django/Zod/Go secure endpoint 200 user-42 /secure/orders"
 run "Express + Pandas + Go workers"         express-pandas-go-workers.json false "Express/Pandas/Go report 3 regions top=west workers=2"
-run "BeautifulSoup + Cheerio + Go cache"    beautifulsoup-cheerio-go-cache.json false "BeautifulSoup/Cheerio/Go scrape POLYGLOT RUNTIME links=2"
+run "BeautifulSoup + Cheerio + Go cache"    beautifulsoup-cheerio-go-cache.json false "BeautifulSoup/Cheerio/Go scrape POLYGLOT RUNTIME links=2 workers=2"
 run "Pydantic + Zod + Go events"            pydantic-zod-go-events.json false "Pydantic/Zod/Go event .* amount=42"
 run "SQLAlchemy + Lodash + Go batching"     sqlalchemy-lodash-go-batching.json false "SQLAlchemy/Lodash/Go admin endpoint roles=2 batches=2 sql=true"
 run "NumPy + Pandas + D3 + Go channels"     numpy-pandas-d3-go-channels.json false "NumPy/Pandas/D3/Go chart points=4 series=4 worker=1"
 run "Jinja2 + Marked + Go docs"             jinja2-marked-go-docs.json false "Jinja2/Marked/Go docs key=poly-docs-[0-9a-f]{12} length=[1-9][0-9]*"
-run "Express + NumPy + Go rate limit"       express-numpy-go-rate-limit.json false "Express/NumPy/Go scoring allowed=true score=2.2"
-run "HTTPX + URL + Go retry workers"        httpx-url-go-retry.json false "HTTPX/URL/Go aggregator endpoint=https://api.example.test/v1/items attempts=2 workers=2"
+run "Express + NumPy + Go rate limit"       express-numpy-go-rate-limit.json false "Express/NumPy/Go scoring allowed=true bucket=3 score=2.2"
+run "HTTPX + URL + Go retry workers"        httpx-url-go-retry.json false "HTTPX/URL/Go aggregator endpoint=https://api.example.test/v1/items attempts=2 workers=2 backoff=50ms"
 run "Nokogiri + Pandas + JS formatting"     nokogiri-pandas-js-format.json false "Nokogiri/Pandas/JS legacy feed Ada:2\\|Grace:3"
 
 # ── Summary ────────────────────────────────────────────────────

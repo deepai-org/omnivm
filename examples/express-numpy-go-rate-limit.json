@@ -20,11 +20,14 @@
       "params": [
         {
           "name": "route"
+        },
+        {
+          "name": "bucket"
         }
       ],
       "body": [],
       "bodyRuntime": "go",
-      "source": "package polyfunc\n\nfunc AllowRequest(route interface{}) interface{} {\n\tif route == \"/predict\" {\n\treturn true\n}\n\treturn false\n}",
+      "source": "package polyfunc\n\nfunc AllowRequest(route interface{}, bucket interface{}) interface{} {\n\tif route == \"/predict\" && bucket != nil {\n\treturn true\n}\n\treturn false\n}",
       "exports": [
         "AllowRequest"
       ]
@@ -54,38 +57,48 @@
       "bind": "score"
     },
     {
-      "op": "eval",
-      "runtime": "go",
-      "code": "allow_request(\"/predict\")",
-      "bind": "allowed"
+      "op": "declare",
+      "bind": "bucket",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": 3
+      }
     },
     {
       "op": "eval",
-      "runtime": "python",
+      "runtime": "go",
+      "code": "allow_request(\"/predict\", bucket)",
+      "bind": "allowed",
+      "captures": {
+        "bucket": "bucket"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
       "code": "{\"route\": \"/predict\", \"allowed\": allowed, \"score\": score}",
       "bind": "prediction",
       "captures": {
-        "allowed": "allowed"
+        "allowed": "allowed",
+        "score": "score"
       }
     },
     {
       "op": "exec",
       "runtime": "javascript",
-      "code": "app.post(\"/predict\", (req, res) => res.json(prediction))",
-      "captures": {
-        "prediction": "prediction"
-      }
+      "code": "app.post(\"/predict\", (req, res) => res.json(prediction))"
     },
     {
       "op": "native",
       "runtime": "python",
-      "code": "print(f\"Express/NumPy/Go scoring allowed={str(prediction['allowed']).lower()} score={prediction['score']}\")"
+      "code": "print(f\"Express/NumPy/Go scoring allowed={str(prediction['allowed']).lower()} bucket={bucket} score={prediction['score']}\")"
     }
   ],
   "bridges": [],
   "typeSummary": {
-    "crossings": 2,
-    "safe": 2,
+    "crossings": 3,
+    "safe": 3,
     "coerce": 0,
     "check": 0,
     "errors": 0
