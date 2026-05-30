@@ -921,8 +921,25 @@ func TestWrapJavaScriptCaptures(t *testing.T) {
 	if !contains(code, "(function(") {
 		t.Error("should wrap in IIFE")
 	}
+	if !contains(code, "__omnivm_materialize_capture") {
+		t.Error("should materialize captures")
+	}
 	if !contains(code, "console.log(x)") {
 		t.Error("should include user code")
+	}
+}
+
+func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
+	channelJSON := channelCaptureJSON("javascript", `[{"name":"a"}]`)
+	code := injectJSCaptures(map[string]string{"outbox": channelJSON})
+	if !contains(code, "__omnivm_channel__") {
+		t.Error("should mark channel captures")
+	}
+	if !contains(code, "globalThis.outbox = globalThis.__omnivm_materialize_capture(") {
+		t.Error("should assign materialized channel capture")
+	}
+	if !contains(code, "[Symbol.iterator]") {
+		t.Error("should expose captured channels as JS iterables")
 	}
 }
 

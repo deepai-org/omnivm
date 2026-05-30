@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/polyglot"
@@ -53,8 +54,11 @@ type Executor struct {
 	scopes          []map[string]interface{}
 	funcs           map[string]*FuncDef
 	goFuncs         map[string]interface{}
+	channels        map[string]*ChanRef
+	channelsMu      sync.RWMutex
 	yieldCollectors [][]interface{}        // stack of yield collectors for nested generators
 	bridgeOps       map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
+	spawnWG         sync.WaitGroup
 }
 
 // NewExecutor creates an Executor with the given runtimes.
@@ -64,6 +68,7 @@ func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
 		scopes:   []map[string]interface{}{make(map[string]interface{})},
 		funcs:    make(map[string]*FuncDef),
 		goFuncs:  make(map[string]interface{}),
+		channels: make(map[string]*ChanRef),
 	}
 	e.registerChannelBuiltins()
 	return e

@@ -91,9 +91,13 @@
       ],
       "body": [],
       "bodyRuntime": "go",
-      "source": "package polyfunc\n\nfunc Worker(id interface{}) interface{} {\n\treturn id\n}",
+      "source": "package polyfunc\n\nvar recv func(interface{}) interface{}\nvar send func(interface{}, interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"recv\"].(func(interface{}) interface{}); ok {\n\t\trecv = fn\n\t}\n\tif fn, ok := deps[\"send\"].(func(interface{}, interface{}) interface{}); ok {\n\t\tsend = fn\n\t}\n}\n\nfunc Worker(id interface{}) interface{} {\n\tfor true {\n\titem := recv(\"inbox\")\n\tif item == nil {\n\t\treturn id\n\t}\n\tsend(\"outbox\", item)\n}\n\treturn id\n}",
       "exports": [
         "Worker"
+      ],
+      "requires": [
+        "recv",
+        "send"
       ]
     },
     {
@@ -148,33 +152,9 @@
     },
     {
       "op": "eval",
-      "runtime": "javascript",
-      "code": "Array.from(inbox).map((item) => process(item))",
-      "bind": "raw",
-      "captures": {
-        "inbox": "inbox"
-      }
-    },
-    {
-      "op": "loop",
-      "mode": "foreach",
-      "body": [
-        {
-          "op": "chan",
-          "action": "send",
-          "runtime": "go",
-          "channel": "outbox",
-          "value": {
-            "kind": "ref",
-            "name": "result"
-          }
-        }
-      ],
-      "variable": "result",
-      "iterable": {
-        "kind": "ref",
-        "name": "raw"
-      }
+      "runtime": "go",
+      "code": "wait()",
+      "bind": "joined"
     },
     {
       "op": "chan",
@@ -194,7 +174,13 @@
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "rows.map((r) => r.name.toUpperCase())",
+      "code": "rows.map((item) => process(item))",
+      "bind": "raw"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "raw.map((r) => r.name.toUpperCase())",
       "bind": "names"
     },
     {
@@ -251,9 +237,24 @@
       "channel": "done"
     },
     {
+      "op": "eval",
+      "runtime": "python",
+      "code": "list(done)",
+      "bind": "final_report",
+      "captures": {
+        "done": "done"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(final_report)",
+      "bind": "delivered"
+    },
+    {
       "op": "native",
       "runtime": "python",
-      "code": "print(f\"Processed {total} items across 3 runtimes\")"
+      "code": "print(f\"Processed {total} items across 3 runtimes; delivered {delivered} report\")"
     }
   ],
   "bridges": [],

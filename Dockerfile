@@ -116,8 +116,12 @@ RUN mkdir -p pkg/polyglot
 # ---- Build Go binaries ----
 RUN chmod +x scripts/build.sh && scripts/build.sh
 
-# Create libs directory for user JARs
-RUN mkdir -p /omnivm/libs
+# Create libs directory for user JARs and bundled CLI-test dependencies.
+ARG GSON_VERSION=2.10.1
+RUN mkdir -p /omnivm/libs && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/google/code/gson/gson/${GSON_VERSION}/gson-${GSON_VERSION}.jar" \
+        -o "/omnivm/libs/gson-${GSON_VERSION}.jar"
 
 # 5. Examples AFTER build (most frequent changes, no rebuild needed)
 COPY examples/ examples/
@@ -216,14 +220,8 @@ RUN LIBJSIG=$(find /usr/lib/jvm -name "libjsig.so" -print -quit 2>/dev/null) && 
     if [ -n "$LIBJSIG" ]; then echo "LD_PRELOAD=$LIBJSIG" >> /etc/environment; fi
 ENV LD_PRELOAD=/usr/lib/jvm/default-java/lib/libjsig.so
 
-# Install Maven and fetch a real dependency (Gson) to /omnivm/libs
-RUN mkdir -p /omnivm/libs && \
-    apt-get update && apt-get install -y --no-install-recommends maven && \
-    mvn dependency:copy \
-        -Dartifact=com.google.code.gson:gson:2.10.1 \
-        -DoutputDirectory=/omnivm/libs \
-        -q && \
-    apt-get remove -y maven && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /root/.m2
+# Copy bundled Java libraries used by examples and CLI integration tests.
+COPY --from=builder /omnivm/libs/ /omnivm/libs/
 
 ENV GOMAXPROCS=4
 ENV JAVA_HOME=/usr/lib/jvm/default-java

@@ -24,6 +24,51 @@ func (e *Executor) registerChannelBuiltins() {
 		}
 		return &ChanRef{ch: make(chan interface{}, size)}
 	}
+	e.goFuncs["recv"] = func(arg interface{}) interface{} {
+		ch, ok := e.channelFromArg(arg)
+		if !ok {
+			return nil
+		}
+		v, ok := <-ch.ch
+		if !ok {
+			return nil
+		}
+		return v
+	}
+	e.goFuncs["send"] = func(chArg interface{}, val interface{}) interface{} {
+		ch, ok := e.channelFromArg(chArg)
+		if !ok || ch.closed {
+			return false
+		}
+		ch.ch <- val
+		return true
+	}
+	e.goFuncs["wait"] = func(args []interface{}) interface{} {
+		e.spawnWG.Wait()
+		return len(args)
+	}
+}
+
+func (e *Executor) channelFromArg(arg interface{}) (*ChanRef, bool) {
+	if ref, ok := arg.(*ChanRef); ok {
+		return ref, true
+	}
+	name, ok := arg.(string)
+	if !ok {
+		return nil, false
+	}
+	e.channelsMu.RLock()
+	ref, found := e.channels[name]
+	e.channelsMu.RUnlock()
+	if found {
+		return ref, true
+	}
+	val, ok := e.getBinding(name)
+	if !ok {
+		return nil, false
+	}
+	ref, ok = val.(*ChanRef)
+	return ref, ok
 }
 
 // opChan handles channel make/send/recv/close operations.
@@ -40,6 +85,9 @@ func (e *Executor) opChan(op *Op) (interface{}, error) {
 		ch := &ChanRef{ch: make(chan interface{}, size)}
 		if op.Bind != "" {
 			e.setBinding(op.Bind, ch)
+			e.channelsMu.Lock()
+			e.channels[op.Bind] = ch
+			e.channelsMu.Unlock()
 		}
 		return ch, nil
 	}
@@ -207,7 +255,9 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 
 	normalizedArgs := normalizeArgs(args)
 
+	e.spawnWG.Add(1)
 	go func() {
+		defer e.spawnWG.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "spawn: %q panicked: %v\n", funcName, r)

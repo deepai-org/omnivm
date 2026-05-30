@@ -46,7 +46,7 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			if err != nil {
 				return "", fmt.Errorf("capture %q: marshal ChanRef: %w", varName, err)
 			}
-			resolved[varName] = string(jsonVal)
+			resolved[varName] = channelCaptureJSON(rtName, string(jsonVal))
 			continue
 		}
 
@@ -151,10 +151,11 @@ func wrapJavaScriptCaptures(code string, captures map[string]string) string {
 		paramVals = append(paramVals, jsonVal)
 	}
 
-	return fmt.Sprintf("(function(%s) { %s\n})(%s)",
+	return fmt.Sprintf("%s\n(function(%s) { %s\n})(%s)",
+		jsChannelMaterializer(),
 		strings.Join(paramNames, ", "),
 		code,
-		strings.Join(paramVals, ", "))
+		strings.Join(materializeJSCaptures(paramVals), ", "))
 }
 
 // wrapRubyCaptures wraps code with global variable assignments from JSON.
@@ -271,7 +272,7 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 			if merr != nil {
 				continue
 			}
-			resolved[varName] = string(jsonVal)
+			resolved[varName] = channelCaptureJSON(rtName, string(jsonVal))
 			continue
 		}
 		if _, ok := val.(ImportRef); ok {
@@ -335,10 +336,43 @@ func injectPythonCaptures(captures map[string]string) string {
 // injectJSCaptures generates JS code to set capture variables as globals.
 func injectJSCaptures(captures map[string]string) string {
 	var lines []string
+	lines = append(lines, jsChannelMaterializer())
 	for varName, jsonVal := range captures {
-		lines = append(lines, fmt.Sprintf("globalThis.%s = %s;", varName, jsonVal))
+		lines = append(lines, fmt.Sprintf("globalThis.%s = globalThis.__omnivm_materialize_capture(%s);", varName, jsonVal))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func channelCaptureJSON(rtName, valuesJSON string) string {
+	if rtName != "javascript" {
+		return valuesJSON
+	}
+	return fmt.Sprintf(`{"__omnivm_channel__":true,"values":%s}`, valuesJSON)
+}
+
+func materializeJSCaptures(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values)+1)
+	for _, val := range values {
+		out = append(out, fmt.Sprintf("globalThis.__omnivm_materialize_capture(%s)", val))
+	}
+	return out
+}
+
+func jsChannelMaterializer() string {
+	return `globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_capture || function(value) {
+  if (value && value.__omnivm_channel__ === true) {
+    var values = Array.isArray(value.values) ? value.values : [];
+    return {
+      get length() { return values.length; },
+      toArray: function() { return values.slice(); },
+      [Symbol.iterator]: function() { return values[Symbol.iterator](); }
+    };
+  }
+  return value;
+};`
 }
 
 // injectRubyCaptures generates Ruby code to set capture variables as globals.
