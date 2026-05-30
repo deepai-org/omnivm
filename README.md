@@ -399,7 +399,7 @@ docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/fizzbuzz-po
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/data-pipeline-manifest.json
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/polyglot-pipeline-manifest.json
 
-# Run the full manifest test suite (11 tests, 6 categories)
+# Run the full manifest test suite (12 tests, 6 categories)
 make test-manifests
 ```
 
@@ -423,6 +423,9 @@ make test-manifests
 | `spawn` | Launch Go functions or manifest func_defs |
 | `yield` | Generator yield (with delegate support) |
 | `await` | Async/await semantics |
+
+Channel, spawn, and `wait()` semantics are defined in
+[`docs/manifest-channel-contract.md`](docs/manifest-channel-contract.md).
 
 ## Stress Tests
 
@@ -654,7 +657,7 @@ pkg/
   arrow/             Shared memory primitives
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
-  test-manifests.sh    Manifest test suite runner (11 tests)
+  test-manifests.sh    Manifest test suite runner (12 tests)
   test-cli.sh          CLI integration tests (27 tests)
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
@@ -685,7 +688,7 @@ Make targets:
 ```bash
 make build                # Build Docker image
 make test-cli             # CLI integration tests (27 tests in Docker)
-make test-manifests       # Run 11 manifest tests
+make test-manifests       # Run 12 manifest tests
 make test-stress          # Run 71 stress tests
 make test-all             # Everything: build + CLI + stress + manifests
 ```

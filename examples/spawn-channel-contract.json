@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "inbox",
+      "size": 4
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "outbox",
+      "size": 4
+    },
+    {
+      "op": "func_def",
+      "name": "worker",
+      "params": [
+        {
+          "name": "id"
+        }
+      ],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nvar recv func(interface{}) interface{}\nvar send func(interface{}, interface{}) interface{}\n\nfunc Init(deps map[string]interface{}) {\n\tif fn, ok := deps[\"recv\"].(func(interface{}) interface{}); ok {\n\t\trecv = fn\n\t}\n\tif fn, ok := deps[\"send\"].(func(interface{}, interface{}) interface{}); ok {\n\t\tsend = fn\n\t}\n}\n\nfunc Worker(id interface{}) interface{} {\n\tfor true {\n\t\titem := recv(\"inbox\")\n\t\tif item == nil {\n\t\t\treturn id\n\t\t}\n\t\tsend(\"outbox\", item)\n\t}\n\treturn id\n}",
+      "exports": [
+        "Worker"
+      ],
+      "requires": [
+        "recv",
+        "send"
+      ]
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(1)",
+      "bind": "h1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(2)",
+      "bind": "h2"
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "inbox",
+      "value": {
+        "kind": "literal",
+        "value": 1
+      }
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "inbox",
+      "value": {
+        "kind": "literal",
+        "value": 2
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "inbox"
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "code": "wait(h1, h2)",
+      "bind": "workers"
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "outbox"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "Array.from(outbox).reduce((sum, n) => sum + n, 0)",
+      "bind": "total",
+      "captures": {
+        "outbox": "outbox"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "make",
+      "runtime": "go",
+      "bind": "done",
+      "size": 1
+    },
+    {
+      "op": "chan",
+      "action": "send",
+      "runtime": "go",
+      "channel": "done",
+      "value": {
+        "kind": "ref",
+        "name": "total"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "done"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(done)",
+      "bind": "delivered",
+      "captures": {
+        "done": "done"
+      }
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Channel contract total={total} workers={len(workers)} delivered={delivered}\")"
+    }
+  ],
+  "bridges": []
+}

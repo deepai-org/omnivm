@@ -44,8 +44,67 @@ func (e *Executor) registerChannelBuiltins() {
 		return true
 	}
 	e.goFuncs["wait"] = func(args []interface{}) interface{} {
+		return e.waitSpawns(args)
+	}
+}
+
+func (e *Executor) newSpawnHandle() *SpawnHandle {
+	e.spawnsMu.Lock()
+	defer e.spawnsMu.Unlock()
+	e.nextSpawnID++
+	handle := &SpawnHandle{
+		ID:   e.nextSpawnID,
+		done: make(chan struct{}),
+	}
+	e.spawns = append(e.spawns, handle)
+	e.spawnWG.Add(1)
+	return handle
+}
+
+func (e *Executor) completeSpawn(handle *SpawnHandle, result interface{}, err error) {
+	handle.result = result
+	handle.err = err
+	close(handle.done)
+	e.spawnWG.Done()
+}
+
+func (e *Executor) spawnCount() int {
+	e.spawnsMu.Lock()
+	defer e.spawnsMu.Unlock()
+	return len(e.spawns)
+}
+
+func (e *Executor) waitSpawns(args []interface{}) interface{} {
+	if len(args) == 0 {
 		e.spawnWG.Wait()
-		return len(args)
+		return e.spawnCount()
+	}
+	if len(args) == 1 {
+		return waitSpawnValue(args[0])
+	}
+	results := make([]interface{}, 0, len(args))
+	for _, arg := range args {
+		results = append(results, waitSpawnValue(arg))
+	}
+	return results
+}
+
+func waitSpawnValue(arg interface{}) interface{} {
+	switch v := arg.(type) {
+	case *SpawnHandle:
+		<-v.done
+		if v.err != nil {
+			return nil
+		}
+		return v.result
+	case []interface{}:
+		results := make([]interface{}, 0, len(v))
+		for _, item := range v {
+			results = append(results, waitSpawnValue(item))
+		}
+		return results
+	default:
+		return nil
 	}
 }
 
@@ -222,7 +281,13 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 	if !ok {
 		// Check if funcName is a manifest func_def
 		if _, isFuncDef := e.funcs[funcName]; isFuncDef {
-			return e.spawnFuncDef(funcName, code[parenIdx+1:len(code)-1])
+			result, err := e.spawnFuncDef(funcName, code[parenIdx+1:len(code)-1])
+			handle := e.newSpawnHandle()
+			e.completeSpawn(handle, result, err)
+			if op.Bind != "" {
+				e.setBinding(op.Bind, handle)
+			}
+			return handle, nil
 		}
 		fmt.Fprintf(os.Stderr, "spawn: undefined function %q\n", funcName)
 		return nil, nil
@@ -254,19 +319,24 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 	}
 
 	normalizedArgs := normalizeArgs(args)
+	handle := e.newSpawnHandle()
 
-	e.spawnWG.Add(1)
 	go func() {
-		defer e.spawnWG.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "spawn: %q panicked: %v\n", funcName, r)
+				err := fmt.Errorf("spawn: %q panicked: %v", funcName, r)
+				fmt.Fprintln(os.Stderr, err)
+				e.completeSpawn(handle, nil, err)
 			}
 		}()
-		callGoFuncDirect(fn, normalizedArgs)
+		result := callGoFuncDirect(fn, normalizedArgs)
+		e.completeSpawn(handle, result, nil)
 	}()
 
-	return nil, nil
+	if op.Bind != "" {
+		e.setBinding(op.Bind, handle)
+	}
+	return handle, nil
 }
 
 // spawnFuncDef executes a manifest func_def inline (single-threaded executor).
@@ -308,15 +378,14 @@ func (e *Executor) spawnFuncDef(funcName, argsStr string) (interface{}, error) {
 	return nil, nil
 }
 
-// callGoFuncDirect calls a Go function with the given args, ignoring the return value.
-func callGoFuncDirect(fn interface{}, args []interface{}) {
+// callGoFuncDirect calls a Go function with the given args.
+func callGoFuncDirect(fn interface{}, args []interface{}) interface{} {
 	if f, ok := fn.(func(interface{}) interface{}); ok {
 		var arg interface{}
 		if len(args) > 0 {
 			arg = args[0]
 		}
-		f(arg)
-		return
+		return f(arg)
 	}
 	if f, ok := fn.(func(interface{}, interface{}) interface{}); ok {
 		var a, b interface{}
@@ -326,15 +395,17 @@ func callGoFuncDirect(fn interface{}, args []interface{}) {
 		if len(args) > 1 {
 			b = args[1]
 		}
-		f(a, b)
-		return
+		return f(a, b)
 	}
 	if f, ok := fn.(func([]interface{}) (interface{}, error)); ok {
-		f(args)
-		return
+		val, err := f(args)
+		if err != nil {
+			panic(err)
+		}
+		return val
 	}
 	if f, ok := fn.(func([]interface{}) interface{}); ok {
-		f(args)
-		return
+		return f(args)
 	}
+	return nil
 }

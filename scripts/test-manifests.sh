@@ -96,10 +96,11 @@ echo "── Advanced Patterns ──"
 run "Foreach, try/catch, batch, large data"    stress-test-2.json    true
 run "Async/await, parallel, channels, select"  stress-test-4.json
 run "Channels, generators, spawn workers"      stress-test-5.json
+run "Spawn handles + channel capture contract" spawn-channel-contract.json false "Channel contract total=3 workers=2 delivered=1"
 
 # ── Category 5: Concurrency & Edge Cases ───────────────────────
 echo "── Concurrency & Edge Cases ──"
-run "Cursed concurrency (full channel+spawn)"  cursed-concurrency.json false "Processed [1-9][0-9]* items across 3 runtimes"
+run "Cursed concurrency (full channel+spawn)"  cursed-concurrency.json false "Processed [1-9][0-9]* items across 3 runtimes; workers 4; delivered 1 report"
 
 # ── Category 6: Application Manifests ──────────────────────────
 echo "── Application Manifests ──"

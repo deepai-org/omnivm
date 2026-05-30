@@ -103,22 +103,26 @@
     {
       "op": "spawn",
       "runtime": "go",
-      "code": "worker(1)"
+      "code": "worker(1)",
+      "bind": "w1"
     },
     {
       "op": "spawn",
       "runtime": "go",
-      "code": "worker(2)"
+      "code": "worker(2)",
+      "bind": "w2"
     },
     {
       "op": "spawn",
       "runtime": "go",
-      "code": "worker(3)"
+      "code": "worker(3)",
+      "bind": "w3"
     },
     {
       "op": "spawn",
       "runtime": "go",
-      "code": "worker(4)"
+      "code": "worker(4)",
+      "bind": "w4"
     },
     {
       "op": "loop",
@@ -153,8 +157,17 @@
     {
       "op": "eval",
       "runtime": "go",
-      "code": "wait()",
+      "code": "wait(w1, w2, w3, w4)",
       "bind": "joined"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(joined)",
+      "bind": "worker_count",
+      "captures": {
+        "joined": "joined"
+      }
     },
     {
       "op": "chan",
@@ -254,13 +267,13 @@
     {
       "op": "native",
       "runtime": "python",
-      "code": "print(f\"Processed {total} items across 3 runtimes; delivered {delivered} report\")"
+      "code": "print(f\"Processed {total} items across 3 runtimes; workers {worker_count}; delivered {delivered} report\")"
     }
   ],
   "bridges": [],
   "typeSummary": {
-    "crossings": 4,
-    "safe": 4,
+    "crossings": 5,
+    "safe": 5,
     "coerce": 0,
     "check": 0,
     "errors": 0

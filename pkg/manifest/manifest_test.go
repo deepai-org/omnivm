@@ -623,6 +623,55 @@ func TestCallGoFuncPanic(t *testing.T) {
 	}
 }
 
+func TestSpawnBindAndSelectiveWait(t *testing.T) {
+	e, _ := makeExecutor()
+	e.goFuncs["identity"] = func(n interface{}) interface{} {
+		return n
+	}
+
+	if _, err := e.executeOp(&Op{OpType: "spawn", Runtime: "go", Code: "identity(1)", Bind: "h1"}); err != nil {
+		t.Fatalf("spawn h1: %v", err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "spawn", Runtime: "go", Code: "identity(2)", Bind: "h2"}); err != nil {
+		t.Fatalf("spawn h2: %v", err)
+	}
+	val, err := e.executeOp(&Op{OpType: "eval", Runtime: "go", Code: "wait(h1, h2)", Bind: "joined"})
+	if err != nil {
+		t.Fatalf("wait handles: %v", err)
+	}
+	results, ok := val.([]interface{})
+	if !ok {
+		t.Fatalf("wait(h1, h2) = %T, want []interface{}", val)
+	}
+	if len(results) != 2 || results[0] != 1 || results[1] != 2 {
+		t.Fatalf("wait(h1, h2) = %#v, want [1 2]", results)
+	}
+	if bound, _ := e.getBinding("joined"); bound == nil {
+		t.Fatal("joined was not bound")
+	}
+}
+
+func TestGlobalWaitReturnsSpawnCount(t *testing.T) {
+	e, _ := makeExecutor()
+	e.goFuncs["identity"] = func(n interface{}) interface{} {
+		return n
+	}
+
+	if _, err := e.executeOp(&Op{OpType: "spawn", Runtime: "go", Code: "identity(1)", Bind: "h1"}); err != nil {
+		t.Fatalf("spawn h1: %v", err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "spawn", Runtime: "go", Code: "identity(2)", Bind: "h2"}); err != nil {
+		t.Fatalf("spawn h2: %v", err)
+	}
+	val, err := e.executeOp(&Op{OpType: "eval", Runtime: "go", Code: "wait()"})
+	if err != nil {
+		t.Fatalf("wait all: %v", err)
+	}
+	if val != 2 {
+		t.Fatalf("wait() = %v, want 2", val)
+	}
+}
+
 // --- normalizeArgs tests ---
 
 func TestNormalizeArgs(t *testing.T) {

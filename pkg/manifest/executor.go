@@ -39,6 +39,15 @@ type RuntimeRef struct {
 	Value   interface{} // last known value (for cross-runtime capture)
 }
 
+// SpawnHandle is a manifest-visible handle returned by a spawn op.
+// Closing done synchronizes result visibility for wait(handle).
+type SpawnHandle struct {
+	ID     int
+	done   chan struct{}
+	result interface{}
+	err    error
+}
+
 // FuncDef stores a manifest-level function definition.
 type FuncDef struct {
 	Name      string
@@ -56,6 +65,9 @@ type Executor struct {
 	goFuncs         map[string]interface{}
 	channels        map[string]*ChanRef
 	channelsMu      sync.RWMutex
+	spawns          []*SpawnHandle
+	spawnsMu        sync.Mutex
+	nextSpawnID     int
 	yieldCollectors [][]interface{}        // stack of yield collectors for nested generators
 	bridgeOps       map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
 	spawnWG         sync.WaitGroup

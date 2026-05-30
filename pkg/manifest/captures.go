@@ -50,6 +50,10 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			continue
 		}
 
+		if _, ok := val.(*SpawnHandle); ok {
+			continue
+		}
+
 		// ImportRef: module is already in scope for the owning runtime
 		if ref, ok := val.(ImportRef); ok {
 			if ref.Runtime == rtName {
@@ -211,6 +215,9 @@ func (e *Executor) autoInjectScope(rtName string) string {
 			if _, ok := val.(*ChanRef); ok {
 				continue // Auto-inject skips channels; use explicit captures to drain
 			}
+			if _, ok := val.(*SpawnHandle); ok {
+				continue
+			}
 			if _, ok := val.(ImportRef); ok {
 				continue
 			}
@@ -273,6 +280,9 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 				continue
 			}
 			resolved[varName] = channelCaptureJSON(rtName, string(jsonVal))
+			continue
+		}
+		if _, ok := val.(*SpawnHandle); ok {
 			continue
 		}
 		if _, ok := val.(ImportRef); ok {
