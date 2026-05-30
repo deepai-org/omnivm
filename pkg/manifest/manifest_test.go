@@ -888,6 +888,22 @@ func TestWrapEmptyCaptures(t *testing.T) {
 	}
 }
 
+func TestAutoInjectScopeFallsBackWhenRuntimeRefHasNoJSON(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: ""}
+	}
+	e.setBinding("handler", RuntimeRef{Runtime: "javascript", VarName: "handler", Value: nil})
+
+	code := e.autoInjectScope("python")
+	if !contains(code, "handler = __json.loads('null')") {
+		t.Errorf("autoInjectScope did not inject fallback handler capture: %q", code)
+	}
+	if !contains(code, "__json.loads('null')") {
+		t.Errorf("autoInjectScope should fall back to cached null JSON, got %q", code)
+	}
+}
+
 // --- runtimeAssign / runtimeVarRef tests ---
 
 func TestRuntimeAssign(t *testing.T) {

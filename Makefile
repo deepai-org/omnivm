@@ -5,11 +5,12 @@ IMAGE_TAG := latest
 
 # Build the Docker image
 build:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	docker build --target builder -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 # Run local tests (dispatcher, signals, arrow, cli, errmsg, golang — no cgo runtimes needed)
 test-local:
-	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/cli/ ./pkg/errmsg/ ./pkg/golang/
+	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/cli/ ./pkg/errmsg/
+	go test -v -count=1 ./pkg/golang/
 
 # Run full test suite inside Docker
 test-docker: build

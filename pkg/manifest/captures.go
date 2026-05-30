@@ -404,6 +404,9 @@ func (e *Executor) crossRuntimeSerialize(ref RuntimeRef) (string, error) {
 	// The eval result is the JSON string itself — return it directly
 	// (strip surrounding quotes if the eval wrapped it as a string)
 	s := fmt.Sprintf("%v", val)
+	if s == "" || s == "undefined" {
+		return "", fmt.Errorf("source runtime returned no JSON")
+	}
 	return s, nil
 }
 

@@ -39,7 +39,7 @@ ENV GOPATH=/go
 ENV GOFLAGS="-buildvcs=false"
 
 # ---- Python 3.14 dev ----
-RUN apt-get update && apt-get install -y python3.14-dev && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1
 
 # ---- Ruby dev ----
@@ -61,6 +61,15 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Framework dependencies used by manifest-runner examples and cross-repo tests.
+# Debian disables ensurepip for system Python, so keep Python packages isolated
+# while exposing them to the embedded interpreter via PYTHONPATH.
+RUN python3.14 -m venv /opt/omnivm-python && \
+    /opt/omnivm-python/bin/pip install --no-cache-dir "Django>=5,<6"
+ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
+RUN cd /usr/local/lib && npm install express 2>&1 | tail -1
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Build the Node.js + V8 bridge shim as a shared library
 # libnode.so is in /usr/lib/<arch>/, headers in /usr/include/node/
@@ -112,6 +121,17 @@ RUN mkdir -p /omnivm/libs
 
 # 5. Examples AFTER build (most frequent changes, no rebuild needed)
 COPY examples/ examples/
+
+# Keep the builder stage runnable for local Docker targets. This avoids
+# requiring BuildKit to skip the tester stage when a quick image is needed.
+RUN mkdir -p /omnivm/scripts && \
+    cp -R examples /omnivm/examples && \
+    cp scripts/test-cli.sh /omnivm/scripts/test-cli.sh && \
+    mkdir -p /var/data && \
+    touch /var/data/app.log /var/data/error.log /var/data/debug.log \
+          /var/data/server.log /var/data/config.yaml /var/data/readme.txt \
+          /var/data/Thumbs.db /var/data/.DS_Store
+ENTRYPOINT ["omnivm"]
 
 # ============================================================
 # Stage 2: Run tests inside Docker
