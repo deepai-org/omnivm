@@ -58,19 +58,20 @@ type FuncDef struct {
 
 // Executor runs manifest ops against a set of runtimes.
 type Executor struct {
-	runtimes        map[string]pkg.Runtime
-	defaultRuntime  string
-	scopes          []map[string]interface{}
-	funcs           map[string]*FuncDef
-	goFuncs         map[string]interface{}
-	channels        map[string]*ChanRef
-	channelsMu      sync.RWMutex
-	spawns          []*SpawnHandle
-	spawnsMu        sync.Mutex
-	nextSpawnID     int
-	yieldCollectors [][]interface{}        // stack of yield collectors for nested generators
-	bridgeOps       map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
-	spawnWG         sync.WaitGroup
+	runtimes         map[string]pkg.Runtime
+	defaultRuntime   string
+	scopes           []map[string]interface{}
+	funcs            map[string]*FuncDef
+	goFuncs          map[string]interface{}
+	channels         map[string]*ChanRef
+	channelsMu       sync.RWMutex
+	spawns           []*SpawnHandle
+	spawnsMu         sync.Mutex
+	nextSpawnID      int
+	yieldCollectors  [][]interface{}        // stack of yield collectors for nested generators
+	bridgeOps        map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
+	boundaryWarnings map[string]struct{}
+	spawnWG          sync.WaitGroup
 }
 
 // NewExecutor creates an Executor with the given runtimes.

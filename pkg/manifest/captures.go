@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -68,20 +69,9 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 				// Same runtime — variable already in scope, skip injection
 				continue
 			}
-			// Cross-runtime: ask the source runtime to JSON-serialize the value
-			// so complex types (lists, dicts, arrays) transfer correctly.
-			jsonVal, err := e.crossRuntimeSerialize(ref)
+			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
-				// Fallback to cached value
-				jsonVal, err = marshalForCapture(ref.Value)
-				if err != nil {
-					return "", fmt.Errorf("capture %q: marshal RuntimeRef: %w", varName, err)
-				}
-			}
-			// Apply bridge ops for this crossing
-			jsonVal, err = e.applyBridgeOpsJSON(bindingName, ref.Runtime, rtName, jsonVal)
-			if err != nil {
-				return "", fmt.Errorf("capture %q: bridge: %w", varName, err)
+				return "", fmt.Errorf("capture %q: RuntimeRef: %w", varName, err)
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -225,15 +215,7 @@ func (e *Executor) autoInjectScope(rtName string) string {
 				if ref.Runtime == rtName {
 					continue // already in scope
 				}
-				jsonVal, err := e.crossRuntimeSerialize(ref)
-				if err != nil {
-					jsonVal, err = marshalForCapture(ref.Value)
-					if err != nil {
-						continue
-					}
-				}
-				// Apply bridge ops for this crossing
-				jsonVal, err = e.applyBridgeOpsJSON(varName, ref.Runtime, rtName, jsonVal)
+				jsonVal, err := e.resolveRuntimeRefCapture(varName, rtName, ref)
 				if err != nil {
 					continue
 				}
@@ -292,15 +274,7 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 			if ref.Runtime == rtName {
 				continue
 			}
-			jsonVal, err := e.crossRuntimeSerialize(ref)
-			if err != nil {
-				jsonVal, err = marshalForCapture(ref.Value)
-				if err != nil {
-					continue
-				}
-			}
-			// Apply bridge ops for this crossing
-			jsonVal, err = e.applyBridgeOpsJSON(bindingName, ref.Runtime, rtName, jsonVal)
+			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
 				continue
 			}
@@ -449,6 +423,57 @@ func (e *Executor) crossRuntimeSerialize(ref RuntimeRef) (string, error) {
 		return "", fmt.Errorf("source runtime returned no JSON")
 	}
 	return s, nil
+}
+
+func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref RuntimeRef) (string, error) {
+	jsonVal, err := e.crossRuntimeSerialize(ref)
+	if err != nil {
+		fallback, fallbackErr := marshalForCapture(ref.Value)
+		if fallbackErr != nil {
+			return "", fmt.Errorf("marshal fallback after serialize error %v: %w", err, fallbackErr)
+		}
+		jsonVal = fallback
+		e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, "source runtime serialization failed; using cached manifest value")
+	} else if e.isAmbiguousBoundary(binding, ref.Runtime, targetRuntime, jsonVal) {
+		e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, "no bridge op for complex or opaque value; using JSON copy fallback")
+	}
+
+	jsonVal, err = e.applyBridgeOpsJSON(binding, ref.Runtime, targetRuntime, jsonVal)
+	if err != nil {
+		return "", fmt.Errorf("bridge: %w", err)
+	}
+	return jsonVal, nil
+}
+
+func (e *Executor) isAmbiguousBoundary(binding, from, to, jsonVal string) bool {
+	if e.hasBridgeOps(binding, from, to) {
+		return false
+	}
+	trimmed := strings.TrimSpace(jsonVal)
+	if trimmed == "" || trimmed == "null" || trimmed == "undefined" {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+func (e *Executor) hasBridgeOps(binding, from, to string) bool {
+	if len(e.bridgeOps) == 0 {
+		return false
+	}
+	ops := e.bridgeOps[bridgeKey(binding, from, to)]
+	return len(ops) > 0
+}
+
+func (e *Executor) warnBoundaryFallback(binding, from, to, reason string) {
+	key := binding + "|" + from + "|" + to + "|" + reason
+	if e.boundaryWarnings == nil {
+		e.boundaryWarnings = make(map[string]struct{})
+	}
+	if _, seen := e.boundaryWarnings[key]; seen {
+		return
+	}
+	e.boundaryWarnings[key] = struct{}{}
+	fmt.Fprintf(os.Stderr, "warning: cross-runtime capture %q from %s to %s has ambiguous boundary semantics: %s. Add an explicit bridge op or type metadata to make the contract enforceable.\n", binding, from, to, reason)
 }
 
 // applyBridgeOpsJSON looks up bridge ops for a binding crossing from→to,

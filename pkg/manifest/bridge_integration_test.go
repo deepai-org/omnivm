@@ -2,6 +2,8 @@ package manifest
 
 import (
 	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,6 +13,27 @@ import (
 // These tests verify the full pipeline: PolyScript emits a manifest with bridge ops,
 // OmniVM's executor parses it, builds the bridge index, and applies bridge ops
 // when captures cross runtime boundaries during execution.
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = orig
+	}()
+
+	fn()
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
 
 // --- Test 1: Numeric narrowing across runtimes ---
 
@@ -556,6 +579,55 @@ func TestBridgeIntegration_NoBridgesPassthrough(t *testing.T) {
 	// JS should still receive the data
 	if !contains(jsCode, "[1, 2, 3]") && !contains(jsCode, "[1,2,3]") {
 		t.Errorf("JS should receive data without bridges, got: %q", jsCode)
+	}
+}
+
+func TestBridgeIntegration_NoBridgeComplexCaptureWarns(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.bridgeOps = buildBridgeIndex(nil)
+	e.setBinding("data", RuntimeRef{Runtime: "python", VarName: "data", Value: nil})
+
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `{"items":[1,2,3]}`}
+	}
+
+	var wrapped string
+	stderr := captureStderr(t, func() {
+		var err error
+		wrapped, err = e.wrapWithCaptures("javascript", "use(data)", map[string]string{"data": "data"})
+		if err != nil {
+			t.Fatalf("wrapWithCaptures: %v", err)
+		}
+	})
+
+	if !contains(wrapped, `"items":[1,2,3]`) {
+		t.Fatalf("expected complex capture to pass through, got %q", wrapped)
+	}
+	if !contains(stderr, `warning: cross-runtime capture "data" from python to javascript`) {
+		t.Fatalf("expected ambiguous boundary warning, got %q", stderr)
+	}
+}
+
+func TestBridgeIntegration_ExplicitBridgeSuppressesBoundaryWarning(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.bridgeOps = buildBridgeIndex([]*BridgeOp{
+		{Binding: "data", Op: "identity", From: "python", To: "javascript"},
+	})
+	e.setBinding("data", RuntimeRef{Runtime: "python", VarName: "data", Value: nil})
+
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `{"items":[1,2,3]}`}
+	}
+
+	stderr := captureStderr(t, func() {
+		_, err := e.wrapWithCaptures("javascript", "use(data)", map[string]string{"data": "data"})
+		if err != nil {
+			t.Fatalf("wrapWithCaptures: %v", err)
+		}
+	})
+
+	if stderr != "" {
+		t.Fatalf("expected explicit bridge to suppress boundary warning, got %q", stderr)
 	}
 }
 

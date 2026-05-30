@@ -996,15 +996,21 @@ func init() {
 	cForceSpawnMode = C.CString("import multiprocessing; multiprocessing.set_start_method('spawn', force=True)")
 	cPumpCode = C.CString(`
 import asyncio
-try:
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
+__omni_pump_seen = set()
+def __omni_pump_loop_once(loop):
+    if loop is None or id(loop) in __omni_pump_seen:
+        return
+    __omni_pump_seen.add(id(loop))
+    if not loop.is_running() and not loop.is_closed():
         loop.call_soon(loop.stop)
         loop.run_forever()
-    else:
-        loop.run_until_complete(asyncio.sleep(0))
+try:
+    __omni_pump_loop_once(asyncio.get_event_loop())
 except RuntimeError:
     pass
+for __omni_pump_obj in list(globals().values()):
+    if isinstance(__omni_pump_obj, asyncio.AbstractEventLoop):
+        __omni_pump_loop_once(__omni_pump_obj)
 `)
 }
 
