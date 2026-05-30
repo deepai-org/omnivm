@@ -53,6 +53,10 @@ class TestCheckResult(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod._check_result("ERR:bad")
 
+    def test_ok_prefix_strips_transport_marker(self):
+        result = omnivm_mod._check_result("OK:ERR: plain value")
+        assert result == "ERR: plain value"
+
 
 class TestFindLibomnivm(unittest.TestCase):
     @patch.dict("os.environ", {"OMNIVM_LIB": "/fake/libomnivm.so"})
@@ -84,6 +88,14 @@ class TestNotInitialized(unittest.TestCase):
     def test_load_plugin_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.load_plugin("go", "/fake.so")
+
+    def test_set_task_timeout_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.set_task_timeout(100)
+
+    def test_host_thread_id_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.host_thread_id()
 
 
 class TestLoadLib(unittest.TestCase):
@@ -141,7 +153,7 @@ class TestCallMetrics(unittest.TestCase):
 
     def test_call_updates_metrics(self):
         mock_lib = MagicMock()
-        mock_lib.OmniCall.return_value = b"42"
+        mock_lib.OmniCallHost.return_value = b"OK:42"
         omnivm_mod._lib = mock_lib
 
         result = omnivm_mod.call("go", "6 * 7")
@@ -151,7 +163,7 @@ class TestCallMetrics(unittest.TestCase):
 
     def test_call_accumulates(self):
         mock_lib = MagicMock()
-        mock_lib.OmniCall.return_value = b"ok"
+        mock_lib.OmniCallHost.return_value = b"OK:ok"
         omnivm_mod._lib = mock_lib
 
         omnivm_mod.thread_local_reset()
@@ -171,17 +183,17 @@ class TestCallWithMockLib(unittest.TestCase):
         omnivm_mod._lib = None
 
     def test_call_encodes_args(self):
-        self.mock_lib.OmniCall.return_value = b"result"
+        self.mock_lib.OmniCallHost.return_value = b"OK:result"
         omnivm_mod.call("javascript", "Math.sqrt(4)")
-        self.mock_lib.OmniCall.assert_called_once_with(
+        self.mock_lib.OmniCallHost.assert_called_once_with(
             b"javascript", b"Math.sqrt(4)"
         )
 
     def test_execute_encodes_args(self):
-        self.mock_lib.OmniExec.return_value = b"output"
+        self.mock_lib.OmniExecHost.return_value = b"OK:output"
         result = omnivm_mod.execute("python", "print('hi')")
         assert result == "output"
-        self.mock_lib.OmniExec.assert_called_once_with(
+        self.mock_lib.OmniExecHost.assert_called_once_with(
             b"python", b"print('hi')"
         )
 
@@ -193,14 +205,14 @@ class TestCallWithMockLib(unittest.TestCase):
         )
 
     def test_call_error_propagation(self):
-        self.mock_lib.OmniCall.return_value = b"ERR:go panic: index out of range"
+        self.mock_lib.OmniCallHost.return_value = b"ERR:go panic: index out of range"
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.call("go", "bad code")
         assert "index out of range" in str(ctx.exception)
         assert ctx.exception.runtime == "go"
 
     def test_execute_null_result(self):
-        self.mock_lib.OmniExec.return_value = None
+        self.mock_lib.OmniExecHost.return_value = None
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.execute("go", "code")
 
@@ -244,6 +256,14 @@ class TestCallWithMockLib(unittest.TestCase):
     def test_release_buffer_calls_lib(self):
         omnivm_mod.release_buffer("payload")
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
+
+    def test_set_task_timeout_calls_lib(self):
+        omnivm_mod.set_task_timeout(250)
+        self.mock_lib.OmniSetTaskTimeout.assert_called_once_with(250)
+
+    def test_host_thread_id_returns_int(self):
+        self.mock_lib.OmniHostThreadID.return_value = 12345
+        assert omnivm_mod.host_thread_id() == 12345
 
 
 class TestShutdown(unittest.TestCase):

@@ -715,6 +715,7 @@ static int interrupt_pipe[2] = {-1, -1};
 // for bytes and calls _thread.interrupt_main(). Must be called after
 // Py_InitializeEx and signal handler setup.
 static void omnivm_py_setup_interrupt(void) {
+    if (interrupt_pipe[0] >= 0 && interrupt_pipe[1] >= 0) return;
     if (pipe(interrupt_pipe) != 0) return;
     char code[512];
     snprintf(code, sizeof(code),
@@ -995,7 +996,13 @@ func init() {
 	// Install Python's default SIGINT handler so _thread.interrupt_main() works.
 	// Py_InitializeEx(0) skips signal handler setup, leaving the handler table
 	// empty. Without this, _thread.interrupt_main() has no handler to invoke.
-	cSetupInterrupt = C.CString("import signal; signal.signal(signal.SIGINT, signal.default_int_handler)")
+	cSetupInterrupt = C.CString(`
+import signal
+try:
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+except ValueError:
+    pass
+`)
 	cForceSpawnMode = C.CString("import multiprocessing; multiprocessing.set_start_method('spawn', force=True)")
 	cPumpCode = C.CString(`
 import asyncio
@@ -1042,8 +1049,12 @@ func (r *Runtime) Initialize() error {
 
 	if cpythonInitialized {
 		// CPython was already initialized (and never truly finalized).
-		// Install the fork guard hook for c-shared hosts, then mark this
-		// Runtime as initialized - the interpreter is still live.
+		// Install host-mode hooks for c-shared hosts, then mark this Runtime
+		// as initialized - the interpreter is still live.
+		gstate := C.PyGILState_Ensure()
+		C.PyRun_SimpleString(cSetupInterrupt)
+		C.omnivm_py_setup_interrupt()
+		C.PyGILState_Release(gstate)
 		C.omnivm_install_fork_guard()
 		r.initialized = true
 		return nil

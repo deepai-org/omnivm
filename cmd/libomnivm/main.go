@@ -116,6 +116,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
 func init() {
@@ -139,6 +140,7 @@ var goPlugins = make(map[string]*goPlugin)
 
 // initialized tracks whether OmniInit has been called.
 var initialized bool
+var directWatchdogTimeoutMS int
 
 //export OmniInit
 func OmniInit(cList *C.char) *C.char {
@@ -226,35 +228,59 @@ func OmniInit(cList *C.char) *C.char {
 
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
-	if !initialized {
-		return C.CString("ERR:not initialized — call OmniInit first")
-	}
-
-	rtName := C.GoString(cRuntime)
-	code := C.GoString(cCode)
-
-	if rtName == "__manifest" {
-		if manifestExecutor == nil {
-			return C.CString("ERR:manifest executor not active")
-		}
-		res, err := manifestExecutor.HandleCall(code)
-		if err != nil {
-			return C.CString("ERR:" + err.Error())
-		}
-		return C.CString(res)
-	}
-
-	// Go plugins use dlopen/dlsym (not the standard runtime interface)
-	if rtName == "go" {
-		return callGoPlugin(code)
-	}
-
-	threadID := int64(C.get_thread_id())
-	val, err := eng.Call(rtName, code, threadID)
+	val, err := callRuntime(C.GoString(cRuntime), C.GoString(cCode))
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
 	return C.CString(val)
+}
+
+//export OmniCallHost
+func OmniCallHost(cRuntime *C.char, cCode *C.char) *C.char {
+	val, err := callRuntime(C.GoString(cRuntime), C.GoString(cCode))
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	return C.CString("OK:" + val)
+}
+
+func callRuntime(rtName, code string) (string, error) {
+	if !initialized {
+		return "", fmt.Errorf("not initialized — call OmniInit first")
+	}
+
+	if rtName == "__manifest" {
+		if manifestExecutor == nil {
+			return "", fmt.Errorf("manifest executor not active")
+		}
+		res, err := manifestExecutor.HandleCall(code)
+		if err != nil {
+			return "", err
+		}
+		return res, nil
+	}
+
+	// Go plugins use dlopen/dlsym (not the standard runtime interface)
+	if rtName == "go" {
+		cRes := callGoPlugin(code)
+		defer C.free(unsafe.Pointer(cRes))
+		res := C.GoString(cRes)
+		if strings.HasPrefix(res, "ERR:") {
+			return "", fmt.Errorf("%s", strings.TrimPrefix(res, "ERR:"))
+		}
+		return res, nil
+	}
+
+	threadID := int64(C.get_thread_id())
+	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
+		watchdog.Arm(directWatchdogTimeoutMS)
+		defer watchdog.Disarm()
+	}
+	val, err := eng.Call(rtName, code, threadID)
+	if err != nil {
+		return "", err
+	}
+	return val, nil
 }
 
 // callGoPlugin dispatches a "plugin.Func(arg)" call to a dlopen'd Go plugin.
@@ -319,19 +345,56 @@ func callGoPlugin(code string) *C.char {
 
 //export OmniExec
 func OmniExec(cRuntime *C.char, cCode *C.char) *C.char {
-	if !initialized {
-		return C.CString("ERR:not initialized — call OmniInit first")
-	}
-
-	rtName := C.GoString(cRuntime)
-	code := C.GoString(cCode)
-
-	threadID := int64(C.get_thread_id())
-	out, err := eng.Exec(rtName, code, threadID)
+	out, err := execRuntime(C.GoString(cRuntime), C.GoString(cCode))
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
 	return C.CString(out)
+}
+
+//export OmniExecHost
+func OmniExecHost(cRuntime *C.char, cCode *C.char) *C.char {
+	out, err := execRuntime(C.GoString(cRuntime), C.GoString(cCode))
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	return C.CString("OK:" + out)
+}
+
+func execRuntime(rtName, code string) (string, error) {
+	if !initialized {
+		return "", fmt.Errorf("not initialized — call OmniInit first")
+	}
+
+	threadID := int64(C.get_thread_id())
+	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
+		watchdog.Arm(directWatchdogTimeoutMS)
+		defer watchdog.Disarm()
+	}
+	out, err := eng.Exec(rtName, code, threadID)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+//export OmniSetTaskTimeout
+func OmniSetTaskTimeout(ms C.int) {
+	if ms < 0 {
+		ms = 0
+	}
+	directWatchdogTimeoutMS = int(ms)
+	if eng != nil {
+		eng.TaskTimeoutMS = int(ms)
+	}
+}
+
+//export OmniHostThreadID
+func OmniHostThreadID() C.long {
+	if eng == nil || eng.GoldenThreadID == 0 {
+		return C.long(C.get_thread_id())
+	}
+	return C.long(eng.GoldenThreadID)
 }
 
 //export OmniRunManifestFile

@@ -35,6 +35,8 @@ __all__ = [
     "call_typed",
     "execute",
     "run_manifest",
+    "set_task_timeout",
+    "host_thread_id",
     "get_buffer",
     "set_buffer",
     "release_buffer",
@@ -120,8 +122,16 @@ def _load_lib():
         lib.OmniCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         lib.OmniCall.restype = ctypes.c_char_p
 
+        if hasattr(lib, "OmniCallHost"):
+            lib.OmniCallHost.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            lib.OmniCallHost.restype = ctypes.c_char_p
+
         lib.OmniExec.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         lib.OmniExec.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniExecHost"):
+            lib.OmniExecHost.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            lib.OmniExecHost.restype = ctypes.c_char_p
 
         lib.OmniRunManifestFile.argtypes = [ctypes.c_char_p]
         lib.OmniRunManifestFile.restype = ctypes.c_char_p
@@ -143,6 +153,14 @@ def _load_lib():
 
         lib.OmniShutdown.argtypes = []
         lib.OmniShutdown.restype = None
+
+        if hasattr(lib, "OmniSetTaskTimeout"):
+            lib.OmniSetTaskTimeout.argtypes = [ctypes.c_int]
+            lib.OmniSetTaskTimeout.restype = None
+
+        if hasattr(lib, "OmniHostThreadID"):
+            lib.OmniHostThreadID.argtypes = []
+            lib.OmniHostThreadID.restype = ctypes.c_long
 
         lib.OmniFree.argtypes = [ctypes.c_char_p]
         lib.OmniFree.restype = None
@@ -259,6 +277,8 @@ def _check_result(result, runtime=None):
     if result is None:
         raise RuntimeError("call returned NULL", runtime=runtime)
     text = result.decode("utf-8") if isinstance(result, bytes) else result
+    if text.startswith("OK:"):
+        return text[3:]
     if text.startswith("ERR:"):
         raise RuntimeError(text[4:], runtime=runtime)
     return text
@@ -309,7 +329,8 @@ def call(runtime, code):
     import time
 
     start = time.monotonic_ns()
-    result = _lib.OmniCall(
+    call_fn = getattr(_lib, "OmniCallHost", _lib.OmniCall)
+    result = call_fn(
         runtime.encode("utf-8"),
         code.encode("utf-8"),
     )
@@ -390,7 +411,8 @@ def execute(runtime, code):
             "omnivm not initialized — call init_runtimes() first",
             runtime=runtime,
         )
-    result = _lib.OmniExec(
+    exec_fn = getattr(_lib, "OmniExecHost", _lib.OmniExec)
+    result = exec_fn(
         runtime.encode("utf-8"),
         code.encode("utf-8"),
     )
@@ -409,6 +431,29 @@ def run_manifest(path):
         raise RuntimeError("omnivm not initialized — call init_runtimes() first")
     result = _lib.OmniRunManifestFile(os.fsencode(path))
     return _check_result(result)
+
+
+def set_task_timeout(ms):
+    """
+    Set the direct libomnivm call watchdog timeout in milliseconds.
+
+    A value of 0 disables direct-call watchdog arming. This controls calls made
+    through the c-shared host API; guest bridge calls inherit the same setting.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniSetTaskTimeout"):
+        raise RuntimeError("libomnivm does not expose OmniSetTaskTimeout")
+    _lib.OmniSetTaskTimeout(int(ms))
+
+
+def host_thread_id():
+    """Return the OS thread id that libomnivm pinned as the host thread."""
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHostThreadID"):
+        raise RuntimeError("libomnivm does not expose OmniHostThreadID")
+    return int(_lib.OmniHostThreadID())
 
 
 def get_buffer(name):
