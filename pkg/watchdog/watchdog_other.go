@@ -12,14 +12,16 @@ const (
 	RuntimeJavaScript = 2
 	RuntimeRuby       = 3
 	RuntimeJVM        = 4
+	RuntimeGo         = 5
 )
 
-func Init()                              {}
+func Init()                                {}
 func SetPythonInterrupt(fn unsafe.Pointer) {}
 func SetV8Terminate(fn unsafe.Pointer)     {}
 func SetRubyInterrupt(fn unsafe.Pointer)   {}
-func Arm(timeoutMS int)                  {}
-func Disarm()                            {}
-func SetActiveRuntime(rt int)            {}
-func GetActiveRuntime() int              { return RuntimeNone }
-func Shutdown()                          {}
+func SetJVMInterrupt(fn unsafe.Pointer)    {}
+func Arm(timeoutMS int)                    {}
+func Disarm()                              {}
+func SetActiveRuntime(rt int)              {}
+func GetActiveRuntime() int                { return RuntimeNone }
+func Shutdown()                            {}

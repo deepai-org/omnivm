@@ -12,7 +12,7 @@
 //   - Python: pipe write (safe from any thread, no GIL needed)
 //   - JavaScript: v8::Isolate::TerminateExecution() (thread-safe atomic flag)
 //   - Ruby: volatile flag → trace hook raises Interrupt at next line event
-//   - JVM: future (JNI Thread.interrupt())
+//   - JVM: Thread.interrupt() on the active Java thread
 package watchdog
 
 /*
@@ -42,6 +42,9 @@ static void (*v8_terminate_fn)(void) = NULL;
 
 // Ruby interrupt function pointer (pipe write, like Python)
 static void (*rb_interrupt_fn)(void) = NULL;
+
+// JVM interrupt function pointer (JNI Thread.interrupt on active thread)
+static void (*jvm_interrupt_fn)(void) = NULL;
 
 static void* watchdog_loop(void* arg) {
 	(void)arg;
@@ -86,6 +89,7 @@ static void* watchdog_loop(void* arg) {
 			if (rb_interrupt_fn) rb_interrupt_fn();
 			break;
 		case 4: // JVM — future: JNI Thread.interrupt()
+			if (jvm_interrupt_fn) jvm_interrupt_fn();
 			break;
 		}
 
@@ -146,6 +150,10 @@ static void omnivm_watchdog_set_rb_interrupt(void (*fn)(void)) {
 	rb_interrupt_fn = fn;
 }
 
+static void omnivm_watchdog_set_jvm_interrupt(void (*fn)(void)) {
+	jvm_interrupt_fn = fn;
+}
+
 static void omnivm_watchdog_shutdown(void) {
 	pthread_mutex_lock(&wd_mutex);
 	wd_running = 0;
@@ -164,6 +172,7 @@ const (
 	RuntimeJavaScript = 2
 	RuntimeRuby       = 3
 	RuntimeJVM        = 4
+	RuntimeGo         = 5
 )
 
 // Init starts the watchdog pthread. goldenTID is the pthread_t of the
@@ -188,6 +197,12 @@ func SetV8Terminate(fn unsafe.Pointer) {
 // The function sets a volatile flag checked by a Ruby trace hook.
 func SetRubyInterrupt(fn unsafe.Pointer) {
 	C.omnivm_watchdog_set_rb_interrupt((*[0]byte)(fn))
+}
+
+// SetJVMInterrupt sets the function pointer called to interrupt Java execution.
+// The function should attach to the JVM if needed and interrupt the active Java thread.
+func SetJVMInterrupt(fn unsafe.Pointer) {
+	C.omnivm_watchdog_set_jvm_interrupt((*[0]byte)(fn))
 }
 
 // Arm starts the watchdog timer. After timeoutMS milliseconds, the

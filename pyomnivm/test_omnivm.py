@@ -271,13 +271,14 @@ class TestCallWithMockLib(unittest.TestCase):
 
     def test_watchdog_capabilities_parses_matrix(self):
         self.mock_lib.OmniWatchdogCapabilities.return_value = (
-            b"python=host-interrupt,javascript=watchdog,ruby=watchdog,java=none"
+            b"python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline"
         )
         assert omnivm_mod.watchdog_capabilities() == {
             "python": "host-interrupt",
             "javascript": "watchdog",
             "ruby": "watchdog",
-            "java": "none",
+            "java": "interrupt",
+            "go": "deadline",
         }
 
 

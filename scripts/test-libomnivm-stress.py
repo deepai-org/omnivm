@@ -2062,6 +2062,92 @@ def test_python_first_process_survives_plain_python():
     expect(omnivm.call("python", "__import__('sys').version_info.major"), "3")
 
 
+def test_jvm_interruptible_direct_call_timeout():
+    child_check(
+        """
+import time
+omnivm.set_task_timeout(1000)
+start = time.monotonic()
+try:
+    omnivm.call("java", "omnivm.OmniVMRunner.interruptibleSleep(5000L)")
+except omnivm.RuntimeError as exc:
+    if "InterruptedException" not in str(exc) and "interrupted" not in str(exc).lower():
+        raise AssertionError(f"unexpected Java timeout error: {exc}")
+else:
+    raise AssertionError("expected Java call to be interrupted")
+elapsed = time.monotonic() - start
+if elapsed > 3:
+    raise AssertionError(f"Java interrupt took too long: {elapsed:.3f}s")
+omnivm.set_task_timeout(0)
+assert omnivm.call("java", "40 + 2") == "42"
+""",
+        timeout=10,
+    )
+
+
+def test_go_plugin_deadline_direct_call_timeout():
+    child_check(
+        r'''
+import os
+import subprocess
+import tempfile
+import time
+
+tmp = tempfile.mkdtemp(prefix="omnivm-go-deadline-")
+src = r"""
+package main
+
+import "C"
+import "time"
+
+//export Slow
+func Slow(arg *C.char) *C.char {
+    time.Sleep(5 * time.Second)
+    return C.CString("late")
+}
+
+//export Fast
+func Fast(arg *C.char) *C.char {
+    return C.CString("ok:" + C.GoString(arg))
+}
+
+func main() {}
+"""
+open(os.path.join(tmp, "main.go"), "w", encoding="utf-8").write(src)
+open(os.path.join(tmp, "go.mod"), "w", encoding="utf-8").write("module deadlineplug\n\ngo 1.23\n")
+so_path = os.path.join(tmp, "deadlineplug.so")
+build = subprocess.run(
+    ["go", "build", "-buildmode=c-shared", "-o", so_path, "."],
+    cwd=tmp,
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    timeout=30,
+)
+if build.returncode != 0:
+    raise AssertionError(f"go plugin build failed\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}")
+
+omnivm.load_plugin("go", so_path)
+omnivm.set_task_timeout(250)
+start = time.monotonic()
+try:
+    omnivm.call("go", 'deadlineplug.Slow("x")')
+except omnivm.RuntimeError as exc:
+    if "timed out" not in str(exc):
+        raise AssertionError(f"unexpected Go deadline error: {exc}")
+else:
+    raise AssertionError("expected Go plugin call deadline")
+elapsed = time.monotonic() - start
+if elapsed > 3:
+    raise AssertionError(f"Go plugin deadline took too long: {elapsed:.3f}s")
+
+omnivm.set_task_timeout(2000)
+assert omnivm.call("go", 'deadlineplug.Fast("x")') == "ok:x"
+''',
+        timeout=45,
+    )
+
+
 def test_fork_guard():
     code = """
 import os
@@ -2271,6 +2357,8 @@ def main():
         check("Buffer bridge", test_buffer_bridge)
         check("Repeated crossings", test_repeated_crossings)
         check("Python-first host stays CPython", test_python_first_process_survives_plain_python)
+        check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
+        check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:
         omnivm.shutdown()
 

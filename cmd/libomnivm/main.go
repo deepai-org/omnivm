@@ -105,6 +105,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
@@ -266,13 +267,7 @@ func callRuntime(rtName, code string) (string, error) {
 
 	// Go plugins use dlopen/dlsym (not the standard runtime interface)
 	if rtName == "go" {
-		cRes := callGoPlugin(code)
-		defer C.free(unsafe.Pointer(cRes))
-		res := C.GoString(cRes)
-		if strings.HasPrefix(res, "ERR:") {
-			return "", fmt.Errorf("%s", strings.TrimPrefix(res, "ERR:"))
-		}
-		return res, nil
+		return callGoPluginWithDeadline(code, threadID)
 	}
 
 	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
@@ -286,8 +281,48 @@ func callRuntime(rtName, code string) (string, error) {
 	return val, nil
 }
 
-// callGoPlugin dispatches a "plugin.Func(arg)" call to a dlopen'd Go plugin.
-func callGoPlugin(code string) *C.char {
+func callGoPluginWithDeadline(code string, threadID int64) (string, error) {
+	if directWatchdogTimeoutMS <= 0 || threadID != eng.GoldenThreadID {
+		return callGoPlugin(code)
+	}
+
+	prevRT := watchdog.GetActiveRuntime()
+	watchdog.SetActiveRuntime(watchdog.RuntimeGo)
+	defer watchdog.SetActiveRuntime(prevRT)
+
+	type result struct {
+		value string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		value, err := callGoPlugin(code)
+		done <- result{value: value, err: err}
+	}()
+
+	timer := time.NewTimer(time.Duration(directWatchdogTimeoutMS) * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case res := <-done:
+		return res.value, res.err
+	case <-timer.C:
+		return "", fmt.Errorf("go plugin call timed out after %dms; arbitrary in-process Go plugin code cannot be force-preempted and the worker should be recycled", directWatchdogTimeoutMS)
+	}
+}
+
+func callGoPlugin(code string) (string, error) {
+	cRes := callGoPluginC(code)
+	defer C.free(unsafe.Pointer(cRes))
+	res := C.GoString(cRes)
+	if strings.HasPrefix(res, "ERR:") {
+		return "", fmt.Errorf("%s", strings.TrimPrefix(res, "ERR:"))
+	}
+	return res, nil
+}
+
+// callGoPluginC dispatches a "plugin.Func(arg)" call to a dlopen'd Go plugin.
+func callGoPluginC(code string) *C.char {
 	code = strings.TrimSpace(code)
 
 	// Parse "pluginname.FuncName(args)"
@@ -429,7 +464,7 @@ func OmniHostThreadID() C.long {
 
 //export OmniWatchdogCapabilities
 func OmniWatchdogCapabilities() *C.char {
-	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=none,go=none")
+	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline")
 }
 
 //export OmniRunManifestFile

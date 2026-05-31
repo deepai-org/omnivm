@@ -20,6 +20,9 @@ func TestConstants(t *testing.T) {
 	if RuntimeJVM != 4 {
 		t.Errorf("RuntimeJVM = %d, want 4", RuntimeJVM)
 	}
+	if RuntimeGo != 5 {
+		t.Errorf("RuntimeGo = %d, want 5", RuntimeGo)
+	}
 }
 
 func TestInitDoesNotPanic(t *testing.T) {
@@ -49,6 +52,7 @@ func TestSetInterruptPointersDoNotPanic(t *testing.T) {
 	SetPythonInterrupt(nil)
 	SetV8Terminate(nil)
 	SetRubyInterrupt(nil)
+	SetJVMInterrupt(nil)
 }
 
 func TestShutdownDoesNotPanic(t *testing.T) {

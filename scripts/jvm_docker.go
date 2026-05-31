@@ -11,6 +11,7 @@ package jvm
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 // Bridge callback pointer
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -64,6 +65,8 @@ static jclass runner_class = NULL;
 static jmethodID execute_method = NULL;
 static jmethodID eval_method_id = NULL;
 static jmethodID exec_file_method_id = NULL;
+static pthread_mutex_t active_java_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
+static jobject active_java_thread = NULL;
 
 // Get a JNIEnv for the current thread. If the thread is not attached to the
 // JVM, attach it as a daemon thread. Sets *did_attach=1 if newly attached
@@ -82,6 +85,84 @@ static JNIEnv* omnivm_jvm_get_env(int* did_attach) {
 
 static void omnivm_jvm_maybe_detach(int did_attach) {
     if (did_attach && jvm_ptr) (*jvm_ptr)->DetachCurrentThread(jvm_ptr);
+}
+
+static void omnivm_jvm_mark_active_thread(JNIEnv* env) {
+    if (!env) return;
+    jclass thread_class = (*env)->FindClass(env, "java/lang/Thread");
+    if (!thread_class) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    jmethodID current_thread = (*env)->GetStaticMethodID(
+        env, thread_class, "currentThread", "()Ljava/lang/Thread;");
+    if (!current_thread) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, thread_class);
+        return;
+    }
+    jobject thread = (*env)->CallStaticObjectMethod(env, thread_class, current_thread);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, thread_class);
+        return;
+    }
+    jobject global_thread = thread ? (*env)->NewGlobalRef(env, thread) : NULL;
+    pthread_mutex_lock(&active_java_thread_mutex);
+    if (active_java_thread) {
+        (*env)->DeleteGlobalRef(env, active_java_thread);
+    }
+    active_java_thread = global_thread;
+    pthread_mutex_unlock(&active_java_thread_mutex);
+    if (thread) (*env)->DeleteLocalRef(env, thread);
+    (*env)->DeleteLocalRef(env, thread_class);
+}
+
+static void omnivm_jvm_clear_active_thread(JNIEnv* env) {
+    if (!env) return;
+    pthread_mutex_lock(&active_java_thread_mutex);
+    jobject thread = active_java_thread;
+    active_java_thread = NULL;
+    pthread_mutex_unlock(&active_java_thread_mutex);
+    if (thread) {
+        (*env)->DeleteGlobalRef(env, thread);
+    }
+}
+
+static void omnivm_jvm_interrupt_active_thread(void) {
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env) return;
+
+    pthread_mutex_lock(&active_java_thread_mutex);
+    jobject thread = active_java_thread;
+    if (thread) {
+        thread = (*env)->NewLocalRef(env, thread);
+    }
+    pthread_mutex_unlock(&active_java_thread_mutex);
+
+    if (thread) {
+        jclass thread_class = (*env)->GetObjectClass(env, thread);
+        if (thread_class) {
+            jmethodID interrupt = (*env)->GetMethodID(env, thread_class, "interrupt", "()V");
+            if (interrupt) {
+                (*env)->CallVoidMethod(env, thread, interrupt);
+            }
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            }
+            (*env)->DeleteLocalRef(env, thread_class);
+        } else if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->DeleteLocalRef(env, thread);
+    }
+
+    omnivm_jvm_maybe_detach(did_attach);
+}
+
+static void* omnivm_jvm_interrupt_active_thread_ptr(void) {
+    return (void*)omnivm_jvm_interrupt_active_thread;
 }
 
 // JNI native implementation of OmniVM.call(runtime, code)
@@ -399,8 +480,10 @@ static jvm_omni_value_t omnivm_jvm_eval_typed(const char* code) {
         return err;
     }
 
+    omnivm_jvm_mark_active_thread(env);
     jstring result = (jstring)(*env)->CallStaticObjectMethod(
         env, runner_class, eval_method_id, jcode);
+    omnivm_jvm_clear_active_thread(env);
 
     if ((*env)->ExceptionCheck(env)) {
         jthrowable exc = (*env)->ExceptionOccurred(env);
@@ -594,8 +677,10 @@ static char* omnivm_jvm_exec(const char* code) {
         return strdup("JavaError: Failed to create Java string");
     }
 
+    omnivm_jvm_mark_active_thread(env);
     jstring result = (jstring)(*env)->CallStaticObjectMethod(
         env, runner_class, execute_method, jcode);
+    omnivm_jvm_clear_active_thread(env);
 
     if ((*env)->ExceptionCheck(env)) {
         jthrowable exc = (*env)->ExceptionOccurred(env);
@@ -660,8 +745,10 @@ static char* omnivm_jvm_eval(const char* code) {
             return strdup("JavaError: Failed to create Java string");
         }
 
+        omnivm_jvm_mark_active_thread(env);
         jstring result = (jstring)(*env)->CallStaticObjectMethod(
             env, runner_class, eval_method_id, jcode);
+        omnivm_jvm_clear_active_thread(env);
 
         if ((*env)->ExceptionCheck(env)) {
             jthrowable exc = (*env)->ExceptionOccurred(env);
@@ -737,8 +824,10 @@ static char* omnivm_jvm_exec_file(const char* path, const char* args_joined) {
         return strdup("JavaError: Failed to create Java strings");
     }
 
+    omnivm_jvm_mark_active_thread(env);
     jstring result = (jstring)(*env)->CallStaticObjectMethod(
         env, runner_class, exec_file_method_id, jpath, jargs);
+    omnivm_jvm_clear_active_thread(env);
 
     if ((*env)->ExceptionCheck(env)) {
         jthrowable exc = (*env)->ExceptionOccurred(env);
@@ -948,6 +1037,11 @@ func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
 // SetTypedCallback installs the typed call bridge function pointer.
 func (r *Runtime) SetTypedCallback(ptr uintptr) {
 	C.omnivm_jvm_set_typed_callback(C.jvm_call_typed_fn(unsafe.Pointer(ptr)))
+}
+
+// InterruptFuncPtr returns the JNI interrupt hook used by the watchdog.
+func (r *Runtime) InterruptFuncPtr() unsafe.Pointer {
+	return C.omnivm_jvm_interrupt_active_thread_ptr()
 }
 
 // EvalTyped evaluates Java code and returns a typed polyglot.Value.

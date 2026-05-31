@@ -134,6 +134,13 @@ func (e *Engine) SetupWatchdog() {
 			}
 		}
 	}
+	if rt, ok := e.Runtimes["java"]; ok {
+		if jvmRT, ok := rt.(*jvm.Runtime); ok {
+			if ptr := jvmRT.InterruptFuncPtr(); ptr != nil {
+				watchdog.SetJVMInterrupt(ptr)
+			}
+		}
+	}
 
 	// Dispatcher hooks for arm/disarm around tasks
 	e.Disp.OnTaskStart = func() {
@@ -176,6 +183,8 @@ func RuntimeID(lang string) int {
 		return watchdog.RuntimeRuby
 	case "java":
 		return watchdog.RuntimeJVM
+	case "go":
+		return watchdog.RuntimeGo
 	default:
 		return watchdog.RuntimeNone
 	}
@@ -361,4 +370,3 @@ func (e *Engine) Context() context.Context { return e.ctx }
 
 // Cancel cancels the engine's context.
 func (e *Engine) Cancel() { e.cancel() }
-

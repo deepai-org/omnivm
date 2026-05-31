@@ -475,6 +475,11 @@ public class OmniVMRunner {
         }
     }
 
+    public static String interruptibleSleep(long millis) throws InterruptedException {
+        Thread.sleep(millis);
+        return "awake";
+    }
+
     public static void setClasspathDir(String dir) {
         classpathDir = dir;
     }

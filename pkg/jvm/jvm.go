@@ -215,6 +215,12 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 	)
 }
 
+// InterruptFuncPtr returns nil in the lightweight local JVM shim. The Docker
+// runtime swaps in scripts/jvm_docker.go, which provides the real JNI hook.
+func (r *Runtime) InterruptFuncPtr() unsafe.Pointer {
+	return nil
+}
+
 // Pump is a no-op for JVM (no cooperative event loop to tick).
 func (r *Runtime) Pump() {}
 

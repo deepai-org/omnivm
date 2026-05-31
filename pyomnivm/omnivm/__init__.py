@@ -443,10 +443,10 @@ def set_task_timeout(ms):
     Set the direct libomnivm call watchdog timeout in milliseconds.
 
     A value of 0 disables direct-call watchdog arming. In c-shared mode the
-    watchdog can preempt JavaScript and Ruby calls. Host CPython interruption is
-    handled by CPython-native mechanisms, and JVM direct interruption is not
-    implemented yet; inspect watchdog_capabilities() before relying on timeouts
-    for a runtime.
+    watchdog can preempt JavaScript and Ruby calls, interrupts Java calls that
+    honor Thread.interrupt(), and applies a deadline to Go plugin calls. Host
+    CPython interruption is handled by CPython-native mechanisms; inspect
+    watchdog_capabilities() before relying on timeouts for a runtime.
     """
     if _lib is None:
         raise RuntimeError("omnivm not initialized - call init_runtimes() first")
@@ -475,8 +475,8 @@ def watchdog_capabilities():
             "python": "host-interrupt",
             "javascript": "watchdog",
             "ruby": "watchdog",
-            "java": "none",
-            "go": "none",
+            "java": "interrupt",
+            "go": "deadline",
         }
     text = _check_result(_lib.OmniWatchdogCapabilities())
     caps = {}
