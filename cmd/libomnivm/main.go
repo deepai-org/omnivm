@@ -249,6 +249,10 @@ func callRuntime(rtName, code string) (string, error) {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
 
+	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
 	if rtName == "__manifest" {
 		if manifestExecutor == nil {
 			return "", fmt.Errorf("manifest executor not active")
@@ -271,7 +275,6 @@ func callRuntime(rtName, code string) (string, error) {
 		return res, nil
 	}
 
-	threadID := int64(C.get_thread_id())
 	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
 		watchdog.Arm(directWatchdogTimeoutMS)
 		defer watchdog.Disarm()
@@ -367,6 +370,9 @@ func execRuntime(rtName, code string) (string, error) {
 	}
 
 	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
 	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
 		watchdog.Arm(directWatchdogTimeoutMS)
 		defer watchdog.Disarm()
@@ -376,6 +382,30 @@ func execRuntime(rtName, code string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+func pumpBeforeHostCall(threadID int64) {
+	if shouldPumpHostAsync(threadID) {
+		pumpAsyncRuntimes()
+	}
+}
+
+func pumpAfterHostCall(threadID int64) {
+	if shouldPumpHostAsync(threadID) {
+		pumpAsyncRuntimes()
+	}
+}
+
+func shouldPumpHostAsync(threadID int64) bool {
+	return eng != nil &&
+		threadID == eng.GoldenThreadID &&
+		watchdog.GetActiveRuntime() == watchdog.RuntimeNone
+}
+
+func pumpAsyncRuntimes() {
+	if rt, ok := eng.Runtimes["javascript"]; ok {
+		rt.Pump()
+	}
 }
 
 //export OmniSetTaskTimeout
@@ -395,6 +425,11 @@ func OmniHostThreadID() C.long {
 		return C.long(C.get_thread_id())
 	}
 	return C.long(eng.GoldenThreadID)
+}
+
+//export OmniWatchdogCapabilities
+func OmniWatchdogCapabilities() *C.char {
+	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=none,go=none")
 }
 
 //export OmniRunManifestFile

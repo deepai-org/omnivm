@@ -97,6 +97,10 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.host_thread_id()
 
+    def test_watchdog_capabilities_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.watchdog_capabilities()
+
 
 class TestLoadLib(unittest.TestCase):
     def setUp(self):
@@ -264,6 +268,17 @@ class TestCallWithMockLib(unittest.TestCase):
     def test_host_thread_id_returns_int(self):
         self.mock_lib.OmniHostThreadID.return_value = 12345
         assert omnivm_mod.host_thread_id() == 12345
+
+    def test_watchdog_capabilities_parses_matrix(self):
+        self.mock_lib.OmniWatchdogCapabilities.return_value = (
+            b"python=host-interrupt,javascript=watchdog,ruby=watchdog,java=none"
+        )
+        assert omnivm_mod.watchdog_capabilities() == {
+            "python": "host-interrupt",
+            "javascript": "watchdog",
+            "ruby": "watchdog",
+            "java": "none",
+        }
 
 
 class TestShutdown(unittest.TestCase):

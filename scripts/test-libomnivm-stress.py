@@ -2081,6 +2081,120 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
         raise AssertionError(f"fork guard exit {proc.returncode}, want 71")
 
 
+def test_prefork_master_import_worker_init():
+    code = """
+import os
+import sys
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+pid = os.fork()
+if pid == 0:
+    try:
+        omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+        ok = (
+            omnivm.call('javascript', '20 + 1') == '21'
+            and omnivm.call('java', '20 + 2') == '22'
+            and omnivm.call('ruby', '20 + 3') == '23'
+        )
+        omnivm.shutdown()
+        os._exit(0 if ok else 2)
+    except Exception as exc:
+        print(exc, file=sys.stderr)
+        os._exit(1)
+_, status = os.waitpid(pid, 0)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+"""
+    proc = subprocess.run([sys.executable, "-c", code], check=False)
+    if proc.returncode != 0:
+        raise AssertionError(f"prefork worker init exit {proc.returncode}, want 0")
+
+
+def test_multiple_prefork_workers():
+    code = """
+import os
+import sys
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+pids = []
+for i in range(4):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+            expected = str(i + 100)
+            got = omnivm.call('javascript', f'{i} + 100')
+            ok = got == expected and omnivm.call('ruby', f'{i} + 200') == str(i + 200)
+            omnivm.shutdown()
+            os._exit(0 if ok else 2)
+        except Exception as exc:
+            print(exc, file=sys.stderr)
+            os._exit(1)
+    pids.append(pid)
+failures = []
+for pid in pids:
+    _, status = os.waitpid(pid, 0)
+    rc = os.waitstatus_to_exitcode(status)
+    if rc != 0:
+        failures.append((pid, rc))
+if failures:
+    print(failures, file=sys.stderr)
+    raise SystemExit(1)
+"""
+    proc = subprocess.run([sys.executable, "-c", code], check=False)
+    if proc.returncode != 0:
+        raise AssertionError(f"multiple prefork workers exit {proc.returncode}, want 0")
+
+
+def test_recycled_worker_processes():
+    child = """
+import sys
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+assert omnivm.call('javascript', '6 * 7') == '42'
+assert omnivm.call('java', '7 * 8') == '56'
+assert omnivm.call('ruby', '8 * 9') == '72'
+omnivm.shutdown()
+"""
+    for _ in range(3):
+        proc = subprocess.run([sys.executable, "-c", child], check=False)
+        if proc.returncode != 0:
+            raise AssertionError(f"recycled worker exit {proc.returncode}, want 0")
+
+
+def test_python3_polyscript_wsgi_smoke():
+    code = """
+import omnivm
+
+def application(environ, start_response):
+    status = '200 OK'
+    body = ('poly:' + omnivm.call('javascript', '21 * 2')).encode()
+    start_response(status, [('Content-Type', 'text/plain')])
+    return [body]
+
+omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+captured = {}
+def start_response(status, headers):
+    captured['status'] = status
+    captured['headers'] = headers
+body = b''.join(application({'PATH_INFO': '/secure/orders'}, start_response))
+omnivm.shutdown()
+assert captured['status'] == '200 OK'
+assert body == b'poly:42'
+"""
+    proc = subprocess.run(
+        ["python3-polyscript", "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"python3-polyscript WSGI smoke exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def main():
     print("=== libomnivm CPython Host Stress Tests ===")
     omnivm.init_runtimes(["javascript", "java", "ruby"])
@@ -2148,10 +2262,12 @@ def main():
         check("M:N isolation equivalent (Python threads + JS tasks)", test_python_host_mn_isolation)
         check("Signal chaos trap (Ruby GC + timeout toggling)", test_signal_chaos_trap_python_host)
         check("Inception preemption (Py -> JS infinite loop via bridge)", test_inception_preemption_js_via_python)
+        check("Async event loop starvation (JS setTimeout vs Python task flood)", test_async_event_loop_starvation_python_host)
         check("Asyncio starvation (Python task vs bridge flood)", test_asyncio_starvation_bridge_task_flood)
         check("Context cancellation guillotine (Python-host equivalent)", test_context_cancellation_guillotine_python_host)
         check("Watchdog deep bridge chain (Py -> JS -> Ruby spin)", test_watchdog_deep_bridge_chain)
         check("Watchdog re-arm race (100 arm/disarm cycles)", test_watchdog_rearm_race)
+        check("Heartbeat-only pump (JS timer, zero task flood)", test_heartbeat_only_js_timer_python_host)
         check("Buffer bridge", test_buffer_bridge)
         check("Repeated crossings", test_repeated_crossings)
         check("Python-first host stays CPython", test_python_first_process_survives_plain_python)
@@ -2159,6 +2275,10 @@ def main():
         omnivm.shutdown()
 
     check("Fork guard", test_fork_guard)
+    check("Prefork master import, worker init", test_prefork_master_import_worker_init)
+    check("Multiple prefork workers initialize independently", test_multiple_prefork_workers)
+    check("Recycled worker processes initialize cleanly", test_recycled_worker_processes)
+    check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
     print(f"\nResults: {PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
 

@@ -37,6 +37,7 @@ __all__ = [
     "run_manifest",
     "set_task_timeout",
     "host_thread_id",
+    "watchdog_capabilities",
     "get_buffer",
     "set_buffer",
     "release_buffer",
@@ -161,6 +162,10 @@ def _load_lib():
         if hasattr(lib, "OmniHostThreadID"):
             lib.OmniHostThreadID.argtypes = []
             lib.OmniHostThreadID.restype = ctypes.c_long
+
+        if hasattr(lib, "OmniWatchdogCapabilities"):
+            lib.OmniWatchdogCapabilities.argtypes = []
+            lib.OmniWatchdogCapabilities.restype = ctypes.c_char_p
 
         lib.OmniFree.argtypes = [ctypes.c_char_p]
         lib.OmniFree.restype = None
@@ -437,8 +442,11 @@ def set_task_timeout(ms):
     """
     Set the direct libomnivm call watchdog timeout in milliseconds.
 
-    A value of 0 disables direct-call watchdog arming. This controls calls made
-    through the c-shared host API; guest bridge calls inherit the same setting.
+    A value of 0 disables direct-call watchdog arming. In c-shared mode the
+    watchdog can preempt JavaScript and Ruby calls. Host CPython interruption is
+    handled by CPython-native mechanisms, and JVM direct interruption is not
+    implemented yet; inspect watchdog_capabilities() before relying on timeouts
+    for a runtime.
     """
     if _lib is None:
         raise RuntimeError("omnivm not initialized - call init_runtimes() first")
@@ -454,6 +462,31 @@ def host_thread_id():
     if not hasattr(_lib, "OmniHostThreadID"):
         raise RuntimeError("libomnivm does not expose OmniHostThreadID")
     return int(_lib.OmniHostThreadID())
+
+
+def watchdog_capabilities():
+    """
+    Return the direct-call watchdog support matrix for this libomnivm build.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniWatchdogCapabilities"):
+        return {
+            "python": "host-interrupt",
+            "javascript": "watchdog",
+            "ruby": "watchdog",
+            "java": "none",
+            "go": "none",
+        }
+    text = _check_result(_lib.OmniWatchdogCapabilities())
+    caps = {}
+    for item in text.split(","):
+        if not item:
+            continue
+        name, _, value = item.partition("=")
+        if name:
+            caps[name] = value
+    return caps
 
 
 def get_buffer(name):
