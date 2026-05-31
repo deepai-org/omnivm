@@ -227,13 +227,20 @@ def my_view(request):
 | Java | `omnivm.set_task_timeout(ms)` calls `Thread.interrupt()` on the active Java thread. This stops interruptible calls such as `Thread.sleep()` and blocking Java APIs; CPU-bound Java code must check interruption cooperatively. |
 | Go plugins | `omnivm.set_task_timeout(ms)` applies a host-call deadline and returns control to CPython. Arbitrary in-process Go plugin code cannot be force-preempted; recycle the worker after a plugin deadline. |
 
-You can inspect the current matrix at runtime:
+You can inspect the current matrix and worker health at runtime:
 
 ```python
 import omnivm
 omnivm.init_runtimes(["javascript", "java", "ruby"])
 print(omnivm.watchdog_capabilities())
+print(omnivm.status())
+
+if omnivm.worker_tainted():
+    # Let your process manager recycle this worker after the request.
+    print(omnivm.worker_taint_reason())
 ```
+
+`worker_tainted()` is intentionally conservative. It is set after a Go plugin deadline because libomnivm can return control to CPython, but arbitrary in-process Go plugin code may still be running and cannot be safely force-preempted.
 
 In c-shared mode there is no Go-owned background dispatcher thread. Direct calls cooperatively pump async runtimes on the pinned CPython worker thread, so Node/libuv timers such as `setTimeout()` advance on subsequent `omnivm.call()` / `omnivm.execute()` boundaries without violating CPython thread-state ownership.
 
@@ -279,6 +286,10 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.set_task_timeout(ms)` | Set direct-call watchdog timeout for supported runtimes (`0` disables) |
 | `omnivm.watchdog_capabilities()` | Return the runtime timeout/preemption support matrix |
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
+| `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state) |
+| `omnivm.worker_tainted()` | Return whether this worker should be recycled after a non-recoverable timeout |
+| `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
+| `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
 | `omnivm.shutdown()` | Tear down runtimes (optional — process exit works too) |
 
 ### Lazy Initialization
@@ -524,7 +535,7 @@ The `spawn-channel-contract.json` example is the small regression manifest for t
 
 ## Stress Tests
 
-71 tests verify correctness under pressure:
+82 tests verify correctness under pressure:
 
 ```bash
 docker run --rm --entrypoint stresstest omnivm
@@ -807,4 +818,4 @@ make test-all             # Everything: build + CLI + stress + manifests + libom
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
 - **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`. The fork guard is **conditional** — it only fires when JVM or Ruby are loaded. Go+JS-only configurations are fork-safe when runtimes are initialized post-fork (the Gunicorn/Passenger pattern).
 - **Python interpreter mode**: When symlinked as `python3`, OmniVM calls `Py_BytesMain()` — CPython's own entry point. `PyImport_AppendInittab("omnivm", ...)` registers the `omnivm` module before CPython initializes, so `import omnivm` works in any Python code. Best for single-process deployments (dev, `gunicorn --workers 1 --threads N`, uvicorn). Not compatible with prefork — Go's runtime doesn't survive `fork()`.
-- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Direct calls and manifest execution run on the calling Python worker thread; the background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. All example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.
+- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Direct calls and manifest execution run on the calling Python worker thread; the background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. Workers expose `omnivm.status()` and conservative taint flags so servers can recycle after a non-recoverable Go plugin deadline without leaking OmniVM details into normal call sites. All example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.

@@ -100,11 +100,14 @@ static char* omni_call_plugin_s(void* fn) {
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -141,7 +144,15 @@ var goPlugins = make(map[string]*goPlugin)
 
 // initialized tracks whether OmniInit has been called.
 var initialized bool
-var directWatchdogTimeoutMS int
+var initPID int
+var activeCalls atomic.Int64
+var directWatchdogTimeoutMS atomic.Int64
+var goDeadlineCount atomic.Int64
+var lifecycleErrors atomic.Int64
+var shutdownWhileActiveCount atomic.Int64
+var workerTainted atomic.Bool
+var lastTimeoutRuntime atomic.Value
+var workerTaintReason atomic.Value
 
 //export OmniInit
 func OmniInit(cList *C.char) *C.char {
@@ -224,6 +235,10 @@ func OmniInit(cList *C.char) *C.char {
 	// worker thread and pump async runtimes cooperatively where needed.
 
 	initialized = true
+	initPID = os.Getpid()
+	workerTainted.Store(false)
+	lastTimeoutRuntime.Store("")
+	workerTaintReason.Store("")
 	return C.CString("OK")
 }
 
@@ -249,6 +264,11 @@ func callRuntime(rtName, code string) (string, error) {
 	if !initialized {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
+	done, err := beginExternalCall("call")
+	if err != nil {
+		return "", err
+	}
+	defer done()
 
 	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
@@ -270,8 +290,9 @@ func callRuntime(rtName, code string) (string, error) {
 		return callGoPluginWithDeadline(code, threadID)
 	}
 
-	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
-		watchdog.Arm(directWatchdogTimeoutMS)
+	timeoutMS := int(directWatchdogTimeoutMS.Load())
+	if timeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
+		watchdog.Arm(timeoutMS)
 		defer watchdog.Disarm()
 	}
 	val, err := eng.Call(rtName, code, threadID)
@@ -282,7 +303,8 @@ func callRuntime(rtName, code string) (string, error) {
 }
 
 func callGoPluginWithDeadline(code string, threadID int64) (string, error) {
-	if directWatchdogTimeoutMS <= 0 || threadID != eng.GoldenThreadID {
+	timeoutMS := int(directWatchdogTimeoutMS.Load())
+	if timeoutMS <= 0 || threadID != eng.GoldenThreadID {
 		return callGoPlugin(code)
 	}
 
@@ -300,14 +322,17 @@ func callGoPluginWithDeadline(code string, threadID int64) (string, error) {
 		done <- result{value: value, err: err}
 	}()
 
-	timer := time.NewTimer(time.Duration(directWatchdogTimeoutMS) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
 	defer timer.Stop()
 
 	select {
 	case res := <-done:
 		return res.value, res.err
 	case <-timer.C:
-		return "", fmt.Errorf("go plugin call timed out after %dms; arbitrary in-process Go plugin code cannot be force-preempted and the worker should be recycled", directWatchdogTimeoutMS)
+		reason := fmt.Sprintf("go plugin call timed out after %dms; arbitrary in-process Go plugin code cannot be force-preempted and the worker should be recycled", timeoutMS)
+		markWorkerTainted("go", reason)
+		goDeadlineCount.Add(1)
+		return "", fmt.Errorf("%s", reason)
 	}
 }
 
@@ -403,13 +428,19 @@ func execRuntime(rtName, code string) (string, error) {
 	if !initialized {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
+	done, err := beginExternalCall("exec")
+	if err != nil {
+		return "", err
+	}
+	defer done()
 
 	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
 	defer pumpAfterHostCall(threadID)
 
-	if directWatchdogTimeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
-		watchdog.Arm(directWatchdogTimeoutMS)
+	timeoutMS := int(directWatchdogTimeoutMS.Load())
+	if timeoutMS > 0 && rtName != "python" && threadID == eng.GoldenThreadID {
+		watchdog.Arm(timeoutMS)
 		defer watchdog.Disarm()
 	}
 	out, err := eng.Exec(rtName, code, threadID)
@@ -445,10 +476,13 @@ func pumpAsyncRuntimes() {
 
 //export OmniSetTaskTimeout
 func OmniSetTaskTimeout(ms C.int) {
+	if err := checkLifecycle("set_task_timeout"); err != nil {
+		return
+	}
 	if ms < 0 {
 		ms = 0
 	}
-	directWatchdogTimeoutMS = int(ms)
+	directWatchdogTimeoutMS.Store(int64(ms))
 	if eng != nil {
 		eng.TaskTimeoutMS = int(ms)
 	}
@@ -467,11 +501,86 @@ func OmniWatchdogCapabilities() *C.char {
 	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline")
 }
 
+//export OmniWorkerTainted
+func OmniWorkerTainted() C.int {
+	if workerTainted.Load() {
+		return 1
+	}
+	return 0
+}
+
+//export OmniLastTimeoutRuntime
+func OmniLastTimeoutRuntime() *C.char {
+	return C.CString(loadAtomicString(&lastTimeoutRuntime))
+}
+
+//export OmniWorkerTaintReason
+func OmniWorkerTaintReason() *C.char {
+	return C.CString(loadAtomicString(&workerTaintReason))
+}
+
+//export OmniClearWorkerTaintForTest
+func OmniClearWorkerTaintForTest() {
+	workerTainted.Store(false)
+	lastTimeoutRuntime.Store("")
+	workerTaintReason.Store("")
+}
+
+//export OmniStatus
+func OmniStatus() *C.char {
+	status := map[string]interface{}{
+		"initialized":                 initialized,
+		"pid":                         os.Getpid(),
+		"init_pid":                    initPID,
+		"pid_changed":                 initialized && initPID != 0 && os.Getpid() != initPID,
+		"golden_thread_id":            int64(0),
+		"active_runtime":              runtimeNameForWatchdog(watchdog.GetActiveRuntime()),
+		"active_calls":                activeCalls.Load(),
+		"direct_timeout_ms":           directWatchdogTimeoutMS.Load(),
+		"worker_tainted":              workerTainted.Load(),
+		"last_timeout_runtime":        loadAtomicString(&lastTimeoutRuntime),
+		"worker_taint_reason":         loadAtomicString(&workerTaintReason),
+		"go_deadline_count":           goDeadlineCount.Load(),
+		"lifecycle_errors":            lifecycleErrors.Load(),
+		"shutdown_while_active_count": shutdownWhileActiveCount.Load(),
+		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline",
+		"runtimes":                    []string{},
+		"go_plugins":                  []string{},
+	}
+	if eng != nil {
+		status["golden_thread_id"] = eng.GoldenThreadID
+		runtimes := make([]string, 0, len(eng.Runtimes))
+		for name := range eng.Runtimes {
+			runtimes = append(runtimes, name)
+		}
+		sort.Strings(runtimes)
+		status["runtimes"] = runtimes
+	}
+	if len(goPlugins) > 0 {
+		plugins := make([]string, 0, len(goPlugins))
+		for name := range goPlugins {
+			plugins = append(plugins, name)
+		}
+		sort.Strings(plugins)
+		status["go_plugins"] = plugins
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	return C.CString(string(data))
+}
+
 //export OmniRunManifestFile
 func OmniRunManifestFile(cPath *C.char) *C.char {
 	if !initialized {
 		return C.CString("ERR:not initialized — call OmniInit first")
 	}
+	done, err := beginExternalCall("manifest")
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
 
 	path := C.GoString(cPath)
 	data, err := os.ReadFile(path)
@@ -505,6 +614,15 @@ func OmniLoadPlugin(cRuntime *C.char, cPath *C.char) *C.char {
 	rtName := C.GoString(cRuntime)
 	path := C.GoString(cPath)
 
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	done, err := beginExternalCall("load_plugin")
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
+
 	if rtName != "go" {
 		return C.CString("ERR:load_plugin only supported for 'go' runtime")
 	}
@@ -534,9 +652,13 @@ func OmniShutdown() {
 	if !initialized {
 		return
 	}
+	if activeCalls.Load() > 0 {
+		shutdownWhileActiveCount.Add(1)
+	}
 	eng.Shutdown()
 	// Go plugins are c-shared libs — dlclose not needed, process exit cleans up
 	initialized = false
+	initPID = 0
 }
 
 //export OmniFree
@@ -579,6 +701,21 @@ func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, n
 	rtName := C.GoString(cRuntime)
 	funcName := C.GoString(cFuncName)
 
+	if !initialized {
+		result := polyglot.Error("not initialized — call OmniInit first")
+		var cv C.omni_value_t
+		result.ToCValueRaw(unsafe.Pointer(&cv))
+		return cv
+	}
+	done, err := beginExternalCall("typed_call")
+	if err != nil {
+		result := polyglot.Error(err.Error())
+		var cv C.omni_value_t
+		result.ToCValueRaw(unsafe.Pointer(&cv))
+		return cv
+	}
+	defer done()
+
 	n := int(nargs)
 	goArgs := make([]polyglot.Value, n)
 	if n > 0 && cArgs != nil {
@@ -599,3 +736,51 @@ func main() {}
 
 // Ensure fmt is used (for error formatting in callGoPlugin).
 var _ = fmt.Sprintf
+
+func beginExternalCall(op string) (func(), error) {
+	if err := checkLifecycle(op); err != nil {
+		return func() {}, err
+	}
+	activeCalls.Add(1)
+	return func() { activeCalls.Add(-1) }, nil
+}
+
+func checkLifecycle(op string) error {
+	if initialized && initPID != 0 && os.Getpid() != initPID {
+		lifecycleErrors.Add(1)
+		return fmt.Errorf("libomnivm initialized in pid %d but %s was attempted from forked pid %d; initialize runtimes after fork inside each worker", initPID, op, os.Getpid())
+	}
+	return nil
+}
+
+func markWorkerTainted(runtimeName, reason string) {
+	workerTainted.Store(true)
+	lastTimeoutRuntime.Store(runtimeName)
+	workerTaintReason.Store(reason)
+}
+
+func loadAtomicString(value *atomic.Value) string {
+	raw := value.Load()
+	if raw == nil {
+		return ""
+	}
+	text, _ := raw.(string)
+	return text
+}
+
+func runtimeNameForWatchdog(runtimeID int) string {
+	switch runtimeID {
+	case watchdog.RuntimePython:
+		return "python"
+	case watchdog.RuntimeJavaScript:
+		return "javascript"
+	case watchdog.RuntimeRuby:
+		return "ruby"
+	case watchdog.RuntimeJVM:
+		return "java"
+	case watchdog.RuntimeGo:
+		return "go"
+	default:
+		return "none"
+	}
+}

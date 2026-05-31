@@ -2062,6 +2062,30 @@ def test_python_first_process_survives_plain_python():
     expect(omnivm.call("python", "__import__('sys').version_info.major"), "3")
 
 
+def test_status_observability():
+    status = omnivm.status()
+    if not status["initialized"]:
+        raise AssertionError("status did not report initialized worker")
+    expect(status["pid"], os.getpid())
+    expect(status["init_pid"], os.getpid())
+    if status["pid_changed"]:
+        raise AssertionError("status reported pid_changed in the initializing process")
+    if status["active_calls"] < 0:
+        raise AssertionError("active call count went negative")
+    for runtime in ("python", "javascript", "java", "ruby"):
+        if runtime not in status["runtimes"]:
+            raise AssertionError(f"missing runtime from status: {runtime}")
+    if status["worker_tainted"]:
+        raise AssertionError("fresh worker was unexpectedly tainted")
+    if status["last_timeout_runtime"] != "":
+        raise AssertionError("fresh worker reported a timeout runtime")
+    if "go=deadline" not in status["watchdog_capabilities"]:
+        raise AssertionError("status omitted Go deadline capability")
+    expect(omnivm.worker_tainted(), False)
+    expect(omnivm.last_timeout_runtime(), "")
+    expect(omnivm.worker_taint_reason(), "")
+
+
 def test_jvm_interruptible_direct_call_timeout():
     child_check(
         """
@@ -2080,6 +2104,31 @@ if elapsed > 3:
     raise AssertionError(f"Java interrupt took too long: {elapsed:.3f}s")
 omnivm.set_task_timeout(0)
 assert omnivm.call("java", "40 + 2") == "42"
+""",
+        timeout=10,
+    )
+
+
+def test_nested_js_to_java_interrupt_timeout():
+    child_check(
+        """
+import time
+omnivm.set_task_timeout(1000)
+start = time.monotonic()
+try:
+    omnivm.call("javascript", "omnivm.call('java', 'omnivm.OmniVMRunner.interruptibleSleep(5000L)')")
+except omnivm.RuntimeError as exc:
+    text = str(exc)
+    if "InterruptedException" not in text and "interrupted" not in text.lower():
+        raise AssertionError(f"unexpected nested Java timeout error: {exc}")
+else:
+    raise AssertionError("expected nested Java call to be interrupted")
+elapsed = time.monotonic() - start
+if elapsed > 3:
+    raise AssertionError(f"nested Java interrupt took too long: {elapsed:.3f}s")
+omnivm.set_task_timeout(0)
+assert omnivm.call("javascript", "40 + 2") == "42"
+assert omnivm.call("java", "41 + 1") == "42"
 """,
         timeout=10,
     )
@@ -2140,6 +2189,20 @@ else:
 elapsed = time.monotonic() - start
 if elapsed > 3:
     raise AssertionError(f"Go plugin deadline took too long: {elapsed:.3f}s")
+
+if not omnivm.worker_tainted():
+    raise AssertionError("Go plugin deadline did not mark the worker tainted")
+if omnivm.last_timeout_runtime() != "go":
+    raise AssertionError(f"unexpected timeout runtime: {omnivm.last_timeout_runtime()!r}")
+if "timed out" not in omnivm.worker_taint_reason():
+    raise AssertionError(f"unexpected taint reason: {omnivm.worker_taint_reason()!r}")
+status = omnivm.status()
+if not status["worker_tainted"]:
+    raise AssertionError("status did not report tainted worker")
+if status["last_timeout_runtime"] != "go":
+    raise AssertionError(f"status reported wrong timeout runtime: {status['last_timeout_runtime']!r}")
+if status["go_deadline_count"] < 1:
+    raise AssertionError("status did not increment go_deadline_count")
 
 omnivm.set_task_timeout(2000)
 assert omnivm.call("go", 'deadlineplug.Fast("x")') == "ok:x"
@@ -2281,6 +2344,77 @@ assert body == b'poly:42'
         )
 
 
+def test_wsgi_prefork_worker_lifecycle_harness():
+    code = """
+import os
+import sys
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+
+def application(environ, start_response):
+    request_id = int(environ['HTTP_X_REQUEST_ID'])
+    js_val = omnivm.call('javascript', f'{request_id} + 10')
+    java_val = omnivm.call('java', f'{request_id} + 20')
+    ruby_val = omnivm.call('ruby', f'{request_id} + 30')
+    state = omnivm.status()
+    start_response(
+        '200 OK',
+        [
+            ('Content-Type', 'text/plain'),
+            ('X-OmniVM-Pid', str(state['pid'])),
+            ('X-OmniVM-Tainted', str(state['worker_tainted']).lower()),
+        ],
+    )
+    return [f'{js_val}|{java_val}|{ruby_val}'.encode()]
+
+pids = []
+for worker_id in range(3):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+            for request_id in range(worker_id * 10, worker_id * 10 + 4):
+                captured = {}
+                def start_response(status, headers):
+                    captured['status'] = status
+                    captured['headers'] = dict(headers)
+                body = b''.join(application({'HTTP_X_REQUEST_ID': str(request_id)}, start_response)).decode()
+                expected = f'{request_id + 10}|{request_id + 20}|{request_id + 30}'
+                if captured['status'] != '200 OK' or body != expected:
+                    raise AssertionError((captured, body, expected))
+                if captured['headers']['X-OmniVM-Tainted'] != 'false':
+                    raise AssertionError('worker unexpectedly tainted')
+            omnivm.shutdown()
+            os._exit(0)
+        except Exception as exc:
+            print(exc, file=sys.stderr)
+            os._exit(1)
+    pids.append(pid)
+
+failures = []
+for pid in pids:
+    _, status = os.waitpid(pid, 0)
+    rc = os.waitstatus_to_exitcode(status)
+    if rc != 0:
+        failures.append((pid, rc))
+if failures:
+    print(failures, file=sys.stderr)
+    raise SystemExit(1)
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"WSGI prefork lifecycle harness exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def main():
     print("=== libomnivm CPython Host Stress Tests ===")
     omnivm.init_runtimes(["javascript", "java", "ruby"])
@@ -2357,7 +2491,9 @@ def main():
         check("Buffer bridge", test_buffer_bridge)
         check("Repeated crossings", test_repeated_crossings)
         check("Python-first host stays CPython", test_python_first_process_survives_plain_python)
+        check("libomnivm status observability", test_status_observability)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
+        check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:
         omnivm.shutdown()
@@ -2367,6 +2503,7 @@ def main():
     check("Multiple prefork workers initialize independently", test_multiple_prefork_workers)
     check("Recycled worker processes initialize cleanly", test_recycled_worker_processes)
     check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
+    check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     print(f"\nResults: {PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
 

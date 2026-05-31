@@ -26,6 +26,7 @@ Usage:
 
 import ctypes
 import ctypes.util
+import json
 import os
 import threading
 
@@ -38,6 +39,10 @@ __all__ = [
     "set_task_timeout",
     "host_thread_id",
     "watchdog_capabilities",
+    "worker_tainted",
+    "last_timeout_runtime",
+    "worker_taint_reason",
+    "status",
     "get_buffer",
     "set_buffer",
     "release_buffer",
@@ -166,6 +171,26 @@ def _load_lib():
         if hasattr(lib, "OmniWatchdogCapabilities"):
             lib.OmniWatchdogCapabilities.argtypes = []
             lib.OmniWatchdogCapabilities.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniWorkerTainted"):
+            lib.OmniWorkerTainted.argtypes = []
+            lib.OmniWorkerTainted.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniLastTimeoutRuntime"):
+            lib.OmniLastTimeoutRuntime.argtypes = []
+            lib.OmniLastTimeoutRuntime.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniWorkerTaintReason"):
+            lib.OmniWorkerTaintReason.argtypes = []
+            lib.OmniWorkerTaintReason.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniStatus"):
+            lib.OmniStatus.argtypes = []
+            lib.OmniStatus.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniClearWorkerTaintForTest"):
+            lib.OmniClearWorkerTaintForTest.argtypes = []
+            lib.OmniClearWorkerTaintForTest.restype = None
 
         lib.OmniFree.argtypes = [ctypes.c_char_p]
         lib.OmniFree.restype = None
@@ -487,6 +512,61 @@ def watchdog_capabilities():
         if name:
             caps[name] = value
     return caps
+
+
+def worker_tainted():
+    """
+    Return True when this worker should be recycled.
+
+    Today this is set after a Go plugin deadline, because arbitrary in-process
+    Go plugin code cannot be force-preempted after the host call returns.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniWorkerTainted"):
+        raise RuntimeError("libomnivm does not expose OmniWorkerTainted")
+    return bool(_lib.OmniWorkerTainted())
+
+
+def last_timeout_runtime():
+    """Return the runtime responsible for the last non-recoverable timeout."""
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniLastTimeoutRuntime"):
+        raise RuntimeError("libomnivm does not expose OmniLastTimeoutRuntime")
+    return _check_result(_lib.OmniLastTimeoutRuntime())
+
+
+def worker_taint_reason():
+    """Return the reason this worker was marked for recycling."""
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniWorkerTaintReason"):
+        raise RuntimeError("libomnivm does not expose OmniWorkerTaintReason")
+    return _check_result(_lib.OmniWorkerTaintReason())
+
+
+def status():
+    """
+    Return libomnivm worker status as a dict.
+
+    This is intentionally observational: normal application code can keep using
+    omnivm.call(), while server glue or health checks can decide whether to
+    recycle a tainted worker.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniStatus"):
+        raise RuntimeError("libomnivm does not expose OmniStatus")
+    return json.loads(_check_result(_lib.OmniStatus()))
+
+
+def _clear_worker_taint_for_test():
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniClearWorkerTaintForTest"):
+        raise RuntimeError("libomnivm does not expose OmniClearWorkerTaintForTest")
+    _lib.OmniClearWorkerTaintForTest()
 
 
 def get_buffer(name):

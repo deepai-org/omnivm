@@ -101,6 +101,22 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.watchdog_capabilities()
 
+    def test_worker_tainted_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.worker_tainted()
+
+    def test_last_timeout_runtime_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.last_timeout_runtime()
+
+    def test_worker_taint_reason_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.worker_taint_reason()
+
+    def test_status_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.status()
+
 
 class TestLoadLib(unittest.TestCase):
     def setUp(self):
@@ -280,6 +296,32 @@ class TestCallWithMockLib(unittest.TestCase):
             "java": "interrupt",
             "go": "deadline",
         }
+
+    def test_worker_tainted_returns_bool(self):
+        self.mock_lib.OmniWorkerTainted.return_value = 1
+        assert omnivm_mod.worker_tainted() is True
+        self.mock_lib.OmniWorkerTainted.return_value = 0
+        assert omnivm_mod.worker_tainted() is False
+
+    def test_worker_taint_details(self):
+        self.mock_lib.OmniLastTimeoutRuntime.return_value = b"go"
+        self.mock_lib.OmniWorkerTaintReason.return_value = b"deadline"
+        assert omnivm_mod.last_timeout_runtime() == "go"
+        assert omnivm_mod.worker_taint_reason() == "deadline"
+
+    def test_status_parses_json(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"initialized":true,"worker_tainted":true,"active_calls":0}'
+        )
+        assert omnivm_mod.status() == {
+            "initialized": True,
+            "worker_tainted": True,
+            "active_calls": 0,
+        }
+
+    def test_clear_worker_taint_for_test_calls_lib(self):
+        omnivm_mod._clear_worker_taint_for_test()
+        self.mock_lib.OmniClearWorkerTaintForTest.assert_called_once_with()
 
 
 class TestShutdown(unittest.TestCase):
