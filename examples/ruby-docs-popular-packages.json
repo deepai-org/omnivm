@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "nokogiri",
+      "runtime": "ruby",
+      "defaultImport": "Nokogiri"
+    },
+    {
+      "op": "import",
+      "path": "rack",
+      "runtime": "ruby",
+      "defaultImport": "Rack"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri::HTML(\"<html><body><h1>Poly</h1><a href=\\\"/docs\\\">Docs</a></body></html>\").css(\"h1\").first.text",
+      "bind": "title"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Nokogiri::HTML(\"<html><body><h1>Poly</h1><a href=\\\"/docs\\\">Docs</a></body></html>\").css(\"a\").first[\"href\"]",
+      "bind": "href"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "Rack::Response.new(\"hello\", 200, {\"content-type\": \"text/plain\"}).finish",
+      "bind": "response"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Ruby docs packages {title} {href} {response[0]}\")"
+    }
+  ]
+}

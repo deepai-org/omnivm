@@ -868,6 +868,8 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 			code = strings.Join(lines, "\n")
 		} else if op.DefaultImport != "" {
 			code = fmt.Sprintf("import %s as __omnivm_import_default\n%s", op.Path, runtimeAssign("python", op.DefaultImport, "__omnivm_import_default"))
+		} else if op.Bind != "" {
+			code = fmt.Sprintf("import %s as __omnivm_import_bind\n%s", op.Path, runtimeAssign("python", op.Bind, "__omnivm_import_bind"))
 		} else {
 			code = fmt.Sprintf("import %s", op.Path)
 		}

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new com.google.gson.Gson().fromJson(new com.google.gson.Gson().toJson(java.util.Map.of(\"name\", \"Ada\", \"age\", 37)), java.util.Map.class).get(\"name\")",
+      "bind": "json_name"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "org.jsoup.Jsoup.parse(\"<html><body><p>Poly</p><a href=\\\"/docs\\\">Docs</a></body></html>\").select(\"a\").first().attr(\"href\")",
+      "bind": "link"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new okhttp3.Request.Builder().url(\"https://example.com/docs\").build().url().host()",
+      "bind": "host"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "org.apache.commons.csv.CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(new java.io.StringReader(\"name,score\\nada,10\\ngrace,12\")).getRecords().size()",
+      "bind": "records"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java docs packages {json_name} {link} {host} {records}\")"
+    }
+  ]
+}

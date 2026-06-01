@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "express",
+      "runtime": "javascript",
+      "defaultImport": "express"
+    },
+    {
+      "op": "import",
+      "path": "zod",
+      "runtime": "javascript",
+      "specifiers": [
+        {
+          "imported": "z",
+          "local": "z"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "lodash",
+      "runtime": "javascript",
+      "defaultImport": "lodash"
+    },
+    {
+      "op": "import",
+      "path": "cheerio",
+      "runtime": "javascript",
+      "defaultImport": "cheerio"
+    },
+    {
+      "op": "import",
+      "path": "marked",
+      "runtime": "javascript",
+      "defaultImport": "marked"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "express()",
+      "bind": "app"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "app.get(\"/\", (req, res) => res.send(\"Hello World!\"))"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "z.object({\"username\": z.string(), \"age\": z.number()})",
+      "bind": "User"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "User.parse({\"username\": \"ada\", \"age\": 37})",
+      "bind": "user"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "lodash.chunk([\"a\", \"b\", \"c\", \"d\"], 2)",
+      "bind": "chunks"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "cheerio.load(\"<ul><li>one</li><li>two</li></ul>\")",
+      "bind": "dom"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "dom(\"li\").first().text()",
+      "bind": "first"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "marked.parse(\"# Poly\")",
+      "bind": "html"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`JavaScript docs packages ${user.username} ${chunks.length} ${first} ${html.includes(\"<h1\")}`)"
+    }
+  ]
+}

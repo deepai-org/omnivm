@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "pandas",
+      "runtime": "python",
+      "bind": "pd"
+    },
+    {
+      "op": "import",
+      "path": "numpy",
+      "runtime": "python",
+      "bind": "np"
+    },
+    {
+      "op": "import",
+      "path": "pydantic",
+      "runtime": "python",
+      "bind": "pydantic"
+    },
+    {
+      "op": "import",
+      "path": "jinja2",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "Template",
+          "local": "Template"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "bs4",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "BeautifulSoup",
+          "local": "BeautifulSoup"
+        }
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pd.DataFrame({\n  \"name\": [\"Ada\", \"Grace\", \"Linus\"],\n  \"age\": [37, 41, 52]\n})",
+      "bind": "df"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "df[df[\"age\"] > 40]",
+      "bind": "adults"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "np.array([1, 2, 3])",
+      "bind": "values"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "values * 2",
+      "bind": "doubled"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pydantic.TypeAdapter(list[dict])",
+      "bind": "adapter"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "adapter.validate_python(df.to_dict(\"records\"))",
+      "bind": "validated"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "BeautifulSoup(\"<h1>Poly</h1>\", \"html.parser\")",
+      "bind": "soup"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "Template(\"Hello {{ name }}\").render(name=soup.h1.string)",
+      "bind": "page"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Python docs packages rows={len(validated)} adults={len(adults)} sum={doubled.sum()} page={page}\")"
+    }
+  ]
+}

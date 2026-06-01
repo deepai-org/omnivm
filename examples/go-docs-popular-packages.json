@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "docs_request",
+      "params": [],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n)\n\nfunc DocsRequest() interface{} {\n\treq , _ := http.NewRequest(\"GET\", \"https://example.com/docs\", nil)\n\tpayload , _ := json.Marshal(map[string]string{\"method\": req.Method, \"path\": req.URL.Path})\n\treturn string(payload)\n}",
+      "exports": [
+        "DocsRequest"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "docs_request",
+      "args": [],
+      "bind": "encoded"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Go docs packages {encoded}\")"
+    }
+  ]
+}

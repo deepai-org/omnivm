@@ -62,6 +62,11 @@ run "Java Gson + Pandas + Zod + Express" java-gson-pandas-zod-express.json
 run "Java Jsoup + BeautifulSoup + Cheerio" java-jsoup-bs4-cheerio.json
 run "Java OkHttp + HTTPX + Go retry" java-okhttp-httpx-go-retry.json
 run "Jinja2 + Marked + Go docs" jinja2-marked-go-docs.json
+run "Python docs-style popular packages" python-docs-popular-packages.json "Python docs packages"
+run "JavaScript docs-style popular packages" javascript-docs-popular-packages.json "JavaScript docs packages"
+run "Java docs-style popular packages" java-docs-popular-packages.json "Java docs packages"
+run "Ruby docs-style popular packages" ruby-docs-popular-packages.json "Ruby docs packages"
+run "Go docs-style popular packages" go-docs-popular-packages.json "Go docs packages"
 run "Nokogiri + Pandas + JS formatting" nokogiri-pandas-js-format.json
 run "NumPy + Pandas + D3 + Go channels" numpy-pandas-d3-go-channels.json
 run "Polyglot pipeline" polyglot-pipeline-manifest.json

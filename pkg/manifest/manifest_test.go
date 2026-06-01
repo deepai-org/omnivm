@@ -6599,6 +6599,19 @@ func TestOpImportPythonUsesSafeAliases(t *testing.T) {
 	if _, ok := e.getBinding("bad-name"); !ok {
 		t.Fatal("named import should record a manifest binding")
 	}
+
+	mocks["python"].execCalls = nil
+	if _, err := e.opImport(&Op{Runtime: "python", Path: "numpy", Bind: "np"}); err != nil {
+		t.Fatalf("opImport bind alias: %v", err)
+	}
+	if len(mocks["python"].execCalls) != 1 ||
+		!strings.Contains(mocks["python"].execCalls[0], "import numpy as __omnivm_import_bind") ||
+		!strings.Contains(mocks["python"].execCalls[0], `np = __omnivm_import_bind`) {
+		t.Fatalf("Python bind import should use a safe temporary alias, calls=%q", mocks["python"].execCalls)
+	}
+	if _, ok := e.getBinding("np"); !ok {
+		t.Fatal("bind import should record a manifest binding")
+	}
 }
 
 // --- Execute manifest tests ---

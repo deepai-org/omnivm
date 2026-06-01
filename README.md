@@ -773,7 +773,7 @@ pkg/
   arrow/             Shared memory primitives
 scripts/
   v8_bridge_node.cc    Node.js ↔ v8_bridge.h C++ adapter
-  test-manifests.sh    Manifest test suite runner (31 tests)
+  test-manifests.sh    Manifest test suite runner
   test-cli.sh          CLI integration tests (29 tests)
   test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
   test-poly-libomnivm-smoke.sh  Compile sibling Garbage .poly examples and run via CPython + libomnivm
