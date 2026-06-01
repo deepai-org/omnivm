@@ -67,6 +67,11 @@ run "JavaScript docs-style popular packages" javascript-docs-popular-packages.js
 run "Java docs-style popular packages" java-docs-popular-packages.json "Java docs packages"
 run "Ruby docs-style popular packages" ruby-docs-popular-packages.json "Ruby docs packages"
 run "Go docs-style popular packages" go-docs-popular-packages.json "Go docs packages"
+run "Python FastAPI/SQLAlchemy/Polars docs" python-fastapi-sqlalchemy-polars-docs.json "Python FastAPI/SQLAlchemy/Polars docs"
+run "JavaScript React JSX docs" javascript-react-jsx-docs.json "React JSX docs"
+run "Java Jackson/Reactor docs" java-jackson-reactor-docs.json "Java Jackson/Reactor docs"
+run "Ruby ActiveRecord docs" ruby-activerecord-docs.json "Ruby ActiveRecord docs"
+run "Go HTTP HandlerFunc docs" go-http-handler-docs.json "Go HTTP HandlerFunc docs"
 run "Nokogiri + Pandas + JS formatting" nokogiri-pandas-js-format.json
 run "NumPy + Pandas + D3 + Go channels" numpy-pandas-d3-go-channels.json
 run "Polyglot pipeline" polyglot-pipeline-manifest.json

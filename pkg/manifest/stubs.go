@@ -4375,6 +4375,12 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 	// Normalize JSON number args and materialize manifest handles for Go.
 	normalizedArgs := e.normalizeGoArgs(args)
 
+	// Try func() interface{} (no args)
+	if f, ok := fn.(func() interface{}); ok {
+		res := f()
+		return e.marshalGoBridgeResult(res)
+	}
+
 	// Try func(interface{}) interface{} (single arg)
 	if f, ok := fn.(func(interface{}) interface{}); ok {
 		var arg interface{}

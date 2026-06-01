@@ -44,6 +44,7 @@ type ImportRef struct {
 type RuntimeRef struct {
 	Runtime       string      // which runtime owns this variable
 	VarName       string      // variable name in that runtime
+	TypeName      string      // optional runtime-native type name for persistent local aliases
 	Value         interface{} // last known primitive value, when SnapshotKnown and not Opaque
 	SnapshotKnown bool        // true when bind-time probing classified the live value
 	Opaque        bool        // true when the live value is complex and must stay behind a handle
@@ -219,11 +220,23 @@ if (typeof globalThis.os === 'undefined') {
 	if pyRT, ok := e.runtimes["python"]; ok {
 		pyRT.Execute(`
 import types as _t, sys as _s
-if 'requests' not in _s.modules:
+try:
+    import requests as _omnivm_real_requests
+except Exception:
+    _omnivm_real_requests = None
+if _omnivm_real_requests is not None:
+    _s.modules['requests'] = _omnivm_real_requests
+elif 'requests' not in _s.modules:
     _m = _t.ModuleType('requests')
     _r = type('Response', (), {'status_code': 200, 'text': 'mock', 'json': lambda self: {'data': 'mock'}})
+    _req = type('Request', (), {'__init__': lambda self, method='GET', url='', **kw: (setattr(self, 'method', method), setattr(self, 'url', url), None)[-1]})
+    _prep = type('PreparedRequest', (), {'__init__': lambda self: setattr(self, 'url', None), 'prepare_url': lambda self, url, params=None: setattr(self, 'url', url)})
+    _sess = type('Session', (), {'get': lambda self, url, **kw: _r(), 'post': lambda self, url, **kw: _r(), 'prepare_request': lambda self, req: _prep()})
     _m.get = lambda url, **kw: _r()
     _m.post = lambda url, **kw: _r()
+    _m.Request = _req
+    _m.PreparedRequest = _prep
+    _m.Session = _sess
     _s.modules['requests'] = _m
 `)
 	}
@@ -402,12 +415,15 @@ func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 		if err != nil {
 			return nil, fmt.Errorf("exec captures: %w", err)
 		}
-	} else if rt.Name() == "ruby" && autoInjection.setup != "" {
-		// Ruby auto-injected $globals need local aliases
+	} else if rt.Name() == "ruby" {
+		// Ruby snippets execute across eval/exec boundaries, so persisted
+		// $globals need local aliases before user code runs.
 		prefix := e.rubyAliasPrefix(nil)
 		if prefix != "" {
 			code = prefix + code
 		}
+	} else if rt.Name() == "java" {
+		code = e.javaPersistentAliasPrefix(nil) + code
 	}
 
 	// Convert Python f-strings to JS template literals when targeting JavaScript
@@ -456,13 +472,11 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	// Auto-inject current scope bindings so eval code can
 	// reference manifest variables without explicit captures.
 	autoInjection := e.autoInjectScopePlanExcluding(rt.Name(), captureBindingExclusions(op.Captures))
-	var autoInjectedRuby bool
 	if autoInjection.setup != "" {
 		injectResult := rt.Execute(autoInjection.setup)
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("eval auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
-		autoInjectedRuby = rt.Name() == "ruby"
 		defer func() {
 			if cleanupErr := e.runJavaCaptureCleanup(rt, autoInjection, op.Bind); cleanupErr != nil {
 				if err != nil {
@@ -500,9 +514,9 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 
 	code := op.Code
 
-	// Ruby: captures were injected as $globals. Create local aliases
-	// so user code can reference variables without the $ prefix.
-	if rt.Name() == "ruby" && (len(op.Captures) > 0 || autoInjectedRuby) {
+	// Ruby: captures and prior same-runtime values are stored as $globals.
+	// Create local aliases so user code can reference variables normally.
+	if rt.Name() == "ruby" {
 		prefix := e.rubyAliasPrefix(op.Captures)
 		if prefix != "" {
 			if op.Bind != "" {
@@ -530,7 +544,9 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	// so subsequent ops in the same runtime can reference it directly.
 	if op.Bind != "" {
 		if rt.Name() == "java" {
-			assignCode := runtimeAssign(rt.Name(), op.Bind, code)
+			imports, expr := splitJavaImports(code)
+			assignLines := append(imports, e.javaPersistentAliasPrefix(nil), runtimeAssign(rt.Name(), op.Bind, expr))
+			assignCode := strings.Join(assignLines, "\n")
 			execResult := rt.Execute(assignCode)
 			if execResult.Err != nil {
 				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
@@ -538,6 +554,10 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 			ref, val, snapshotErr := e.boundRuntimeRefSnapshot(rt.Name(), op.Bind)
 			if snapshotErr != nil {
 				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), snapshotErr)
+			}
+			ref.TypeName = inferJavaBindType(expr)
+			if ref.TypeName == "" && ref.SnapshotKnown && !ref.Opaque {
+				ref.TypeName = javaPrimitiveTypeName(ref.Value)
 			}
 			e.setBinding(op.Bind, ref)
 			return val, nil
@@ -850,6 +870,20 @@ func jsonToPolyglot(v interface{}) polyglot.Value {
 }
 
 func (e *Executor) opImport(op *Op) (interface{}, error) {
+	if op.Runtime == "go" {
+		// Go imports are compile-time dependencies of generated func_defs.
+		ref := ImportRef{Runtime: "go", Name: op.Path}
+		if op.Bind != "" {
+			e.setBinding(op.Bind, ref)
+		} else if op.DefaultImport != "" {
+			e.setBinding(op.DefaultImport, ref)
+		}
+		for _, s := range op.Specifiers {
+			e.setBinding(s.Local, ImportRef{Runtime: "go", Name: s.Imported})
+		}
+		return ref, nil
+	}
+
 	rt, err := e.resolveRuntime(op)
 	if err != nil {
 		return nil, err
@@ -889,7 +923,16 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 			code = fmt.Sprintf("require(%s);", pathLiteral)
 		}
 	case "ruby":
-		code = fmt.Sprintf("require '%s'", op.Path)
+		code = fmt.Sprintf(`require 'set'
+begin
+  require 'rubygems' unless defined?(Gem::Specification)
+  Gem::Specification.each do |spec|
+    lib = File.join(spec.full_gem_path, 'lib')
+    $LOAD_PATH.unshift(lib) if File.directory?(lib) && !$LOAD_PATH.include?(lib)
+  end
+rescue Exception
+end
+require '%s'`, op.Path)
 	case "java":
 		// Java imports are handled at compile time; just record the binding
 		ref := ImportRef{Runtime: rt.Name(), Name: op.Path}
@@ -1349,9 +1392,11 @@ func (e *Executor) evalCondition(cond *CondExpr) (truthy bool, err error) {
 						err = fmt.Errorf("condition auto capture cleanup [%s]: %w", rtName, cleanupErr)
 					}
 				}()
-				// Ruby: create local aliases from $globals
+				// Ruby/Java: create local aliases from persisted runtime globals.
 				if rtName == "ruby" {
 					code = e.rubyAliasPrefix(nil) + code
+				} else if rtName == "java" {
+					code = e.javaPersistentAliasPrefix(nil) + code
 				}
 			}
 		}
@@ -1380,6 +1425,15 @@ func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (val
 	}
 
 	normalizedArgs := e.normalizeGoArgs(args)
+
+	// func() interface{} (no args)
+	if f, ok := fn.(func() interface{}); ok {
+		val = f()
+		if bind != "" {
+			e.setBinding(bind, val)
+		}
+		return val, nil
+	}
 
 	// func(interface{}) interface{} (single arg)
 	if f, ok := fn.(func(interface{}) interface{}); ok {
@@ -1575,6 +1629,7 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 		if err := e.ensureHandleTable().Release(ref.ID); err != nil {
 			return nil, fmt.Errorf("resource close handle: %w", err)
 		}
+		ref.Closed = true
 		return ref, nil
 	default:
 		return nil, fmt.Errorf("resource: unknown action %q", op.Action)
@@ -1833,9 +1888,6 @@ func (e *Executor) rubyAliasPrefix(captures map[string]string) string {
 				if _, ok := val.(ImportRef); ok {
 					continue
 				}
-				if ref, ok := val.(RuntimeRef); ok && ref.Runtime == "ruby" {
-					continue
-				}
 				aliases = append(aliases, fmt.Sprintf("%s = $%s", varName, varName))
 			}
 		}
@@ -1844,6 +1896,83 @@ func (e *Executor) rubyAliasPrefix(captures map[string]string) string {
 		return ""
 	}
 	return strings.Join(aliases, "; ") + "; "
+}
+
+func (e *Executor) javaPersistentAliasPrefix(exclude map[string]bool) string {
+	var aliases []string
+	seen := make(map[string]bool)
+	for _, scope := range e.scopes {
+		for varName, val := range scope {
+			if exclude[varName] || seen[varName] || !isJavaIdentifier(varName) {
+				continue
+			}
+			ref, ok := val.(RuntimeRef)
+			if !ok || ref.Runtime != "java" {
+				continue
+			}
+			seen[varName] = true
+			typeName := ref.TypeName
+			if typeName == "" {
+				typeName = "Object"
+			}
+			aliases = append(aliases, fmt.Sprintf("%s %s = (%s) omnivm.OmniVM.getCapture(\"%s\");", typeName, varName, typeName, escapeJavaString(ref.VarName)))
+		}
+	}
+	if len(aliases) == 0 {
+		return ""
+	}
+	return strings.Join(aliases, "\n") + "\n"
+}
+
+func inferJavaBindType(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "new ") && !strings.Contains(expr, ").") {
+		rest := strings.TrimSpace(strings.TrimPrefix(expr, "new "))
+		end := strings.IndexAny(rest, "(<[{ ")
+		if end > 0 {
+			return rest[:end]
+		}
+	}
+	if strings.Contains(expr, ".readValue(") {
+		return "java.util.Map"
+	}
+	staticFactories := []struct {
+		prefix string
+		typ    string
+	}{
+		{"com.fasterxml.jackson.databind.json.JsonMapper.builder().findAndAddModules().build()", "com.fasterxml.jackson.databind.ObjectMapper"},
+		{"com.fasterxml.jackson.databind.json.JsonMapper.builder().build()", "com.fasterxml.jackson.databind.ObjectMapper"},
+		{"reactor.core.publisher.Flux.just(", "reactor.core.publisher.Flux<String>"},
+	}
+	for _, factory := range staticFactories {
+		if strings.HasPrefix(expr, factory.prefix) {
+			return factory.typ
+		}
+	}
+	if strings.HasPrefix(expr, "org.jsoup.Jsoup.parse(") && !strings.Contains(expr, ").") {
+		return "org.jsoup.nodes.Document"
+	}
+	if strings.Contains(expr, ".collectList().block()") {
+		return "java.util.List"
+	}
+	return ""
+}
+
+func javaPrimitiveTypeName(value interface{}) string {
+	switch value.(type) {
+	case string:
+		return "String"
+	case bool:
+		return "Boolean"
+	case int, int8, int16, int32, int64:
+		return "Long"
+	case uint, uint8, uint16, uint32, uint64:
+		return "Long"
+	case float32, float64:
+		return "Double"
+	default:
+		return ""
+	}
 }
 
 // Scope operations

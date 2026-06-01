@@ -30,6 +30,8 @@ public class OmniVMRunner {
 
     private static final String WRAPPER_CLASS = "OmniVMUserCode";
     private static String classpathDir = "/omnivm/libs";
+    private static volatile String sharedClasspath = null;
+    private static volatile URLClassLoader sharedClasspathLoader = null;
     private static final File persistentClassDir =
         new File(System.getProperty("java.io.tmpdir"), "omnivm-java-classes");
 
@@ -360,6 +362,20 @@ public class OmniVMRunner {
             .toArray(URL[]::new);
     }
 
+    private static synchronized ClassLoader sharedClasspathLoader(String cp) {
+        String key = cp == null ? "" : cp;
+        if (sharedClasspathLoader == null || !key.equals(sharedClasspath)) {
+            sharedClasspath = key;
+            sharedClasspathLoader = new URLClassLoader(classpathToURLs(key), OmniVMRunner.class.getClassLoader());
+        }
+        return sharedClasspathLoader;
+    }
+
+    private static synchronized void invalidateSharedClasspathLoader() {
+        sharedClasspath = null;
+        sharedClasspathLoader = null;
+    }
+
     // ---- REPL execution (with stdout capture) ----
 
     /**
@@ -477,7 +493,7 @@ public class OmniVMRunner {
                 return executed;
             }
 
-            URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
+            ClassLoader parentLoader = sharedClasspathLoader(cp);
             InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
             Class<?> clazz = classLoader.loadClass(className);
             Method run = clazz.getMethod("run");
@@ -588,7 +604,7 @@ public class OmniVMRunner {
 
         persistCompiledClasses(className, fileManager.getClasses());
 
-        URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
+        ClassLoader parentLoader = sharedClasspathLoader(cp);
         InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
         Class<?> clazz = classLoader.loadClass(className);
 
@@ -618,6 +634,7 @@ public class OmniVMRunner {
         if (WRAPPER_CLASS.equals(entryClassName) || "OmniVMEval".equals(entryClassName)) {
             return;
         }
+        boolean wrote = false;
         for (InMemoryClassFile cf : classes) {
             try {
                 File out = new File(persistentClassDir, cf.getClassName().replace('.', File.separatorChar) + ".class");
@@ -626,8 +643,12 @@ public class OmniVMRunner {
                     parent.mkdirs();
                 }
                 Files.write(out.toPath(), cf.getBytes());
+                wrote = true;
             } catch (IOException ignored) {
             }
+        }
+        if (wrote) {
+            invalidateSharedClasspathLoader();
         }
     }
 

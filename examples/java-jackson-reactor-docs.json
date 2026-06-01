@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "new com.fasterxml.jackson.databind.ObjectMapper()",
+      "bind": "mapper"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "mapper.writeValueAsString(java.util.Map.of(\"name\", \"Ada\", \"score\", 12))",
+      "bind": "json"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "mapper.readValue(json, java.util.Map.class)",
+      "bind": "parsed"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "reactor.core.publisher.Flux.just(\"alpha\", \"beta\", \"gamma\")",
+      "bind": "flux"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "flux.map(s -> s.toUpperCase()).collectList().block()",
+      "bind": "labels"
+    },
+    {
+      "op": "eval",
+      "runtime": "java",
+      "code": "labels.get(0)",
+      "bind": "first"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Java Jackson/Reactor docs name={parsed.get('name')} labels={labels.size()} first={first}\")"
+    }
+  ]
+}

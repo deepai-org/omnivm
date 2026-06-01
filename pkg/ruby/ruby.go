@@ -15,6 +15,8 @@ package ruby
 #include <pthread.h>
 #include <unistd.h>
 #include <signal.h>
+#include <time.h>
+#include <glob.h>
 
 // Bridge callback pointer — set via omnivm_ruby_set_bridge_callback().
 typedef char* (*omni_call_fn)(const char* runtime, const char* code);
@@ -161,6 +163,80 @@ static VALUE omnivm_ruby_object_class(VALUE self) {
 
 static VALUE omnivm_ruby_object_clone(VALUE self) {
     return rb_obj_clone(self);
+}
+
+static VALUE omnivm_ruby_object_frozen_p(VALUE self) {
+    return rb_obj_frozen_p(self);
+}
+
+static VALUE omnivm_ruby_time_now(VALUE klass) {
+    return rb_time_new(time(NULL), 0);
+}
+
+static VALUE omnivm_ruby_time_from_args(int argc, VALUE* argv, int utc) {
+    if (argc == 0) {
+        return rb_time_new(time(NULL), 0);
+    }
+    if (rb_obj_is_kind_of(argv[0], rb_cTime)) {
+        return argv[0];
+    }
+    if (!rb_obj_is_kind_of(argv[0], rb_cInteger)) {
+        return rb_time_new(0, 0);
+    }
+
+    struct tm tmv;
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = NUM2INT(argv[0]) - 1900;
+    tmv.tm_mon = argc > 1 && rb_obj_is_kind_of(argv[1], rb_cInteger) ? NUM2INT(argv[1]) - 1 : 0;
+    tmv.tm_mday = argc > 2 && rb_obj_is_kind_of(argv[2], rb_cInteger) ? NUM2INT(argv[2]) : 1;
+    tmv.tm_hour = argc > 3 && rb_obj_is_kind_of(argv[3], rb_cInteger) ? NUM2INT(argv[3]) : 0;
+    tmv.tm_min = argc > 4 && rb_obj_is_kind_of(argv[4], rb_cInteger) ? NUM2INT(argv[4]) : 0;
+    tmv.tm_sec = argc > 5 && rb_obj_is_kind_of(argv[5], rb_cInteger) ? NUM2INT(argv[5]) : 0;
+    tmv.tm_isdst = -1;
+
+    time_t sec;
+#ifdef _GNU_SOURCE
+    sec = utc ? timegm(&tmv) : mktime(&tmv);
+#else
+    sec = mktime(&tmv);
+#endif
+    return rb_time_new(sec, 0);
+}
+
+static VALUE omnivm_ruby_time_new(int argc, VALUE* argv, VALUE klass) {
+    return omnivm_ruby_time_from_args(argc, argv, 0);
+}
+
+static VALUE omnivm_ruby_time_at(int argc, VALUE* argv, VALUE klass) {
+    time_t sec = 0;
+    long usec = 0;
+    if (argc > 0 && rb_obj_is_kind_of(argv[0], rb_cTime)) {
+        return argv[0];
+    }
+    if (argc > 0) sec = NUM2LONG(argv[0]);
+    if (argc > 1) usec = NUM2LONG(argv[1]);
+    return rb_time_new(sec, usec);
+}
+
+static VALUE omnivm_ruby_time_utc(int argc, VALUE* argv, VALUE klass) {
+    return omnivm_ruby_time_from_args(argc, argv, 1);
+}
+
+static VALUE omnivm_ruby_dir_glob(int argc, VALUE* argv, VALUE klass) {
+    VALUE ary = rb_ary_new();
+    if (argc == 0) return ary;
+
+    const char* pattern = StringValueCStr(argv[0]);
+    glob_t matches;
+    memset(&matches, 0, sizeof(matches));
+    int rc = glob(pattern, 0, NULL, &matches);
+    if (rc == 0) {
+        for (size_t i = 0; i < matches.gl_pathc; i++) {
+            rb_ary_push(ary, rb_str_new_cstr(matches.gl_pathv[i]));
+        }
+    }
+    globfree(&matches);
+    return ary;
 }
 
 // Forward declarations (defined later in this file)
@@ -601,6 +677,15 @@ static VALUE call_exception_class_name(VALUE exception) {
                       rb_intern("to_s"), 0);
 }
 
+// rb_protect callback: returns the first backtrace frame, if available.
+static VALUE call_exception_backtrace_first(VALUE exception) {
+    VALUE backtrace = rb_funcall(exception, rb_intern("backtrace"), 0);
+    if (backtrace == Qnil || !RB_TYPE_P(backtrace, T_ARRAY) || RARRAY_LEN(backtrace) == 0) {
+        return Qnil;
+    }
+    return rb_obj_as_string(rb_ary_entry(backtrace, 0));
+}
+
 // Safe helper to extract exception message using rb_protect.
 // Catches any secondary exceptions during message extraction (e.g., rb_exc_raise
 // in rb_funcall which crashes on ARM64 when JVM is active).
@@ -609,6 +694,7 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     int inner_state = 0;
     const char* klass_cstr = "UnknownError";
     const char* msg_cstr = "unknown error";
+    const char* frame_cstr = NULL;
 
     // Try to get class name safely
     VALUE klass = rb_protect(call_exception_class_name, exception, &inner_state);
@@ -627,9 +713,22 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         rb_set_errinfo(Qnil); // Clear secondary error
     }
 
+    inner_state = 0;
+    VALUE frame = rb_protect(call_exception_backtrace_first, exception, &inner_state);
+    if (!inner_state && frame != Qnil) {
+        frame_cstr = StringValueCStr(frame);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
     size_t len = strlen(klass_cstr) + strlen(msg_cstr) + 20;
+    if (frame_cstr) len += strlen(frame_cstr) + 6;
     char* err = (char*)malloc(len);
-    snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
+    if (frame_cstr) {
+        snprintf(err, len, "RubyError: %s: %s (at %s)", klass_cstr, msg_cstr, frame_cstr);
+    } else {
+        snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
+    }
     return err;
 }
 
@@ -645,6 +744,14 @@ static int omnivm_ruby_init(void) {
     rb_define_method(rb_mKernel, "class", omnivm_ruby_object_class, 0);
     rb_define_method(rb_mKernel, "clone", omnivm_ruby_object_clone, 0);
     rb_define_method(rb_mKernel, "dup", omnivm_ruby_object_clone, 0);
+    rb_define_method(rb_cObject, "frozen?", omnivm_ruby_object_frozen_p, 0);
+    rb_define_singleton_method(rb_cTime, "now", omnivm_ruby_time_now, 0);
+    rb_define_singleton_method(rb_cTime, "new", omnivm_ruby_time_new, -1);
+    rb_define_singleton_method(rb_cTime, "at", omnivm_ruby_time_at, -1);
+    rb_define_singleton_method(rb_cTime, "utc", omnivm_ruby_time_utc, -1);
+    rb_define_singleton_method(rb_cTime, "local", omnivm_ruby_time_new, -1);
+    rb_define_singleton_method(rb_cDir, "glob", omnivm_ruby_dir_glob, -1);
+    rb_define_singleton_method(rb_cDir, "[]", omnivm_ruby_dir_glob, -1);
 
     // Load internal preludes so core methods like Integer#times exist.
     // Ruby 3.3 defines many core methods in <internal:numeric> etc.
@@ -657,6 +764,12 @@ static int omnivm_ruby_init(void) {
             "class Integer\n"
             "  def to_i\n"
             "    self\n"
+            "  end\n"
+            "  def size\n"
+            "    8\n"
+            "  end\n"
+            "  def ~\n"
+            "    -self - 1\n"
             "  end\n"
             "  def times\n"
             "    return to_enum(:times) { self } unless block_given?\n"
@@ -720,12 +833,31 @@ static int omnivm_ruby_init(void) {
             "    self\n"
             "  end\n"
             "end\n"
+            "class Dir\n"
+            "  def self.[](pattern, *flags)\n"
+            "    glob(pattern, *flags)\n"
+            "  end unless respond_to?(:[])\n"
+            "end\n"
             "if defined?(Ractor)\n"
             "  class Ractor\n"
+            "    def self.current\n"
+            "      @__omnivm_current ||= {}\n"
+            "    end unless respond_to?(:current)\n"
             "    def self.make_shareable(obj, copy: false)\n"
             "      obj\n"
             "    end\n"
             "  end\n"
+            "end\n"
+            "module GC\n"
+            "  def self.stat(hash = nil)\n"
+            "    stats = {heap_live_slots: 0, total_allocated_objects: 0, total_freed_objects: 0}\n"
+            "    if hash\n"
+            "      stats.each { |k, v| hash[k] = v }\n"
+            "      hash\n"
+            "    else\n"
+            "      stats\n"
+            "    end\n"
+            "  end unless respond_to?(:stat)\n"
             "end\n"
             "RUBY_DESCRIPTION = \"ruby #{RUBY_VERSION}\" unless defined?(RUBY_DESCRIPTION)\n"
             "module Kernel\n"

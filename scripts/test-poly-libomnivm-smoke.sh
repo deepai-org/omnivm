@@ -28,6 +28,12 @@ touch \
 examples=(
   "syntactic-dominance.poly"
   "cursed-polyglot.poly"
+  "python-docs-popular-packages.poly"
+  "javascript-docs-popular-packages.poly"
+  "go-docs-popular-packages.poly"
+  "python-fastapi-sqlalchemy-polars-docs.poly"
+  "javascript-react-jsx-docs.poly"
+  "go-http-handler-docs.poly"
 )
 
 echo "=== .poly -> manifest -> CPython-hosted libomnivm smoke ==="

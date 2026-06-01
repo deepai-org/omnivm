@@ -23,39 +23,10 @@
       "size": 16
     },
     {
-      "op": "func_def",
-      "name": "crawl",
-      "params": [
-        {
-          "name": "root"
-        }
-      ],
-      "body": [
-        {
-          "op": "loop",
-          "mode": "foreach",
-          "body": [
-            {
-              "op": "yield",
-              "from": {
-                "op": "eval",
-                "runtime": "python",
-                "code": "{\"name\": entry[\"name\"], \"size\": os.path.getsize(entry[\"path\"])}",
-                "bind": "__yield",
-                "captures": {
-                  "os": "os"
-                }
-              }
-            }
-          ],
-          "variable": "entry",
-          "iterable": {
-            "kind": "ref",
-            "name": "os.scandir(root)"
-          }
-        }
-      ],
-      "bodyRuntime": "python"
+      "op": "eval",
+      "runtime": "python",
+      "code": "[\n  {\"name\": entry.name, \"size\": os.path.getsize(entry.path)}\n  for entry in os.scandir(\"/var/data\")\n  if entry.is_file()\n]",
+      "bind": "discovered"
     },
     {
       "op": "func_def",
@@ -101,6 +72,36 @@
       ]
     },
     {
+      "op": "loop",
+      "mode": "foreach",
+      "body": [
+        {
+          "op": "chan",
+          "action": "send",
+          "runtime": "go",
+          "channel": "inbox",
+          "value": {
+            "kind": "ref",
+            "name": "item"
+          },
+          "captures": {
+            "item": "item"
+          }
+        }
+      ],
+      "variable": "item",
+      "iterable": {
+        "kind": "ref",
+        "name": "discovered"
+      }
+    },
+    {
+      "op": "chan",
+      "action": "close",
+      "runtime": "go",
+      "channel": "inbox"
+    },
+    {
       "op": "spawn",
       "runtime": "go",
       "code": "worker(1)",
@@ -123,36 +124,6 @@
       "runtime": "go",
       "code": "worker(4)",
       "bind": "w4"
-    },
-    {
-      "op": "loop",
-      "mode": "foreach",
-      "body": [
-        {
-          "op": "chan",
-          "action": "send",
-          "runtime": "go",
-          "channel": "inbox",
-          "value": {
-            "kind": "ref",
-            "name": "item"
-          },
-          "captures": {
-            "item": "item"
-          }
-        }
-      ],
-      "variable": "item",
-      "iterable": {
-        "kind": "ref",
-        "name": "crawl(\"/var/data\")"
-      }
-    },
-    {
-      "op": "chan",
-      "action": "close",
-      "runtime": "go",
-      "channel": "inbox"
     },
     {
       "op": "eval",
@@ -270,12 +241,88 @@
       "code": "print(f\"Processed {total} items across 3 runtimes; workers {worker_count}; delivered {delivered} report\")"
     }
   ],
-  "bridges": [],
+  "bridges": [
+    {
+      "binding": "outbox",
+      "from": "go",
+      "to": "javascript",
+      "op": "stream_proxy",
+      "meta": {
+        "backpressure": true
+      }
+    },
+    {
+      "binding": "done",
+      "from": "go",
+      "to": "python",
+      "op": "stream_proxy",
+      "meta": {
+        "backpressure": true
+      }
+    }
+  ],
   "typeSummary": {
     "crossings": 5,
     "safe": 5,
     "coerce": 0,
     "check": 0,
     "errors": 0
-  }
+  },
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'item' from __params__ to javascript. Source binding: __params__ (inferred; scope: manifest binding recorded during lowering). Target expression: javascript (inferred; scope: enclosing function: javascript).",
+      "span": {
+        "start": 826,
+        "end": 918,
+        "line": 24,
+        "column": 10
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'item' from __params__ to go. Source binding: __params__ (inferred; scope: manifest binding recorded during lowering). Target expression: go (definite; syntax: channel send <-).",
+      "span": {
+        "start": 1299,
+        "end": 1312,
+        "line": 46,
+        "column": 3
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'joined' from go to python. Source binding: go (inferred; builtin: builtin: wait). Target expression: python (inferred; builtin: builtin: len).",
+      "span": {
+        "start": 1758,
+        "end": 1790,
+        "line": 59,
+        "column": 1
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'deduped' from javascript to python. Source binding: javascript (definite; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; scope: inherited from callee: javascript; scope: inherited from object: javascript; builtin: global: Array). Target expression: python (inferred; builtin: builtin: sorted).",
+      "span": {
+        "start": 2160,
+        "end": 2190,
+        "line": 69,
+        "column": 1
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'report' from python to go. Source binding: python (inferred; builtin: builtin: sorted). Target expression: go (definite; syntax: channel send <-).",
+      "span": {
+        "start": 2349,
+        "end": 2363,
+        "line": 75,
+        "column": 1
+      }
+    }
+  ]
 }

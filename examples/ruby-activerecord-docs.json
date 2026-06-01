@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "active_record",
+      "runtime": "ruby",
+      "defaultImport": "ActiveRecord"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "ActiveRecord::VERSION::STRING",
+      "bind": "version"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "ActiveRecord::Base.model_name.name",
+      "bind": "model_name"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "ActiveRecord::Type::Integer.new.cast(\"12\")",
+      "bind": "score"
+    },
+    {
+      "op": "eval",
+      "runtime": "ruby",
+      "code": "model_name + \":\" + score.to_s",
+      "bind": "label"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Ruby ActiveRecord docs {label}\")"
+    }
+  ]
+}

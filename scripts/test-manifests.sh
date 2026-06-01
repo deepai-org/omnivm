@@ -128,6 +128,16 @@ run "Java Gson + Pandas + Zod + Express"    java-gson-pandas-zod-express.json fa
 run "Java Commons CSV + Pydantic + Go"       java-commons-csv-pydantic-go-batching.json false "Java/CommonsCSV/Pydantic/Go rows=3 javaRecords=3 batches=2"
 run "Java Jsoup + BeautifulSoup + Cheerio"   java-jsoup-bs4-cheerio.json false "Java/Jsoup/BeautifulSoup/Cheerio title=Poly Feed javaLinks=2 pyLinks=2 js=ALPHA\\|BETA"
 run "Java OkHttp + HTTPX + Go retry"         java-okhttp-httpx-go-retry.json false "Java/OkHttp/HTTPX/Go host=api.example.test path=/v1/items attempts=2 workers=2 backoff=75ms"
+run "Python docs-style popular packages"     python-docs-popular-packages.json false "Python docs packages rows=3 adults=2 sum=12 page=Hello Poly"
+run "JavaScript docs-style packages"         javascript-docs-popular-packages.json false "JavaScript docs packages ada 2 one true"
+run "Java docs-style packages"               java-docs-popular-packages.json false "Java docs packages Ada /docs example.com 2"
+run "Ruby docs-style packages"               ruby-docs-popular-packages.json false "Ruby docs packages Poly /docs 200"
+run "Go docs-style packages"                 go-docs-popular-packages.json false "Go docs packages .*GET.*/docs"
+run "Python FastAPI/SQLAlchemy/Polars docs"  python-fastapi-sqlalchemy-polars-docs.json false "Python FastAPI/SQLAlchemy/Polars docs routes=[1-9][0-9]* columns=2 top=Grace"
+run "JavaScript React JSX docs"              javascript-react-jsx-docs.json false "React JSX docs html=[1-9][0-9]* badge=true"
+run "Java Jackson/Reactor docs"              java-jackson-reactor-docs.json false "Java Jackson/Reactor docs name=Ada labels=3 first=ALPHA"
+run "Ruby ActiveRecord docs"                 ruby-activerecord-docs.json false "Ruby ActiveRecord docs ActiveRecord::Base:12"
+run "Go HTTP HandlerFunc docs"               go-http-handler-docs.json false "Go HTTP HandlerFunc docs http.HandlerFunc:202"
 
 # ── Category 8: Edge Runtime Contracts ───────────────────────────
 echo "── Edge Runtime Contracts ──"

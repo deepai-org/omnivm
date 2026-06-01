@@ -645,6 +645,9 @@ func (e *Executor) spawnFuncDef(funcName, argsStr string) (interface{}, error) {
 
 // callGoFuncDirect calls a Go function with the given args.
 func callGoFuncDirect(fn interface{}, args []interface{}) interface{} {
+	if f, ok := fn.(func() interface{}); ok {
+		return f()
+	}
 	if f, ok := fn.(func(interface{}) interface{}); ok {
 		var arg interface{}
 		if len(args) > 0 {

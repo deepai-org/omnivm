@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "react",
+      "runtime": "javascript",
+      "defaultImport": "React"
+    },
+    {
+      "op": "import",
+      "path": "react-dom/server",
+      "runtime": "javascript",
+      "specifiers": [
+        {
+          "imported": "renderToStaticMarkup",
+          "local": "renderToStaticMarkup"
+        }
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "(props) => React.createElement(\"span\", {\"className\": \"badge\"}, props.label)",
+      "bind": "Badge"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "renderToStaticMarkup(React.createElement(Badge, {label: \"Poly\"}))",
+      "bind": "html"
+    },
+    {
+      "op": "eval",
+      "runtime": "javascript",
+      "code": "html.includes(\"badge\")",
+      "bind": "has_badge"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(`React JSX docs html=${html.length} badge=${has_badge}`)"
+    }
+  ]
+}

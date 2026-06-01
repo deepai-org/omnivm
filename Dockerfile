@@ -47,6 +47,13 @@ RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -r
 RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri ruby-rack && rm -rf /var/lib/apt/lists/*
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri.rb"), File.join(site, "nokogiri.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri"), File.join(site, "nokogiri")); FileUtils.ln_sf(File.join(spec.extension_dir, "nokogiri", "nokogiri.so"), File.join(site, "nokogiri", "nokogiri.so"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
+RUN gem install activerecord --no-document
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activesupport"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support.rb"), File.join(site, "active_support.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support"), File.join(site, "active_support"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activemodel"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model.rb"), File.join(site, "active_model.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model"), File.join(site, "active_model"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activerecord"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record.rb"), File.join(site, "active_record.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record"), File.join(site, "active_record")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel.rb"), File.join(site, "arel.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel"), File.join(site, "arel"))'
 
 # ---- JDK (full — needed for javax.tools.JavaCompiler) ----
 RUN apt-get update && apt-get install -y default-jdk && rm -rf /var/lib/apt/lists/*
@@ -92,6 +99,8 @@ RUN cd /usr/local/lib && npm install \
       lodash \
       d3-shape@2 \
       marked@4 \
+      react \
+      react-dom \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
@@ -148,6 +157,9 @@ ARG COMMONS_CSV_VERSION=1.10.0
 ARG JSOUP_VERSION=1.17.2
 ARG OKHTTP_VERSION=3.14.9
 ARG OKIO_VERSION=1.17.5
+ARG JACKSON_VERSION=2.17.2
+ARG REACTOR_VERSION=3.6.6
+ARG REACTIVE_STREAMS_VERSION=1.0.4
 RUN mkdir -p /omnivm/libs && \
     curl -fsSL \
         "https://repo1.maven.org/maven2/com/google/code/gson/gson/${GSON_VERSION}/gson-${GSON_VERSION}.jar" \
@@ -163,7 +175,22 @@ RUN mkdir -p /omnivm/libs && \
         -o "/omnivm/libs/okhttp-${OKHTTP_VERSION}.jar" && \
     curl -fsSL \
         "https://repo1.maven.org/maven2/com/squareup/okio/okio/${OKIO_VERSION}/okio-${OKIO_VERSION}.jar" \
-        -o "/omnivm/libs/okio-${OKIO_VERSION}.jar"
+        -o "/omnivm/libs/okio-${OKIO_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/${JACKSON_VERSION}/jackson-databind-${JACKSON_VERSION}.jar" \
+        -o "/omnivm/libs/jackson-databind-${JACKSON_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/${JACKSON_VERSION}/jackson-core-${JACKSON_VERSION}.jar" \
+        -o "/omnivm/libs/jackson-core-${JACKSON_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/${JACKSON_VERSION}/jackson-annotations-${JACKSON_VERSION}.jar" \
+        -o "/omnivm/libs/jackson-annotations-${JACKSON_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/io/projectreactor/reactor-core/${REACTOR_VERSION}/reactor-core-${REACTOR_VERSION}.jar" \
+        -o "/omnivm/libs/reactor-core-${REACTOR_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/org/reactivestreams/reactive-streams/${REACTIVE_STREAMS_VERSION}/reactive-streams-${REACTIVE_STREAMS_VERSION}.jar" \
+        -o "/omnivm/libs/reactive-streams-${REACTIVE_STREAMS_VERSION}.jar"
 
 # 5. Examples AFTER build (most frequent changes, no rebuild needed)
 COPY examples/ examples/
@@ -238,6 +265,13 @@ RUN apt-get update && apt-get install -y \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
+RUN gem install activerecord --no-document
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activesupport"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support.rb"), File.join(site, "active_support.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support"), File.join(site, "active_support"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activemodel"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model.rb"), File.join(site, "active_model.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model"), File.join(site, "active_model"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activerecord"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record.rb"), File.join(site, "active_record.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record"), File.join(site, "active_record")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel.rb"), File.join(site, "arel.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel"), File.join(site, "arel"))'
 
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go
@@ -261,6 +295,8 @@ RUN cd /usr/local/lib && npm install \
       lodash \
       d3-shape@2 \
       marked@4 \
+      react \
+      react-dom \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 

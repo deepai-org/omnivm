@@ -1748,6 +1748,25 @@ func TestCallGoFuncTwoArgs(t *testing.T) {
 	}
 }
 
+func TestCallGoFuncZeroArgs(t *testing.T) {
+	e, _ := makeExecutor()
+	e.goFuncs["answer"] = func() interface{} {
+		return 42
+	}
+
+	val, err := e.callGoFunc("answer", nil, "result")
+	if err != nil {
+		t.Fatalf("callGoFunc: %v", err)
+	}
+	if val != 42 {
+		t.Errorf("answer() = %v, want 42", val)
+	}
+	bound, _ := e.getBinding("result")
+	if bound != 42 {
+		t.Errorf("bound = %v, want 42", bound)
+	}
+}
+
 func TestCallGoFuncUndefined(t *testing.T) {
 	e, _ := makeExecutor()
 	_, err := e.callGoFunc("nope", nil, "")
@@ -6614,6 +6633,50 @@ func TestOpImportPythonUsesSafeAliases(t *testing.T) {
 	}
 }
 
+func TestOpImportRubyLoadsBaselineStdlib(t *testing.T) {
+	e, mocks := makeExecutor("ruby")
+	if _, err := e.opImport(&Op{Runtime: "ruby", Path: "active_record"}); err != nil {
+		t.Fatalf("opImport ruby: %v", err)
+	}
+	if len(mocks["ruby"].execCalls) != 1 ||
+		!strings.Contains(mocks["ruby"].execCalls[0], "require 'set'") ||
+		!strings.Contains(mocks["ruby"].execCalls[0], "Gem::Specification.each") ||
+		!strings.Contains(mocks["ruby"].execCalls[0], "require 'active_record'") {
+		t.Fatalf("Ruby import should load baseline stdlib before package import, calls=%q", mocks["ruby"].execCalls)
+	}
+}
+
+func TestOpImportGoRecordsCompileTimeBinding(t *testing.T) {
+	e, _ := makeExecutor()
+	if _, err := e.opImport(&Op{Runtime: "go", Path: "net/http", DefaultImport: "http"}); err != nil {
+		t.Fatalf("opImport go default: %v", err)
+	}
+	bound, ok := e.getBinding("http")
+	if !ok {
+		t.Fatal("go default import should record a manifest binding")
+	}
+	ref, ok := bound.(ImportRef)
+	if !ok {
+		t.Fatalf("go default import binding = %T, want ImportRef", bound)
+	}
+	if ref.Runtime != "go" || ref.Name != "net/http" {
+		t.Fatalf("go default import ref = %#v", ref)
+	}
+
+	if _, err := e.opImport(&Op{
+		Runtime: "go",
+		Path:    "pkg",
+		Specifiers: []*ImportSpec{
+			{Imported: "HandlerFunc", Local: "handler"},
+		},
+	}); err != nil {
+		t.Fatalf("opImport go specifier: %v", err)
+	}
+	if _, ok := e.getBinding("handler"); !ok {
+		t.Fatal("go named import should record a manifest binding")
+	}
+}
+
 // --- Execute manifest tests ---
 
 func TestExecuteManifestDeclareAndConcat(t *testing.T) {
@@ -6782,14 +6845,14 @@ func TestRubyAliasPrefixSkipsImportRef(t *testing.T) {
 	}
 }
 
-func TestRubyAliasPrefixSkipsSameRuntime(t *testing.T) {
+func TestRubyAliasPrefixIncludesSameRuntimeRuntimeRef(t *testing.T) {
 	e, _ := makeExecutor("ruby")
 	e.setBinding("rv", RuntimeRef{Runtime: "ruby", VarName: "rv", Value: "x"})
 	e.setBinding("pv", RuntimeRef{Runtime: "python", VarName: "pv", Value: "y"})
 
 	prefix := e.rubyAliasPrefix(nil)
-	if contains(prefix, "rv = $rv") {
-		t.Error("should skip same-runtime RuntimeRef")
+	if !contains(prefix, "rv = $rv") {
+		t.Error("should include same-runtime RuntimeRef so persisted Ruby globals are visible as locals")
 	}
 	if !contains(prefix, "pv = $pv") {
 		t.Error("should include cross-runtime RuntimeRef")

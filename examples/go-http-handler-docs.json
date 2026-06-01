@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "net/http",
+      "runtime": "go",
+      "defaultImport": "http"
+    },
+    {
+      "op": "func_def",
+      "name": "docs_handler",
+      "params": [],
+      "body": [],
+      "bodyRuntime": "go",
+      "source": "package polyfunc\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n)\n\nfunc DocsHandler() interface{} {\n\thandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n    w.Header().Set(\"x-poly\", \"yes\")\n    w.WriteHeader(http.StatusAccepted)\n    _, _ = w.Write([]byte(r.URL.Path))\n  })\n\treturn fmt.Sprintf(\"%T:%d\", handler, http.StatusAccepted)\n}",
+      "exports": [
+        "DocsHandler"
+      ]
+    },
+    {
+      "op": "eval",
+      "runtime": "go",
+      "func": "docs_handler",
+      "args": [],
+      "bind": "response"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Go HTTP HandlerFunc docs {response}\")"
+    }
+  ]
+}

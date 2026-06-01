@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "import",
+      "path": "fastapi",
+      "runtime": "python",
+      "bind": "fastapi"
+    },
+    {
+      "op": "import",
+      "path": "sqlalchemy",
+      "runtime": "python",
+      "bind": "sqlalchemy"
+    },
+    {
+      "op": "import",
+      "path": "sqlalchemy.orm",
+      "runtime": "python",
+      "specifiers": [
+        {
+          "imported": "declarative_base",
+          "local": "declarative_base"
+        }
+      ]
+    },
+    {
+      "op": "import",
+      "path": "polars",
+      "runtime": "python",
+      "bind": "pl"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "fastapi.FastAPI()",
+      "bind": "api"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "declarative_base()",
+      "bind": "Base"
+    },
+    {
+      "op": "func_def",
+      "name": "read_user",
+      "params": [
+        {
+          "name": "user_id"
+        }
+      ],
+      "body": [
+        {
+          "op": "return",
+          "from": {
+            "op": "eval",
+            "runtime": "python",
+            "code": "{\"user_id\": user_id, \"active\": True}",
+            "bind": "__ret",
+            "captures": {
+              "user_id": "user_id"
+            }
+          }
+        }
+      ],
+      "bodyRuntime": "python"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "api.get(\"/users/{user_id}\")(read_user)",
+      "bind": "route"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "type(\"User\", (Base,), {\n  \"__tablename__\": \"users\",\n  \"id\": sqlalchemy.Column(sqlalchemy.Integer, primary_key=True),\n  \"name\": sqlalchemy.Column(sqlalchemy.String)\n})",
+      "bind": "User"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(User.__table__.columns)",
+      "bind": "user_columns"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "pl.DataFrame({\"name\": [\"Ada\", \"Grace\"], \"score\": [10, 12]}).lazy()",
+      "bind": "lazy"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "lazy.filter(pl.col(\"score\") > 10).collect().to_dicts()[0][\"name\"]",
+      "bind": "top"
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(api.routes)",
+      "bind": "route_count"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print(f\"Python FastAPI/SQLAlchemy/Polars docs routes={route_count} columns={user_columns} top={top}\")"
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'user_id' from __params__ to python. Source binding: __params__ (inferred; scope: manifest binding recorded during lowering). Target expression: python (inferred; scope: enclosing function: python).",
+      "span": {
+        "start": 348,
+        "end": 384,
+        "line": 14,
+        "column": 10
+      }
+    }
+  ]
+}

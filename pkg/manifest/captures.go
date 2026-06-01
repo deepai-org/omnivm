@@ -1395,7 +1395,15 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   return proxy;
 };
 globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy || function(value) {
+  var localValues = Array.isArray(value && value.values) ? value.values.map(function(v) {
+    return globalThis.__omnivm_materialize_capture(v);
+  }) : null;
+  var localIndex = 0;
   var nextValue = function() {
+    if (localValues) {
+      if (localIndex >= localValues.length) return {done: true};
+      return {done: false, value: localValues[localIndex++]};
+    }
     try {
       if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return {done: true};
       var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
