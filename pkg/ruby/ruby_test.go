@@ -124,6 +124,22 @@ func TestRubyImportStdlib(t *testing.T) {
 	}
 }
 
+func TestRubyEncodingDatabaseLoaded(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute("puts Encoding.find('binary').name")
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ASCII-8BIT\n" {
+		t.Fatalf("expected ASCII-8BIT, got %q", result.Output)
+	}
+}
+
 func TestRubyPump(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

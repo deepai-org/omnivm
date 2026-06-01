@@ -6,6 +6,7 @@ without requiring libomnivm.so to be present.
 
 import builtins
 import ctypes
+import gc
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -209,6 +210,12 @@ class TestCallWithMockLib(unittest.TestCase):
             b"javascript", b"Math.sqrt(4)"
         )
 
+    def test_call_typed_rejects_implicit_complex_stringification(self):
+        with self.assertRaises(TypeError) as ctx:
+            omnivm_mod.call_typed("javascript", "use", args=({"path": "/orders"},))
+        assert "implicit stringification" in str(ctx.exception)
+        self.mock_lib.OmniCallTyped.assert_not_called()
+
     def test_execute_encodes_args(self):
         self.mock_lib.OmniExecHost.return_value = b"OK:output"
         result = omnivm_mod.execute("python", "print('hi')")
@@ -255,8 +262,9 @@ class TestCallWithMockLib(unittest.TestCase):
         assert name == b"payload"
         assert buf.len == 3
         assert buf.dtype == 7
+        assert buf.owned == 0
 
-    def test_get_buffer_copies_bytes(self):
+    def test_get_buffer_returns_borrowed_memoryview(self):
         backing = ctypes.create_string_buffer(b"abc")
 
         def fill_buffer(_name, out):
@@ -267,15 +275,92 @@ class TestCallWithMockLib(unittest.TestCase):
             buf.data = ctypes.cast(backing, ctypes.c_void_p)
             buf.len = 3
             buf.dtype = 0
+            buf.read_only = 0
             return 0
 
         self.mock_lib.OmniBufGet.side_effect = fill_buffer
         result = omnivm_mod.get_buffer("payload")
+        assert isinstance(result, memoryview)
+        assert result.readonly is False
         assert bytes(result) == b"abc"
+        result[0] = ord("z")
+        assert backing.raw[:3] == b"zbc"
+        self.mock_lib.OmniBufRelease.assert_not_called()
+        del result
+        gc.collect()
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
+
+    def test_get_buffer_preserves_readonly_metadata(self):
+        backing = ctypes.create_string_buffer(b"abc")
+
+        def fill_buffer(_name, out):
+            buf = ctypes.cast(
+                out,
+                ctypes.POINTER(omnivm_mod._OmniBuffer),
+            ).contents
+            buf.data = ctypes.cast(backing, ctypes.c_void_p)
+            buf.len = 3
+            buf.dtype = 0
+            buf.read_only = 1
+            return 0
+
+        self.mock_lib.OmniBufGet.side_effect = fill_buffer
+        result = omnivm_mod.get_buffer("payload")
+        assert result.readonly is True
+        assert bytes(result) == b"abc"
+        with self.assertRaises(TypeError):
+            result[0] = ord("z")
+        del result
+        gc.collect()
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
 
     def test_release_buffer_calls_lib(self):
         omnivm_mod.release_buffer("payload")
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
+
+    def test_release_handle_calls_lib(self):
+        self.mock_lib.OmniHandleRelease.return_value = 0
+        assert omnivm_mod._release_handle(123) is True
+        self.mock_lib.OmniHandleRelease.assert_called_once_with(123)
+
+    def test_retain_handle_calls_lib(self):
+        self.mock_lib.OmniHandleRetain.return_value = 0
+        assert omnivm_mod._retain_handle(123) is True
+        self.mock_lib.OmniHandleRetain.assert_called_once_with(123)
+
+    def test_escape_handle_calls_lib(self):
+        self.mock_lib.OmniHandleEscape.return_value = 0
+        assert omnivm_mod._escape_handle(123) is True
+        self.mock_lib.OmniHandleEscape.assert_called_once_with(123)
+
+    def test_release_handle_from_finalizer_calls_lib(self):
+        self.mock_lib.OmniHandleReleaseFromFinalizer.return_value = 0
+        assert omnivm_mod._release_handle_from_finalizer(123) is True
+        self.mock_lib.OmniHandleReleaseFromFinalizer.assert_called_once_with(123)
+
+    def test_record_handle_access_returns_chatty_flag(self):
+        self.mock_lib.OmniHandleAccess.return_value = 1
+        assert omnivm_mod._record_handle_access(123, "index", 16) is True
+        self.mock_lib.OmniHandleAccess.assert_called_once_with(123, b"index", 16)
+
+    def test_record_handle_access_error_raises(self):
+        self.mock_lib.OmniHandleAccess.return_value = -1
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod._record_handle_access(123, "index")
+
+    def test_record_handle_reference_calls_lib(self):
+        self.mock_lib.OmniHandleRecordReference.return_value = 0
+        assert omnivm_mod._record_handle_reference(123, 456, "proxy") is True
+        self.mock_lib.OmniHandleRecordReference.assert_called_once_with(123, 456, b"proxy")
+
+    def test_drop_handle_reference_calls_lib(self):
+        omnivm_mod._drop_handle_reference(123, 456)
+        self.mock_lib.OmniHandleDropReference.assert_called_once_with(123, 456)
+
+    def test_drain_finalizer_releases_calls_lib(self):
+        self.mock_lib.OmniDrainFinalizerReleases.return_value = 0
+        assert omnivm_mod._drain_finalizer_releases(25) is True
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(25)
 
     def test_set_task_timeout_calls_lib(self):
         omnivm_mod.set_task_timeout(250)

@@ -44,8 +44,9 @@ RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -r
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 
 # ---- Ruby dev ----
-RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri ruby-rack && rm -rf /var/lib/apt/lists/*
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri.rb"), File.join(site, "nokogiri.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri"), File.join(site, "nokogiri")); FileUtils.ln_sf(File.join(spec.extension_dir, "nokogiri", "nokogiri.so"), File.join(site, "nokogiri", "nokogiri.so"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
 
 # ---- JDK (full — needed for javax.tools.JavaCompiler) ----
 RUN apt-get update && apt-get install -y default-jdk && rm -rf /var/lib/apt/lists/*
@@ -73,6 +74,9 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       "Django>=5,<6" \
       pandas \
       numpy \
+      Pillow \
+      polars \
+      fastapi \
       beautifulsoup4 \
       pydantic \
       SQLAlchemy \
@@ -183,7 +187,7 @@ FROM builder AS tester
 WORKDIR /build
 
 # Pure Go tests (race detector enabled)
-RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/ ./pkg/watchdog/ ./pkg/manifest/
+RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./pkg/signals/ ./pkg/arrow/ ./pkg/handles/ ./pkg/watchdog/ ./pkg/manifest/
 
 # Go plugin tests — cannot use -race because the test binary and dynamically
 # compiled plugins must share identical runtime/internal/sys instrumentation.
@@ -223,6 +227,7 @@ RUN apt-get update && apt-get install -y \
     python3.14-venv \
     ruby \
     ruby-nokogiri \
+    ruby-rack \
     libruby \
     default-jdk \
     nodejs \
@@ -232,6 +237,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
 
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go

@@ -25,6 +25,7 @@ typedef struct {
     int64_t len;
     int32_t dtype;
     int8_t  owned;
+    int8_t  read_only;
 } jvm_omni_buffer_t;
 typedef int (*jvm_buf_get_fn)(const char* name, jvm_omni_buffer_t* out);
 typedef int (*jvm_buf_set_fn)(const char* name, jvm_omni_buffer_t buf);
@@ -59,11 +60,36 @@ typedef jvm_omni_value_t (*jvm_call_typed_fn)(const char* runtime,
                                                int32_t nargs);
 static jvm_call_typed_fn g_call_typed = NULL;
 
+typedef struct {
+    jobject object;
+    void* critical;
+    int array_kind;
+} jvm_exported_buffer_handle_t;
+
+typedef struct {
+    void* data;
+    int64_t len;
+    int32_t dtype;
+    int64_t elements;
+    const char* arrow_format;
+    int8_t read_only;
+    void* handle;
+} jvm_omnivm_exported_buffer_t;
+
+#define JVM_EXPORT_DIRECT 0
+#define JVM_EXPORT_BYTE_ARRAY 1
+#define JVM_EXPORT_INT_ARRAY 2
+#define JVM_EXPORT_LONG_ARRAY 3
+#define JVM_EXPORT_FLOAT_ARRAY 4
+#define JVM_EXPORT_DOUBLE_ARRAY 5
+#define JVM_EXPORT_SHORT_ARRAY 6
+
 static JavaVM* jvm_ptr = NULL;
 static JNIEnv* env_ptr = NULL;  // Initial thread's env (used during init only)
 static jclass runner_class = NULL;
 static jmethodID execute_method = NULL;
 static jmethodID eval_method_id = NULL;
+static jmethodID eval_object_method_id = NULL;
 static jmethodID exec_file_method_id = NULL;
 static pthread_mutex_t active_java_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
 static jobject active_java_thread = NULL;
@@ -219,13 +245,18 @@ static jbyteArray JNICALL Java_omnivm_OmniVM_nativeGetBuffer(JNIEnv* env, jclass
     jvm_omni_buffer_t buf;
     memset(&buf, 0, sizeof(buf));
     int rc = g_buf_get(name, &buf);
-    (*env)->ReleaseStringUTFChars(env, j_name, name);
-    if (rc != 0 || !buf.data || buf.len <= 0) return NULL;
+    if (rc != 0 || !buf.data || buf.len <= 0) {
+        if (rc == 0 && g_buf_release) g_buf_release(name);
+        (*env)->ReleaseStringUTFChars(env, j_name, name);
+        return NULL;
+    }
 
     jbyteArray arr = (*env)->NewByteArray(env, (jsize)buf.len);
     if (arr) {
         (*env)->SetByteArrayRegion(env, arr, 0, (jsize)buf.len, (jbyte*)buf.data);
     }
+    if (g_buf_release) g_buf_release(name);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
     return arr;
 }
 
@@ -237,9 +268,14 @@ static jint JNICALL Java_omnivm_OmniVM_nativeGetBufferDtype(JNIEnv* env, jclass 
     jvm_omni_buffer_t buf;
     memset(&buf, 0, sizeof(buf));
     int rc = g_buf_get(name, &buf);
+    if (rc != 0) {
+        (*env)->ReleaseStringUTFChars(env, j_name, name);
+        return -1;
+    }
+    jint dtype = (jint)buf.dtype;
+    if (g_buf_release) g_buf_release(name);
     (*env)->ReleaseStringUTFChars(env, j_name, name);
-    if (rc != 0) return -1;
-    return (jint)buf.dtype;
+    return dtype;
 }
 
 // JNI: OmniVM.nativeSetBuffer(name, data, dtype) -> void
@@ -260,6 +296,7 @@ static void JNICALL Java_omnivm_OmniVM_nativeSetBuffer(JNIEnv* env, jclass cls,
     buf.len = (int64_t)len;
     buf.dtype = (int32_t)j_dtype;
     buf.owned = 0;
+    buf.read_only = 0;
     g_buf_set(name, buf);
 
     (*env)->ReleaseByteArrayElements(env, j_data, data, JNI_ABORT);
@@ -320,19 +357,10 @@ static jvm_omni_value_t java_to_omni_value(JNIEnv* env, jobject obj) {
         val.v.s.ptr = strdup(utf);
         (*env)->ReleaseStringUTFChars(env, (jstring)obj, utf);
     } else {
-        // Fallback: toString()
-        jclass obj_class = (*env)->GetObjectClass(env, obj);
-        jmethodID to_str = (*env)->GetMethodID(env, obj_class, "toString", "()Ljava/lang/String;");
-        jstring str = (jstring)(*env)->CallObjectMethod(env, obj, to_str);
-        if (str) {
-            const char* utf = (*env)->GetStringUTFChars(env, str, NULL);
-            val.tag = JVM_OMNI_TAG_STRING;
-            val.v.s.len = strlen(utf);
-            val.v.s.ptr = strdup(utf);
-            (*env)->ReleaseStringUTFChars(env, str, utf);
-        } else {
-            val.tag = JVM_OMNI_TAG_NULL;
-        }
+        const char* msg = "unsupported typed bridge argument; complex values must cross through the manifest proxy/Arrow boundary, not implicit stringification";
+        val.tag = JVM_OMNI_TAG_ERROR;
+        val.v.s.len = strlen(msg);
+        val.v.s.ptr = strdup(msg);
     }
 
     (*env)->DeleteLocalRef(env, int_class);
@@ -421,6 +449,17 @@ static jobject JNICALL Java_omnivm_OmniVM_nativeCallTyped(JNIEnv* env, jclass cl
             jobject item = (*env)->GetObjectArrayElement(env, j_args, i);
             c_args[i] = java_to_omni_value(env, item);
             if (item) (*env)->DeleteLocalRef(env, item);
+            if (c_args[i].tag == JVM_OMNI_TAG_ERROR) {
+                jclass exc = (*env)->FindClass(env, "java/lang/IllegalArgumentException");
+                (*env)->ThrowNew(env, exc, c_args[i].v.s.ptr ? c_args[i].v.s.ptr : "unsupported typed bridge argument");
+                (*env)->ReleaseStringUTFChars(env, j_runtime, runtime);
+                (*env)->ReleaseStringUTFChars(env, j_func, func_name);
+                for (int32_t j = 0; j <= i; j++) {
+                    jvm_free_omni_value(&c_args[j]);
+                }
+                free(c_args);
+                return NULL;
+            }
         }
     }
 
@@ -553,6 +592,404 @@ static jvm_omni_value_t omnivm_jvm_eval_typed(const char* code) {
     return typed;
 }
 
+static int omnivm_jvm_export_array_buffer(JNIEnv* env,
+                                          jobject obj,
+                                          int array_kind,
+                                          int32_t dtype,
+                                          const char* arrow_format,
+                                          int64_t item_size,
+                                          jvm_omnivm_exported_buffer_t* out) {
+    jarray arr = (jarray)obj;
+    jsize elements = (*env)->GetArrayLength(env, arr);
+    if (elements == 0) {
+        jvm_exported_buffer_handle_t* handle =
+            (jvm_exported_buffer_handle_t*)calloc(1, sizeof(jvm_exported_buffer_handle_t));
+        if (!handle) return -1;
+        handle->object = (*env)->NewGlobalRef(env, obj);
+        if (!handle->object) {
+            free(handle);
+            return -1;
+        }
+        handle->array_kind = array_kind;
+        out->data = NULL;
+        out->len = 0;
+        out->dtype = dtype;
+        out->elements = 0;
+        out->arrow_format = arrow_format;
+        out->read_only = 0;
+        out->handle = handle;
+        return 0;
+    }
+    jboolean is_copy = JNI_FALSE;
+    void* data = (*env)->GetPrimitiveArrayCritical(env, arr, &is_copy);
+    if (!data) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return -1;
+    }
+    if (is_copy == JNI_TRUE) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, data, JNI_ABORT);
+        return 1;
+    }
+
+    jvm_exported_buffer_handle_t* handle =
+        (jvm_exported_buffer_handle_t*)calloc(1, sizeof(jvm_exported_buffer_handle_t));
+    if (!handle) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, data, JNI_ABORT);
+        return -1;
+    }
+    handle->object = (*env)->NewGlobalRef(env, obj);
+    if (!handle->object) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, data, JNI_ABORT);
+        free(handle);
+        return -1;
+    }
+    handle->critical = data;
+    handle->array_kind = array_kind;
+
+    out->data = data;
+    out->len = (int64_t)elements * item_size;
+    out->dtype = dtype;
+    out->elements = (int64_t)elements;
+    out->arrow_format = arrow_format;
+    out->read_only = 0;
+    out->handle = handle;
+    return 0;
+}
+
+static int omnivm_jvm_export_nio_buffer(JNIEnv* env,
+                                        jobject obj,
+                                        jclass buffer_class,
+                                        const char* array_signature,
+                                        int array_kind,
+                                        int32_t dtype,
+                                        const char* arrow_format,
+                                        int64_t item_size,
+                                        jvm_omnivm_exported_buffer_t* out) {
+    jmethodID position_method = (*env)->GetMethodID(env, buffer_class, "position", "()I");
+    jmethodID remaining_method = (*env)->GetMethodID(env, buffer_class, "remaining", "()I");
+    jmethodID capacity_method = (*env)->GetMethodID(env, buffer_class, "capacity", "()I");
+    jmethodID read_only_method = (*env)->GetMethodID(env, buffer_class, "isReadOnly", "()Z");
+    if (!position_method || !remaining_method || !capacity_method) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return -1;
+    }
+
+    jint position = (*env)->CallIntMethod(env, obj, position_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return -1;
+    }
+    jint remaining = (*env)->CallIntMethod(env, obj, remaining_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return -1;
+    }
+    jint capacity = (*env)->CallIntMethod(env, obj, capacity_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return -1;
+    }
+    jboolean read_only = JNI_FALSE;
+    if (read_only_method) {
+        read_only = (*env)->CallBooleanMethod(env, obj, read_only_method);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            return -1;
+        }
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    if (position < 0 || remaining < 0 || capacity < 0 || position + remaining > capacity) {
+        return -1;
+    }
+    if (remaining == 0) {
+        jvm_exported_buffer_handle_t* handle =
+            (jvm_exported_buffer_handle_t*)calloc(1, sizeof(jvm_exported_buffer_handle_t));
+        if (!handle) return -1;
+        handle->object = (*env)->NewGlobalRef(env, obj);
+        if (!handle->object) {
+            free(handle);
+            return -1;
+        }
+        handle->array_kind = JVM_EXPORT_DIRECT;
+        out->data = NULL;
+        out->len = 0;
+        out->dtype = dtype;
+        out->elements = 0;
+        out->arrow_format = arrow_format;
+        out->read_only = read_only ? 1 : 0;
+        out->handle = handle;
+        return 0;
+    }
+
+    void* direct_data = (*env)->GetDirectBufferAddress(env, obj);
+    if (direct_data) {
+        if (item_size > 1) {
+            jmethodID order_method = (*env)->GetMethodID(env, buffer_class, "order", "()Ljava/nio/ByteOrder;");
+            jclass byte_order_class = (*env)->FindClass(env, "java/nio/ByteOrder");
+            jmethodID native_order_method = byte_order_class ? (*env)->GetStaticMethodID(env, byte_order_class, "nativeOrder", "()Ljava/nio/ByteOrder;") : NULL;
+            if (!order_method || !byte_order_class || !native_order_method) {
+                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+                if (byte_order_class) (*env)->DeleteLocalRef(env, byte_order_class);
+                return 1;
+            }
+            jobject order_obj = (*env)->CallObjectMethod(env, obj, order_method);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                (*env)->DeleteLocalRef(env, byte_order_class);
+                return 1;
+            }
+            jobject native_order_obj = (*env)->CallStaticObjectMethod(env, byte_order_class, native_order_method);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                if (order_obj) (*env)->DeleteLocalRef(env, order_obj);
+                (*env)->DeleteLocalRef(env, byte_order_class);
+                return 1;
+            }
+            jboolean native_order = order_obj && native_order_obj && (*env)->IsSameObject(env, order_obj, native_order_obj);
+            if (order_obj) (*env)->DeleteLocalRef(env, order_obj);
+            if (native_order_obj) (*env)->DeleteLocalRef(env, native_order_obj);
+            (*env)->DeleteLocalRef(env, byte_order_class);
+            if (!native_order) return 1;
+        }
+        jvm_exported_buffer_handle_t* handle =
+            (jvm_exported_buffer_handle_t*)calloc(1, sizeof(jvm_exported_buffer_handle_t));
+        if (!handle) return -1;
+        handle->object = (*env)->NewGlobalRef(env, obj);
+        if (!handle->object) {
+            free(handle);
+            return -1;
+        }
+        handle->array_kind = JVM_EXPORT_DIRECT;
+        out->data = (void*)((char*)direct_data + ((int64_t)position * item_size));
+        out->len = (int64_t)remaining * item_size;
+        out->dtype = dtype;
+        out->elements = (int64_t)remaining;
+        out->arrow_format = arrow_format;
+        out->read_only = read_only ? 1 : 0;
+        out->handle = handle;
+        return 0;
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    jmethodID has_array_method = (*env)->GetMethodID(env, buffer_class, "hasArray", "()Z");
+    jmethodID array_method = (*env)->GetMethodID(env, buffer_class, "array", array_signature);
+    jmethodID array_offset_method = (*env)->GetMethodID(env, buffer_class, "arrayOffset", "()I");
+    if (!has_array_method || !array_method || !array_offset_method) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return 1;
+    }
+    jboolean has_array = (*env)->CallBooleanMethod(env, obj, has_array_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return 1;
+    }
+    if (!has_array) return 1;
+
+    jobject array_obj = (*env)->CallObjectMethod(env, obj, array_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return -1;
+    }
+    if (!array_obj) return 1;
+
+    jint array_offset = (*env)->CallIntMethod(env, obj, array_offset_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, array_obj);
+        return -1;
+    }
+    if (array_offset < 0) {
+        (*env)->DeleteLocalRef(env, array_obj);
+        return -1;
+    }
+
+    jarray arr = (jarray)array_obj;
+    jsize array_len = (*env)->GetArrayLength(env, arr);
+    if ((int64_t)array_offset + (int64_t)position + (int64_t)remaining > (int64_t)array_len) {
+        (*env)->DeleteLocalRef(env, array_obj);
+        return -1;
+    }
+    jboolean is_copy = JNI_FALSE;
+    void* base = (*env)->GetPrimitiveArrayCritical(env, arr, &is_copy);
+    if (!base) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, array_obj);
+        return -1;
+    }
+    if (is_copy == JNI_TRUE) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, base, JNI_ABORT);
+        (*env)->DeleteLocalRef(env, array_obj);
+        return 1;
+    }
+
+    jvm_exported_buffer_handle_t* handle =
+        (jvm_exported_buffer_handle_t*)calloc(1, sizeof(jvm_exported_buffer_handle_t));
+    if (!handle) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, base, JNI_ABORT);
+        (*env)->DeleteLocalRef(env, array_obj);
+        return -1;
+    }
+    handle->object = (*env)->NewGlobalRef(env, arr);
+    if (!handle->object) {
+        (*env)->ReleasePrimitiveArrayCritical(env, arr, base, JNI_ABORT);
+        (*env)->DeleteLocalRef(env, array_obj);
+        free(handle);
+        return -1;
+    }
+    handle->critical = base;
+    handle->array_kind = array_kind;
+
+    int64_t start = ((int64_t)array_offset + (int64_t)position) * item_size;
+    out->data = (void*)((char*)base + start);
+    out->len = (int64_t)remaining * item_size;
+    out->dtype = dtype;
+    out->elements = (int64_t)remaining;
+    out->arrow_format = arrow_format;
+    out->read_only = read_only ? 1 : 0;
+    out->handle = handle;
+    (*env)->DeleteLocalRef(env, array_obj);
+    return 0;
+}
+
+static int omnivm_jvm_export_buffer(const char* code, jvm_omnivm_exported_buffer_t* out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (!env || !runner_class || !eval_object_method_id) {
+        omnivm_jvm_maybe_detach(did_attach);
+        return -1;
+    }
+
+    if ((*env)->PushLocalFrame(env, 32) < 0) {
+        omnivm_jvm_maybe_detach(did_attach);
+        return -1;
+    }
+
+    jstring jcode = (*env)->NewStringUTF(env, code);
+    if (!jcode) {
+        (*env)->ExceptionClear(env);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return -1;
+    }
+
+    omnivm_jvm_mark_active_thread(env);
+    jobject obj = (*env)->CallStaticObjectMethod(env, runner_class, eval_object_method_id, jcode);
+    omnivm_jvm_clear_active_thread(env);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return -1;
+    }
+    if (!obj) {
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return 1;
+    }
+
+    jclass throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+    if (throwable_class && (*env)->IsInstanceOf(env, obj, throwable_class)) {
+        (*env)->PopLocalFrame(env, NULL);
+        omnivm_jvm_maybe_detach(did_attach);
+        return -1;
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    struct nio_export_case {
+        const char* class_name;
+        const char* array_signature;
+        int array_kind;
+        int32_t dtype;
+        const char* arrow_format;
+        int64_t item_size;
+    };
+    struct nio_export_case nio_cases[] = {
+        {"java/nio/ByteBuffer", "()[B", JVM_EXPORT_BYTE_ARRAY, 0, "C", 1},
+        {"java/nio/ShortBuffer", "()[S", JVM_EXPORT_SHORT_ARRAY, 6, "s", 2},
+        {"java/nio/IntBuffer", "()[I", JVM_EXPORT_INT_ARRAY, 1, "i", 4},
+        {"java/nio/LongBuffer", "()[J", JVM_EXPORT_LONG_ARRAY, 2, "l", 8},
+        {"java/nio/FloatBuffer", "()[F", JVM_EXPORT_FLOAT_ARRAY, 3, "f", 4},
+        {"java/nio/DoubleBuffer", "()[D", JVM_EXPORT_DOUBLE_ARRAY, 4, "g", 8},
+    };
+    for (size_t i = 0; i < sizeof(nio_cases)/sizeof(nio_cases[0]); i++) {
+        jclass buffer_class = (*env)->FindClass(env, nio_cases[i].class_name);
+        if (!buffer_class) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            continue;
+        }
+        if ((*env)->IsInstanceOf(env, obj, buffer_class)) {
+            int rc = omnivm_jvm_export_nio_buffer(env, obj, buffer_class,
+                                                  nio_cases[i].array_signature,
+                                                  nio_cases[i].array_kind,
+                                                  nio_cases[i].dtype,
+                                                  nio_cases[i].arrow_format,
+                                                  nio_cases[i].item_size, out);
+            (*env)->DeleteLocalRef(env, buffer_class);
+            (*env)->PopLocalFrame(env, NULL);
+            omnivm_jvm_maybe_detach(did_attach);
+            return rc;
+        }
+        (*env)->DeleteLocalRef(env, buffer_class);
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    struct array_export_case {
+        const char* class_name;
+        int array_kind;
+        int32_t dtype;
+        const char* arrow_format;
+        int64_t item_size;
+    };
+    struct array_export_case cases[] = {
+		{"[B", JVM_EXPORT_BYTE_ARRAY, 10, "c", 1},
+        {"[S", JVM_EXPORT_SHORT_ARRAY, 6, "s", 2},
+        {"[I", JVM_EXPORT_INT_ARRAY, 1, "i", 4},
+        {"[J", JVM_EXPORT_LONG_ARRAY, 2, "l", 8},
+        {"[F", JVM_EXPORT_FLOAT_ARRAY, 3, "f", 4},
+        {"[D", JVM_EXPORT_DOUBLE_ARRAY, 4, "g", 8},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        jclass arr_class = (*env)->FindClass(env, cases[i].class_name);
+        if (!arr_class) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            continue;
+        }
+        if ((*env)->IsInstanceOf(env, obj, arr_class)) {
+            int rc = omnivm_jvm_export_array_buffer(env, obj, cases[i].array_kind,
+                                                    cases[i].dtype, cases[i].arrow_format,
+                                                    cases[i].item_size, out);
+            (*env)->DeleteLocalRef(env, arr_class);
+            (*env)->PopLocalFrame(env, NULL);
+            omnivm_jvm_maybe_detach(did_attach);
+            return rc;
+        }
+        (*env)->DeleteLocalRef(env, arr_class);
+    }
+
+    (*env)->PopLocalFrame(env, NULL);
+    omnivm_jvm_maybe_detach(did_attach);
+    return 1;
+}
+
+static void omnivm_jvm_release_exported_buffer(void* raw) {
+    jvm_exported_buffer_handle_t* handle = (jvm_exported_buffer_handle_t*)raw;
+    if (!handle) return;
+    int did_attach;
+    JNIEnv* env = omnivm_jvm_get_env(&did_attach);
+    if (env && handle->object) {
+        if (handle->critical && handle->array_kind != JVM_EXPORT_DIRECT) {
+            (*env)->ReleasePrimitiveArrayCritical(env, (jarray)handle->object, handle->critical, JNI_ABORT);
+        }
+        (*env)->DeleteGlobalRef(env, handle->object);
+    }
+    omnivm_jvm_maybe_detach(did_attach);
+    free(handle);
+}
+
 static void omnivm_jvm_set_buf_callbacks(jvm_buf_get_fn get_fn,
                                           jvm_buf_set_fn set_fn,
                                           jvm_buf_release_fn release_fn) {
@@ -615,6 +1052,13 @@ static int omnivm_jvm_init(const char* classpath) {
     if (!eval_method_id) {
         (*env_ptr)->ExceptionClear(env_ptr);
         // eval not available; will fall back to execute
+    }
+
+    // Cache the raw object-returning eval method used for automatic exports.
+    eval_object_method_id = (*env_ptr)->GetStaticMethodID(env_ptr, runner_class,
+        "evalObject", "(Ljava/lang/String;)Ljava/lang/Object;");
+    if (!eval_object_method_id) {
+        (*env_ptr)->ExceptionClear(env_ptr);
     }
 
     // Cache the executeFile method
@@ -891,6 +1335,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
@@ -972,6 +1417,57 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: output, Output: output}
+}
+
+// ExportBuffer publishes Java direct or array-backed NIO buffers and primitive
+// arrays into OmniVM's shared data plane without a user-visible bridge API.
+func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, error) {
+	if !r.initialized {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("jvm: not initialized")
+	}
+
+	cExpr := C.CString(expr)
+	defer C.free(unsafe.Pointer(cExpr))
+
+	var out C.jvm_omnivm_exported_buffer_t
+	rc := C.omnivm_jvm_export_buffer(cExpr, &out)
+	if rc < 0 {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("jvm: export buffer failed")
+	}
+	if rc > 0 {
+		return pkg.ExportedBuffer{}, false, nil
+	}
+
+	byteLen := int64(out.len)
+	elements := int64(out.elements)
+	if byteLen < 0 || elements < 0 || (byteLen > 0 && out.data == nil) || out.handle == nil {
+		C.omnivm_jvm_release_exported_buffer(out.handle)
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("jvm: invalid exported buffer")
+	}
+	dtype := int32(out.dtype)
+	arrowFormat := C.GoString(out.arrow_format)
+	meta := arrow.BufferMetadata{
+		Dtype:     dtype,
+		Format:    arrowFormat,
+		Shape:     []int64{elements},
+		ReadOnly:  out.read_only != 0,
+		Ownership: "producer",
+	}
+	if _, err := arrow.GlobalStore().SetExternalWithMetadata(name, unsafe.Pointer(out.data), byteLen, meta, func() error {
+		C.omnivm_jvm_release_exported_buffer(out.handle)
+		return nil
+	}); err != nil {
+		C.omnivm_jvm_release_exported_buffer(out.handle)
+		return pkg.ExportedBuffer{}, false, err
+	}
+	return pkg.ExportedBuffer{
+		Name:        name,
+		Dtype:       dtype,
+		ArrowFormat: arrowFormat,
+		Elements:    elements,
+		Shape:       []int64{elements},
+		ReadOnly:    meta.ReadOnly,
+	}, true, nil
 }
 
 // ExecuteFile runs a .java, .class, or .jar file with arguments.

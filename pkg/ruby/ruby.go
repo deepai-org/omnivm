@@ -28,6 +28,7 @@ typedef struct {
     int64_t len;
     int32_t dtype;
     int8_t  owned;
+    int8_t  read_only;
 } rb_omni_buffer_t;
 
 typedef int (*omni_buf_get_fn)(const char* name, rb_omni_buffer_t* out);
@@ -97,13 +98,11 @@ static rb_omni_value_t rb_to_omni_value(VALUE val) {
         memcpy(out.v.s.ptr, RSTRING_PTR(val), out.v.s.len);
         out.v.s.ptr[out.v.s.len] = '\0';
     } else {
-        // Fallback: to_s
-        VALUE str = rb_funcall(val, rb_intern("to_s"), 0);
-        out.tag = RB_OMNI_TAG_STRING;
-        out.v.s.len = RSTRING_LEN(str);
+        const char* msg = "unsupported typed bridge argument; complex values must cross through the manifest proxy/Arrow boundary, not implicit stringification";
+        out.tag = RB_OMNI_TAG_ERROR;
+        out.v.s.len = strlen(msg);
         out.v.s.ptr = (char*)malloc(out.v.s.len + 1);
-        memcpy(out.v.s.ptr, RSTRING_PTR(str), out.v.s.len);
-        out.v.s.ptr[out.v.s.len] = '\0';
+        memcpy(out.v.s.ptr, msg, out.v.s.len + 1);
     }
     return out;
 }
@@ -226,6 +225,10 @@ static VALUE ruby_proxy_thread_val = Qnil;
 
 // Submit work from a foreign (non-Ruby) thread. Blocks until completion.
 // Multiple foreign threads are serialized by the mutex.
+typedef void* (*rb_fproxy_callback_fn)(void*);
+static rb_fproxy_callback_fn rb_fproxy_callback = NULL;
+static void* rb_fproxy_callback_arg = NULL;
+
 static char* rb_fproxy_submit(const char* code, int is_eval) {
     // Reject if the proxy is shutting down / already dead
     if (rb_fproxy_shutdown) {
@@ -247,6 +250,8 @@ static char* rb_fproxy_submit(const char* code, int is_eval) {
     }
     rb_fproxy_code = code;
     rb_fproxy_is_eval = is_eval;
+    rb_fproxy_callback = NULL;
+    rb_fproxy_callback_arg = NULL;
     rb_fproxy_has_request = 1;
     pthread_cond_signal(&rb_fproxy_req_cv);
 
@@ -264,6 +269,31 @@ static char* rb_fproxy_submit(const char* code, int is_eval) {
     rb_fproxy_result = NULL;
     pthread_mutex_unlock(&rb_fproxy_mtx);
     return result;
+}
+
+static void rb_fproxy_submit_callback(rb_fproxy_callback_fn fn, void* arg) {
+    if (rb_fproxy_shutdown || !fn) return;
+    while (!rb_fproxy_ready && !rb_fproxy_shutdown) {
+        usleep(1000);
+    }
+    if (rb_fproxy_shutdown) return;
+
+    pthread_mutex_lock(&rb_fproxy_mtx);
+    if (rb_fproxy_shutdown) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return;
+    }
+    rb_fproxy_code = NULL;
+    rb_fproxy_is_eval = 0;
+    rb_fproxy_callback = fn;
+    rb_fproxy_callback_arg = arg;
+    rb_fproxy_has_request = 1;
+    pthread_cond_signal(&rb_fproxy_req_cv);
+
+    while (rb_fproxy_has_request && !rb_fproxy_shutdown) {
+        pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+    }
+    pthread_mutex_unlock(&rb_fproxy_mtx);
 }
 
 
@@ -353,8 +383,13 @@ static void* ruby_init_thread_func(void* arg) {
 
         if (rb_fproxy_shutdown) break;
 
-        // Execute the requested code (we hold GVL)
-        if (rb_fproxy_is_eval) {
+        // Execute the requested code/callback (we hold GVL)
+        if (rb_fproxy_callback) {
+            rb_fproxy_callback(rb_fproxy_callback_arg);
+            rb_fproxy_callback = NULL;
+            rb_fproxy_callback_arg = NULL;
+            rb_fproxy_result = NULL;
+        } else if (rb_fproxy_is_eval) {
             rb_fproxy_result = omnivm_ruby_eval(rb_fproxy_code);
         } else {
             rb_fproxy_result = omnivm_ruby_exec(rb_fproxy_code);
@@ -433,6 +468,128 @@ static char* omnivm_ruby_eval_safe(const char* code) {
     return rb_fproxy_submit(code, 1);
 }
 
+typedef struct {
+    VALUE object;
+    int locked;
+} rb_omni_exported_buffer_handle_t;
+
+typedef struct {
+    void* data;
+    int64_t len;
+    int32_t dtype;
+    int64_t elements;
+    const char* arrow_format;
+    int8_t read_only;
+    void* handle;
+} rb_omni_exported_buffer_t;
+
+typedef struct {
+    const char* code;
+    rb_omni_exported_buffer_t* out;
+    int rc;
+} ruby_export_buffer_args;
+
+static VALUE ruby_export_eval_cb(VALUE raw) {
+    ruby_export_buffer_args* args = (ruby_export_buffer_args*)raw;
+    return rb_eval_string(args->code);
+}
+
+static VALUE ruby_lock_tmp_cb(VALUE value) {
+    return rb_str_locktmp(value);
+}
+
+static VALUE ruby_unlock_tmp_cb(VALUE raw) {
+    rb_omni_exported_buffer_handle_t* handle = (rb_omni_exported_buffer_handle_t*)raw;
+    if (handle && handle->locked) rb_str_unlocktmp(handle->object);
+    return Qnil;
+}
+
+static void* omnivm_ruby_export_buffer_run(void* raw) {
+    ruby_export_buffer_args* args = (ruby_export_buffer_args*)raw;
+    if (!args) return NULL;
+    args->rc = 1;
+    if (!args->out || !args->code) return NULL;
+    memset(args->out, 0, sizeof(*args->out));
+
+    int state = 0;
+    VALUE obj = rb_protect(ruby_export_eval_cb, (VALUE)args, &state);
+    if (state) {
+        rb_set_errinfo(Qnil);
+        return NULL;
+    }
+
+    VALUE str = rb_check_string_type(obj);
+    if (NIL_P(str)) return NULL;
+    if (rb_enc_get(str) != rb_ascii8bit_encoding()) return NULL;
+
+    rb_omni_exported_buffer_handle_t* handle =
+        (rb_omni_exported_buffer_handle_t*)calloc(1, sizeof(rb_omni_exported_buffer_handle_t));
+    if (!handle) {
+        args->rc = -1;
+        return NULL;
+    }
+    handle->object = Qnil;
+    rb_gc_register_address(&handle->object);
+    handle->object = str;
+
+    state = 0;
+    rb_protect(ruby_lock_tmp_cb, str, &state);
+    if (state) {
+        rb_set_errinfo(Qnil);
+        rb_gc_unregister_address(&handle->object);
+        free(handle);
+        return NULL;
+    }
+    handle->locked = 1;
+
+    args->out->data = (void*)RSTRING_PTR(str);
+    args->out->len = (int64_t)RSTRING_LEN(str);
+    args->out->dtype = 0;
+    args->out->elements = (int64_t)RSTRING_LEN(str);
+    args->out->arrow_format = "C";
+    args->out->read_only = 1;
+    args->out->handle = handle;
+    args->rc = 0;
+    return NULL;
+}
+
+static int omnivm_ruby_export_buffer_safe(const char* code, rb_omni_exported_buffer_t* out) {
+    ruby_export_buffer_args args;
+    args.code = code;
+    args.out = out;
+    args.rc = 1;
+    if (tls_holds_gvl) {
+        omnivm_ruby_export_buffer_run(&args);
+    } else if (tls_is_ruby_thread) {
+        rb_thread_call_with_gvl(omnivm_ruby_export_buffer_run, &args);
+    } else {
+        rb_fproxy_submit_callback(omnivm_ruby_export_buffer_run, &args);
+    }
+    return args.rc;
+}
+
+static void* omnivm_ruby_release_exported_buffer_run(void* raw) {
+    rb_omni_exported_buffer_handle_t* handle = (rb_omni_exported_buffer_handle_t*)raw;
+    if (!handle) return NULL;
+    int state = 0;
+    rb_protect(ruby_unlock_tmp_cb, (VALUE)handle, &state);
+    if (state) rb_set_errinfo(Qnil);
+    rb_gc_unregister_address(&handle->object);
+    free(handle);
+    return NULL;
+}
+
+static void omnivm_ruby_release_exported_buffer_safe(void* handle) {
+    if (!handle) return;
+    if (tls_holds_gvl) {
+        omnivm_ruby_release_exported_buffer_run(handle);
+    } else if (tls_is_ruby_thread) {
+        rb_thread_call_with_gvl(omnivm_ruby_release_exported_buffer_run, handle);
+    } else {
+        rb_fproxy_submit_callback(omnivm_ruby_release_exported_buffer_run, handle);
+    }
+}
+
 // rb_protect callback: calls exception.message
 static VALUE call_exception_message(VALUE exception) {
     return rb_funcall(exception, rb_intern("message"), 0);
@@ -498,6 +655,9 @@ static int omnivm_ruby_init(void) {
         int state = 0;
         rb_eval_string_protect(
             "class Integer\n"
+            "  def to_i\n"
+            "    self\n"
+            "  end\n"
             "  def times\n"
             "    return to_enum(:times) { self } unless block_given?\n"
             "    i = 0\n"
@@ -593,6 +753,7 @@ static int omnivm_ruby_init(void) {
         int state = 0;
         rb_eval_string_protect(
             "begin\n"
+            "  require 'enc/encdb'\n"
             "  require 'rubygems'\n"
             "  require 'set'\n"
             "rescue LoadError\n"
@@ -833,6 +994,14 @@ static VALUE rb_omnivm_call_typed(int argc, VALUE* argv, VALUE self) {
         c_args = (rb_omni_value_t*)calloc(nargs, sizeof(rb_omni_value_t));
         for (int32_t i = 0; i < nargs; i++) {
             c_args[i] = rb_to_omni_value(argv[i + 2]);
+            if (c_args[i].tag == RB_OMNI_TAG_ERROR) {
+                for (int32_t j = 0; j <= i; j++) {
+                    rb_free_omni_value(&c_args[j]);
+                }
+                free(c_args);
+                rb_raise(rb_eTypeError, "unsupported typed bridge argument; complex values must cross through the manifest proxy/Arrow boundary, not implicit stringification");
+                return Qnil;
+            }
         }
     }
 
@@ -871,11 +1040,13 @@ static VALUE rb_omnivm_get_buffer(VALUE self, VALUE rb_name) {
     int rc = g_buf_get(name, &buf);
     if (rc != 0) return Qnil;
     if (buf.data == NULL || buf.len <= 0) {
+        if (g_buf_release) g_buf_release(name);
         return rb_str_new("", 0);
     }
     // Return a frozen binary string (copy from shared memory)
     VALUE str = rb_str_new((const char*)buf.data, (long)buf.len);
     rb_enc_associate(str, rb_ascii8bit_encoding());
+    if (g_buf_release) g_buf_release(name);
     return str;
 }
 
@@ -897,6 +1068,7 @@ static VALUE rb_omnivm_set_buffer(int argc, VALUE* argv, VALUE self) {
     buf.len = (int64_t)RSTRING_LEN(rb_data);
     buf.dtype = NIL_P(rb_dtype) ? 0 : (int32_t)NUM2INT(rb_dtype);
     buf.owned = 0;
+    buf.read_only = 0;
 
     int rc = g_buf_set(name, buf);
     if (rc != 0) {
@@ -958,6 +1130,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
@@ -1057,6 +1230,58 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: output, Output: output}
+}
+
+// ExportBuffer publishes a Ruby String-compatible value into OmniVM's shared
+// data plane without copying. It uses Ruby's generic to_str protocol, pins the
+// backing object against GC movement, and exposes the memory as read-only.
+func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, error) {
+	if !r.initialized {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("ruby: not initialized")
+	}
+
+	cExpr := C.CString(expr)
+	defer C.free(unsafe.Pointer(cExpr))
+
+	var out C.rb_omni_exported_buffer_t
+	rc := C.omnivm_ruby_export_buffer_safe(cExpr, &out)
+	if rc < 0 {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("ruby: export buffer failed")
+	}
+	if rc > 0 {
+		return pkg.ExportedBuffer{}, false, nil
+	}
+
+	byteLen := int64(out.len)
+	elements := int64(out.elements)
+	if byteLen < 0 || elements < 0 || (byteLen > 0 && out.data == nil) || out.handle == nil {
+		C.omnivm_ruby_release_exported_buffer_safe(out.handle)
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("ruby: invalid exported buffer")
+	}
+	dtype := int32(out.dtype)
+	arrowFormat := C.GoString(out.arrow_format)
+	meta := arrow.BufferMetadata{
+		Dtype:     dtype,
+		Format:    arrowFormat,
+		Shape:     []int64{elements},
+		ReadOnly:  out.read_only != 0,
+		Ownership: "producer",
+	}
+	if _, err := arrow.GlobalStore().SetExternalWithMetadata(name, unsafe.Pointer(out.data), byteLen, meta, func() error {
+		C.omnivm_ruby_release_exported_buffer_safe(out.handle)
+		return nil
+	}); err != nil {
+		C.omnivm_ruby_release_exported_buffer_safe(out.handle)
+		return pkg.ExportedBuffer{}, false, err
+	}
+	return pkg.ExportedBuffer{
+		Name:        name,
+		Dtype:       dtype,
+		ArrowFormat: arrowFormat,
+		Elements:    elements,
+		Shape:       []int64{elements},
+		ReadOnly:    meta.ReadOnly,
+	}, true, nil
 }
 
 // EvalTyped evaluates Ruby code and returns a typed polyglot.Value.

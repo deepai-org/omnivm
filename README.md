@@ -286,7 +286,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.set_task_timeout(ms)` | Set direct-call watchdog timeout for supported runtimes (`0` disables) |
 | `omnivm.watchdog_capabilities()` | Return the runtime timeout/preemption support matrix |
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
-| `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state) |
+| `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state, handle/boundary diagnostics) |
 | `omnivm.worker_tainted()` | Return whether this worker should be recycled after a non-recoverable timeout |
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
@@ -502,6 +502,10 @@ make test-manifests
 
 Channel, spawn, and `wait()` semantics are defined in
 [`docs/manifest-channel-contract.md`](docs/manifest-channel-contract.md).
+Cross-runtime value movement is specified in
+[`docs/boundary-semantics.md`](docs/boundary-semantics.md), with the staged
+performance plan in
+[`docs/bridge-performance-plan.md`](docs/bridge-performance-plan.md).
 
 Manifests are validated when parsed. The validator checks the stable executor contract: supported runtimes and op names, required fields for ops such as `spawn`, `chan`, `select`, `func_def`, and nested control-flow bodies. It intentionally does not reject dynamic binding-liveness cases that only execution can know.
 
@@ -668,7 +672,13 @@ result, err := vm.Call("python", fmt.Sprintf(`get_user_json(%q)`, userID))
 sessionUID, err := vm.Call("python", fmt.Sprintf(`validate_session(%q)`, sessionKey))
 ```
 
-ORM objects can't cross the bridge (everything is a string), so helpers should serialize their return values (JSON). This matches the typical Django view pattern where the output is already `JsonResponse`.
+The string-returning `Call` API is the compatibility surface, so helpers that
+produce HTTP JSON can still return JSON directly. That is not the long-term
+boundary model for PolyScript or manifest execution: framework objects, ORM
+models, buffers, streams, and other complex values should cross automatically
+through the generic `copy`, `ref`, `stream`, or Arrow boundary selected from the
+value's protocol shape. The runtime must not rely on special cases for Django,
+Pandas, PIL, or any other package name.
 
 ### Priority Dispatch
 

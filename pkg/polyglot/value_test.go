@@ -31,7 +31,7 @@ func TestValueBool(t *testing.T) {
 }
 
 func TestValueI64(t *testing.T) {
-	for _, i := range []int64{0, 1, -1, 1<<62, -(1 << 62)} {
+	for _, i := range []int64{0, 1, -1, 1 << 62, -(1 << 62)} {
 		v := I64(i)
 		cv := v.ToCValue()
 		v2 := FromCValue(cv)
@@ -170,5 +170,17 @@ func TestEmptyBytesRoundtrip(t *testing.T) {
 	FreeCValue(cv)
 	if len(v2.Bytes) != 0 {
 		t.Fatalf("expected empty bytes, got %d", len(v2.Bytes))
+	}
+}
+
+func TestArrowCDataABISizes(t *testing.T) {
+	if CValueABISize != CValueSize {
+		t.Fatalf("CValueABISize = %d, want CValueSize %d", CValueABISize, CValueSize)
+	}
+	if CArrowSchemaSize <= 0 {
+		t.Fatalf("CArrowSchemaSize = %d, want positive", CArrowSchemaSize)
+	}
+	if CArrowArraySize <= 0 {
+		t.Fatalf("CArrowArraySize = %d, want positive", CArrowArraySize)
 	}
 }

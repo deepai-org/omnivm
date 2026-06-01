@@ -52,6 +52,106 @@ static omni_buf_get_fn g_buf_get = nullptr;
 static omni_buf_set_fn g_buf_set = nullptr;
 static omni_buf_release_fn g_buf_release = nullptr;
 
+struct OmniExternalBufferLease {
+    char* name;
+};
+
+struct OmniExportedBufferHandle {
+    std::shared_ptr<v8::BackingStore> backing;
+};
+
+static void OmniExternalBufferDeleter(void* data, size_t length, void* deleter_data) {
+    (void)data;
+    (void)length;
+    auto* lease = static_cast<OmniExternalBufferLease*>(deleter_data);
+    if (lease) {
+        if (g_buf_release && lease->name) {
+            g_buf_release(lease->name);
+        }
+        free(lease->name);
+        delete lease;
+    }
+}
+
+static bool OmniTypedArrayMetadata(v8::Local<v8::Value> value,
+                                   int32_t* dtype,
+                                   const char** arrow_format,
+                                   size_t* elem_size) {
+    if (value->IsArrayBuffer()) {
+        *dtype = 0;
+        *arrow_format = "C";
+        *elem_size = 1;
+        return true;
+    }
+    if (value->IsDataView()) {
+        *dtype = 0;
+        *arrow_format = "C";
+        *elem_size = 1;
+        return true;
+    }
+    if (value->IsInt8Array()) {
+        *dtype = 10;
+        *arrow_format = "c";
+        *elem_size = 1;
+        return true;
+    }
+    if (value->IsUint8Array() || value->IsUint8ClampedArray()) {
+        *dtype = 11;
+        *arrow_format = "C";
+        *elem_size = 1;
+        return true;
+    }
+    if (value->IsInt16Array()) {
+        *dtype = 6;
+        *arrow_format = "s";
+        *elem_size = 2;
+        return true;
+    }
+    if (value->IsUint16Array()) {
+        *dtype = 7;
+        *arrow_format = "S";
+        *elem_size = 2;
+        return true;
+    }
+    if (value->IsInt32Array()) {
+        *dtype = 1;
+        *arrow_format = "i";
+        *elem_size = 4;
+        return true;
+    }
+    if (value->IsUint32Array()) {
+        *dtype = 8;
+        *arrow_format = "I";
+        *elem_size = 4;
+        return true;
+    }
+    if (value->IsBigInt64Array()) {
+        *dtype = 2;
+        *arrow_format = "l";
+        *elem_size = 8;
+        return true;
+    }
+    if (value->IsBigUint64Array()) {
+        *dtype = 9;
+        *arrow_format = "L";
+        *elem_size = 8;
+        return true;
+    }
+    if (value->IsFloat32Array()) {
+        *dtype = 3;
+        *arrow_format = "f";
+        *elem_size = 4;
+        return true;
+    }
+    if (value->IsFloat64Array()) {
+        *dtype = 4;
+        *arrow_format = "g";
+        *elem_size = 8;
+        return true;
+    }
+    return false;
+}
+
 // Node.js per-process init result (shared_ptr since Node 24)
 static std::shared_ptr<node::InitializationResult> init_result;
 
@@ -123,23 +223,54 @@ static void OmnivmGetBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& i
     omni_buffer_t buf;
     memset(&buf, 0, sizeof(buf));
 
+    int rc;
     {
         v8::Unlocker unlocker(isolate);
-        int rc = g_buf_get(*name, &buf);
-        if (rc != 0) {
-            // re-lock happens when unlocker goes out of scope
-        }
+        rc = g_buf_get(*name, &buf);
     }
-
-    if (buf.data == nullptr || buf.len <= 0) {
+    if (rc != 0) {
         info.GetReturnValue().Set(v8::Null(isolate));
         return;
     }
 
-    // Create an ArrayBuffer backed by a copy of the shared data.
-    // V8 manages its own memory, so we copy here for safety.
-    auto backing = v8::ArrayBuffer::NewBackingStore(isolate, buf.len);
-    memcpy(backing->Data(), buf.data, buf.len);
+    if (buf.data == nullptr || buf.len <= 0) {
+        if (g_buf_release) {
+            g_buf_release(*name);
+        }
+        info.GetReturnValue().Set(v8::Null(isolate));
+        return;
+    }
+
+    if (buf.read_only != 0) {
+        auto backing = v8::ArrayBuffer::NewBackingStore(isolate, buf.len);
+        memcpy(backing->Data(), buf.data, buf.len);
+        if (g_buf_release) {
+            g_buf_release(*name);
+        }
+        auto ab = v8::ArrayBuffer::New(isolate, std::move(backing));
+        info.GetReturnValue().Set(ab);
+        return;
+    }
+
+    auto* lease = new OmniExternalBufferLease();
+    size_t name_len = strlen(*name);
+    lease->name = static_cast<char*>(malloc(name_len + 1));
+    if (!lease->name) {
+        delete lease;
+        if (g_buf_release) {
+            g_buf_release(*name);
+        }
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "getBuffer allocation failed")));
+        return;
+    }
+    memcpy(lease->name, *name, name_len + 1);
+
+    auto backing = v8::ArrayBuffer::NewBackingStore(
+        buf.data,
+        static_cast<size_t>(buf.len),
+        OmniExternalBufferDeleter,
+        lease);
     auto ab = v8::ArrayBuffer::New(isolate, std::move(backing));
     info.GetReturnValue().Set(ab);
 }
@@ -170,6 +301,7 @@ static void OmnivmSetBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& i
     buf.len = static_cast<int64_t>(ab->ByteLength());
     buf.dtype = dtype;
     buf.owned = 0;
+    buf.read_only = 0;
 
     int rc;
     {
@@ -237,18 +369,11 @@ static omni_value_t js_to_omni_value(v8::Isolate* isolate,
         out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len));
         memcpy(out.v.s.ptr, ab->GetBackingStore()->Data(), out.v.s.len);
     } else {
-        // Fallback: stringify
-        v8::Local<v8::String> str;
-        if (val->ToString(context).ToLocal(&str)) {
-            v8::String::Utf8Value utf8(isolate, str);
-            out.tag = OMNI_TAG_STRING;
-            out.v.s.len = utf8.length();
-            out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len + 1));
-            memcpy(out.v.s.ptr, *utf8, out.v.s.len);
-            out.v.s.ptr[out.v.s.len] = '\0';
-        } else {
-            out.tag = OMNI_TAG_NULL;
-        }
+        const char* msg = "unsupported typed bridge argument; complex values must cross through the manifest proxy/Arrow boundary, not implicit stringification";
+        out.tag = OMNI_TAG_ERROR;
+        out.v.s.len = static_cast<int64_t>(strlen(msg));
+        out.v.s.ptr = static_cast<char*>(malloc(out.v.s.len + 1));
+        memcpy(out.v.s.ptr, msg, out.v.s.len + 1);
     }
     return out;
 }
@@ -324,6 +449,16 @@ static void OmnivmCallTypedCallback(const v8::FunctionCallbackInfo<v8::Value>& i
         c_args = static_cast<omni_value_t*>(calloc(nargs, sizeof(omni_value_t)));
         for (int32_t i = 0; i < nargs; i++) {
             c_args[i] = js_to_omni_value(isolate, context, info[i + 2]);
+            if (c_args[i].tag == OMNI_TAG_ERROR) {
+                isolate->ThrowException(v8::Exception::TypeError(
+                    v8::String::NewFromUtf8(isolate,
+                        c_args[i].v.s.ptr ? c_args[i].v.s.ptr : "unsupported typed bridge argument").ToLocalChecked()));
+                for (int32_t j = 0; j <= i; j++) {
+                    free_omni_value(&c_args[j]);
+                }
+                free(c_args);
+                return;
+            }
         }
     }
 
@@ -673,6 +808,89 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
     ctx_w->isolate->PerformMicrotaskCheckpoint();
 
     return result;
+}
+
+int omnivm_v8_export_buffer(omnivm_v8_context* ctx_w,
+                             const char* code,
+                             omnivm_v8_exported_buffer_t* out) {
+    if (!ctx_w || !ctx_w->isolate || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    v8::Locker locker(ctx_w->isolate);
+    v8::Isolate::Scope isolate_scope(ctx_w->isolate);
+    v8::HandleScope handle_scope(ctx_w->isolate);
+    v8::Local<v8::Context> context =
+        v8::Local<v8::Context>::New(ctx_w->isolate, ctx_w->context);
+    v8::Context::Scope context_scope(context);
+    node::CallbackScope callback_scope(ctx_w->isolate,
+        v8::Object::New(ctx_w->isolate), {0, 0});
+
+    ctx_w->isolate->CancelTerminateExecution();
+    register_omnivm_bridge(ctx_w->isolate, context);
+
+    v8::TryCatch try_catch(ctx_w->isolate);
+    v8::Local<v8::String> source =
+        v8::String::NewFromUtf8(ctx_w->isolate, code).ToLocalChecked();
+    v8::MaybeLocal<v8::Script> maybe_script =
+        v8::Script::Compile(context, source);
+    if (maybe_script.IsEmpty()) {
+        return 1;
+    }
+    v8::MaybeLocal<v8::Value> maybe_result =
+        maybe_script.ToLocalChecked()->Run(context);
+    if (maybe_result.IsEmpty() || try_catch.HasCaught()) {
+        if (try_catch.HasTerminated()) {
+            ctx_w->isolate->CancelTerminateExecution();
+            return -1;
+        }
+        return 1;
+    }
+
+    v8::Local<v8::Value> value = maybe_result.ToLocalChecked();
+    int32_t dtype = 0;
+    const char* arrow_format = nullptr;
+    size_t elem_size = 0;
+    if (!OmniTypedArrayMetadata(value, &dtype, &arrow_format, &elem_size)) {
+        return 1;
+    }
+
+    std::shared_ptr<v8::BackingStore> backing;
+    size_t byte_offset = 0;
+    size_t byte_len = 0;
+    if (value->IsArrayBuffer()) {
+        auto ab = value.As<v8::ArrayBuffer>();
+        backing = ab->GetBackingStore();
+        byte_len = ab->ByteLength();
+    } else if (value->IsArrayBufferView()) {
+        auto view = value.As<v8::ArrayBufferView>();
+        backing = view->Buffer()->GetBackingStore();
+        byte_offset = view->ByteOffset();
+        byte_len = view->ByteLength();
+    } else {
+        return 1;
+    }
+    if (elem_size == 0 || byte_len % elem_size != 0 || byte_offset > backing->ByteLength() ||
+        byte_len > backing->ByteLength() - byte_offset) {
+        return 1;
+    }
+
+    auto* handle = new OmniExportedBufferHandle();
+    handle->backing = backing;
+    out->data = static_cast<char*>(backing->Data()) + byte_offset;
+    out->len = static_cast<int64_t>(byte_len);
+    out->dtype = dtype;
+    out->elements = static_cast<int64_t>(byte_len / elem_size);
+    out->arrow_format = arrow_format;
+    out->read_only = 0;
+    out->handle = handle;
+    ctx_w->isolate->PerformMicrotaskCheckpoint();
+    return 0;
+}
+
+void omnivm_v8_release_exported_buffer(void* handle) {
+    delete static_cast<OmniExportedBufferHandle*>(handle);
 }
 
 omni_value_t omnivm_v8_eval_typed(omnivm_v8_context* ctx_w, const char* code) {

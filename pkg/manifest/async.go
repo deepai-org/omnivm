@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 )
 
 var (
@@ -379,18 +380,27 @@ func (e *Executor) opParallel(op *Op) (interface{}, error) {
 }
 
 // startAsyncBranch starts an async task for a parallel branch.
-func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int) error {
+func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int) (err error) {
 	rt := e.runtimes[rtName]
 	resultVar := fmt.Sprintf("__omni_parallel_%d_result", idx)
 	errorVar := fmt.Sprintf("__omni_parallel_%d_error", idx)
 
 	// Auto-inject scope bindings so branch code can reference manifest variables
-	autoCode := e.autoInjectScope(rtName)
-	if autoCode != "" {
-		injectResult := rt.Execute(autoCode)
+	injection := e.autoInjectScopePlanExcluding(rtName, captureBindingExclusions(branch.Captures))
+	if injection.setup != "" {
+		injectResult := rt.Execute(injection.setup)
 		if injectResult.Err != nil {
 			return fmt.Errorf("parallel auto-inject [%s]: %w", rtName, injectResult.Err)
 		}
+		defer func() {
+			if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w (auto capture cleanup failed: %v)", err, cleanupErr)
+					return
+				}
+				err = fmt.Errorf("parallel auto capture cleanup [%s]: %w", rtName, cleanupErr)
+			}
+		}()
 	}
 
 	code := branch.Code
@@ -458,6 +468,7 @@ func (e *Executor) pumpUntilDone(checkDone func() bool) error {
 		for _, rt := range e.runtimes {
 			rt.Pump()
 		}
+		arrow.GlobalStore().DrainDeferred()
 		time.Sleep(asyncPumpInterval)
 	}
 	return fmt.Errorf("async operation timed out after %s", asyncPumpTimeout)

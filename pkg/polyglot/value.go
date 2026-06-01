@@ -30,12 +30,12 @@ const (
 
 // Value is the Go representation of omni_value_t.
 type Value struct {
-	Tag    int64
-	Int    int64   // TagBool (0/1), TagI64
-	Float  float64 // TagF64
-	Str    string  // TagString, TagError
-	Bytes  []byte  // TagBytes
-	Ref    uint64  // TagRef
+	Tag   int64
+	Int   int64   // TagBool (0/1), TagI64
+	Float float64 // TagF64
+	Str   string  // TagString, TagError
+	Bytes []byte  // TagBytes
+	Ref   uint64  // TagRef
 }
 
 // Null returns a null Value.
@@ -74,10 +74,17 @@ func (v Value) IsError() bool { return v.Tag == TagError }
 // IsNull returns true if this value is null.
 func (v Value) IsNull() bool { return v.Tag == TagNull }
 
-// CValueSize is the size of omni_value_t (24 bytes: 8-byte tag + 16-byte union).
+// C ABI sizes, exported for bridge pointer arithmetic and adapter tests.
+const (
+	CArrowSchemaSize = int(C.sizeof_ArrowSchema)
+	CArrowArraySize  = int(C.sizeof_ArrowArray)
+)
+
 const CValueSize = 24
 
-// ToCValueRaw writes a Value into a 32-byte C omni_value_t at the given pointer.
+var CValueABISize = int(C.sizeof_omni_value_t)
+
+// ToCValueRaw writes a Value into a C omni_value_t at the given pointer.
 // String/bytes data is copied into C-allocated memory (caller must free via FreeCValueRaw).
 func (v Value) ToCValueRaw(ptr unsafe.Pointer) {
 	// Zero the struct

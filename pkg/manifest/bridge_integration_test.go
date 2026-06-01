@@ -537,9 +537,9 @@ func TestBridgeIntegration_TypeSummaryWarning(t *testing.T) {
 	}
 }
 
-// --- Test 10: No bridges = passthrough (backward compat) ---
+// --- Test 10: No bridges = generic proxy for ambiguous complex captures ---
 
-func TestBridgeIntegration_NoBridgesPassthrough(t *testing.T) {
+func TestBridgeIntegration_NoBridgeComplexCaptureUsesProxy(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 
 	mocks["python"].evalFn = func(code string) pkg.Result {
@@ -558,7 +558,6 @@ func TestBridgeIntegration_NoBridgesPassthrough(t *testing.T) {
 		return pkg.Result{Value: "mock"}
 	}
 
-	// No bridges — data should flow through unchanged via JSON serialization
 	manifest := `{
 		"version": 1,
 		"defaultRuntime": "python",
@@ -576,19 +575,35 @@ func TestBridgeIntegration_NoBridgesPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// JS should still receive the data
-	if !contains(jsCode, "[1, 2, 3]") && !contains(jsCode, "[1,2,3]") {
-		t.Errorf("JS should receive data without bridges, got: %q", jsCode)
+	if !contains(jsCode, "__omnivm_materialize_capture") || !contains(jsCode, "__omnivm_resource__") {
+		t.Errorf("JS should receive a generic resource proxy without explicit bridges, got: %q", jsCode)
+	}
+	if contains(jsCode, `"values":[1,2,3]`) || contains(jsCode, "[1, 2, 3]") {
+		t.Errorf("complex capture should not be copied as JSON payload, got: %q", jsCode)
+	}
+	stats := e.BoundaryStats()
+	if stats.RuntimeSerializations != 0 || stats.ResourceProxyCaptures != 1 || stats.JSONFallbacks != 0 || stats.BoundaryWarnings != 0 || stats.CaptureInjections != 1 {
+		t.Fatalf("unexpected boundary stats: %+v", stats)
 	}
 }
 
-func TestBridgeIntegration_NoBridgeComplexCaptureWarns(t *testing.T) {
+func TestBridgeIntegration_NoBridgeComplexCaptureDoesNotJSONFallback(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	e.bridgeOps = buildBridgeIndex(nil)
 	e.setBinding("data", RuntimeRef{Runtime: "python", VarName: "data", Value: nil})
 
 	mocks["python"].evalFn = func(code string) pkg.Result {
-		return pkg.Result{Value: `{"items":[1,2,3]}`}
+		if strings.Contains(code, "__next__") {
+			return pkg.Result{Value: "false"}
+		}
+		if strings.Contains(code, "collections.abc") {
+			return pkg.Result{Value: `"mapping"`}
+		}
+		if strings.Contains(code, `"primitive": False`) || strings.Contains(code, `"primitive": false`) {
+			return pkg.Result{Value: `{"primitive":false}`}
+		}
+		t.Fatalf("complex capture should not JSON-serialize source runtime, got eval %q", code)
+		return pkg.Result{}
 	}
 
 	var wrapped string
@@ -600,11 +615,18 @@ func TestBridgeIntegration_NoBridgeComplexCaptureWarns(t *testing.T) {
 		}
 	})
 
-	if !contains(wrapped, `"items":[1,2,3]`) {
-		t.Fatalf("expected complex capture to pass through, got %q", wrapped)
+	if !contains(wrapped, "__omnivm_resource__") || !contains(wrapped, "__omnivm_materialize_capture") {
+		t.Fatalf("expected complex capture to use a generic proxy descriptor, got %q", wrapped)
 	}
-	if !contains(stderr, `warning: cross-runtime capture "data" from python to javascript`) {
-		t.Fatalf("expected ambiguous boundary warning, got %q", stderr)
+	if contains(wrapped, `"items":[1,2,3]`) {
+		t.Fatalf("complex capture should not pass through as JSON payload, got %q", wrapped)
+	}
+	if stderr != "" {
+		t.Fatalf("expected proxy capture without fallback warning, got %q", stderr)
+	}
+	stats := e.BoundaryStats()
+	if stats.RuntimeSerializations != 0 || stats.ResourceProxyCaptures != 1 || stats.JSONFallbacks != 0 || stats.BoundaryWarnings != 0 || stats.CaptureInjections != 1 {
+		t.Fatalf("unexpected boundary stats: %+v", stats)
 	}
 }
 
@@ -628,6 +650,102 @@ func TestBridgeIntegration_ExplicitBridgeSuppressesBoundaryWarning(t *testing.T)
 
 	if stderr != "" {
 		t.Fatalf("expected explicit bridge to suppress boundary warning, got %q", stderr)
+	}
+	stats := e.BoundaryStats()
+	if stats.RuntimeSerializations != 1 || stats.JSONFallbacks != 0 || stats.BoundaryWarnings != 0 || stats.BridgeTransforms != 1 {
+		t.Fatalf("unexpected boundary stats: %+v", stats)
+	}
+}
+
+func TestBridgeIntegration_ExplicitRubyBridgeSerializesGlobalBinding(t *testing.T) {
+	e, mocks := makeExecutor("ruby", "javascript")
+	e.bridgeOps = buildBridgeIndex([]*BridgeOp{
+		{Binding: "data", Op: "identity", From: "ruby", To: "javascript"},
+	})
+	e.setBinding("data", RuntimeRef{Runtime: "ruby", VarName: "data", Value: nil})
+
+	mocks["ruby"].evalFn = func(code string) pkg.Result {
+		if !contains(code, "JSON.generate($data)") {
+			t.Fatalf("explicit Ruby bridge should serialize the persisted global binding, got %q", code)
+		}
+		return pkg.Result{Value: `{"items":[1,2,3]}`}
+	}
+
+	wrapped, err := e.wrapWithCaptures("javascript", "use(data)", map[string]string{"data": "data"})
+	if err != nil {
+		t.Fatalf("wrapWithCaptures: %v", err)
+	}
+	if !contains(wrapped, `globalThis.__omnivm_materialize_capture({"items":[1,2,3]})`) {
+		t.Fatalf("explicit Ruby bridge did not inject serialized bridge value, got %q", wrapped)
+	}
+	stats := e.BoundaryStats()
+	if stats.RuntimeSerializations != 1 || stats.BridgeTransforms != 1 || stats.JSONFallbacks != 0 || stats.ResourceProxyCaptures != 0 {
+		t.Fatalf("unexpected Ruby bridge stats: %+v", stats)
+	}
+}
+
+func TestBridgeIntegration_JSONFallbackRecordsReason(t *testing.T) {
+	e, _ := makeExecutor("javascript")
+	e.bridgeOps = buildBridgeIndex(nil)
+	e.setBinding("score", RuntimeRef{Runtime: "missing", Value: 42})
+
+	stderr := captureStderr(t, func() {
+		wrapped, err := e.wrapWithCaptures("javascript", "use(score)", map[string]string{"score": "score"})
+		if err != nil {
+			t.Fatalf("wrapWithCaptures: %v", err)
+		}
+		if !contains(wrapped, "globalThis.__omnivm_materialize_capture(42)") {
+			t.Fatalf("expected cached primitive JSON fallback injection, got %q", wrapped)
+		}
+	})
+	if !contains(stderr, "source runtime serialization failed; using cached manifest value") {
+		t.Fatalf("expected fallback warning, got %q", stderr)
+	}
+	stats := e.BoundaryStats()
+	if stats.JSONFallbacks != 1 || stats.LastJSONFallbackReason != "source runtime serialization failed; using cached manifest value" || stats.BoundaryWarnings != 1 {
+		t.Fatalf("unexpected fallback stats: %+v", stats)
+	}
+}
+
+func TestBridgeIntegration_StreamProxyBoundaryStats(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.bridgeOps = buildBridgeIndex([]*BridgeOp{
+		{Binding: "chunks", Op: "stream_proxy", From: "python", To: "javascript"},
+	})
+	e.setBinding("chunks", RuntimeRef{Runtime: "python", VarName: "chunks", Value: nil})
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `["a","b"]`}
+	}
+
+	wrapped, err := e.wrapWithCaptures("javascript", "use(chunks)", map[string]string{"chunks": "chunks"})
+	if err != nil {
+		t.Fatalf("wrapWithCaptures: %v", err)
+	}
+	if !contains(wrapped, "__omnivm_stream__") {
+		t.Fatalf("expected stream proxy marker, got %q", wrapped)
+	}
+	stats := e.BoundaryStats()
+	if stats.StreamProxyCaptures != 1 || stats.BridgeTransforms != 1 || stats.CaptureInjections != 1 {
+		t.Fatalf("unexpected boundary stats: %+v", stats)
+	}
+}
+
+func TestBridgeIntegration_ShareMemoryBoundaryStats(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.bridgeOps = buildBridgeIndex([]*BridgeOp{
+		{Binding: "data", Op: "share_memory", From: "python", To: "javascript"},
+	})
+	e.setBinding("data", RuntimeRef{Runtime: "python", VarName: "data", Value: nil})
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `[1,2,3]`}
+	}
+
+	if _, err := e.wrapWithCaptures("javascript", "use(data)", map[string]string{"data": "data"}); err != nil {
+		t.Fatalf("wrapWithCaptures: %v", err)
+	}
+	stats := e.BoundaryStats()
+	if stats.ArrowTransfers != 1 || stats.BridgeTransforms != 1 || stats.CaptureInjections != 1 {
+		t.Fatalf("unexpected boundary stats: %+v", stats)
 	}
 }
 

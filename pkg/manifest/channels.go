@@ -3,12 +3,15 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/omnivm/omnivm/pkg/handles"
 )
 
 // ChanRef wraps a Go channel for use as a manifest binding.
@@ -47,6 +50,226 @@ func (ch *ChanRef) isClosed() bool {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	return ch.closed
+}
+
+func (ch *ChanRef) recvStreamValue() (interface{}, bool) {
+	select {
+	case v, ok := <-ch.ch:
+		if !ok {
+			return nil, true
+		}
+		return v, false
+	default:
+		return nil, true
+	}
+}
+
+func (e *Executor) channelStreamCaptureJSON(ch *ChanRef) (string, error) {
+	id, err := e.channelStreamHandle(ch)
+	if err != nil {
+		return "", err
+	}
+	e.addBoundaryStat(func(stats *BoundaryStats) {
+		stats.StreamProxyCaptures++
+	})
+	return streamCaptureJSON(id, "go", "channel"), nil
+}
+
+func (e *Executor) channelStreamHandle(ch *ChanRef) (handles.ID, error) {
+	return e.genericStreamHandle("go", ch)
+}
+
+func (e *Executor) localStreamCaptureJSON(value interface{}, runtime string) (string, bool, error) {
+	switch v := value.(type) {
+	case *ChanRef:
+		jsonVal, err := e.channelStreamCaptureJSON(v)
+		return jsonVal, true, err
+	}
+	if !isReceivableChannelValue(value) {
+		if !isReaderStreamValue(value) {
+			return "", false, nil
+		}
+	}
+	if runtime == "" {
+		runtime = "go"
+	}
+	id, err := e.genericStreamHandle(runtime, value)
+	if err != nil {
+		return "", true, err
+	}
+	e.addBoundaryStat(func(stats *BoundaryStats) {
+		stats.StreamProxyCaptures++
+	})
+	return streamCaptureJSON(id, runtime, streamKindForValue(value)), true, nil
+}
+
+func (e *Executor) genericStreamHandle(runtime string, value interface{}) (handles.ID, error) {
+	if runtime == "" {
+		runtime = "go"
+	}
+	if id, ok := e.bridgeHandleForValue(runtime, value); ok {
+		return id, nil
+	}
+	var id handles.ID
+	id, err := e.ensureHandleTable().Register(value, handles.RegisterOptions{
+		Runtime: runtime,
+		Kind:    streamKindForValue(value),
+		ScopeID: e.currentHandleScope(),
+		Release: func(any) error {
+			if err := closeGenericStreamValue(value); err != nil {
+				return err
+			}
+			e.forgetReleasedHandle(id, value)
+			return nil
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	if ident, ok := bridgeIdentityForValue(value); ok {
+		e.bridgeHandles[ident] = id
+	}
+	return id, nil
+}
+
+func isReceivableChannelValue(value interface{}) bool {
+	rv, ok := reflectChannelValue(value)
+	if !ok {
+		return false
+	}
+	return rv.Type().ChanDir()&reflect.RecvDir != 0
+}
+
+func isReaderStreamValue(value interface{}) bool {
+	if isHTTPMessageShapeValue(value) {
+		return false
+	}
+	_, ok := value.(io.Reader)
+	return ok
+}
+
+func isHTTPMessageShapeValue(value interface{}) bool {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return false
+	}
+	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	methodLike := false
+	targetLike := false
+	if rt.Kind() == reflect.Struct {
+		for _, name := range []string{"Method", "RequestMethod"} {
+			if _, ok := rt.FieldByName(name); ok {
+				methodLike = true
+				break
+			}
+		}
+		for _, name := range []string{"Path", "URL", "Url", "URI", "Headers", "Header", "Env", "PathInfo", "RequestURI"} {
+			if _, ok := rt.FieldByName(name); ok {
+				targetLike = true
+				break
+			}
+		}
+	}
+	for i := 0; i < rt.NumMethod(); i++ {
+		method := rt.Method(i)
+		if method.Type.NumIn() != 1 || method.Type.NumOut() == 0 {
+			continue
+		}
+		switch method.Name {
+		case "Method", "GetMethod", "RequestMethod", "GetRequestMethod":
+			methodLike = true
+		case "Path", "GetPath", "URL", "Url", "GetURL", "GetUrl", "URI", "GetURI", "Headers", "GetHeaders", "Header", "GetHeader", "Env", "GetEnv", "PathInfo", "GetPathInfo", "RequestURI", "GetRequestURI":
+			targetLike = true
+		}
+	}
+	return methodLike && targetLike
+}
+
+func streamKindForValue(value interface{}) string {
+	switch value.(type) {
+	case *ChanRef:
+		return "channel"
+	}
+	if isReceivableChannelValue(value) {
+		return "channel"
+	}
+	if isReaderStreamValue(value) {
+		return "reader"
+	}
+	return "stream"
+}
+
+func reflectChannelValue(value interface{}) (reflect.Value, bool) {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return reflect.Value{}, false
+	}
+	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return reflect.Value{}, false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Chan {
+		return reflect.Value{}, false
+	}
+	return rv, true
+}
+
+func recvReflectStreamValue(value interface{}) (interface{}, bool, bool) {
+	rv, ok := reflectChannelValue(value)
+	if !ok || rv.Type().ChanDir()&reflect.RecvDir == 0 {
+		return nil, false, false
+	}
+	chosen, recv, recvOK := reflect.Select([]reflect.SelectCase{
+		{Dir: reflect.SelectRecv, Chan: rv},
+		{Dir: reflect.SelectDefault},
+	})
+	if chosen == 1 {
+		return nil, true, true
+	}
+	if !recvOK {
+		return nil, true, true
+	}
+	if !recv.IsValid() || !recv.CanInterface() {
+		return nil, false, true
+	}
+	return recv.Interface(), false, true
+}
+
+func readGenericStreamValue(value interface{}) (interface{}, bool, bool, error) {
+	reader, ok := value.(io.Reader)
+	if !ok {
+		return nil, false, false, nil
+	}
+	buf := make([]byte, 8192)
+	n, err := reader.Read(buf)
+	if n > 0 {
+		chunk := make([]byte, n)
+		copy(chunk, buf[:n])
+		return chunk, false, true, nil
+	}
+	if err == nil {
+		return nil, true, true, nil
+	}
+	if err == io.EOF {
+		return nil, true, true, nil
+	}
+	return nil, false, true, err
+}
+
+func closeGenericStreamValue(value interface{}) error {
+	closer, ok := value.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
 
 // registerChannelBuiltins registers Go channel builtins in the goFuncs registry.
@@ -360,7 +583,7 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 		}
 	}
 
-	normalizedArgs := normalizeArgs(args)
+	normalizedArgs := e.normalizeGoArgs(args)
 	handle := e.newSpawnHandle()
 
 	go func() {

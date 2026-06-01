@@ -204,6 +204,199 @@ func TestSetWithDtype(t *testing.T) {
 	}
 }
 
+func TestSetWithMetadataCopiesDescriptor(t *testing.T) {
+	s := NewSharedStore()
+	shape := []int64{2, 3}
+	strides := []int64{12, 4}
+	buf, err := s.SetWithMetadata("tensor", []byte{1, 2, 3, 4, 5, 6}, BufferMetadata{
+		Dtype:     DtypeF32,
+		Format:    "f",
+		Shape:     shape,
+		Strides:   strides,
+		NullCount: -1,
+		ReadOnly:  true,
+		Ownership: "producer",
+	})
+	if err != nil {
+		t.Fatalf("SetWithMetadata failed: %v", err)
+	}
+	shape[0] = 99
+	strides[0] = 99
+
+	meta := buf.Metadata()
+	if meta.Dtype != DtypeF32 || meta.Format != "f" || !meta.ReadOnly || meta.Ownership != "producer" {
+		t.Fatalf("bad metadata: %+v", meta)
+	}
+	if meta.Shape[0] != 2 || meta.Strides[0] != 12 || meta.NullCount != -1 {
+		t.Fatalf("metadata was not preserved defensively: %+v", meta)
+	}
+
+	if _, err := s.SetWithMetadata("tensor", []byte{7}, BufferMetadata{Dtype: DtypeUTF8, Format: "u"}); err != nil {
+		t.Fatalf("replace SetWithMetadata failed: %v", err)
+	}
+	meta = buf.Metadata()
+	if meta.Dtype != DtypeUTF8 || meta.Format != "u" || meta.Ownership != "omnivm" {
+		t.Fatalf("bad replacement metadata: %+v", meta)
+	}
+}
+
+func TestBorrowZeroCopyLease(t *testing.T) {
+	s := NewSharedStore()
+	buf, err := s.SetWithMetadata("tensor", []byte{1, 2, 3, 4}, BufferMetadata{
+		Dtype:     DtypeI32,
+		Format:    "i",
+		Shape:     []int64{2},
+		Strides:   []int64{4},
+		ReadOnly:  true,
+		Ownership: "producer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := s.Borrow("tensor")
+	if err != nil {
+		t.Fatalf("Borrow failed: %v", err)
+	}
+	if lease.Data != unsafe.Pointer(&buf.Data[0]) || lease.Len != 4 || lease.Dtype != DtypeI32 {
+		t.Fatalf("bad lease: %+v", lease)
+	}
+	if lease.Metadata.Format != "i" || lease.Metadata.Shape[0] != 2 || !lease.Metadata.ReadOnly {
+		t.Fatalf("bad lease metadata: %+v", lease.Metadata)
+	}
+	lease.Metadata.Shape[0] = 99
+	if meta := buf.Metadata(); meta.Shape[0] != 2 {
+		t.Fatalf("lease metadata was not defensive: %+v", meta)
+	}
+
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs != 2 {
+		t.Fatalf("expected borrowed refs=2, got %d", refs)
+	}
+
+	lease.Release()
+	lease.Release()
+	buf.mu.Lock()
+	refs = buf.refs
+	buf.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("expected released refs=1, got %d", refs)
+	}
+
+	stats := s.Stats()
+	if stats.ZeroCopyBorrows != 1 || stats.Gets != 1 || stats.Releases != 1 {
+		t.Fatalf("bad borrow stats: %+v", stats)
+	}
+}
+
+func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
+	s := NewSharedStore()
+	old, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := s.SetWithDtype("payload", []byte{9, 8, 7}, DtypeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement == old {
+		t.Fatal("replacement reused a buffer with an active borrow")
+	}
+
+	borrowed := unsafe.Slice((*byte)(lease.Data), lease.Len)
+	if borrowed[0] != 1 || borrowed[1] != 2 || borrowed[2] != 3 {
+		t.Fatalf("borrowed view changed after replacement: %v", borrowed)
+	}
+
+	current, err := s.Get("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != replacement || current.Data[0] != 9 {
+		t.Fatalf("name did not point at replacement: %+v", current)
+	}
+
+	lease.Release()
+	old.mu.Lock()
+	oldRefs := old.refs
+	old.mu.Unlock()
+	if oldRefs != 0 {
+		t.Fatalf("expected old buffer refs=0 after lease release, got %d", oldRefs)
+	}
+}
+
+func TestNamedBorrowReleaseTracksOriginalBufferAfterReplacement(t *testing.T) {
+	s := NewSharedStore()
+	old, err := s.SetWithDtype("payload", []byte{1}, DtypeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.borrowNamed("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Buffer != old {
+		t.Fatal("named borrow did not lease original buffer")
+	}
+
+	replacement, err := s.SetWithDtype("payload", []byte{2}, DtypeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.releaseNamedBorrow("payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	old.mu.Lock()
+	oldRefs := old.refs
+	old.mu.Unlock()
+	replacement.mu.Lock()
+	replacementRefs := replacement.refs
+	replacement.mu.Unlock()
+	if oldRefs != 0 || replacementRefs != 1 {
+		t.Fatalf("release hit wrong buffer: old=%d replacement=%d", oldRefs, replacementRefs)
+	}
+}
+
+func TestSharedStoreStats(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.Allocate("allocated", 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetWithMetadata("table", []byte{1, 2, 3, 4}, BufferMetadata{Dtype: DtypeI32, Format: "i"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("table"); err != nil {
+		t.Fatal(err)
+	}
+	s.recordBorrow()
+	s.recordCopy(4)
+
+	stats := s.Stats()
+	if stats.LiveBuffers != 2 || stats.LiveBytes != 12 {
+		t.Fatalf("bad live stats: %+v", stats)
+	}
+	if stats.Allocations != 1 || stats.Sets != 1 || stats.Gets != 1 {
+		t.Fatalf("bad operation stats: %+v", stats)
+	}
+	if stats.CopiedBytes != 4 || stats.ZeroCopyBorrows != 1 {
+		t.Fatalf("bad copy/borrow stats: %+v", stats)
+	}
+	if stats.BuffersByDtype["1"] != 1 || stats.BuffersByFormat["i"] != 1 {
+		t.Fatalf("bad type stats: %+v", stats)
+	}
+	if stats.LargestBufferName != "allocated" || stats.LargestBufferSize != 8 {
+		t.Fatalf("bad largest buffer stats: %+v", stats)
+	}
+}
+
 func TestBufGetSet(t *testing.T) {
 	// Set up global store for callback tests
 	store := NewSharedStore()
@@ -218,7 +411,7 @@ func TestBufGetSet(t *testing.T) {
 		src[i] = byte(i % 256)
 	}
 
-	rc := BufSet("test_buf", unsafe.Pointer(&src[0]), int64(size), DtypeBytes)
+	rc := BufSet("test_buf", unsafe.Pointer(&src[0]), int64(size), DtypeBytes, true)
 	if rc != 0 {
 		t.Fatal("BufSet failed")
 	}
@@ -227,7 +420,8 @@ func TestBufGetSet(t *testing.T) {
 	var dataOut unsafe.Pointer
 	var lenOut int64
 	var dtypeOut int32
-	rc = BufGet("test_buf", &dataOut, &lenOut, &dtypeOut)
+	var readOnlyOut bool
+	rc = BufGet("test_buf", &dataOut, &lenOut, &dtypeOut, &readOnlyOut)
 	if rc != 0 {
 		t.Fatal("BufGet failed")
 	}
@@ -236,6 +430,13 @@ func TestBufGetSet(t *testing.T) {
 	}
 	if dtypeOut != DtypeBytes {
 		t.Fatalf("expected dtype %d, got %d", DtypeBytes, dtypeOut)
+	}
+	if !readOnlyOut {
+		t.Fatalf("expected read-only metadata from buffer bridge")
+	}
+	stats := store.Stats()
+	if stats.CopiedBytes != int64(size) || stats.ZeroCopyBorrows != 1 || stats.Gets != 1 || stats.Sets != 1 {
+		t.Fatalf("bad buffer bridge stats: %+v", stats)
 	}
 
 	// Verify data
@@ -252,7 +453,7 @@ func TestBufGetNotFound(t *testing.T) {
 	var dataOut unsafe.Pointer
 	var lenOut int64
 	var dtypeOut int32
-	rc := BufGet("nonexistent", &dataOut, &lenOut, &dtypeOut)
+	rc := BufGet("nonexistent", &dataOut, &lenOut, &dtypeOut, nil)
 	if rc != -1 {
 		t.Fatal("expected -1 for nonexistent buffer")
 	}
@@ -260,7 +461,7 @@ func TestBufGetNotFound(t *testing.T) {
 
 func TestBufRelease(t *testing.T) {
 	globalStore = NewSharedStore()
-	BufSet("rel_test", nil, 0, DtypeBytes)
+	BufSet("rel_test", nil, 0, DtypeBytes, false)
 
 	// Should not block
 	BufRelease("rel_test")
@@ -276,11 +477,99 @@ func TestBufRelease(t *testing.T) {
 	}
 }
 
+func TestBufReleaseSpillsWhenDeferredChannelIsFull(t *testing.T) {
+	for {
+		select {
+		case <-DeferredRelease:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	s := NewSharedStore()
+	globalStore = s
+	BufSet("overflow", nil, 0, DtypeBytes, false)
+
+	for i := 0; i < cap(DeferredRelease); i++ {
+		DeferredRelease <- "missing"
+	}
+	BufRelease("overflow")
+
+	stats := s.Stats()
+	if stats.DeferredDrops != 0 {
+		t.Fatalf("deferred release should spill instead of dropping: %+v", stats)
+	}
+
+	s.DrainDeferred()
+	if _, err := s.Get("overflow"); err == nil {
+		t.Fatal("overflow release should be drained from spill queue")
+	}
+	stats = s.Stats()
+	if stats.DeferredDrops != 0 {
+		t.Fatalf("deferred release spill should not count as a drop: %+v", stats)
+	}
+}
+
+func TestBufReleaseCoalescesRepeatedSpillNames(t *testing.T) {
+	for {
+		select {
+		case <-DeferredRelease:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	s := NewSharedStore()
+	globalStore = s
+	BufSet("repeated", nil, 0, DtypeBytes, false)
+
+	for i := 0; i < 10; i++ {
+		if _, err := s.borrowNamed("repeated"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < cap(DeferredRelease); i++ {
+		DeferredRelease <- "missing"
+	}
+	for i := 0; i < 10; i++ {
+		BufRelease("repeated")
+	}
+
+	if deferredReleaseOverflow.total != 10 || len(deferredReleaseOverflow.order) != 1 || deferredReleaseOverflow.counts["repeated"] != 10 {
+		t.Fatalf("repeated buffer releases were not coalesced: total=%d order=%v counts=%v", deferredReleaseOverflow.total, deferredReleaseOverflow.order, deferredReleaseOverflow.counts)
+	}
+	stats := s.Stats()
+	if stats.DeferredQueueLen != cap(DeferredRelease)+10 || stats.DeferredOverflow != 1 {
+		t.Fatalf("bad deferred release stats before drain: %+v", stats)
+	}
+
+	s.DrainDeferred()
+	if deferredReleaseOverflow.total != 0 || len(deferredReleaseOverflow.order) != 0 {
+		t.Fatalf("coalesced buffer releases were not fully drained: total=%d order=%v", deferredReleaseOverflow.total, deferredReleaseOverflow.order)
+	}
+	stats = s.Stats()
+	if stats.DeferredQueueLen != 0 || stats.DeferredOverflow != 0 {
+		t.Fatalf("bad deferred release stats after drain: %+v", stats)
+	}
+	buf, err := s.Get("repeated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("coalesced releases drained wrong ref count: got %d, want 1", refs)
+	}
+}
+
 func TestDrainDeferred(t *testing.T) {
 	s := NewSharedStore()
 	globalStore = s
-	BufSet("drain1", nil, 0, DtypeBytes)
-	BufSet("drain2", nil, 0, DtypeBytes)
+	BufSet("drain1", nil, 0, DtypeBytes, false)
+	BufSet("drain2", nil, 0, DtypeBytes, false)
 
 	DeferredRelease <- "drain1"
 	DeferredRelease <- "drain2"

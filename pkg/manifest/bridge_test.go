@@ -430,10 +430,24 @@ func TestApplyBridgeOpsJSON(t *testing.T) {
 		t.Fatalf("got %q", result)
 	}
 
+	// Invalid JSON with no matching bridge remains passthrough.
+	result, err = e.applyBridgeOpsJSON("score", "python", "javascript", "not-json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "not-json" {
+		t.Fatalf("got %q", result)
+	}
+
 	// Overflow
 	_, err = e.applyBridgeOpsJSON("score", "python", "go", "99999999999")
 	if err == nil {
 		t.Fatal("expected overflow error")
+	}
+
+	_, err = e.applyBridgeOpsJSON("score", "python", "go", "not-json")
+	if err == nil {
+		t.Fatal("expected invalid JSON error for explicit bridge")
 	}
 }
 

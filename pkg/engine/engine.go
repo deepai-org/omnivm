@@ -14,6 +14,7 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
+	"github.com/omnivm/omnivm/pkg/handles"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/polyglot"
@@ -27,6 +28,7 @@ type Engine struct {
 	Runtimes       map[string]pkg.Runtime
 	GoldenThreadID int64
 	Disp           *dispatcher.Dispatcher
+	Handles        *handles.Table
 	TaskTimeoutMS  int
 
 	ctx               context.Context
@@ -46,6 +48,7 @@ func New() *Engine {
 	return &Engine{
 		Runtimes:      make(map[string]pkg.Runtime),
 		Disp:          disp,
+		Handles:       handles.NewTable(),
 		TaskTimeoutMS: int(disp.TaskTimeout / time.Millisecond),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -328,6 +331,10 @@ func (e *Engine) ActivateForkGuard() {
 
 // Shutdown performs an ordered teardown of all runtimes, dispatcher, and watchdog.
 func (e *Engine) Shutdown() {
+	if e.Handles != nil {
+		_ = e.Handles.DrainFinalizerReleases(0)
+		_ = e.Handles.ReleaseAll()
+	}
 	e.cancel()
 	if e.dispatcherStarted {
 		e.Disp.WaitForStop()

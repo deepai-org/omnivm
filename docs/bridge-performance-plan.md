@@ -1,44 +1,175 @@
-# Bridge Performance Plan: Zero-Copy, Native C-ABI, Compile-Time Binding
+# Bridge Performance Plan: Automatic Handles, Arrow Data, Native C-ABI
 
 ## Current State
 
-Every cross-runtime value goes through:
+Many current cross-runtime values still go through:
 ```
 Source value → toString()/JSON.stringify → char* (malloc) → C.GoString → Go string → C.CString → target runtime parses string
 ```
 
 This is correct but ~1000x slower than a direct C function call for hot paths.
-The plan adds three tiers of progressively faster bridge paths **without removing
-the existing one** — the JSON path becomes the fallback when the others don't apply.
+It also loses object identity for complex values. The plan adds progressively
+better bridge paths **without removing the existing one**. JSON becomes the
+diagnosed fallback when typed values, handles, streams, and Arrow data do not
+apply.
+
+Normal `.poly` source should not expose this machinery. The compiler/runtime
+chooses the crossing path automatically from value kind and use shape.
+
+The plan intentionally does not add library-specific fast paths. Popular
+ecosystem libraries should work because their values expose ordinary host
+protocols: reflection/property/call surfaces for objects, iterator/body
+protocols for streams, buffer/Arrow/dataframe protocols for bulk data, and host
+finalizers/scope cleanup for lifetime. If two values expose the same protocol
+shape, OmniVM should choose the same crossing mode regardless of the package
+that created them.
 
 ---
 
-## Tier 1: Zero-Copy Buffer Passing
+## Tier 1: Automatic Object Handles
 
-**Builds on:** existing `pkg/arrow/arrow.go` (SharedStore, Buffer, ref counting)
+Complex values cross as scoped runtime-owned handles when identity, laziness,
+mutation, or native ownership matters. This is selected from generic protocol
+evidence such as callability, mutability, stream/body interfaces, close/finalize
+semantics, buffer export support, and stable identity. The rule is deliberately
+not a catalog of library names.
 
-### New C-level buffer type (`omni_bridge.h`)
+### Handle table
+
+```go
+type HandleID uint64
+
+type HandleEntry struct {
+    ID          HandleID
+    Runtime     string
+    Kind        string
+    TypeHint    string
+    ScopeID     uint64
+    StrongRefs  int64
+    Finalizers  int64
+    Accesses    int64
+    Value       any
+    Release     func() error
+    CreatedAt   time.Time
+    LastAccess  time.Time
+}
+```
+
+The handle table is process-local in libomnivm and Go-hosted OmniVM. Handles are
+not portable across processes.
+
+### Lifetime model
+
+- Handles are scope-bound by default. Request/manifest cleanup is the
+  deterministic release path.
+- Guest proxies register finalizers:
+  - JS: `FinalizationRegistry`
+  - Python: `weakref.finalize`
+  - Java: `Cleaner`
+  - Ruby: finalizers where safe, scope cleanup otherwise
+  - Go: runtime finalizers for proxy wrappers
+- Finalizers enqueue release events; they must not call into Go/runtime internals
+  directly from arbitrary GC threads.
+- Release is idempotent.
+- Explicit release/dispose remains an internal/debug escape hatch, not a normal
+  `.poly` API.
+
+### Cross-runtime cycles
+
+Distributed cycle collection is not phase-one scope. Instead:
+
+- request/manifest scopes release non-retained handles at scope end;
+- retained handle graphs are observable through status diagnostics;
+- oldest-live-handle and handles-by-origin counters make leaks visible;
+- generic handle access counters make repeated proxy traffic visible by access
+  kind before adapter-level batching lands;
+- compiler/runtime escape evidence is required before a handle outlives its
+  creating scope.
+
+### Chatty proxy mitigation
+
+Proxies preserve identity but can hide FFI costs. The runtime must detect:
+
+- repeated index access;
+- repeated property reads;
+- `len(proxy)` followed by indexed loops;
+- map/filter/reduce over foreign collections.
+
+Mitigations are automatic:
+
+- batch reads when stable;
+- materialize small immutable values;
+- switch array-like values to Arrow;
+- stream large iterables;
+- warn when no safe optimization exists.
+
+The first concrete layer is generic telemetry in the central handle table:
+runtime adapters record access kinds such as property/index/call/iterate/buffer,
+and `omnivm.status()["handles"]` reports total accesses, accesses by kind,
+chatty warning counts, chatty origins, and the chattiest live handle. Runtime
+adapters can also record generic handle-reference edges, which lets status
+report live graph edges, runtime pairs, suspected cycles, cyclic handle counts,
+and a sample cycle. Manifest boundary status separately reports automatic proxy
+materializations so batched chatty-proxy mitigation is observable without a
+user-facing API. This keeps the optimization and leak-diagnostic triggers
+protocol-shaped rather than tied to particular libraries.
+
+---
+
+## Tier 2: Arrow C Data Interface
+
+**Builds on:** existing `pkg/arrow/arrow.go`, but replaces the long-term
+OmniVM-specific buffer contract with Arrow C Data Interface handles.
+
+### C-level data types (`omni_bridge.h`)
 
 ```c
 typedef struct {
-    void*   data;
-    int64_t len;
-    int32_t dtype;  // 0=bytes, 1=i32, 2=f64, 3=utf8, ...
-    int8_t  owned;  // 1=receiver owns (must free), 0=borrowed
-} omni_buffer_t;
+    const char* format;
+    const char* name;
+    const char* metadata;
+    int64_t flags;
+    int64_t n_children;
+    struct ArrowSchema** children;
+    struct ArrowSchema* dictionary;
+    void (*release)(struct ArrowSchema*);
+    void* private_data;
+} ArrowSchema;
 
-typedef char* (*omni_call_buf_fn)(const char* runtime, const char* code,
-                                   omni_buffer_t* bufs, int32_t nbuf);
+typedef struct {
+    int64_t length;
+    int64_t null_count;
+    int64_t offset;
+    int64_t n_buffers;
+    int64_t n_children;
+    const void** buffers;
+    struct ArrowArray** children;
+    struct ArrowArray* dictionary;
+    void (*release)(struct ArrowArray*);
+    void* private_data;
+} ArrowArray;
 ```
 
-### Per-runtime buffer access
+Simple bytes and typed arrays are represented as one-buffer Arrow arrays. Bulk
+tabular, image-like, tensor-like, and nested values use normal Arrow schemas,
+child arrays, shape metadata, and release callbacks when they expose the
+required protocols.
 
-| Runtime | Zero-copy API | Mechanism |
-|---------|--------------|-----------|
-| Python | `omnivm.get_buffer("name")` → `memoryview` | `PyMemoryView_FromMemory` |
-| JS/V8 | `omnivm.getBuffer("name")` → `ArrayBuffer` | `v8::ArrayBuffer::NewBackingStore` (no-op deleter) |
-| Ruby | `omnivm.get_buffer("name")` → frozen `String` | `rb_str_new_static` |
-| Java | `omnivm.getBuffer("name")` → `ByteBuffer` | `NewDirectByteBuffer` |
+The current shared store records generic metadata slots for dtype, Arrow format,
+shape, strides, null count, read-only state, and ownership. Status reports live
+buffers, bytes, formats, copied bytes, and zero-copy borrows so runtime adapters
+can prove when a bulk crossing stayed on the shared-memory path and when it
+fell back to a copy.
+
+### Per-runtime Arrow access
+
+| Runtime | Zero-copy target | Mechanism |
+|---------|------------------|-----------|
+| Python | buffer/Arrow/DLPack/dataframe interchange exporters, `memoryview` | Arrow C Data Interface / buffer protocol |
+| JS/V8 | `ArrayBuffer`, TypedArray, `DataView`, Arrow-compatible vectors | external backing stores plus schema metadata |
+| Ruby | `to_io`, `each`, frozen/binary strings, Fiddle-backed views | borrowed pointer with scope pinning |
+| Java | `ByteBuffer`, `DirectByteBuffer`, Arrow-compatible vectors | C Data import / `NewDirectByteBuffer` |
+| Go | slices, `io.Reader`/`io.Writer`, Arrow-compatible values | cgo pointer with release callback |
 
 ### Constraints
 
@@ -55,14 +186,18 @@ typedef char* (*omni_call_buf_fn)(const char* runtime, const char* code,
   - Java: `NewGlobalRef`
   Automatic in the per-runtime `get_buffer` implementation, not caller's responsibility.
 
-### Wire share_memory bridge op
+### Wire Arrow bridge op
 
-The manifest compiler emits `share_memory{ownership: "borrowed"}` and OmniVM
-skips serialization entirely, passing pointer+length through the buffer path.
+The manifest compiler emits Arrow/share-memory bridge intent and OmniVM skips
+serialization entirely, passing Arrow schema/array handles through the data path.
+The user still writes ordinary `.poly`; this is a lowered boundary decision.
+Manifest table handles carry generic metadata (`dtype`, `arrow_format`, shape,
+strides, null count, and read-only state) so target runtimes can import the view
+without guessing from runtime-specific objects.
 
 ---
 
-## Tier 2: Native C-ABI Bridge (Typed Values)
+## Tier 3: Native C-ABI Bridge (Typed Values)
 
 ### Tagged value type
 
@@ -125,26 +260,24 @@ type HandleTable struct {
 type HandleEntry struct {
     Value   interface{}
     Runtime string
-    Weak    bool  // if true, source runtime can GC the object
+    ScopeID uint64
+    Kind    string
 }
 ```
 
-**Cross-runtime GC cycles:** If Python holds a handle to a JS object and JS holds
-a handle to a Python object, neither GC can see the other's roots → memory leak.
-
-**Policy for Tier 2:** Handles are weak by default (dereference returns null/error
-if source GC'd). Strong handles are opt-in and require explicit `Release()`.
-Distributed cycle collection is out of scope — document the limitation.
+The native value bridge carries handle ids for complex values, but lifecycle is
+owned by Tier 1. Handles are scope-bound and finalizer-backed by default, not
+weak by default.
 
 ### PolyScript integration
 
-When the type system knows both sides are scalar types, emit a `typed_call` bridge
-op instead of `serialize`/`deserialize`. The manifest executor checks for `call_typed`
-availability and falls back to JSON if not present.
+When the type system knows both sides are scalar types, emit a `typed_call`
+bridge op instead of `serialize`/`deserialize`. The manifest executor checks for
+`call_typed` availability and falls back only with diagnostics if not present.
 
 ---
 
-## Tier 3: Compile-Time Binding (Optional)
+## Tier 4: Compile-Time Binding (Optional)
 
 ### `polybind` code generator
 
@@ -172,7 +305,7 @@ It emits either:
 ### Callback escape hatch
 
 The compiled binding uses `omni_value_t` internally. If the compiled module needs
-to call back into Python (e.g., Django ORM), it goes through `call_typed`.
+to call back into a host-owned Python object, it goes through `call_typed`.
 PyO3-speed for the hot path, bridge-speed for callbacks.
 
 ### Extends existing `exec_compiled`
@@ -188,40 +321,48 @@ dlsym("fast_compute") → call with omni_value_t args
 ## Implementation Order
 
 ```
-Phase 1 (Tier 1): Zero-copy buffers
-   ├─ Extend omni_bridge.h with omni_buffer_t
-   ├─ SharedStore ↔ runtime bindings (Python memoryview, V8 ArrayBuffer)
-   ├─ Eventfd-based release hook (not direct Go call from GC threads)
-   ├─ Borrowed buffer auto-pinning per runtime
-   ├─ Wire share_memory bridge op in manifest executor
-   └─ Tests: pass 1MB buffer Python→JS without copy
+Phase 1 (Tier 1): Object handles and scopes
+   ├─ Central HandleTable with scope ids and release callbacks
+   ├─ Python and JS proxy wrappers first
+   ├─ Finalizer release queue drained on safe OmniVM threads
+   ├─ Request/manifest scope cleanup
+   ├─ Status counters for live handles, origins, retained handles, releases
+   └─ Tests: identity, scope release, finalizer release, cycle diagnostics
 
-Phase 2 (Tier 2): Typed value bridge
+Phase 2 (Tier 2): Arrow data plane
+   ├─ Add ArrowSchema/ArrowArray C definitions
+   ├─ Adapt existing SharedStore around Arrow handles
+   ├─ Borrowed buffer auto-pinning per runtime
+   ├─ Wire Arrow/share_memory bridge op in manifest executor
+   └─ Tests: generic buffer/Arrow/dataframe/typed-array zero-copy where supported
+
+Phase 3 (Tier 3): Typed value bridge
    ├─ Define omni_value_t with alignment guarantees
    ├─ Implement call_typed in OmniCall
    ├─ Python typed extraction (PyLong/PyFloat direct)
    ├─ V8 typed extraction (v8::Integer/Number direct)
-   ├─ Object handle table (weak by default)
    ├─ PolyScript emits typed bridge ops when types are known
-   └─ Tests: 1M scalar calls Python→Rust, benchmark vs JSON path
+   └─ Tests: scalar hot paths, fallback diagnostics
 
-Phase 3 (Tier 3): Compile-time binding
+Phase 4 (Tier 4): Compile-time binding
    ├─ polybind code generator
    ├─ CPython extension module generation
    ├─ Rust FFI wrapper generation
    ├─ Integration with exec_compiled
-   └─ Tests: Django view calling compiled Rust function
+   └─ Tests: ordinary framework handler calling compiled native function
 ```
 
 ## What Stays the Same
 
-- The JSON string bridge (`omni_call_fn`) remains the **default and fallback**
+- The JSON string bridge (`omni_call_fn`) remains available as a compatibility
+  fallback
 - The manifest executor works unchanged — bridge ops apply at the same injection points
 - The Golden Thread / dispatcher architecture is untouched
 - The watchdog / timeout system works across all tiers
-- PolyScript's type system drives which tier to use:
-  unknown types → JSON, known scalars → typed, annotated hot paths → compiled
+- PolyScript's type system and runtime adapters drive which tier to use:
+  primitives → typed/copy, complex objects → handles, bulk data → Arrow,
+  streams → stream handles, unsupported values → diagnosed fallback
 
-Each tier is additive. You can use zero-copy buffers without typed calls.
-You can use typed calls without compile-time binding. And you can always
-fall back to the JSON path that works today.
+Each tier is additive. Handles can ship before Arrow. Arrow can ship before
+compile-time binding. The JSON path remains available for compatibility, but it
+is not the target architecture for complex or bulk values.

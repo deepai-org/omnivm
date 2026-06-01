@@ -50,6 +50,20 @@ type TypeSummary struct {
 	Errors    int `json:"errors"`
 }
 
+// TableMetadata carries generic Arrow-compatible bulk data metadata through
+// manifest table handles. It is intentionally protocol-shaped rather than
+// tied to any producer library.
+type TableMetadata struct {
+	Dtype       *int32  `json:"dtype,omitempty"`
+	ArrowFormat string  `json:"arrow_format,omitempty"`
+	Buffer      string  `json:"buffer,omitempty"`
+	Shape       []int64 `json:"shape,omitempty"`
+	Strides     []int64 `json:"strides,omitempty"`
+	Offset      int64   `json:"offset,omitempty"`
+	NullCount   *int64  `json:"null_count,omitempty"`
+	ReadOnly    bool    `json:"read_only"`
+}
+
 // Op represents a single operation in the manifest.
 type Op struct {
 	OpType  string `json:"op"`
@@ -66,6 +80,7 @@ type Op struct {
 	Format    string            `json:"format,omitempty"`
 	Ownership string            `json:"ownership,omitempty"`
 	Release   string            `json:"release,omitempty"`
+	Metadata  *TableMetadata    `json:"metadata,omitempty"`
 
 	// import
 	Path          string `json:"path,omitempty"`

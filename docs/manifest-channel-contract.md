@@ -33,10 +33,19 @@ The `channel` argument may be either a channel binding or a channel binding name
 
 ## Cross-Runtime Channel Captures
 
-When a channel is explicitly captured by a non-Go runtime, OmniVM drains the channel's buffered values into a snapshot.
+When a channel is explicitly captured by a non-Go runtime, OmniVM injects a
+scoped stream descriptor. The target pulls values with `stream_next` as normal
+iteration advances, so capture itself does not drain the channel or copy the
+buffered values into JSON.
 
-- Python receives a list.
+- Python receives an iterator.
 - JavaScript receives an iterable adapter, so `Array.from(channelBinding)` is valid.
-- Ruby and Java receive JSON-compatible arrays through their existing capture paths.
+- Ruby receives an `Enumerable`.
+- Java receives an `Iterable`.
 
-Channel captures are snapshots. They do not keep a live channel subscription open across runtime boundaries.
+Strict arrays/lists are materialized only when target code asks for them, such
+as `list(channelBinding)` or `Array.from(channelBinding)`.
+
+The stream handle is released automatically when iteration reaches end-of-stream.
+Targets that abandon iteration early may cancel the stream; otherwise scope
+cleanup and proxy finalizers remain fallback release paths.

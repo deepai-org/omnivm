@@ -21,6 +21,7 @@ typedef struct {
     int64_t len;
     int32_t dtype;
     int8_t  owned;
+    int8_t  read_only;
 } omni_buffer_t;
 extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
@@ -61,11 +62,11 @@ import (
 
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
-	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/dispatcher"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/manifest"
+	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
 )
@@ -146,7 +147,8 @@ func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
 	var data unsafe.Pointer
 	var length int64
 	var dtype int32
-	rc := arrow.BufGet(name, &data, &length, &dtype)
+	var readOnly bool
+	rc := arrow.BufGet(name, &data, &length, &dtype, &readOnly)
 	if rc != 0 {
 		return -1
 	}
@@ -154,18 +156,26 @@ func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
 	out.len = C.int64_t(length)
 	out.dtype = C.int32_t(dtype)
 	out.owned = 0
+	if readOnly {
+		out.read_only = 1
+	} else {
+		out.read_only = 0
+	}
 	return 0
 }
 
 //export OmniBufSet
 func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
 	name := C.GoString(cName)
-	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype)))
+	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype), buf.read_only != 0))
 }
 
 //export OmniBufRelease
 func OmniBufRelease(cName *C.char) {
 	arrow.BufRelease(C.GoString(cName))
+	if int64(C.get_thread_id()) == goldenThreadID {
+		arrow.GlobalStore().DrainDeferred()
+	}
 }
 
 //export OmniCallTyped

@@ -30,6 +30,8 @@ public class OmniVMRunner {
 
     private static final String WRAPPER_CLASS = "OmniVMUserCode";
     private static String classpathDir = "/omnivm/libs";
+    private static final File persistentClassDir =
+        new File(System.getProperty("java.io.tmpdir"), "omnivm-java-classes");
 
     // ---- File Execution (called from JNI for "omnivm run") ----
     // stdout/stderr are NOT redirected — they go to the real process streams.
@@ -232,6 +234,8 @@ public class OmniVMRunner {
     private static String buildFileClasspath(File projectRoot, File srcDir) {
         List<String> entries = new ArrayList<>();
 
+        entries.add(persistentClassDir.getAbsolutePath());
+
         // Source directory itself (for .class files alongside .java)
         entries.add(srcDir.getAbsolutePath());
 
@@ -419,6 +423,19 @@ public class OmniVMRunner {
      * For use by the cross-runtime bridge.
      */
     public static String eval(String code) {
+        Object result = evalObject(code);
+        if (result instanceof Throwable t) {
+            return "JavaError: " + t.getClass().getName() + ": " + t.getMessage();
+        }
+        return result == null ? "null" : result.toString();
+    }
+
+    /**
+     * Eval Java expression and return the raw object to the embedding runtime.
+     * User-facing eval still stringifies; this exists for automatic boundary
+     * inference/export paths that need to inspect the Java object shape.
+     */
+    public static Object evalObject(String code) {
         String className = "OmniVMEval";
         String source =
             "public class " + className + " {\n" +
@@ -430,7 +447,7 @@ public class OmniVMRunner {
         try {
             JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
             if (compiler == null) {
-                return "JavaError: No Java compiler available";
+                return new RuntimeException("No Java compiler available");
             }
 
             DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
@@ -453,25 +470,27 @@ public class OmniVMRunner {
 
             boolean success = task.call();
             if (!success) {
-                return execute(code);
+                String executed = execute(code);
+                if (executed != null && executed.startsWith("JavaError: ")) {
+                    return new RuntimeException(executed.substring("JavaError: ".length()));
+                }
+                return executed;
             }
 
             URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
             InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
             Class<?> clazz = classLoader.loadClass(className);
             Method run = clazz.getMethod("run");
-            Object result = run.invoke(null);
-
-            return result == null ? "null" : result.toString();
+            return run.invoke(null);
 
         } catch (java.lang.reflect.InvocationTargetException e) {
             Throwable cause = e.getCause();
             if (cause != null) {
-                return "JavaError: " + cause.getClass().getName() + ": " + cause.getMessage();
+                return cause;
             }
-            return "JavaError: " + e.getMessage();
+            return e;
         } catch (Exception e) {
-            return "JavaError: " + e.getMessage();
+            return e;
         }
     }
 
@@ -567,6 +586,8 @@ public class OmniVMRunner {
             return errors.toString();
         }
 
+        persistCompiledClasses(className, fileManager.getClasses());
+
         URLClassLoader parentLoader = new URLClassLoader(classpathToURLs(cp), OmniVMRunner.class.getClassLoader());
         InMemoryClassLoader classLoader = new InMemoryClassLoader(fileManager.getClasses(), parentLoader);
         Class<?> clazz = classLoader.loadClass(className);
@@ -593,14 +614,32 @@ public class OmniVMRunner {
         return null; // Success
     }
 
+    private static void persistCompiledClasses(String entryClassName, List<InMemoryClassFile> classes) {
+        if (WRAPPER_CLASS.equals(entryClassName) || "OmniVMEval".equals(entryClassName)) {
+            return;
+        }
+        for (InMemoryClassFile cf : classes) {
+            try {
+                File out = new File(persistentClassDir, cf.getClassName().replace('.', File.separatorChar) + ".class");
+                File parent = out.getParentFile();
+                if (parent != null) {
+                    parent.mkdirs();
+                }
+                Files.write(out.toPath(), cf.getBytes());
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
     /** Classpath for REPL mode — system cp + /omnivm/libs */
     private static String buildClasspath() {
         File libDir = new File(classpathDir);
         if (!libDir.exists() || !libDir.isDirectory()) {
-            return System.getProperty("java.class.path", ".");
+            return persistentClassDir.getAbsolutePath() + File.pathSeparator + System.getProperty("java.class.path", ".");
         }
 
-        StringBuilder cp = new StringBuilder(System.getProperty("java.class.path", "."));
+        StringBuilder cp = new StringBuilder(persistentClassDir.getAbsolutePath());
+        cp.append(File.pathSeparator).append(System.getProperty("java.class.path", "."));
         appendJars(cp, libDir);
         appendJars(cp, new File("/omnivm/libs"));
         return cp.toString();

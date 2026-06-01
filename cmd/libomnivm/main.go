@@ -44,10 +44,40 @@ typedef struct {
     int64_t len;
     int32_t dtype;
     int8_t  owned;
+    int8_t  read_only;
 } omni_buffer_t;
 extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
+
+// Arrow C Data bridge exports
+typedef struct ArrowSchema {
+    const char* format;
+    const char* name;
+    const char* metadata;
+    int64_t flags;
+    int64_t n_children;
+    struct ArrowSchema** children;
+    struct ArrowSchema* dictionary;
+    void (*release)(struct ArrowSchema*);
+    void* private_data;
+} ArrowSchema;
+
+typedef struct ArrowArray {
+    int64_t length;
+    int64_t null_count;
+    int64_t offset;
+    int64_t n_buffers;
+    int64_t n_children;
+    const void** buffers;
+    struct ArrowArray** children;
+    struct ArrowArray* dictionary;
+    void (*release)(struct ArrowArray*);
+    void* private_data;
+} ArrowArray;
+
+extern int OmniArrowGet(char* name, ArrowSchema* schema, ArrowArray* array);
+extern int OmniArrowSet(char* name, ArrowSchema* schema, ArrowArray* array);
 
 // Typed value bridge
 typedef struct {
@@ -67,6 +97,8 @@ static void* get_omni_free_ptr() { return (void*)OmniFree; }
 static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
+static void* get_omni_arrow_get_ptr()   { return (void*)OmniArrowGet; }
+static void* get_omni_arrow_set_ptr()   { return (void*)OmniArrowSet; }
 static void* get_omni_call_typed_ptr() { return (void*)OmniCallTyped; }
 
 // Get the current OS thread ID (Linux-specific).
@@ -114,6 +146,7 @@ import (
 	"github.com/omnivm/omnivm/pkg"
 	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/engine"
+	"github.com/omnivm/omnivm/pkg/handles"
 	"github.com/omnivm/omnivm/pkg/javascript"
 	"github.com/omnivm/omnivm/pkg/jvm"
 	"github.com/omnivm/omnivm/pkg/manifest"
@@ -153,6 +186,7 @@ var shutdownWhileActiveCount atomic.Int64
 var workerTainted atomic.Bool
 var lastTimeoutRuntime atomic.Value
 var workerTaintReason atomic.Value
+var lastBoundaryStats atomic.Value
 
 //export OmniInit
 func OmniInit(cList *C.char) *C.char {
@@ -239,6 +273,7 @@ func OmniInit(cList *C.char) *C.char {
 	workerTainted.Store(false)
 	lastTimeoutRuntime.Store("")
 	workerTaintReason.Store("")
+	lastBoundaryStats.Store(manifest.BoundaryStats{})
 	return C.CString("OK")
 }
 
@@ -452,6 +487,7 @@ func execRuntime(rtName, code string) (string, error) {
 
 func pumpBeforeHostCall(threadID int64) {
 	if shouldPumpHostAsync(threadID) {
+		drainFinalizerReleasesOnHostBoundary(threadID)
 		pumpAsyncRuntimes()
 	}
 }
@@ -459,6 +495,10 @@ func pumpBeforeHostCall(threadID int64) {
 func pumpAfterHostCall(threadID int64) {
 	if shouldPumpHostAsync(threadID) {
 		pumpAsyncRuntimes()
+		drainFinalizerReleasesOnHostBoundary(threadID)
+	}
+	if eng != nil && threadID == eng.GoldenThreadID {
+		arrow.GlobalStore().DrainDeferred()
 	}
 }
 
@@ -471,6 +511,21 @@ func shouldPumpHostAsync(threadID int64) bool {
 func pumpAsyncRuntimes() {
 	if rt, ok := eng.Runtimes["javascript"]; ok {
 		rt.Pump()
+	}
+}
+
+func drainFinalizerReleasesOnHostBoundary(threadID int64) {
+	if eng == nil || eng.Handles == nil || threadID != eng.GoldenThreadID {
+		return
+	}
+	if manifestExecutor != nil {
+		return
+	}
+	if watchdog.GetActiveRuntime() != watchdog.RuntimeNone {
+		return
+	}
+	if err := eng.Handles.DrainFinalizerReleases(0); err != nil {
+		lifecycleErrors.Add(1)
 	}
 }
 
@@ -546,9 +601,14 @@ func OmniStatus() *C.char {
 		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline",
 		"runtimes":                    []string{},
 		"go_plugins":                  []string{},
+		"boundary":                    loadBoundaryStats(),
+		"arrow":                       arrow.GlobalStore().Stats(),
 	}
 	if eng != nil {
 		status["golden_thread_id"] = eng.GoldenThreadID
+		if eng.Handles != nil {
+			status["handles"] = eng.Handles.Stats(time.Now())
+		}
 		runtimes := make([]string, 0, len(eng.Runtimes))
 		for name := range eng.Runtimes {
 			runtimes = append(runtimes, name)
@@ -563,6 +623,9 @@ func OmniStatus() *C.char {
 		}
 		sort.Strings(plugins)
 		status["go_plugins"] = plugins
+	}
+	if manifestExecutor != nil {
+		status["boundary"] = manifestExecutor.BoundaryStats()
 	}
 	data, err := json.Marshal(status)
 	if err != nil {
@@ -581,6 +644,7 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 		return C.CString("ERR:" + err.Error())
 	}
 	defer done()
+	threadID := int64(C.get_thread_id())
 
 	path := C.GoString(cPath)
 	data, err := os.ReadFile(path)
@@ -593,11 +657,13 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 		return C.CString("ERR:parse manifest: " + err.Error())
 	}
 
-	executor := manifest.NewExecutor(eng.Runtimes)
+	executor := manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles)
 	manifestExecutor = executor
 	prevGoSourceFallback := manifest.UseGoSourceFallback
 	manifest.UseGoSourceFallback = true
+	defer drainFinalizerReleasesOnHostBoundary(threadID)
 	defer func() {
+		lastBoundaryStats.Store(executor.BoundaryStats())
 		manifestExecutor = nil
 		manifest.UseGoSourceFallback = prevGoSourceFallback
 	}()
@@ -674,7 +740,8 @@ func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
 	var data unsafe.Pointer
 	var length int64
 	var dtype int32
-	rc := arrow.BufGet(name, &data, &length, &dtype)
+	var readOnly bool
+	rc := arrow.BufGet(name, &data, &length, &dtype, &readOnly)
 	if rc != 0 {
 		return -1
 	}
@@ -682,18 +749,149 @@ func OmniBufGet(cName *C.char, out *C.omni_buffer_t) C.int {
 	out.len = C.int64_t(length)
 	out.dtype = C.int32_t(dtype)
 	out.owned = 0
+	if readOnly {
+		out.read_only = 1
+	} else {
+		out.read_only = 0
+	}
 	return 0
 }
 
 //export OmniBufSet
 func OmniBufSet(cName *C.char, buf C.omni_buffer_t) C.int {
 	name := C.GoString(cName)
-	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype)))
+	return C.int(arrow.BufSet(name, buf.data, int64(buf.len), int32(buf.dtype), buf.read_only != 0))
 }
 
 //export OmniBufRelease
 func OmniBufRelease(cName *C.char) {
 	arrow.BufRelease(C.GoString(cName))
+	if initialized &&
+		eng != nil &&
+		int64(C.get_thread_id()) == eng.GoldenThreadID &&
+		watchdog.GetActiveRuntime() == watchdog.RuntimeNone {
+		arrow.GlobalStore().DrainDeferred()
+	}
+}
+
+//export OmniArrowGet
+func OmniArrowGet(cName *C.char, schema *C.ArrowSchema, arrayOut *C.ArrowArray) C.int {
+	if cName == nil || schema == nil || arrayOut == nil {
+		return -1
+	}
+	view, err := arrow.GlobalStore().BorrowCArrowArray(C.GoString(cName))
+	if err != nil {
+		return -1
+	}
+	if err := view.DetachTo(unsafe.Pointer(schema), unsafe.Pointer(arrayOut)); err != nil {
+		view.Release()
+		return -1
+	}
+	return 0
+}
+
+//export OmniArrowSet
+func OmniArrowSet(cName *C.char, schema *C.ArrowSchema, arrayIn *C.ArrowArray) C.int {
+	if cName == nil || schema == nil || arrayIn == nil {
+		return -1
+	}
+	if err := arrow.GlobalStore().ImportCArrowArray(C.GoString(cName), unsafe.Pointer(schema), unsafe.Pointer(arrayIn)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleRelease
+func OmniHandleRelease(cID C.uint64_t) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if err := eng.Handles.Release(handles.ID(cID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleRetain
+func OmniHandleRetain(cID C.uint64_t) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if err := eng.Handles.Retain(handles.ID(cID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleEscape
+func OmniHandleEscape(cID C.uint64_t) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if err := eng.Handles.Escape(handles.ID(cID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleReleaseFromFinalizer
+func OmniHandleReleaseFromFinalizer(cID C.uint64_t) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if !eng.Handles.QueueReleaseFromFinalizer(handles.ID(cID)) {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleAccess
+func OmniHandleAccess(cID C.uint64_t, cKind *C.char, cThreshold C.int64_t) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	kind := C.GoString(cKind)
+	report, err := eng.Handles.RecordAccess(handles.ID(cID), handles.AccessOptions{
+		Kind:            kind,
+		ChattyThreshold: int64(cThreshold),
+	})
+	if err != nil {
+		return -1
+	}
+	if report.Chatty {
+		return 1
+	}
+	return 0
+}
+
+//export OmniHandleRecordReference
+func OmniHandleRecordReference(cFrom C.uint64_t, cTo C.uint64_t, cKind *C.char) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if _, err := eng.Handles.RecordReference(handles.ID(cFrom), handles.ID(cTo), C.GoString(cKind)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export OmniHandleDropReference
+func OmniHandleDropReference(cFrom C.uint64_t, cTo C.uint64_t) {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return
+	}
+	eng.Handles.DropReference(handles.ID(cFrom), handles.ID(cTo))
+}
+
+//export OmniDrainFinalizerReleases
+func OmniDrainFinalizerReleases(max C.int) C.int {
+	if !initialized || eng == nil || eng.Handles == nil {
+		return -1
+	}
+	if err := eng.Handles.DrainFinalizerReleases(int(max)); err != nil {
+		return -1
+	}
+	return 0
 }
 
 //export OmniCallTyped
@@ -766,6 +964,15 @@ func loadAtomicString(value *atomic.Value) string {
 	}
 	text, _ := raw.(string)
 	return text
+}
+
+func loadBoundaryStats() manifest.BoundaryStats {
+	raw := lastBoundaryStats.Load()
+	if raw == nil {
+		return manifest.BoundaryStats{}
+	}
+	stats, _ := raw.(manifest.BoundaryStats)
+	return stats
 }
 
 func runtimeNameForWatchdog(runtimeID int) string {

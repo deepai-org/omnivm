@@ -9,12 +9,6 @@
       "bind": "os"
     },
     {
-      "op": "import",
-      "path": "json",
-      "runtime": "python",
-      "bind": "json"
-    },
-    {
       "op": "eval",
       "runtime": "python",
       "code": "os.listdir(\"/var/data\")",
@@ -62,13 +56,13 @@
     {
       "op": "eval",
       "runtime": "python",
-      "code": "json.dumps(ordered)",
+      "code": "list(ordered)",
       "bind": "payload"
     },
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "ordered.reduce((acc, f) => (((acc + \"\\\\n\") + f) , \"=== LOG FILES ===\"))",
+      "code": "ordered.reduce((acc, f) => ((acc + \"\\\\n\") + f), \"=== LOG FILES ===\")",
       "bind": "summary",
       "captures": {
         "ordered": "ordered"
@@ -77,12 +71,65 @@
     {
       "op": "native",
       "runtime": "javascript",
-      "code": "print(summary)"
+      "code": "console.log(summary)"
     },
     {
       "op": "native",
-      "runtime": "javascript",
+      "runtime": "python",
       "code": "print(payload)"
+    }
+  ],
+  "typeSummary": {
+    "crossings": 4,
+    "safe": 4,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  },
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'files' from python to javascript. Source binding: python (inferred; scope: inherited from callee: python; scope: inherited from object: python; import: import os). Target expression: javascript (definite; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: python; scope: inherited from callee: python; scope: inherited from object: python; import: import os).",
+      "span": {
+        "start": 410,
+        "end": 441,
+        "line": 11,
+        "column": 14
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'valid' from javascript to python. Source binding: javascript (definite; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: python; scope: inherited from callee: python; scope: inherited from object: python; import: import os). Target expression: python (inferred; builtin: builtin: len).",
+      "span": {
+        "start": 651,
+        "end": 675,
+        "line": 17,
+        "column": 1
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'logs' from javascript to python. Source binding: javascript (definite; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: javascript; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: python; scope: inherited from callee: python; scope: inherited from object: python; import: import os). Target expression: python (inferred; builtin: builtin: sorted).",
+      "span": {
+        "start": 834,
+        "end": 862,
+        "line": 23,
+        "column": 1
+      }
+    },
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'ordered' from python to javascript. Source binding: python (inferred; builtin: builtin: sorted). Target expression: javascript (definite; syntax: syntactic dominance: argument syntax overrides callee provenance; scope: inherited from object: python; builtin: builtin: sorted).",
+      "span": {
+        "start": 1034,
+        "end": 1097,
+        "line": 29,
+        "column": 17
+      }
     }
   ]
 }

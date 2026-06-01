@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
@@ -109,6 +110,57 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: value, Output: value}
+}
+
+// ExportBuffer publishes a JavaScript ArrayBuffer or typed-array view into
+// OmniVM's shared data plane without copying.
+func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, error) {
+	if !r.initialized {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: not initialized")
+	}
+
+	cCode := C.CString(expr)
+	defer C.free(unsafe.Pointer(cCode))
+
+	var out C.omnivm_v8_exported_buffer_t
+	rc := C.omnivm_v8_export_buffer(r.context, cCode, &out)
+	if rc < 0 {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: export buffer failed")
+	}
+	if rc > 0 {
+		return pkg.ExportedBuffer{}, false, nil
+	}
+
+	byteLen := int64(out.len)
+	dtype := int32(out.dtype)
+	arrowFormat := C.GoString(out.arrow_format)
+	elements := int64(out.elements)
+	if elements < 0 || byteLen < 0 || (byteLen > 0 && out.data == nil) || out.handle == nil {
+		C.omnivm_v8_release_exported_buffer(out.handle)
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: invalid exported buffer")
+	}
+	meta := arrow.BufferMetadata{
+		Dtype:     dtype,
+		Format:    arrowFormat,
+		Shape:     []int64{elements},
+		ReadOnly:  out.read_only != 0,
+		Ownership: "producer",
+	}
+	if _, err := arrow.GlobalStore().SetExternalWithMetadata(name, unsafe.Pointer(out.data), byteLen, meta, func() error {
+		C.omnivm_v8_release_exported_buffer(out.handle)
+		return nil
+	}); err != nil {
+		C.omnivm_v8_release_exported_buffer(out.handle)
+		return pkg.ExportedBuffer{}, false, err
+	}
+	return pkg.ExportedBuffer{
+		Name:        name,
+		Dtype:       dtype,
+		ArrowFormat: arrowFormat,
+		Elements:    elements,
+		Shape:       []int64{elements},
+		ReadOnly:    meta.ReadOnly,
+	}, true, nil
 }
 
 // EvalTyped evaluates JavaScript code and returns a typed polyglot.Value.

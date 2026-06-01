@@ -1,21 +1,64 @@
 # OmniVM Boundary Semantics
 
 This document defines how values cross OmniVM runtime boundaries. It is the
-contract for manifest execution, compiler lowering, bridge validation, and
-future runtime inference work.
+contract for manifest execution, compiler lowering, bridge validation, runtime
+inference, and user-visible `.poly` semantics.
+
+The design goal is automatic crossing. Normal `.poly` code should not need
+manual `dispose()`, `to_arrow()`, `to_buffer()`, runtime annotations, or
+JSON encode/decode glue to move values between Python, JavaScript, Java, Ruby,
+and Go. Lowering and runtime adapters choose the crossing mode from the value's
+kind and how the target runtime uses it.
+
+## Next-Stage Goal
+
+OmniVM should make CPython-hosted `libomnivm` feel like an ordinary Python
+process that can progressively run `.poly` code, while preserving normal object
+identity, lifetime, streaming, and bulk-data behavior across every loaded
+runtime. A framework handler, request object, model, image-like value, typed
+array, dataframe, iterator, file-like value, channel, callback, or native
+runtime object should cross the boundary by the same automatic rules as any
+other value with the same protocol shape.
+
+This means the long-term contract is protocol-driven, not package-driven:
+
+- no `.poly` source helper API for handles, buffers, Arrow exports, or
+  materialization;
+- no classifier allowlists for specific libraries, frameworks, or object
+  types;
+- no implicit JSON encode/decode path for complex objects or bulk data;
+- no manual lifetime calls in normal `.poly` code;
+- diagnostics and status counters expose the chosen boundary form, but source
+  syntax stays ordinary.
+
+The implementation may contain runtime-specific protocol adapters, because each
+host has different reflection, buffer, stream, and finalizer APIs. Those
+adapters must recognize generic language/runtime protocols rather than named
+ecosystem packages.
 
 ## Boundary Model
 
-Every value crossing a runtime boundary is represented as one of three forms:
+Every value crossing a runtime boundary is represented as one of four forms:
 
 - `copy`: an immutable value copied into the target runtime.
-- `ref`: an opaque runtime-owned handle with identity and lifetime managed by
-  the source runtime.
+- `ref`: an opaque runtime-owned handle with identity, scoped lifetime, and
+  finalizer-backed release.
 - `stream`: a sequenced value source, such as a channel or iterator, that is
   consumed according to an explicit materialization rule.
+- `arrow`: Arrow C Data Interface arrays/schemas for bulk array, tensor, and
+  tabular values.
 
 Serialization is not the default boundary model. It is used only when requested
 by a manifest bridge operation or when a runtime cannot expose a usable `ref`.
+
+The automatic classifier is:
+
+1. primitives and small immutable scalars use `copy`;
+2. Arrow-compatible arrays/tables/images/tensors use `arrow`;
+3. streams, bodies, channels, iterators, and generators use `stream`;
+4. complex objects with identity, methods, lazy fields, sessions, sockets, or
+   framework ownership use `ref`;
+5. serialization is the diagnosed fallback, not the default.
 
 ## Value Matrix
 
@@ -26,29 +69,104 @@ by a manifest bridge operation or when a runtime cannot expose a usable `ref`.
 | integers | `copy` | none | none | Narrowing must be explicit or validated by bridge rules. |
 | floats | `copy` | none | none | Precision loss must be explicit or diagnosed. |
 | strings | `copy` | none | none | UTF-8 text; runtimes may store internally however they need. |
-| bytes | `copy` unless explicitly shared | source owns original | no | Shared buffers must use the Arrow/shared-buffer path. |
-| columnar tables | `ref` to a shared Arrow handle | producer owns until released | schema-dependent | Prefer Arrow C Data Interface in-process; Arrow IPC is a fallback, not the default. |
-| arrays/lists | `copy` by default | target owns copy | no | Elements cross recursively using this matrix. |
-| maps/objects/structs | `copy` by default | target owns copy | no | Opaque host objects may cross as `ref` instead. |
+| bytes | `arrow` when buffer-like, otherwise `copy` | producer owns until release | read-only by default | Simple bytes are a one-buffer Arrow view when zero-copy is safe. |
+| columnar tables | `arrow` | producer owns until release | schema-dependent | Arrow C Data Interface in-process; Arrow IPC only for out-of-process fallback. |
+| arrays/lists | `arrow`, `stream`, or `ref` when bulk/foreign; `copy` only for small immutable literals | scope owns handle or target owns copy | depends on mode | Tight loops over foreign arrays should materialize or batch automatically. |
+| maps/objects/structs | `ref` when identity/mutation/laziness matters; `copy` only for plain data records | source runtime | yes for refs, no for copies | Framework objects, ORM models, clients, modules, and native objects default to refs. |
 | functions/callbacks | `ref` | defining runtime | yes, via calls | Calls marshal arguments/results through this contract. |
 | runtime objects/classes/modules | `ref` | source runtime | yes, via methods | Target receives an opaque handle or generated stub. |
 | errors/exceptions | `copy` summary plus optional `ref` | source runtime | no | Structured error data should include runtime, type, message, traceback. |
 | channels | `stream` | OmniVM manifest scope | consumption-dependent | See channel rules below. |
 | iterators/generators | `stream` or `ref` | defining runtime | consumption-dependent | Must declare whether crossing drains or proxies. |
 
+## Automatic Boundary Selection
+
+Compiler lowering and runtime adapters must keep boundary mechanics out of
+normal `.poly` source. The source language should look like ordinary Python,
+JavaScript, Java, Ruby, or Go unless the user deliberately asks for
+serialization.
+
+Automatic selection uses evidence from:
+
+- static type information from `.poly` inference;
+- runtime adapter type tests such as Python buffer protocol, Arrow exporters,
+  Java `Buffer`/Arrow vectors, JS `ArrayBuffer`/TypedArray, and Ruby strings;
+- operation shape, for example index-heavy loops, method calls, iteration,
+  stream consumption, or property reads;
+- generic object protocol evidence such as callability, mutability, stream/body
+  interfaces, buffer export support, and stable identity;
+- manifest bridge metadata from compiled `.poly` output.
+
+Named packages and frameworks are not classifier inputs. A value crosses through
+the same path whenever it exposes the same protocol shape, regardless of which
+ecosystem package produced it.
+
+The lowering phase must emit explicit boundary intent into IR/manifest output
+even when the user did not write a bridge API. The automatic decision is visible
+to tooling and diagnostics, not to the source syntax.
+
 ## Runtime Refs
 
 A runtime ref is an opaque handle to a value owned by one runtime.
 
 - The source runtime owns allocation and object identity.
-- Other runtimes must access the value through bridge calls, generated stubs, or
-  explicit manifest operations.
+- Other runtimes access the value through generated proxies, bridge calls, or
+  manifest operations.
 - Runtime refs must not be silently serialized just because the target runtime
   cannot inspect them.
-- Ref lifetime is at least the duration of the manifest execution unless an
-  explicit release operation is introduced.
-- Future release/finalizer work must be idempotent and safe after source-runtime
-  shutdown.
+- Ref lifetime is request/scope-bound by default and may be retained only when
+  compiler/runtime evidence proves the value escapes.
+- Release is automatic through scope cleanup and guest-runtime finalizers.
+- Manual release/dispose may exist for internals and debugging, but normal
+  `.poly` code must not require it.
+- Release must be idempotent and safe after source-runtime shutdown.
+
+The handle table entry must include:
+
+- stable handle id;
+- origin runtime;
+- source object pointer/reference;
+- kind and optional type hint;
+- scope id;
+- strong reference count;
+- weak/finalizer registration state;
+- release callback;
+- creation site, last access, and generic access counters for diagnostics.
+
+Guest proxies register finalizers:
+
+- JavaScript uses `FinalizationRegistry`;
+- Python uses `weakref.finalize`;
+- Java uses `Cleaner`;
+- Ruby uses finalizers cautiously and should prefer scope cleanup where
+  available;
+- Go uses runtime finalizers only for adapter-owned proxy wrappers.
+
+Finalizers are best effort. Request/scope cleanup is the deterministic safety
+net for web workloads. Guest runtime finalizers enqueue release events; OmniVM
+drains those events from safe host-owned contexts so release callbacks do not
+run on arbitrary GC finalizer threads.
+In the CPython-hosted `libomnivm` path, ordinary host call boundaries drain the
+queue automatically when the golden host thread is idle; nested runtime bridge
+calls only enqueue.
+The finalizer queue has a fixed in-memory spill limit for distinct handle ids;
+overflow is counted under handle diagnostics instead of growing without bound.
+
+### Cross-Runtime Cycles
+
+Cross-runtime cycles are not visible to any single runtime GC. For example, a
+Python object may hold a JS proxy that holds a Python proxy. OmniVM must bound
+these cycles with scope ownership and diagnostics.
+
+Policy:
+
+- handles created inside a request/manifest scope are released at scope end
+  unless explicitly retained by escape analysis or runtime adapter evidence;
+- retained handle graphs are tracked by origin runtime and scope;
+- cycle detection may be conservative, but leak diagnostics must report retained
+  handles, handles by origin, oldest live handles, and repeated access patterns;
+- finalizer release breaks non-cyclic stale proxies opportunistically;
+- serialization must not be used to avoid solving identity/lifetime semantics.
 
 ## Copies
 
@@ -70,21 +188,51 @@ Channels are OmniVM-owned manifest resources, not native runtime objects.
   a runtime ref.
 - `chan recv` consumes one item and returns either the item or the runtime's null
   value when the channel is closed and empty.
-- Capturing a channel into JavaScript with `Array.from(channel)` materializes the
-  currently buffered/drainable values into a strict array.
+- Capturing a channel injects a scoped stream descriptor. The target runtime
+  pulls values lazily with `stream_next`; strict arrays/lists are materialized
+  only when user code asks for them, such as `Array.from(channel)` or
+  `list(channel)`.
 - Global `wait(...)` returns spawn results, not channel contents.
 - Channel draining must be explicit in the lowered IR or manifest operation.
 
-Iterators and generators need an explicit crossing mode:
+Iterators and generators need an explicit lowered crossing mode:
 
 - `stream`: target pulls values lazily through a bridge.
 - `copy`: target drains the iterator into an array/list.
 - `ref`: target receives an opaque iterator handle.
 
-`stream_proxy` bridge ops now carry an explicit stream marker into JavaScript
-captures. The materialized target value is iterable, exposes a strict `toArray()`
-snapshot, and has cancellation metadata. This is still a proxy contract, not an
-implicit JSON array contract.
+`stream_proxy` bridge ops carry an explicit stream marker into captures. The
+materialized target value follows the host runtime's normal iteration protocol
+and pulls with `stream_next`. This is a proxy contract, not an implicit JSON
+array contract.
+
+Stream handles release automatically when `stream_next` reaches end-of-stream.
+Targets may cancel abandoned streams; request/manifest scope cleanup and proxy
+finalizers remain fallback release paths.
+
+HTTP bodies, request/response streams, file handles, sockets, and
+generator-like library objects use this same lazy stream contract. They must
+not be materialized unless the target operation requires a strict value and the
+size policy allows it.
+
+Runtime adapters recognize generic reader protocols as stream sources: Python
+objects with `read`, unsized non-collection `__iter__`, or unsized
+non-collection `__aiter__`, Ruby objects with
+`read`, `to_io`, or non-collection `each`, JavaScript iterator objects,
+non-collection sync iterables, async iterables, or `getReader` streams, Java
+`InputStream`, `ReadableByteChannel`, `Reader`, `BaseStream`, or non-collection
+`Iterable` values, and Go `io.Reader` values. The bridge pulls bounded chunks with
+`stream_next` and releases the stream handle at EOF.
+Closeable stream sources are closed through their host
+protocol on EOF, cancellation, or scope/finalizer release: Python and Ruby
+`close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
+Binary chunks continue through the same bulk-data classifier, so byte chunks can
+become Arrow/shared-buffer table descriptors without a user-visible helper.
+
+HTTP message-shaped values with public method/path/url/header metadata stay
+identity-preserving `ref` values even when they expose body iteration methods.
+The request or response object is the complex resource; its body stream can
+cross lazily when accessed as a separate body value.
 
 ## Opaque Resources And Jobs
 
@@ -100,14 +248,17 @@ connections, and job scheduler internals should not cross as JSON copies.
 - `job enqueue` creates a delayed-work handle; `job complete` records its
   eventual result; `job wait` materializes that result into a normal binding.
 
-## Zero-Copy Tables And Buffers
+## Arrow Data Plane
 
-The preferred table/buffer boundary should be a handle contract, not JSON rows.
-For in-process runtimes, OmniVM should use the Arrow C Data Interface as the
-primary representation because it carries schema, buffers, offsets, validity
-bitmaps, and release callbacks without copying column data. Arrow IPC is the
-portable fallback for out-of-process runtimes or runtimes that cannot safely
-consume C pointers.
+The preferred bulk-data boundary is the Arrow C Data Interface, not a parallel
+OmniVM-specific buffer protocol. It carries schema, buffers, offsets, child
+arrays, validity bitmaps, and release callbacks without copying column data.
+Arrow IPC is the portable fallback for out-of-process runtimes or runtimes that
+cannot safely consume C pointers.
+
+Simple byte buffers, typed arrays, image pixels, tensors, and one-dimensional
+numeric arrays are represented as degenerate Arrow arrays. Higher-dimensional
+values carry shape/stride metadata when the source library exposes it.
 
 The long-term manifest shape should distinguish the logical table from the
 transport:
@@ -121,11 +272,19 @@ transport:
   "format": "arrow_c_data",
   "source": { "kind": "ref", "name": "orders" },
   "ownership": "borrowed",
-  "release": "producer"
+  "release": "producer",
+  "metadata": {
+    "dtype": 4,
+    "arrow_format": "g",
+    "shape": [1024],
+    "strides": [8],
+    "null_count": 0,
+    "read_only": true
+  }
 }
 ```
 
-Open design choices before implementation:
+Implementation requirements:
 
 - `owned` handles transfer release responsibility to OmniVM; `borrowed` handles
   must keep the producer alive until all consumers release the view.
@@ -137,6 +296,147 @@ Open design choices before implementation:
   bridge with diagnostics, never the default table boundary.
 - DataFrame libraries should lower to this table handle when they expose Arrow
   memory directly; otherwise they should lower to Arrow IPC or a diagnosed copy.
+- The shared Arrow store carries primitive value buffers plus Arrow validity
+  bitmaps for nullable flat arrays. Until it carries full child-array and
+  multi-buffer table descriptors, dataframe interchange imports may only lower
+  single-column, single-chunk numeric data and validity buffers. Wider,
+  chunked, string, or offset-backed frames must remain refs or use an explicit
+  fallback rather than pretending to be one-buffer Arrow data.
+- Dataframe interchange buffers must prove CPU-addressable memory through the
+  protocol device hook before OmniVM treats their `ptr` value as host memory.
+- Dataframe interchange dtype endianness must match the host byte order or be
+  endian-irrelevant; byte-swapping is a diagnosed copy/fallback operation, not a
+  zero-copy import.
+- Python `__arrow_c_array__` exports and one-chunk `__arrow_c_stream__` exports
+  lower flat primitive nullable arrays by preserving the standard Arrow validity
+  bitmap. Chunked, nested, dictionary, or multi-buffer stream shapes stay refs or
+  fall back until the Python adapter can pass their full descriptors through
+  without lying. Invalid elements surface as native null values through table
+  proxies.
+- Generated Go `c-shared` manifest functions use the same contract for
+  primitive numeric slices and arrays. Returns export an owned C data buffer
+  with dtype, Arrow format, shape, and release callback metadata, then the host
+  imports that memory into the shared Arrow store. Parameters receive borrowed
+  table buffers through the same dtype/format descriptor for the duration of the
+  call. The rule is based on value shape and element type, not producer package
+  names.
+
+Runtime adapters should target generic protocols instead of named-library
+branches:
+
+- Python: buffer protocol, `memoryview`, `__arrow_c_array__`,
+  `__arrow_c_stream__`, `__dlpack__`, sync/async iterables, and dataframe
+  interchange protocols;
+- JavaScript: `ArrayBuffer`, TypedArray, `DataView`, sync/async iterables,
+  `getReader` streams, and Arrow C Data compatible vectors when exposed;
+- Java: `ByteBuffer`, `DirectByteBuffer`, `InputStream`, `ReadableByteChannel`,
+  `Reader`, `BaseStream`, `AutoCloseable` ownership, and Arrow C Data compatible
+  vectors when exposed;
+- Go: slices, `io.Reader`/`io.Writer`, `io.Closer`, and Arrow C Data compatible
+  values when exposed;
+- Ruby: `to_io`, `each`, frozen/binary strings, Fiddle-backed views, and Arrow C
+  Data compatible values when exposed.
+
+The manifest executor keeps the same model internally: serialized captures are
+classified as `copy`, `ref`, `stream`, `arrow`, or diagnosed `json_fallback`
+from bridge metadata and generic handle/table shapes. It does not inspect
+producer library names.
+
+## Chatty Proxy Control
+
+Refs preserve identity, but they can hide expensive boundary traffic. The
+runtime must detect and mitigate chatty access patterns without requiring new
+`.poly` syntax.
+
+Examples:
+
+- repeated foreign index access inside a loop;
+- repeated property reads on the same proxy;
+- `len(proxy)` followed by `proxy[i]`;
+- map/filter/reduce over a foreign collection.
+
+Mitigations:
+
+- automatically batch known property/index reads when the adapter can prove
+  stability;
+- automatically materialize small immutable collections into typed values;
+- switch bulk array access to Arrow when possible;
+- stream large iterables lazily instead of indexing them;
+- emit diagnostics when the runtime cannot safely optimize;
+- expose counters through status/diagnostics: proxy calls, batched calls,
+  materializations, Arrow transfers, and JSON fallbacks.
+
+Current manifest/libomnivm diagnostics expose process-level movement counters
+under `omnivm.status()["boundary"]`:
+
+- `capture_injections`;
+- `runtime_serializations`;
+- `json_fallbacks`;
+- `arrow_transfers`;
+- `bridge_transforms`;
+- `boundary_warnings`;
+- `proxy_materializations`;
+- `proxy_captures`;
+- `channel_materializations`;
+- `stream_proxy_captures`;
+- `resource_proxy_captures`;
+- `table_proxy_captures`;
+- `job_proxy_captures`.
+
+The central handle table also exposes generic access diagnostics under
+`omnivm.status()["handles"]`:
+
+- `handle_accesses`;
+- `handle_accesses_by_kind`;
+- `finalizer_queued`;
+- `finalizer_queue_drains`;
+- `finalizer_queue_drops`;
+- `finalizer_queue_len`;
+- `finalizer_overflow_handles`;
+- `strong_refs`;
+- `retained_refs`;
+- `retained_handles`;
+- `retained_by_runtime`;
+- `max_strong_refs`;
+- `max_strong_ref_handle_id`;
+- `chatty_proxy_warnings`;
+- `chatty_by_runtime`;
+- `chattiest_handle_id`;
+- `chattiest_accesses`;
+- `chattiest_handle_kind`;
+- `reference_edges`;
+- `reference_edges_by_kind`;
+- `reference_edges_by_runtime`;
+- `suspected_cycles`;
+- `cyclic_handles`;
+- `largest_cycle`;
+- `cycle_sample`.
+
+Runtime adapters should report proxy behavior through the internal handle ABI:
+retain/escape/release for lifetime, finalizer release enqueueing for GC-owned
+threads, access recording for chatty proxy detection, and reference/drop-edge
+events for cross-runtime cycle observability. These hooks are adapter plumbing,
+not `.poly` language APIs.
+
+The shared Arrow data plane exposes generic bulk-data diagnostics under
+`omnivm.status()["arrow"]`:
+
+- `live_buffers`;
+- `live_bytes`;
+- `buffers_by_dtype`;
+- `buffers_by_format`;
+- `allocations`;
+- `sets`;
+- `gets`;
+- `releases`;
+- `copied_bytes`;
+- `zero_copy_borrows`;
+- `deferred_release_drops`;
+- `largest_buffer_name`;
+- `largest_buffer_size`.
+
+Internal debug helpers such as materialize-to-value or materialize-to-Arrow may
+exist, but normal `.poly` code should not need to call them.
 
 ## Callbacks
 

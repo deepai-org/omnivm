@@ -29,6 +29,7 @@ import ctypes.util
 import json
 import os
 import threading
+import weakref
 
 __all__ = [
     "init_runtimes",
@@ -154,6 +155,62 @@ def _load_lib():
         lib.OmniBufRelease.argtypes = [ctypes.c_char_p]
         lib.OmniBufRelease.restype = None
 
+        if hasattr(lib, "OmniArrowGet"):
+            lib.OmniArrowGet.argtypes = [
+                ctypes.c_char_p,
+                ctypes.POINTER(_ArrowSchema),
+                ctypes.POINTER(_ArrowArray),
+            ]
+            lib.OmniArrowGet.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniArrowSet"):
+            lib.OmniArrowSet.argtypes = [
+                ctypes.c_char_p,
+                ctypes.POINTER(_ArrowSchema),
+                ctypes.POINTER(_ArrowArray),
+            ]
+            lib.OmniArrowSet.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleRelease"):
+            lib.OmniHandleRelease.argtypes = [ctypes.c_uint64]
+            lib.OmniHandleRelease.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleRetain"):
+            lib.OmniHandleRetain.argtypes = [ctypes.c_uint64]
+            lib.OmniHandleRetain.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleEscape"):
+            lib.OmniHandleEscape.argtypes = [ctypes.c_uint64]
+            lib.OmniHandleEscape.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleReleaseFromFinalizer"):
+            lib.OmniHandleReleaseFromFinalizer.argtypes = [ctypes.c_uint64]
+            lib.OmniHandleReleaseFromFinalizer.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleAccess"):
+            lib.OmniHandleAccess.argtypes = [
+                ctypes.c_uint64,
+                ctypes.c_char_p,
+                ctypes.c_int64,
+            ]
+            lib.OmniHandleAccess.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleRecordReference"):
+            lib.OmniHandleRecordReference.argtypes = [
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_char_p,
+            ]
+            lib.OmniHandleRecordReference.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniHandleDropReference"):
+            lib.OmniHandleDropReference.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
+            lib.OmniHandleDropReference.restype = None
+
+        if hasattr(lib, "OmniDrainFinalizerReleases"):
+            lib.OmniDrainFinalizerReleases.argtypes = [ctypes.c_int]
+            lib.OmniDrainFinalizerReleases.restype = ctypes.c_int
+
         lib.OmniLoadPlugin.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         lib.OmniLoadPlugin.restype = ctypes.c_char_p
 
@@ -241,7 +298,46 @@ class _OmniBuffer(ctypes.Structure):
         ("data", ctypes.c_void_p),
         ("len", ctypes.c_int64),
         ("dtype", ctypes.c_int32),
+        ("owned", ctypes.c_int8),
+        ("read_only", ctypes.c_int8),
     ]
+
+
+class _ArrowSchema(ctypes.Structure):
+    pass
+
+
+class _ArrowArray(ctypes.Structure):
+    pass
+
+
+_ArrowSchemaRelease = ctypes.CFUNCTYPE(None, ctypes.POINTER(_ArrowSchema))
+_ArrowArrayRelease = ctypes.CFUNCTYPE(None, ctypes.POINTER(_ArrowArray))
+
+_ArrowSchema._fields_ = [
+    ("format", ctypes.c_char_p),
+    ("name", ctypes.c_char_p),
+    ("metadata", ctypes.c_char_p),
+    ("flags", ctypes.c_int64),
+    ("n_children", ctypes.c_int64),
+    ("children", ctypes.POINTER(ctypes.POINTER(_ArrowSchema))),
+    ("dictionary", ctypes.POINTER(_ArrowSchema)),
+    ("release", _ArrowSchemaRelease),
+    ("private_data", ctypes.c_void_p),
+]
+
+_ArrowArray._fields_ = [
+    ("length", ctypes.c_int64),
+    ("null_count", ctypes.c_int64),
+    ("offset", ctypes.c_int64),
+    ("n_buffers", ctypes.c_int64),
+    ("n_children", ctypes.c_int64),
+    ("buffers", ctypes.POINTER(ctypes.c_void_p)),
+    ("children", ctypes.POINTER(ctypes.POINTER(_ArrowArray))),
+    ("dictionary", ctypes.POINTER(_ArrowArray)),
+    ("release", _ArrowArrayRelease),
+    ("private_data", ctypes.c_void_p),
+]
 
 
 def _py_to_omni_value(val):
@@ -268,11 +364,10 @@ def _py_to_omni_value(val):
         ov.v.s.ptr = bytes(val)
         ov.v.s.len = len(val)
     else:
-        # Fallback: stringify
-        s = str(val).encode("utf-8")
-        ov.tag = _TAG_STRING
-        ov.v.s.ptr = s
-        ov.v.s.len = len(s)
+        raise TypeError(
+            "unsupported typed bridge argument; complex values must cross "
+            "through the manifest proxy/Arrow boundary, not implicit stringification"
+        )
     return ov
 
 
@@ -573,17 +668,30 @@ def get_buffer(name):
     """
     Return a shared OmniVM buffer as a Python memoryview, or None if missing.
 
-    The current libomnivm bridge copies the buffer into Python-owned memory for
-    host safety. Guest runtimes can still exchange the named buffer through the
-    shared OmniVM buffer store.
+    The returned memoryview is a borrowed view over OmniVM-managed memory. Its
+    finalizer releases the underlying borrow when the view is garbage collected.
     """
     if _lib is None:
         raise RuntimeError("omnivm not initialized - call init_runtimes() first")
     out = _OmniBuffer()
-    rc = _lib.OmniBufGet(str(name).encode("utf-8"), ctypes.byref(out))
-    if rc != 0 or not out.data or out.len <= 0:
+    encoded_name = str(name).encode("utf-8")
+    rc = _lib.OmniBufGet(encoded_name, ctypes.byref(out))
+    if rc != 0:
         return None
-    return memoryview(ctypes.string_at(out.data, out.len))
+    if not out.data or out.len <= 0:
+        _lib.OmniBufRelease(encoded_name)
+        return None
+    view_owner = (ctypes.c_char * int(out.len)).from_address(int(out.data))
+    weakref.finalize(view_owner, _release_buffer_borrow, encoded_name)
+    view = memoryview(view_owner).cast("B")
+    if out.read_only:
+        view = view.toreadonly()
+    return view
+
+
+def _release_buffer_borrow(encoded_name):
+    if _lib is not None:
+        _lib.OmniBufRelease(encoded_name)
 
 
 def set_buffer(name, data, dtype=0):
@@ -598,6 +706,8 @@ def set_buffer(name, data, dtype=0):
         ctypes.cast(backing, ctypes.c_void_p),
         len(view),
         int(dtype),
+        0,
+        int(view.readonly),
     )
     rc = _lib.OmniBufSet(str(name).encode("utf-8"), buf)
     if rc != 0:
@@ -611,6 +721,84 @@ def release_buffer(name):
     if _lib is None:
         raise RuntimeError("omnivm not initialized - call init_runtimes() first")
     _lib.OmniBufRelease(str(name).encode("utf-8"))
+
+
+def _release_handle(handle_id):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleRelease"):
+        raise RuntimeError("libomnivm does not expose OmniHandleRelease")
+    return _lib.OmniHandleRelease(int(handle_id)) == 0
+
+
+def _retain_handle(handle_id):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleRetain"):
+        raise RuntimeError("libomnivm does not expose OmniHandleRetain")
+    return _lib.OmniHandleRetain(int(handle_id)) == 0
+
+
+def _escape_handle(handle_id):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleEscape"):
+        raise RuntimeError("libomnivm does not expose OmniHandleEscape")
+    return _lib.OmniHandleEscape(int(handle_id)) == 0
+
+
+def _release_handle_from_finalizer(handle_id):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleReleaseFromFinalizer"):
+        raise RuntimeError("libomnivm does not expose OmniHandleReleaseFromFinalizer")
+    return _lib.OmniHandleReleaseFromFinalizer(int(handle_id)) == 0
+
+
+def _record_handle_access(handle_id, kind="access", chatty_threshold=0):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleAccess"):
+        raise RuntimeError("libomnivm does not expose OmniHandleAccess")
+    rc = _lib.OmniHandleAccess(
+        int(handle_id),
+        str(kind).encode("utf-8"),
+        int(chatty_threshold),
+    )
+    if rc < 0:
+        raise RuntimeError("omnivm handle access failed")
+    return rc == 1
+
+
+def _record_handle_reference(from_id, to_id, kind="reference"):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleRecordReference"):
+        raise RuntimeError("libomnivm does not expose OmniHandleRecordReference")
+    return (
+        _lib.OmniHandleRecordReference(
+            int(from_id),
+            int(to_id),
+            str(kind).encode("utf-8"),
+        )
+        == 0
+    )
+
+
+def _drop_handle_reference(from_id, to_id):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniHandleDropReference"):
+        raise RuntimeError("libomnivm does not expose OmniHandleDropReference")
+    _lib.OmniHandleDropReference(int(from_id), int(to_id))
+
+
+def _drain_finalizer_releases(max_releases=0):
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniDrainFinalizerReleases"):
+        raise RuntimeError("libomnivm does not expose OmniDrainFinalizerReleases")
+    return _lib.OmniDrainFinalizerReleases(int(max_releases)) == 0
 
 
 def load_plugin(runtime, path):

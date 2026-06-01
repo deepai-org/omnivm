@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	pkg "github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/handles"
 )
 
 // mockRuntime implements pkg.Runtime for testing without cgo.
@@ -75,6 +77,9 @@ func TestNew(t *testing.T) {
 	}
 	if e.Disp == nil {
 		t.Fatal("Dispatcher is nil")
+	}
+	if e.Handles == nil {
+		t.Fatal("Handles table is nil")
 	}
 	if e.TaskTimeoutMS <= 0 {
 		t.Fatalf("TaskTimeoutMS should be positive, got %d", e.TaskTimeoutMS)
@@ -225,6 +230,59 @@ func TestShutdown(t *testing.T) {
 	}
 	if len(e.Runtimes) != 0 {
 		t.Fatalf("runtimes not cleared after shutdown: %d remain", len(e.Runtimes))
+	}
+}
+
+func TestShutdownReleasesHandles(t *testing.T) {
+	e := New()
+	released := 0
+	if _, err := e.Handles.Register("payload", handles.RegisterOptions{
+		Runtime: "python",
+		Kind:    "object",
+		Release: func(value any) error {
+			released++
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	e.Shutdown()
+
+	if released != 1 {
+		t.Fatalf("release calls = %d, want 1", released)
+	}
+	if stats := e.Handles.Stats(time.Now()); stats.Live != 0 {
+		t.Fatalf("live handles = %d, want 0", stats.Live)
+	}
+}
+
+func TestShutdownDrainsQueuedFinalizerReleases(t *testing.T) {
+	e := New()
+	released := 0
+	id, err := e.Handles.Register("payload", handles.RegisterOptions{
+		Runtime: "javascript",
+		Kind:    "proxy",
+		Release: func(value any) error {
+			released++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok := e.Handles.QueueReleaseFromFinalizer(id); !ok {
+		t.Fatal("expected finalizer release to queue")
+	}
+
+	e.Shutdown()
+
+	if released != 1 {
+		t.Fatalf("release calls = %d, want 1", released)
+	}
+	stats := e.Handles.Stats(time.Now())
+	if stats.Live != 0 || stats.FinalizerQueueDrains != 1 || stats.FinalizerReleases != 1 {
+		t.Fatalf("bad handle stats after shutdown drain: %+v", stats)
 	}
 }
 

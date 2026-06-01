@@ -1,14 +1,21 @@
 package manifest
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
+	"github.com/omnivm/omnivm/pkg/handles"
 	"github.com/omnivm/omnivm/pkg/polyglot"
 )
 
@@ -31,18 +38,29 @@ type ImportRef struct {
 }
 
 // RuntimeRef marks a binding as a variable that lives in a specific runtime's
-// global scope. Captures for the same runtime skip injection (already in scope).
-// Cross-runtime captures serialize the value via JSON.
+// global scope. Captures for the same runtime skip injection since the value is
+// already in scope. Cross-runtime captures are resolved by bridge/boundary
+// metadata, with JSON used only as the compatibility fallback.
 type RuntimeRef struct {
-	Runtime string      // which runtime owns this variable
-	VarName string      // variable name in that runtime
-	Value   interface{} // last known value (for cross-runtime capture)
+	Runtime       string      // which runtime owns this variable
+	VarName       string      // variable name in that runtime
+	Value         interface{} // last known primitive value, when SnapshotKnown and not Opaque
+	SnapshotKnown bool        // true when bind-time probing classified the live value
+	Opaque        bool        // true when the live value is complex and must stay behind a handle
+	CallableKnown bool        // true when the source runtime classified callability
+	Callable      bool        // true when the source runtime value can be called directly
+}
+
+type bridgeIdentity struct {
+	typ string
+	ptr uintptr
+	key string
 }
 
 // ResourceRef is an opaque runtime-owned handle. Other runtimes may receive a
 // proxy descriptor, but the live object itself is not serialized.
 type ResourceRef struct {
-	ID       int         `json:"id"`
+	ID       handles.ID  `json:"id"`
 	Runtime  string      `json:"runtime"`
 	Kind     string      `json:"kind"`
 	Disposer string      `json:"disposer,omitempty"`
@@ -54,13 +72,14 @@ type ResourceRef struct {
 // owned by the source runtime or Arrow memory producer; captures receive a
 // descriptor, not JSON rows.
 type TableRef struct {
-	ID        int         `json:"id"`
-	Runtime   string      `json:"runtime"`
-	Format    string      `json:"format"`
-	Ownership string      `json:"ownership"`
-	Release   string      `json:"release,omitempty"`
-	Value     interface{} `json:"value,omitempty"`
-	Released  bool        `json:"released"`
+	ID        handles.ID     `json:"id"`
+	Runtime   string         `json:"runtime"`
+	Format    string         `json:"format"`
+	Ownership string         `json:"ownership"`
+	Release   string         `json:"release,omitempty"`
+	Metadata  *TableMetadata `json:"metadata,omitempty"`
+	Value     interface{}    `json:"value,omitempty"`
+	Released  bool           `json:"released"`
 }
 
 // SpawnHandle is a manifest-visible handle returned by a spawn op.
@@ -83,6 +102,24 @@ type JobHandle struct {
 	Done    bool        `json:"done"`
 }
 
+// BoundaryStats is a diagnostics snapshot for cross-runtime value movement.
+type BoundaryStats struct {
+	CaptureInjections       int64  `json:"capture_injections"`
+	RuntimeSerializations   int64  `json:"runtime_serializations"`
+	JSONFallbacks           int64  `json:"json_fallbacks"`
+	LastJSONFallbackReason  string `json:"last_json_fallback_reason"`
+	ArrowTransfers          int64  `json:"arrow_transfers"`
+	BridgeTransforms        int64  `json:"bridge_transforms"`
+	BoundaryWarnings        int64  `json:"boundary_warnings"`
+	ProxyCaptures           int64  `json:"proxy_captures"`
+	ProxyMaterializations   int64  `json:"proxy_materializations"`
+	ChannelMaterializations int64  `json:"channel_materializations"`
+	StreamProxyCaptures     int64  `json:"stream_proxy_captures"`
+	ResourceProxyCaptures   int64  `json:"resource_proxy_captures"`
+	TableProxyCaptures      int64  `json:"table_proxy_captures"`
+	JobProxyCaptures        int64  `json:"job_proxy_captures"`
+}
+
 // FuncDef stores a manifest-level function definition.
 type FuncDef struct {
 	Name      string
@@ -96,36 +133,54 @@ type Executor struct {
 	runtimes         map[string]pkg.Runtime
 	defaultRuntime   string
 	scopes           []map[string]interface{}
+	handleTable      *handles.Table
+	handleScopes     []handles.ScopeID
 	funcs            map[string]*FuncDef
 	goFuncs          map[string]interface{}
+	javaStubFuncs    map[string]*FuncDef
 	channels         map[string]*ChanRef
 	channelsMu       sync.RWMutex
 	spawns           []*SpawnHandle
 	spawnsMu         sync.Mutex
 	nextSpawnID      int
-	resources        map[int]*ResourceRef
-	nextResourceID   int
-	tables           map[int]*TableRef
-	nextTableID      int
+	nextRuntimeRefID int
+	resources        map[handles.ID]*ResourceRef
+	tables           map[handles.ID]*TableRef
+	bridgeHandles    map[bridgeIdentity]handles.ID
 	jobs             map[int]*JobHandle
 	nextJobID        int
 	yieldCollectors  [][]interface{}        // stack of yield collectors for nested generators
 	bridgeOps        map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
 	boundaryWarnings map[string]struct{}
+	boundaryStats    BoundaryStats
+	boundaryStatsMu  sync.Mutex
 	spawnWG          sync.WaitGroup
 }
 
 // NewExecutor creates an Executor with the given runtimes.
 func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
+	return NewExecutorWithHandles(runtimes, handles.NewTable())
+}
+
+// NewExecutorWithHandles creates an Executor that records runtime-owned values
+// in the supplied process-local handle table.
+func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Table) *Executor {
+	if table == nil {
+		table = handles.NewTable()
+	}
 	e := &Executor{
-		runtimes:  runtimes,
-		scopes:    []map[string]interface{}{make(map[string]interface{})},
-		funcs:     make(map[string]*FuncDef),
-		goFuncs:   make(map[string]interface{}),
-		channels:  make(map[string]*ChanRef),
-		resources: make(map[int]*ResourceRef),
-		tables:    make(map[int]*TableRef),
-		jobs:      make(map[int]*JobHandle),
+		runtimes:      runtimes,
+		scopes:        []map[string]interface{}{make(map[string]interface{})},
+		handleTable:   table,
+		handleScopes:  []handles.ScopeID{table.NewScope()},
+		funcs:         make(map[string]*FuncDef),
+		goFuncs:       make(map[string]interface{}),
+		javaStubFuncs: make(map[string]*FuncDef),
+		channels:      make(map[string]*ChanRef),
+		resources:     make(map[handles.ID]*ResourceRef),
+		tables:        make(map[handles.ID]*TableRef),
+		bridgeHandles: make(map[bridgeIdentity]handles.ID),
+		jobs:          make(map[int]*JobHandle),
 	}
 	e.registerChannelBuiltins()
 	return e
@@ -182,7 +237,13 @@ if 'requests' not in _s.modules:
 }
 
 // Execute runs all top-level ops in the manifest sequentially.
-func (e *Executor) Execute(m *Manifest) error {
+func (e *Executor) Execute(m *Manifest) (err error) {
+	defer func() {
+		if cleanupErr := e.releaseAllHandleScopes(); cleanupErr != nil && err == nil {
+			err = cleanupErr
+		}
+	}()
+
 	e.defaultRuntime = m.DefaultRuntime
 	e.bridgeOps = buildBridgeIndex(m.Bridges)
 
@@ -191,7 +252,7 @@ func (e *Executor) Execute(m *Manifest) error {
 	}
 
 	e.setupRuntimeBuiltins()
-	_, err := e.executeOps(m.Ops)
+	_, err = e.executeOps(m.Ops)
 	if _, ok := err.(ErrReturn); ok {
 		return nil
 	}
@@ -206,9 +267,20 @@ func (e *Executor) executeOps(ops []*Op) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := e.drainPostOpDeferredWork(); err != nil {
+			return nil, err
+		}
 		lastVal = val
 	}
 	return lastVal, nil
+}
+
+func (e *Executor) drainPostOpDeferredWork() error {
+	for _, rt := range e.runtimes {
+		rt.Pump()
+	}
+	arrow.GlobalStore().DrainDeferred()
+	return e.ensureHandleTable().DrainFinalizerReleases(0)
 }
 
 // executeOp dispatches a single op by type.
@@ -282,8 +354,20 @@ func (e *Executor) resolveRuntime(op *Op) (pkg.Runtime, error) {
 	return rt, nil
 }
 
+func (e *Executor) runJavaCaptureCleanup(rt pkg.Runtime, injection captureInjection, excludeNames ...string) error {
+	cleanupCode := injection.javaCleanupCode(excludeNames...)
+	if cleanupCode == "" {
+		return nil
+	}
+	result := rt.Execute(cleanupCode)
+	if result.Err != nil {
+		return result.Err
+	}
+	return nil
+}
+
 // opExec handles exec and native ops.
-func (e *Executor) opExec(op *Op) (interface{}, error) {
+func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 	if op.Async {
 		return e.execAsync(op)
 	}
@@ -295,12 +379,21 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 
 	// Auto-inject current scope bindings so exec code can
 	// reference manifest variables without explicit captures.
-	autoCode := e.autoInjectScope(rt.Name())
-	if autoCode != "" {
-		injectResult := rt.Execute(autoCode)
+	autoInjection := e.autoInjectScopePlanExcluding(rt.Name(), captureBindingExclusions(op.Captures))
+	if autoInjection.setup != "" {
+		injectResult := rt.Execute(autoInjection.setup)
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("exec auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
+		defer func() {
+			if cleanupErr := e.runJavaCaptureCleanup(rt, autoInjection); cleanupErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w (auto capture cleanup failed: %v)", err, cleanupErr)
+					return
+				}
+				err = fmt.Errorf("exec auto capture cleanup [%s]: %w", rt.Name(), cleanupErr)
+			}
+		}()
 	}
 
 	code := op.Code
@@ -309,7 +402,7 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("exec captures: %w", err)
 		}
-	} else if rt.Name() == "ruby" && autoCode != "" {
+	} else if rt.Name() == "ruby" && autoInjection.setup != "" {
 		// Ruby auto-injected $globals need local aliases
 		prefix := e.rubyAliasPrefix(nil)
 		if prefix != "" {
@@ -340,7 +433,7 @@ func (e *Executor) opExec(op *Op) (interface{}, error) {
 }
 
 // opEval handles eval ops.
-func (e *Executor) opEval(op *Op) (interface{}, error) {
+func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	// Go function call via goFuncs registry
 	if op.Func != "" && (op.Runtime == "go" || op.Runtime == "") {
 		return e.callGoFunc(op.Func, op.Args, op.Bind)
@@ -362,24 +455,46 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 
 	// Auto-inject current scope bindings so eval code can
 	// reference manifest variables without explicit captures.
-	autoCode := e.autoInjectScope(rt.Name())
+	autoInjection := e.autoInjectScopePlanExcluding(rt.Name(), captureBindingExclusions(op.Captures))
 	var autoInjectedRuby bool
-	if autoCode != "" {
-		injectResult := rt.Execute(autoCode)
+	if autoInjection.setup != "" {
+		injectResult := rt.Execute(autoInjection.setup)
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("eval auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
 		autoInjectedRuby = rt.Name() == "ruby"
+		defer func() {
+			if cleanupErr := e.runJavaCaptureCleanup(rt, autoInjection, op.Bind); cleanupErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w (auto capture cleanup failed: %v)", err, cleanupErr)
+					return
+				}
+				err = fmt.Errorf("eval auto capture cleanup [%s]: %w", rt.Name(), cleanupErr)
+			}
+		}()
 	}
 
 	// Inject explicit captures (overrides auto-injected values)
+	var explicitInjection captureInjection
 	if len(op.Captures) > 0 {
-		captureCode := e.buildCaptureInjection(rt.Name(), op.Captures)
-		if captureCode != "" {
-			injectResult := rt.Execute(captureCode)
+		explicitInjection = e.buildCaptureInjectionPlan(rt.Name(), op.Captures)
+		if explicitInjection.err != nil {
+			return nil, fmt.Errorf("eval captures [%s]: %w", rt.Name(), explicitInjection.err)
+		}
+		if explicitInjection.setup != "" {
+			injectResult := rt.Execute(explicitInjection.setup)
 			if injectResult.Err != nil {
 				return nil, fmt.Errorf("eval captures [%s]: %w", rt.Name(), injectResult.Err)
 			}
+			defer func() {
+				if cleanupErr := e.runJavaCaptureCleanup(rt, explicitInjection, op.Bind); cleanupErr != nil {
+					if err != nil {
+						err = fmt.Errorf("%w (capture cleanup failed: %v)", err, cleanupErr)
+						return
+					}
+					err = fmt.Errorf("eval capture cleanup [%s]: %w", rt.Name(), cleanupErr)
+				}
+			}()
 		}
 	}
 
@@ -400,12 +515,10 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 				if execResult.Err != nil {
 					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
 				}
-				valResult := rt.Eval(runtimeSerializeExpr(rt.Name(), runtimeVarRef(rt.Name(), op.Bind)))
-				val, decodeErr := decodeRuntimeValue(rt.Name(), valResult)
-				if decodeErr != nil {
-					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
+				ref, val, snapshotErr := e.boundRuntimeRefSnapshot(rt.Name(), op.Bind)
+				if snapshotErr != nil {
+					return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), snapshotErr)
 				}
-				ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
 				e.setBinding(op.Bind, ref)
 				return val, nil
 			}
@@ -417,15 +530,15 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 	// so subsequent ops in the same runtime can reference it directly.
 	if op.Bind != "" {
 		if rt.Name() == "java" {
-			result := rt.Eval(runtimeSerializeExpr(rt.Name(), code))
-			if result.Err != nil {
-				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), result.Err)
+			assignCode := runtimeAssign(rt.Name(), op.Bind, code)
+			execResult := rt.Execute(assignCode)
+			if execResult.Err != nil {
+				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
 			}
-			val, decodeErr := decodeRuntimeValue(rt.Name(), result)
-			if decodeErr != nil {
-				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
+			ref, val, snapshotErr := e.boundRuntimeRefSnapshot(rt.Name(), op.Bind)
+			if snapshotErr != nil {
+				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), snapshotErr)
 			}
-			ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
 			e.setBinding(op.Bind, ref)
 			return val, nil
 		}
@@ -436,14 +549,10 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), execResult.Err)
 		}
 
-		// Read back a JSON-safe snapshot of the value for cross-runtime use.
-		valResult := rt.Eval(runtimeSerializeExpr(rt.Name(), runtimeVarRef(rt.Name(), op.Bind)))
-		val, decodeErr := decodeRuntimeValue(rt.Name(), valResult)
-		if decodeErr != nil {
-			return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), decodeErr)
+		ref, val, snapshotErr := e.boundRuntimeRefSnapshot(rt.Name(), op.Bind)
+		if snapshotErr != nil {
+			return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), snapshotErr)
 		}
-
-		ref := RuntimeRef{Runtime: rt.Name(), VarName: op.Bind, Value: val}
 		e.setBinding(op.Bind, ref)
 		return val, nil
 	}
@@ -465,11 +574,19 @@ func (e *Executor) opEval(op *Op) (interface{}, error) {
 func runtimeAssign(rtName, varName, expr string) string {
 	switch rtName {
 	case "javascript":
-		return fmt.Sprintf("globalThis.%s = %s;", varName, expr)
+		return fmt.Sprintf("globalThis[%s] = %s;", strconv.Quote(varName), expr)
 	case "python":
+		if !isPythonIdentifier(varName) || isPythonReservedWord(varName) {
+			return fmt.Sprintf("globals()[%s] = %s", strconv.Quote(varName), expr)
+		}
 		return fmt.Sprintf("%s = %s", varName, expr)
 	case "ruby":
-		return fmt.Sprintf("$%s = %s", varName, expr)
+		if !isRubyIdentifier(varName) || rubyReserved[varName] {
+			return fmt.Sprintf("($omnivm_bindings ||= {})[%s] = (begin; %s; end)", strconv.Quote(varName), expr)
+		}
+		return fmt.Sprintf("$%s = (begin; %s; end)", varName, expr)
+	case "java":
+		return fmt.Sprintf("omnivm.OmniVM.setCaptureObject(\"%s\", %s);", escapeJavaString(varName), expr)
 	default:
 		return fmt.Sprintf("%s = %s", varName, expr)
 	}
@@ -482,12 +599,85 @@ func runtimeSerializeExpr(rtName, expr string) string {
 	case "javascript":
 		return fmt.Sprintf(`(function(){ var __v = (%s); var __s = JSON.stringify(__v); return typeof __s === "undefined" ? JSON.stringify(String(__v)) : __s; })()`, expr)
 	case "python":
-		return fmt.Sprintf(`__import__("json").dumps((%s), default=str)`, expr)
+		return fmt.Sprintf(`__import__("json").dumps((%s), default=lambda __o: __o.to_json() if hasattr(__o, "to_json") else str(__o))`, expr)
 	case "ruby":
 		return fmt.Sprintf(`begin; require 'json'; JSON.generate(begin; %s; end); rescue; JSON.generate((begin; %s; end).to_s); end`, expr, expr)
+	case "java":
+		return fmt.Sprintf("omnivm.OmniVM.toJson(%s)", expr)
 	default:
 		return expr
 	}
+}
+
+type runtimePrimitiveSnapshot struct {
+	Primitive bool        `json:"primitive"`
+	Value     interface{} `json:"value"`
+	Callable  bool        `json:"callable,omitempty"`
+}
+
+func (e *Executor) boundRuntimeRefSnapshot(rtName, varName string) (RuntimeRef, interface{}, error) {
+	ref := RuntimeRef{Runtime: rtName, VarName: varName}
+	rt, ok := e.runtimes[rtName]
+	if !ok {
+		return ref, ref, fmt.Errorf("runtime %q not found", rtName)
+	}
+	result := rt.Eval(runtimePrimitiveSnapshotExpr(rtName, runtimeVarRef(rtName, varName)))
+	if result.Err != nil {
+		return ref, ref, result.Err
+	}
+	snapshot, ok, err := decodeRuntimePrimitiveSnapshot(rtName, result)
+	if err != nil {
+		return ref, ref, err
+	}
+	if !ok {
+		return ref, ref, nil
+	}
+	ref.SnapshotKnown = true
+	if snapshot.Primitive {
+		ref.Value = snapshot.Value
+		return ref, snapshot.Value, nil
+	}
+	ref.Opaque = true
+	ref.CallableKnown = true
+	ref.Callable = snapshot.Callable
+	return ref, ref, nil
+}
+
+func runtimePrimitiveSnapshotExpr(rtName, expr string) string {
+	switch rtName {
+	case "javascript":
+		return fmt.Sprintf(`(function(){ var __v = (%s); var __p = (__v === null || typeof __v === "boolean" || typeof __v === "number" || typeof __v === "string"); return JSON.stringify(__p ? {primitive:true,value:__v} : {primitive:false,callable:typeof __v === "function"}); })()`, expr)
+	case "python":
+		return fmt.Sprintf(`(lambda __v: __import__("json").dumps({"primitive": True, "value": __v} if isinstance(__v, (type(None), bool, int, float, str)) else {"primitive": False, "callable": callable(__v)}))(%s)`, expr)
+	case "ruby":
+		return fmt.Sprintf(`begin; require 'json'; __v = (begin; %s; end); __text = __v.is_a?(String) && __v.encoding.ascii_compatible? && __v.valid_encoding?; JSON.generate((__v.nil? || __v == true || __v == false || __v.is_a?(Numeric) || __text) ? {primitive: true, value: __v} : {primitive: false, callable: __v.respond_to?(:call)}); end`, expr)
+	case "java":
+		return fmt.Sprintf("omnivm.OmniVM.primitiveSnapshot(%s)", expr)
+	default:
+		return expr
+	}
+}
+
+func decodeRuntimePrimitiveSnapshot(rtName string, result pkg.Result) (runtimePrimitiveSnapshot, bool, error) {
+	if result.Err != nil {
+		return runtimePrimitiveSnapshot{}, false, result.Err
+	}
+	raw := result.Output
+	if result.Value != nil {
+		raw = fmt.Sprintf("%v", result.Value)
+	}
+	var snapshot runtimePrimitiveSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err == nil {
+		return snapshot, true, nil
+	}
+	value, err := decodeRuntimeValue(rtName, result)
+	if err != nil {
+		return runtimePrimitiveSnapshot{}, false, err
+	}
+	if isBridgePrimitive(value) {
+		return runtimePrimitiveSnapshot{Primitive: true, Value: value}, true, nil
+	}
+	return runtimePrimitiveSnapshot{Primitive: false}, true, nil
 }
 
 func decodeRuntimeValue(rtName string, result pkg.Result) (interface{}, error) {
@@ -498,7 +688,7 @@ func decodeRuntimeValue(rtName string, result pkg.Result) (interface{}, error) {
 	if result.Value != nil {
 		raw = fmt.Sprintf("%v", result.Value)
 	}
-	if rtName == "javascript" || rtName == "python" || rtName == "ruby" {
+	if rtName == "javascript" || rtName == "python" || rtName == "ruby" || rtName == "java" {
 		var val interface{}
 		if err := json.Unmarshal([]byte(raw), &val); err == nil {
 			return val, nil
@@ -511,9 +701,37 @@ func decodeRuntimeValue(rtName string, result pkg.Result) (interface{}, error) {
 func runtimeVarRef(rtName, varName string) string {
 	switch rtName {
 	case "javascript":
-		return fmt.Sprintf("globalThis.%s", varName)
+		if strings.HasPrefix(varName, "globalThis.") {
+			return varName
+		}
+		if strings.ContainsAny(varName, "[(") {
+			return fmt.Sprintf("globalThis.%s", varName)
+		}
+		return fmt.Sprintf("globalThis[%s]", strconv.Quote(varName))
+	case "python":
+		if strings.ContainsAny(varName, "[(") {
+			return varName
+		}
+		if !isPythonIdentifier(varName) || isPythonReservedWord(varName) {
+			return fmt.Sprintf("globals()[%s]", strconv.Quote(varName))
+		}
+		return varName
 	case "ruby":
+		if strings.HasPrefix(varName, "$") {
+			return varName
+		}
+		if strings.ContainsAny(varName, "[(") {
+			return varName
+		}
+		if !isRubyIdentifier(varName) || rubyReserved[varName] {
+			return fmt.Sprintf("($omnivm_bindings ||= {})[%s]", strconv.Quote(varName))
+		}
 		return fmt.Sprintf("$%s", varName)
+	case "java":
+		if key, ok := runtimeArgRefKey(varName); ok {
+			return fmt.Sprintf("omnivm.OmniVM.getArgRef(\"%s\")", escapeJavaString(key))
+		}
+		return fmt.Sprintf("omnivm.OmniVM.getCapture(\"%s\")", escapeJavaString(varName))
 	default:
 		return varName
 	}
@@ -641,41 +859,32 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 	switch rt.Name() {
 	case "python":
 		if len(op.Specifiers) > 0 {
-			var specs []string
-			for _, s := range op.Specifiers {
-				if s.Imported == s.Local {
-					specs = append(specs, s.Local)
-				} else {
-					specs = append(specs, s.Imported+" as "+s.Local)
-				}
+			var lines []string
+			for i, s := range op.Specifiers {
+				temp := fmt.Sprintf("__omnivm_import_%d", i)
+				lines = append(lines, fmt.Sprintf("from %s import %s as %s", op.Path, s.Imported, temp))
+				lines = append(lines, runtimeAssign("python", s.Local, temp))
 			}
-			code = fmt.Sprintf("from %s import %s", op.Path, strings.Join(specs, ", "))
+			code = strings.Join(lines, "\n")
 		} else if op.DefaultImport != "" {
-			if op.DefaultImport == op.Path {
-				code = fmt.Sprintf("import %s", op.Path)
-			} else {
-				code = fmt.Sprintf("import %s as %s", op.Path, op.DefaultImport)
-			}
+			code = fmt.Sprintf("import %s as __omnivm_import_default\n%s", op.Path, runtimeAssign("python", op.DefaultImport, "__omnivm_import_default"))
 		} else {
 			code = fmt.Sprintf("import %s", op.Path)
 		}
 	case "javascript":
+		pathLiteral := strconv.Quote(op.Path)
 		if len(op.Specifiers) > 0 {
-			var specs []string
+			lines := []string{fmt.Sprintf("var __omnivm_import = require(%s);", pathLiteral)}
 			for _, s := range op.Specifiers {
-				if s.Imported == s.Local {
-					specs = append(specs, s.Local)
-				} else {
-					specs = append(specs, s.Imported+": "+s.Local)
-				}
+				lines = append(lines, fmt.Sprintf("globalThis[%s] = __omnivm_import[%s];", strconv.Quote(s.Local), strconv.Quote(s.Imported)))
 			}
-			code = fmt.Sprintf("var { %s } = require('%s');", strings.Join(specs, ", "), op.Path)
+			code = strings.Join(lines, "\n")
 		} else if op.DefaultImport != "" {
-			code = fmt.Sprintf("var %s = require('%s');", op.DefaultImport, op.Path)
+			code = fmt.Sprintf("globalThis[%s] = require(%s);", strconv.Quote(op.DefaultImport), pathLiteral)
 		} else if op.Bind != "" {
-			code = fmt.Sprintf("var %s = require('%s');", op.Bind, op.Path)
+			code = fmt.Sprintf("globalThis[%s] = require(%s);", strconv.Quote(op.Bind), pathLiteral)
 		} else {
-			code = fmt.Sprintf("require('%s');", op.Path)
+			code = fmt.Sprintf("require(%s);", pathLiteral)
 		}
 	case "ruby":
 		code = fmt.Sprintf("require '%s'", op.Path)
@@ -698,6 +907,8 @@ func (e *Executor) opImport(op *Op) (interface{}, error) {
 	ref := ImportRef{Runtime: rt.Name(), Name: op.Path}
 	if op.Bind != "" {
 		e.setBinding(op.Bind, ref)
+	} else if op.DefaultImport != "" {
+		e.setBinding(op.DefaultImport, ref)
 	}
 	for _, s := range op.Specifiers {
 		e.setBinding(s.Local, ImportRef{Runtime: rt.Name(), Name: s.Imported})
@@ -752,12 +963,7 @@ func (e *Executor) opReturn(op *Op) (interface{}, error) {
 			if !ok {
 				return nil, fmt.Errorf("return: undefined binding %q", op.Value.Name)
 			}
-			// Unwrap RuntimeRef to get the actual value
-			if ref, ok := v.(RuntimeRef); ok {
-				val = ref.Value
-			} else {
-				val = v
-			}
+			val = v
 		default:
 			return nil, fmt.Errorf("return: unknown value kind %q", op.Value.Kind)
 		}
@@ -838,6 +1044,14 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("foreach: undefined binding %q", op.Iterable.Name)
 		}
 		if ref, ok := val.(RuntimeRef); ok {
+			items, iterOK, err := e.runtimeRefIter(ref, "values")
+			if err != nil {
+				return nil, fmt.Errorf("foreach: runtime ref iterable %q: %w", op.Iterable.Name, err)
+			}
+			if iterOK {
+				collection = items
+				break
+			}
 			val = ref.Value
 		}
 		arr, ok := val.([]interface{})
@@ -1088,7 +1302,7 @@ func (e *Executor) opAssign(op *Op) (interface{}, error) {
 }
 
 // evalCondition evaluates a CondExpr and returns whether it's truthy.
-func (e *Executor) evalCondition(cond *CondExpr) (bool, error) {
+func (e *Executor) evalCondition(cond *CondExpr) (truthy bool, err error) {
 	switch cond.Kind {
 	case "literal":
 		return isTruthy(cond.Value), nil
@@ -1118,12 +1332,21 @@ func (e *Executor) evalCondition(cond *CondExpr) (bool, error) {
 		} else {
 			// Auto-inject current scope bindings so condition code can
 			// reference func_def params and other manifest variables.
-			captureCode := e.autoInjectScope(rtName)
-			if captureCode != "" {
-				injectResult := rt.Execute(captureCode)
+			injection := e.autoInjectScopePlan(rtName)
+			if injection.setup != "" {
+				injectResult := rt.Execute(injection.setup)
 				if injectResult.Err != nil {
 					return false, fmt.Errorf("condition auto-inject [%s]: %w", rtName, injectResult.Err)
 				}
+				defer func() {
+					if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
+						if err != nil {
+							err = fmt.Errorf("%w (auto capture cleanup failed: %v)", err, cleanupErr)
+							return
+						}
+						err = fmt.Errorf("condition auto capture cleanup [%s]: %w", rtName, cleanupErr)
+					}
+				}()
 				// Ruby: create local aliases from $globals
 				if rtName == "ruby" {
 					code = e.rubyAliasPrefix(nil) + code
@@ -1154,7 +1377,7 @@ func (e *Executor) callGoFunc(name string, args []interface{}, bind string) (val
 		return nil, fmt.Errorf("eval go: unknown function %q", name)
 	}
 
-	normalizedArgs := normalizeArgs(args)
+	normalizedArgs := e.normalizeGoArgs(args)
 
 	// func(interface{}) interface{} (single arg)
 	if f, ok := fn.(func(interface{}) interface{}); ok {
@@ -1284,9 +1507,7 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 		if runtime == "" {
 			runtime = e.defaultRuntime
 		}
-		e.nextResourceID++
 		ref := &ResourceRef{
-			ID:       e.nextResourceID,
 			Runtime:  runtime,
 			Kind:     op.Kind,
 			Disposer: op.Disposer,
@@ -1298,6 +1519,23 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 			}
 			ref.Value = val
 		}
+		table := e.ensureHandleTable()
+		var id handles.ID
+		var err error
+		id, err = table.Register(ref, handles.RegisterOptions{
+			Runtime: runtime,
+			Kind:    nonEmpty(op.Kind, "resource"),
+			ScopeID: e.currentHandleScope(),
+			Release: func(any) error {
+				ref.Closed = true
+				e.forgetReleasedHandle(id, ref)
+				return nil
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resource open handle: %w", err)
+		}
+		ref.ID = id
 		e.resources[ref.ID] = ref
 		e.setBinding(op.Bind, ref)
 		return ref, nil
@@ -1332,7 +1570,9 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 				return nil, fmt.Errorf("resource close cleanup: %w", err)
 			}
 		}
-		ref.Closed = true
+		if err := e.ensureHandleTable().Release(ref.ID); err != nil {
+			return nil, fmt.Errorf("resource close handle: %w", err)
+		}
 		return ref, nil
 	default:
 		return nil, fmt.Errorf("resource: unknown action %q", op.Action)
@@ -1357,13 +1597,12 @@ func (e *Executor) opTable(op *Op) (interface{}, error) {
 		if ownership == "" {
 			ownership = "borrowed"
 		}
-		e.nextTableID++
 		ref := &TableRef{
-			ID:        e.nextTableID,
 			Runtime:   runtime,
 			Format:    format,
 			Ownership: ownership,
 			Release:   op.Release,
+			Metadata:  cloneTableMetadata(op.Metadata),
 		}
 		if op.Value != nil {
 			val, err := e.resolveValueExpr(op.Value)
@@ -1372,6 +1611,23 @@ func (e *Executor) opTable(op *Op) (interface{}, error) {
 			}
 			ref.Value = val
 		}
+		table := e.ensureHandleTable()
+		var id handles.ID
+		var err error
+		id, err = table.Register(ref, handles.RegisterOptions{
+			Runtime: runtime,
+			Kind:    "table:" + format,
+			ScopeID: e.currentHandleScope(),
+			Release: func(any) error {
+				ref.Released = true
+				e.forgetReleasedHandle(id, ref)
+				return nil
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("table export handle: %w", err)
+		}
+		ref.ID = id
 		e.tables[ref.ID] = ref
 		e.setBinding(op.Bind, ref)
 		return ref, nil
@@ -1395,7 +1651,9 @@ func (e *Executor) opTable(op *Op) (interface{}, error) {
 				return nil, fmt.Errorf("table release cleanup: %w", err)
 			}
 		}
-		ref.Released = true
+		if err := e.ensureHandleTable().Release(ref.ID); err != nil {
+			return nil, fmt.Errorf("table release handle: %w", err)
+		}
 		return ref, nil
 	default:
 		return nil, fmt.Errorf("table: unknown action %q", op.Action)
@@ -1573,9 +1831,6 @@ func (e *Executor) rubyAliasPrefix(captures map[string]string) string {
 				if _, ok := val.(ImportRef); ok {
 					continue
 				}
-				if _, ok := val.(*ChanRef); ok {
-					continue
-				}
 				if ref, ok := val.(RuntimeRef); ok && ref.Runtime == "ruby" {
 					continue
 				}
@@ -1593,10 +1848,14 @@ func (e *Executor) rubyAliasPrefix(captures map[string]string) string {
 
 func (e *Executor) pushScope() {
 	e.scopes = append(e.scopes, make(map[string]interface{}))
+	if e.handleTable != nil {
+		e.handleScopes = append(e.handleScopes, e.handleTable.NewScope())
+	}
 }
 
 func (e *Executor) popScope() {
 	if len(e.scopes) > 1 {
+		_ = e.releaseLastHandleScope()
 		e.scopes = e.scopes[:len(e.scopes)-1]
 	}
 }
@@ -1614,7 +1873,96 @@ func (e *Executor) setBinding(name string, val interface{}) {
 	e.scopes[len(e.scopes)-1][name] = val
 }
 
+func (e *Executor) currentHandleScope() handles.ScopeID {
+	table := e.ensureHandleTable()
+	if len(e.handleScopes) == 0 {
+		e.handleScopes = append(e.handleScopes, table.NewScope())
+	}
+	return e.handleScopes[len(e.handleScopes)-1]
+}
+
+func (e *Executor) ensureHandleTable() *handles.Table {
+	if e.handleTable == nil {
+		e.handleTable = handles.NewTable()
+	}
+	return e.handleTable
+}
+
+func (e *Executor) releaseLastHandleScope() error {
+	if e.handleTable == nil || len(e.handleScopes) == 0 {
+		return nil
+	}
+	scope := e.handleScopes[len(e.handleScopes)-1]
+	e.handleScopes = e.handleScopes[:len(e.handleScopes)-1]
+	return e.handleTable.ReleaseScope(scope)
+}
+
+func (e *Executor) releaseAllHandleScopes() error {
+	var firstErr error
+	for len(e.handleScopes) > 0 {
+		if err := e.releaseLastHandleScope(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (e *Executor) forgetReleasedHandle(id handles.ID, value interface{}) {
+	if id == 0 {
+		return
+	}
+	delete(e.resources, id)
+	delete(e.tables, id)
+	e.forgetBridgeHandle(id, value)
+	switch v := value.(type) {
+	case *ResourceRef:
+		if v != nil {
+			e.forgetBridgeHandle(id, v.Value)
+		}
+	case ResourceRef:
+		e.forgetBridgeHandle(id, v.Value)
+	case *TableRef:
+		if v != nil {
+			e.forgetBridgeHandle(id, v.Value)
+		}
+	case TableRef:
+		e.forgetBridgeHandle(id, v.Value)
+	}
+}
+
+func (e *Executor) forgetBridgeHandle(id handles.ID, value interface{}) {
+	if e.bridgeHandles == nil {
+		return
+	}
+	ident, ok := bridgeIdentityForValue(value)
+	if !ok {
+		return
+	}
+	if current, ok := e.bridgeHandles[ident]; ok && current == id {
+		delete(e.bridgeHandles, ident)
+	}
+}
+
+func (e *Executor) BoundaryStats() BoundaryStats {
+	e.boundaryStatsMu.Lock()
+	defer e.boundaryStatsMu.Unlock()
+	return e.boundaryStats
+}
+
+func (e *Executor) addBoundaryStat(update func(*BoundaryStats)) {
+	e.boundaryStatsMu.Lock()
+	defer e.boundaryStatsMu.Unlock()
+	update(&e.boundaryStats)
+}
+
 // Helpers
+
+func nonEmpty(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
 
 func isTruthy(val interface{}) bool {
 	if val == nil {
@@ -1806,19 +2154,28 @@ func (e *Executor) resolveIterableCall(expr string) ([]interface{}, error) {
 
 // evalRuntimeIterable evaluates an expression in a source runtime and returns
 // the result as a JSON-parsed array. Substitutes manifest bindings into the expression.
-func (e *Executor) evalRuntimeIterable(rtName, expr string) ([]interface{}, error) {
+func (e *Executor) evalRuntimeIterable(rtName, expr string) (items []interface{}, err error) {
 	rt, ok := e.runtimes[rtName]
 	if !ok {
 		return nil, fmt.Errorf("evalRuntimeIterable: unknown runtime %q", rtName)
 	}
 
 	// Auto-inject scope so the runtime can see manifest bindings
-	autoCode := e.autoInjectScope(rtName)
-	if autoCode != "" {
-		injectResult := rt.Execute(autoCode)
+	injection := e.autoInjectScopePlan(rtName)
+	if injection.setup != "" {
+		injectResult := rt.Execute(injection.setup)
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("evalRuntimeIterable auto-inject [%s]: %w", rtName, injectResult.Err)
 		}
+		defer func() {
+			if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w (auto capture cleanup failed: %v)", err, cleanupErr)
+					return
+				}
+				err = fmt.Errorf("evalRuntimeIterable auto capture cleanup [%s]: %w", rtName, cleanupErr)
+			}
+		}()
 	}
 
 	// Wrap expression to produce JSON array
@@ -1853,14 +2210,598 @@ func (e *Executor) evalRuntimeIterable(rtName, expr string) ([]interface{}, erro
 }
 
 // marshalForCapture serializes a value to JSON for injection into a runtime.
+func (e *Executor) marshalForCapture(val interface{}) (string, error) {
+	if ref, ok, err := e.autoBulkTableRefForCapture(val); ok || err != nil {
+		if err != nil {
+			return "", err
+		}
+		val = ref
+	}
+	if ref, ok, err := e.autoResourceRefForCapture(val); ok || err != nil {
+		if err != nil {
+			return "", err
+		}
+		val = ref
+	}
+	decision := classifyLocalCaptureBoundary(val)
+	switch decision.Form {
+	case BoundaryRef:
+		e.addBoundaryStat(func(stats *BoundaryStats) {
+			switch val.(type) {
+			case *ResourceRef:
+				stats.ResourceProxyCaptures++
+			case *JobHandle:
+				stats.JobProxyCaptures++
+			}
+		})
+	case BoundaryArrow:
+		e.addBoundaryStat(func(stats *BoundaryStats) {
+			stats.TableProxyCaptures++
+			stats.ArrowTransfers++
+		})
+	}
+	if _, ok := val.(*TableRef); ok && decision.Form != BoundaryArrow {
+		e.addBoundaryStat(func(stats *BoundaryStats) {
+			stats.TableProxyCaptures++
+		})
+	}
+	return marshalForCapture(val)
+}
+
+func (e *Executor) autoResourceRefForCapture(val interface{}) (*ResourceRef, bool, error) {
+	if !shouldProxyLocalCapture(val) {
+		return nil, false, nil
+	}
+	if id, ok := e.bridgeHandleForValue("go", val); ok {
+		entry, live := e.ensureHandleTable().Get(id)
+		if live {
+			if ref, ok := entry.Value.(*ResourceRef); ok {
+				return ref, true, nil
+			}
+		}
+	}
+
+	ref := &ResourceRef{
+		Runtime: "go",
+		Kind:    bridgeResultKind(val),
+		Value:   val,
+	}
+	var id handles.ID
+	id, err := e.ensureHandleTable().Register(ref, handles.RegisterOptions{
+		Runtime: ref.Runtime,
+		Kind:    ref.Kind,
+		ScopeID: e.currentHandleScope(),
+		Release: func(any) error {
+			ref.Closed = true
+			e.forgetReleasedHandle(id, ref)
+			e.forgetReleasedHandle(id, val)
+			if proxy, ok := val.(*cSharedObjectProxy); ok {
+				return proxy.Release()
+			}
+			if proxy, ok := val.(cSharedObjectProxy); ok {
+				return proxy.Release()
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	ref.ID = id
+	e.resources[id] = ref
+	if ident, ok := bridgeIdentityForValue(val); ok {
+		e.bridgeHandles[ident] = id
+	}
+	return ref, true, nil
+}
+
+func shouldProxyLocalCapture(val interface{}) bool {
+	if val == nil || isBridgePrimitive(val) || isBridgeMarker(val) {
+		return false
+	}
+	switch val.(type) {
+	case *ResourceRef, ResourceRef, *TableRef, TableRef, *JobHandle, JobHandle, *ChanRef, ChanRef, *SpawnHandle, SpawnHandle, ImportRef, RuntimeRef, *RuntimeRef, []byte:
+		return false
+	}
+	if isReceivableChannelValue(val) || isReaderStreamValue(val) {
+		return false
+	}
+	rv := reflect.ValueOf(val)
+	if !rv.IsValid() {
+		return false
+	}
+	for rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct, reflect.Pointer, reflect.Func:
+		if (rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Func) && rv.IsNil() {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Executor) autoBulkTableRefForCapture(val interface{}) (*TableRef, bool, error) {
+	view, ok := bulkCaptureViewForValue(val)
+	if !ok {
+		return nil, false, nil
+	}
+	e.nextRuntimeRefID++
+	name := fmt.Sprintf("__omnivm_auto_buffer_%p_%d", e, e.nextRuntimeRefID)
+	dtype := view.dtype
+	meta := arrow.BufferMetadata{
+		Dtype:     dtype,
+		Format:    view.format,
+		Shape:     view.shapeOrDefault(),
+		Strides:   append([]int64(nil), view.strides...),
+		ReadOnly:  true,
+		Ownership: "producer",
+	}
+	var err error
+	if view.ptr != nil || view.bytes == nil {
+		_, err = arrow.GlobalStore().SetExternalWithMetadata(name, view.ptr, view.bytesLen, meta, view.release)
+	} else {
+		_, err = arrow.GlobalStore().SetWithMetadata(name, view.bytes, meta)
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	ref := &TableRef{
+		Runtime:   "go",
+		Format:    "arrow_c_data",
+		Ownership: "borrowed",
+		Metadata: &TableMetadata{
+			Dtype:       &dtype,
+			ArrowFormat: view.format,
+			Buffer:      name,
+			Shape:       view.shapeOrDefault(),
+			Strides:     append([]int64(nil), view.strides...),
+			ReadOnly:    true,
+		},
+		Value: name,
+	}
+	var id handles.ID
+	id, err = e.ensureHandleTable().Register(ref, handles.RegisterOptions{
+		Runtime: ref.Runtime,
+		Kind:    "table:" + ref.Format,
+		ScopeID: e.currentHandleScope(),
+		Release: func(any) error {
+			ref.Released = true
+			e.forgetReleasedHandle(id, ref)
+			return arrow.GlobalStore().Free(name)
+		},
+	})
+	if err != nil {
+		_ = arrow.GlobalStore().Free(name)
+		return nil, true, err
+	}
+	ref.ID = id
+	e.tables[id] = ref
+	return ref, true, nil
+}
+
+type bulkCaptureView struct {
+	bytes    []byte
+	ptr      unsafe.Pointer
+	bytesLen int64
+	elements int64
+	shape    []int64
+	strides  []int64
+	dtype    int32
+	format   string
+	release  func() error
+}
+
+func (v bulkCaptureView) shapeOrDefault() []int64 {
+	if len(v.shape) > 0 {
+		return append([]int64(nil), v.shape...)
+	}
+	return []int64{v.elements}
+}
+
+func bulkCaptureViewForValue(val interface{}) (bulkCaptureView, bool) {
+	switch data := val.(type) {
+	case *cSharedOwnedBuffer:
+		if data == nil {
+			return bulkCaptureView{}, false
+		}
+		return cSharedOwnedBufferBulkCaptureView(data), true
+	case cSharedOwnedBuffer:
+		return cSharedOwnedBufferBulkCaptureView(&data), true
+	case []byte:
+		view := bulkCaptureView{
+			bytesLen: int64(len(data)),
+			elements: int64(len(data)),
+			shape:    []int64{int64(len(data))},
+			dtype:    arrow.DtypeBytes,
+			format:   "C",
+			release: func() error {
+				runtime.KeepAlive(data)
+				return nil
+			},
+		}
+		if len(data) > 0 {
+			view.ptr = unsafe.Pointer(&data[0])
+		}
+		return view, true
+	case []int8:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeI8, "c", 1)
+	case []int16:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeI16, "s", 2)
+	case []uint16:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeU16, "S", 2)
+	case []int32:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeI32, "i", 4)
+	case []uint32:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeU32, "I", 4)
+	case []int64:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeI64, "l", 8)
+	case []uint64:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeU64, "L", 8)
+	case []float32:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeF32, "f", 4)
+	case []float64:
+		return fixedWidthSliceBulkCaptureView(data, arrow.DtypeF64, "g", 8)
+	default:
+		return reflectBulkCaptureViewForValue(val)
+	}
+}
+
+func cSharedOwnedBufferBulkCaptureView(data *cSharedOwnedBuffer) bulkCaptureView {
+	return bulkCaptureView{
+		ptr:      data.ptr,
+		bytesLen: data.bytesLen,
+		elements: data.elements,
+		shape:    append([]int64(nil), data.shape...),
+		strides:  append([]int64(nil), data.strides...),
+		dtype:    data.dtype,
+		format:   data.format,
+		release:  data.release,
+	}
+}
+
+func fixedWidthSliceBulkCaptureView[T any](data []T, dtype int32, format string, elemSize int64) (bulkCaptureView, bool) {
+	view := bulkCaptureView{
+		bytesLen: int64(len(data)) * elemSize,
+		elements: int64(len(data)),
+		shape:    []int64{int64(len(data))},
+		dtype:    dtype,
+		format:   format,
+		release: func() error {
+			runtime.KeepAlive(data)
+			return nil
+		},
+	}
+	if len(data) > 0 {
+		view.ptr = unsafe.Pointer(&data[0])
+	}
+	return view, true
+}
+
+func reflectBulkCaptureViewForValue(val interface{}) (bulkCaptureView, bool) {
+	rv := reflect.ValueOf(val)
+	if !rv.IsValid() {
+		return bulkCaptureView{}, false
+	}
+	for rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return bulkCaptureView{}, false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return bulkCaptureView{}, false
+		}
+		elem := rv.Elem()
+		if elem.Kind() == reflect.Array || elem.Kind() == reflect.Slice {
+			return reflectSequentialBulkCaptureView(elem, val)
+		}
+		return bulkCaptureView{}, false
+	}
+	if rv.Kind() != reflect.Array && rv.Kind() != reflect.Slice {
+		return bulkCaptureView{}, false
+	}
+	return reflectSequentialBulkCaptureView(rv, val)
+}
+
+func reflectSequentialBulkCaptureView(rv reflect.Value, keepAlive interface{}) (bulkCaptureView, bool) {
+	shape, elem, contiguous, ok := reflectSequentialShape(rv)
+	if !ok {
+		return bulkCaptureView{}, false
+	}
+	dtype, format, elemSize, ok := arrowFormatForGoElem(elem)
+	if !ok {
+		return bulkCaptureView{}, false
+	}
+	elements, ok := shapeProduct(shape)
+	if !ok {
+		return bulkCaptureView{}, false
+	}
+	view := bulkCaptureView{
+		bytesLen: elements * elemSize,
+		elements: elements,
+		shape:    shape,
+		strides:  contiguousStrides(shape, elemSize),
+		dtype:    dtype,
+		format:   format,
+		release: func() error {
+			runtime.KeepAlive(keepAlive)
+			return nil
+		},
+	}
+	if elements == 0 {
+		return view, true
+	}
+	first := firstScalarValue(rv)
+	if contiguous && first.CanAddr() {
+		view.ptr = unsafe.Pointer(first.UnsafeAddr())
+		return view, true
+	}
+	view.bytes = copyReflectSequentialBulkBytes(rv, dtype, int(elemSize), int(elements))
+	view.release = nil
+	return view, true
+}
+
+func reflectSequentialShape(rv reflect.Value) ([]int64, reflect.Type, bool, bool) {
+	if rv.Kind() != reflect.Array && rv.Kind() != reflect.Slice {
+		return nil, nil, false, false
+	}
+	elem, ok := reflectSequentialScalarType(rv.Type())
+	if !ok {
+		return nil, nil, false, false
+	}
+	shape, contiguous, ok := reflectSequentialShapeDims(rv)
+	if !ok || len(shape) == 0 {
+		return nil, nil, false, false
+	}
+	return shape, elem, contiguous, true
+}
+
+func reflectSequentialScalarType(t reflect.Type) (reflect.Type, bool) {
+	for t.Kind() == reflect.Array || t.Kind() == reflect.Slice {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Array || t.Kind() == reflect.Slice {
+		return nil, false
+	}
+	return t, true
+}
+
+func reflectSequentialShapeDims(rv reflect.Value) ([]int64, bool, bool) {
+	for rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, false, false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Array && rv.Kind() != reflect.Slice {
+		return nil, true, true
+	}
+	shape := []int64{int64(rv.Len())}
+	contiguous := rv.Type().Elem().Kind() != reflect.Slice
+	if rv.Len() == 0 {
+		inner, innerContiguous, ok := reflectSequentialTypeFixedShape(rv.Type().Elem())
+		if !ok {
+			return shape, contiguous, true
+		}
+		shape = append(shape, inner...)
+		return shape, contiguous && innerContiguous, true
+	}
+	var expected []int64
+	for i := 0; i < rv.Len(); i++ {
+		inner, innerContiguous, ok := reflectSequentialShapeDims(rv.Index(i))
+		if !ok {
+			return nil, false, false
+		}
+		if i == 0 {
+			expected = append([]int64(nil), inner...)
+		} else if !int64SlicesEqual(expected, inner) {
+			return nil, false, false
+		}
+		contiguous = contiguous && innerContiguous
+	}
+	shape = append(shape, expected...)
+	return shape, contiguous, true
+}
+
+func reflectSequentialTypeFixedShape(t reflect.Type) ([]int64, bool, bool) {
+	switch t.Kind() {
+	case reflect.Array:
+		inner, contiguous, ok := reflectSequentialTypeFixedShape(t.Elem())
+		if !ok {
+			return nil, false, false
+		}
+		return append([]int64{int64(t.Len())}, inner...), contiguous, true
+	case reflect.Slice:
+		return nil, false, false
+	default:
+		return nil, true, true
+	}
+}
+
+func int64SlicesEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func arrowFormatForGoElem(elem reflect.Type) (int32, string, int64, bool) {
+	switch elem.Kind() {
+	case reflect.Int8:
+		return arrow.DtypeI8, "c", 1, true
+	case reflect.Uint8:
+		return arrow.DtypeU8, "C", 1, true
+	case reflect.Int16:
+		return arrow.DtypeI16, "s", 2, true
+	case reflect.Uint16:
+		return arrow.DtypeU16, "S", 2, true
+	case reflect.Int32:
+		return arrow.DtypeI32, "i", 4, true
+	case reflect.Uint32:
+		return arrow.DtypeU32, "I", 4, true
+	case reflect.Int64:
+		return arrow.DtypeI64, "l", 8, true
+	case reflect.Uint64:
+		return arrow.DtypeU64, "L", 8, true
+	case reflect.Float32:
+		return arrow.DtypeF32, "f", 4, true
+	case reflect.Float64:
+		return arrow.DtypeF64, "g", 8, true
+	case reflect.Int:
+		if elem.Size() == 4 {
+			return arrow.DtypeI32, "i", 4, true
+		}
+		if elem.Size() == 8 {
+			return arrow.DtypeI64, "l", 8, true
+		}
+	case reflect.Uint:
+		if elem.Size() == 4 {
+			return arrow.DtypeU32, "I", 4, true
+		}
+		if elem.Size() == 8 {
+			return arrow.DtypeU64, "L", 8, true
+		}
+	}
+	return 0, "", 0, false
+}
+
+func firstScalarValue(rv reflect.Value) reflect.Value {
+	for rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice {
+		if rv.Len() == 0 {
+			return reflect.Value{}
+		}
+		rv = rv.Index(0)
+	}
+	return rv
+}
+
+func copyReflectSequentialBulkBytes(rv reflect.Value, dtype int32, elemSize, elements int) []byte {
+	out := make([]byte, elements*elemSize)
+	offset := 0
+	copyReflectSequentialBulkBytesInto(rv, dtype, elemSize, out, &offset)
+	return out
+}
+
+func copyReflectSequentialBulkBytesInto(rv reflect.Value, dtype int32, elemSize int, out []byte, offset *int) {
+	for rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice {
+		for i := 0; i < rv.Len(); i++ {
+			copyReflectSequentialBulkBytesInto(rv.Index(i), dtype, elemSize, out, offset)
+		}
+		return
+	}
+	if *offset < 0 || *offset+elemSize > len(out) {
+		return
+	}
+	slot := out[*offset : *offset+elemSize]
+	switch dtype {
+	case arrow.DtypeBytes:
+		slot[0] = byte(rv.Uint())
+	case arrow.DtypeI8:
+		slot[0] = byte(int8(rv.Int()))
+	case arrow.DtypeU8:
+		slot[0] = byte(rv.Uint())
+	case arrow.DtypeI16:
+		binary.LittleEndian.PutUint16(slot, uint16(int16(rv.Int())))
+	case arrow.DtypeU16:
+		binary.LittleEndian.PutUint16(slot, uint16(rv.Uint()))
+	case arrow.DtypeI32:
+		binary.LittleEndian.PutUint32(slot, uint32(int32(rv.Int())))
+	case arrow.DtypeU32:
+		binary.LittleEndian.PutUint32(slot, uint32(rv.Uint()))
+	case arrow.DtypeI64:
+		binary.LittleEndian.PutUint64(slot, uint64(rv.Int()))
+	case arrow.DtypeU64:
+		binary.LittleEndian.PutUint64(slot, rv.Uint())
+	case arrow.DtypeF32:
+		binary.LittleEndian.PutUint32(slot, math.Float32bits(float32(rv.Float())))
+	case arrow.DtypeF64:
+		binary.LittleEndian.PutUint64(slot, math.Float64bits(rv.Float()))
+	}
+	*offset += elemSize
+}
+
+func shapeProduct(shape []int64) (int64, bool) {
+	product := int64(1)
+	for _, dim := range shape {
+		if dim < 0 {
+			return 0, false
+		}
+		if dim == 0 {
+			return 0, true
+		}
+		if product > math.MaxInt64/dim {
+			return 0, false
+		}
+		product *= dim
+	}
+	return product, true
+}
+
+func contiguousStrides(shape []int64, elemSize int64) []int64 {
+	if len(shape) == 0 {
+		return nil
+	}
+	strides := make([]int64, len(shape))
+	stride := elemSize
+	for i := len(shape) - 1; i >= 0; i-- {
+		strides[i] = stride
+		if shape[i] == 0 {
+			stride = 0
+			continue
+		}
+		if stride <= math.MaxInt64/shape[i] {
+			stride *= shape[i]
+		}
+	}
+	return strides
+}
+
+// marshalForCapture serializes a value to JSON for injection into a runtime.
 func marshalForCapture(val interface{}) (string, error) {
 	switch v := val.(type) {
 	case *ResourceRef:
+		if v == nil {
+			return "null", nil
+		}
 		return marshalResourceProxy(v)
+	case ResourceRef:
+		return marshalResourceProxy(&v)
 	case *TableRef:
+		if v == nil {
+			return "null", nil
+		}
 		return marshalTableProxy(v)
+	case TableRef:
+		return marshalTableProxy(&v)
 	case *JobHandle:
+		if v == nil {
+			return "null", nil
+		}
 		return marshalJobProxy(v)
+	case JobHandle:
+		return marshalJobProxy(&v)
+	}
+	if !isBridgePrimitive(val) && !isBridgeMarker(val) {
+		return "", fmt.Errorf("capture value %T is not a primitive or bridge descriptor; boundary classification must wrap complex values as Arrow, stream, or proxy handles", val)
 	}
 	b, err := json.Marshal(val)
 	if err != nil {
@@ -1870,38 +2811,89 @@ func marshalForCapture(val interface{}) (string, error) {
 }
 
 func marshalResourceProxy(ref *ResourceRef) (string, error) {
-	b, err := json.Marshal(map[string]interface{}{
+	b, err := json.Marshal(resourceProxyValue(ref))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func resourceProxyValue(ref *ResourceRef) map[string]interface{} {
+	return map[string]interface{}{
 		"__omnivm_resource__": true,
 		"id":                  ref.ID,
 		"runtime":             ref.Runtime,
 		"kind":                ref.Kind,
 		"disposer":            ref.Disposer,
 		"closed":              ref.Closed,
-	})
+	}
+}
+
+func transferResourceProxyValue(ref *ResourceRef) map[string]interface{} {
+	value := resourceProxyValue(ref)
+	value["transfer"] = true
+	return value
+}
+
+func marshalTableProxy(ref *TableRef) (string, error) {
+	b, err := json.Marshal(tableProxyValue(ref))
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
 }
 
-func marshalTableProxy(ref *TableRef) (string, error) {
-	b, err := json.Marshal(map[string]interface{}{
+func tableProxyValue(ref *TableRef) map[string]interface{} {
+	value := map[string]interface{}{
 		"__omnivm_table__": true,
 		"id":               ref.ID,
 		"runtime":          ref.Runtime,
 		"format":           ref.Format,
 		"ownership":        ref.Ownership,
 		"release":          ref.Release,
+		"metadata":         ref.Metadata,
 		"released":         ref.Released,
-	})
+	}
+	if name, ok := ref.Value.(string); ok && name != "" {
+		value["buffer"] = name
+	}
+	return value
+}
+
+func transferTableProxyValue(ref *TableRef) map[string]interface{} {
+	value := tableProxyValue(ref)
+	value["transfer"] = true
+	return value
+}
+
+func cloneTableMetadata(meta *TableMetadata) *TableMetadata {
+	if meta == nil {
+		return nil
+	}
+	clone := *meta
+	clone.Shape = append([]int64(nil), meta.Shape...)
+	clone.Strides = append([]int64(nil), meta.Strides...)
+	if meta.Dtype != nil {
+		dtype := *meta.Dtype
+		clone.Dtype = &dtype
+	}
+	if meta.NullCount != nil {
+		nullCount := *meta.NullCount
+		clone.NullCount = &nullCount
+	}
+	return &clone
+}
+
+func marshalJobProxy(job *JobHandle) (string, error) {
+	b, err := json.Marshal(jobProxyValue(job))
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
 }
 
-func marshalJobProxy(job *JobHandle) (string, error) {
-	b, err := json.Marshal(map[string]interface{}{
+func jobProxyValue(job *JobHandle) map[string]interface{} {
+	return map[string]interface{}{
 		"__omnivm_job__": true,
 		"id":             job.ID,
 		"runtime":        job.Runtime,
@@ -1909,9 +2901,5 @@ func marshalJobProxy(job *JobHandle) (string, error) {
 		"done":           job.Done,
 		"payload":        job.Payload,
 		"result":         job.Result,
-	})
-	if err != nil {
-		return "", err
 	}
-	return string(b), nil
 }

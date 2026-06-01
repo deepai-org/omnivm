@@ -11,6 +11,27 @@ type Result struct {
 	ExitCode int // Non-zero exit code from the program (for file execution)
 }
 
+// ExportedBuffer describes runtime-owned buffer memory published into
+// OmniVM's shared data plane. Shape/stride metadata describes the logical view
+// when the underlying memory is strided.
+type ExportedBuffer struct {
+	Name        string
+	Dtype       int32
+	ArrowFormat string
+	Elements    int64
+	Shape       []int64
+	Strides     []int64
+	Offset      int64
+	NullCount   int64
+	ReadOnly    bool
+}
+
+// BufferExporter is implemented by runtimes that can expose a live expression
+// through a generic buffer protocol without a user-visible bridge API.
+type BufferExporter interface {
+	ExportBuffer(name, expr string) (ExportedBuffer, bool, error)
+}
+
 // FileExecutor is an optional interface for runtimes that support file execution
 // with arguments, stdin, and environment passthrough.
 type FileExecutor interface {

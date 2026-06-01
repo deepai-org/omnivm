@@ -92,6 +92,7 @@ typedef struct {
     int64_t len;
     int32_t dtype;
     int8_t  owned;
+    int8_t  read_only;
 } omni_buffer_t;
 typedef int (*omni_buf_get_fn)(const char* name, omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, omni_buffer_t buf);
@@ -99,6 +100,21 @@ typedef void (*omni_buf_release_fn)(const char* name);
 void omnivm_v8_set_buf_callbacks(omni_buf_get_fn get_fn,
                                   omni_buf_set_fn set_fn,
                                   omni_buf_release_fn release_fn);
+
+typedef struct {
+    void* data;
+    int64_t len;
+    int32_t dtype;
+    int64_t elements;
+    const char* arrow_format;
+    int8_t read_only;
+    void* handle;
+} omnivm_v8_exported_buffer_t;
+
+int omnivm_v8_export_buffer(omnivm_v8_context* ctx,
+                             const char* code,
+                             omnivm_v8_exported_buffer_t* out);
+void omnivm_v8_release_exported_buffer(void* handle);
 
 #ifdef __cplusplus
 }

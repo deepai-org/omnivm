@@ -7,9 +7,9 @@ IMAGE_TAG := latest
 build:
 	docker build --target builder -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
-# Run local tests (dispatcher, signals, arrow, cli, errmsg, golang — no cgo runtimes needed)
+# Run local tests (dispatcher, signals, arrow, handles, cli, errmsg, golang — no cgo runtimes needed)
 test-local:
-	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/cli/ ./pkg/errmsg/
+	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/handles/ ./pkg/cli/ ./pkg/errmsg/
 	go test -v -count=1 ./pkg/golang/
 
 # Run Go, cgo runtime, integration, and Python package tests inside Docker.

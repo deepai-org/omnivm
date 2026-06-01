@@ -4,37 +4,38 @@ import "unsafe"
 
 // BufGet fills output params from a named shared buffer.
 // Returns 0 on success, -1 if not found.
-func BufGet(name string, dataOut *unsafe.Pointer, lenOut *int64, dtypeOut *int32) int {
+func BufGet(name string, dataOut *unsafe.Pointer, lenOut *int64, dtypeOut *int32, readOnlyOut *bool) int {
 	store := GlobalStore()
-	buf, err := store.Get(name)
+	lease, err := store.borrowNamed(name)
 	if err != nil {
 		return -1
 	}
 
-	buf.Retain() // caller borrows; must release when done
-	if len(buf.Data) == 0 {
-		*dataOut = nil
-		*lenOut = 0
-	} else {
-		*dataOut = unsafe.Pointer(&buf.Data[0])
-		*lenOut = int64(buf.Len)
+	*dataOut = lease.Data
+	*lenOut = lease.Len
+	*dtypeOut = lease.Dtype
+	if readOnlyOut != nil {
+		*readOnlyOut = lease.Metadata.ReadOnly
 	}
-	*dtypeOut = buf.Dtype
 	return 0
 }
 
 // BufSet stores data into the shared store under the given name.
 // The data is copied from the provided pointer.
-func BufSet(name string, data unsafe.Pointer, length int64, dtype int32) int {
+func BufSet(name string, data unsafe.Pointer, length int64, dtype int32, readOnly bool) int {
 	store := GlobalStore()
 	goData := make([]byte, length)
 	if length > 0 && data != nil {
 		copy(goData, unsafe.Slice((*byte)(data), length))
 	}
-	_, err := store.SetWithDtype(name, goData, dtype)
+	_, err := store.SetWithMetadata(name, goData, BufferMetadata{
+		Dtype:    dtype,
+		ReadOnly: readOnly,
+	})
 	if err != nil {
 		return -1
 	}
+	store.recordCopy(length)
 	return 0
 }
 
@@ -43,6 +44,6 @@ func BufRelease(name string) {
 	select {
 	case DeferredRelease <- name:
 	default:
-		// Channel full — drop. Buffer will leak but won't crash.
+		queueDeferredReleaseOverflow(name)
 	}
 }
