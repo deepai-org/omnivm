@@ -776,6 +776,7 @@ scripts/
   test-manifests.sh    Manifest test suite runner (31 tests)
   test-cli.sh          CLI integration tests (29 tests)
   test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
+  test-poly-libomnivm-smoke.sh  Compile sibling Garbage .poly examples and run via CPython + libomnivm
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
@@ -809,8 +810,29 @@ make test-cli             # CLI integration tests (29 tests in Docker)
 make test-manifests       # Run manifest examples and edge contract fixtures
 make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
 make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
+make test-poly-libomnivm-smoke # Compile selected Garbage .poly examples, then run via CPython + libomnivm
 make test-stress          # Run 71 stress tests
 make test-all             # Everything: build + CLI + stress + manifests + libomnivm
+```
+
+The cross-repo `.poly` smoke expects a sibling `../garbage` checkout by default:
+
+```bash
+GARBAGE_DIR=/path/to/garbage make test-poly-libomnivm-smoke
+```
+
+The README-level CI parity sequence is:
+
+```bash
+# garbage
+npm test -- --runInBand
+npm run build
+node scripts/audit-manifests.js
+
+# omnivm
+make test-poly-libomnivm-smoke
+make test-libomnivm-manifests
+make test-libomnivm-stress
 ```
 
 ## Key Design Decisions
@@ -828,4 +850,4 @@ make test-all             # Everything: build + CLI + stress + manifests + libom
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
 - **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`. The fork guard is **conditional** — it only fires when JVM or Ruby are loaded. Go+JS-only configurations are fork-safe when runtimes are initialized post-fork (the Gunicorn/Passenger pattern).
 - **Python interpreter mode**: When symlinked as `python3`, OmniVM calls `Py_BytesMain()` — CPython's own entry point. `PyImport_AppendInittab("omnivm", ...)` registers the `omnivm` module before CPython initializes, so `import omnivm` works in any Python code. Best for single-process deployments (dev, `gunicorn --workers 1 --threads N`, uvicorn). Not compatible with prefork — Go's runtime doesn't survive `fork()`.
-- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Direct calls and manifest execution run on the calling Python worker thread; the background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. Workers expose `omnivm.status()` and conservative taint flags so servers can recycle after a non-recoverable Go plugin deadline without leaking OmniVM details into normal call sites. All example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.
+- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so` and starts a fresh Go runtime. Direct calls and manifest execution run on the calling Python worker thread; the background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. Workers expose `omnivm.status()` and conservative taint flags so servers can recycle after a non-recoverable Go plugin deadline without leaking OmniVM details into normal call sites. Garbage `.poly` examples are compiled and executed through this path by `make test-poly-libomnivm-smoke`; all example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.

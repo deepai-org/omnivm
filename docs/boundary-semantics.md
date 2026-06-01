@@ -36,6 +36,37 @@ host has different reflection, buffer, stream, and finalizer APIs. Those
 adapters must recognize generic language/runtime protocols rather than named
 ecosystem packages.
 
+## Implementation Status
+
+Implemented today:
+
+- CPython-hosted `libomnivm` can run manifests with Python as the parent
+  process and load JavaScript, Java, Ruby, and Go after fork.
+- Runtime refs preserve identity for complex objects through manifest proxy
+  descriptors, scoped handle tables, finalizer queues, and deterministic scope
+  cleanup.
+- Generic buffer, Arrow, stream, channel, resource, table, job, callback, and
+  function-return crossings are visible in manifest/status diagnostics.
+- The Arrow/shared store reports live buffers, copied bytes, zero-copy borrows,
+  dtype/format metadata, shape, strides, and release counters.
+- The handle table records generic access kinds and bounded chatty-proxy
+  auto-materialization for repeated item access.
+- Request/framework-shaped values and ORM/model-shaped values are tested as
+  refs/proxies based on protocol shape, not package-specific allowlists.
+
+Still future or intentionally conservative:
+
+- Arbitrary compiler loop rewriting and deep batching of property/index access
+  beyond the currently instrumented repeated-item paths.
+- Full multi-buffer, nested, chunked, dictionary, and string-offset Arrow table
+  transfer everywhere. Unsupported shapes stay refs or use diagnosed fallback
+  paths instead of pretending to be zero-copy.
+- Distributed cycle collection across runtimes. Scope cleanup and finalizer
+  release bound common cases; retained cycles are observable through diagnostics.
+- Returning import-time Python symbols from `.poly` modules as normal Python
+  module exports. Side-effect `.poly` imports work; exported symbol semantics
+  need a separate contract.
+
 ## Boundary Model
 
 Every value crossing a runtime boundary is represented as one of four forms:

@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-all run clean
+.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -36,6 +36,9 @@ test-libomnivm-manifests: build
 
 test-libomnivm-stress: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-stress.sh
+
+test-poly-libomnivm-smoke: build
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-poly-libomnivm-smoke.sh
 
 # Run manifest tests in quick mode (skip Express/pastebin)
 test-manifests-quick: build

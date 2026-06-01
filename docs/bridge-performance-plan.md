@@ -24,6 +24,32 @@ finalizers/scope cleanup for lifetime. If two values expose the same protocol
 shape, OmniVM should choose the same crossing mode regardless of the package
 that created them.
 
+## Implementation Boundary
+
+This plan is partly implemented and partly architectural direction.
+
+Implemented now:
+
+- scoped runtime handles with status counters, finalizer queues, retained-handle
+  diagnostics, reference-edge diagnostics, and cycle samples;
+- generic manifest proxy descriptors for complex objects, callbacks, functions,
+  request-shaped values, model-shaped values, collections, maps, sets, and
+  runtime-owned objects;
+- generic Arrow/shared-buffer diagnostics for buffer protocol, `__array_interface__`,
+  dataframe interchange, Arrow capsule/stream, JS typed arrays, Ruby binary
+  strings, Java buffers/primitive arrays, and Go c-shared slices;
+- lazy stream descriptors for channels, iterators, generators, readers, and
+  body-shaped values;
+- bounded repeated-item materialization and warning counters for chatty proxies.
+
+Future work:
+
+- compiler-driven loop rewriting and adapter-wide batching for arbitrary
+  property/index/method access patterns;
+- complete Arrow C Data Interface coverage for multi-buffer, nested, chunked,
+  dictionary, and string-offset table shapes across all runtimes;
+- distributed cycle collection for long-lived cross-runtime object graphs.
+
 ---
 
 ## Tier 1: Automatic Object Handles
