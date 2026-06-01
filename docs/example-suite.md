@@ -1,0 +1,37 @@
+# Example Suite Coverage
+
+The example suite is meant to prove real ecosystem shapes, not just toy arithmetic. The current manifest examples exercise these runtimes under both `manifest-runner` and CPython-hosted `libomnivm`.
+
+| Example | Main coverage |
+| --- | --- |
+| `python-fastapi-sqlalchemy-polars-docs.json` | Python framework, ORM, and dataframe-style shapes |
+| `javascript-react-jsx-docs.json` | JavaScript package usage and React/JSX output shape |
+| `java-jackson-reactor-docs.json` | Java object mapping and reactive-style value flow |
+| `ruby-activerecord-docs.json` | Ruby ORM-style class and record shapes |
+| `go-http-handler-docs.json` | Go `http.HandlerFunc`-style callable shape |
+| `java-manifest-function-proxy.json` | Java manifest stubs calling Python manifest functions with live object identity and unsafe-name fallback |
+
+Broader application fixtures cover Django/Zod/Go HMAC, Express/Pandas/Go workers, Java Gson/Pandas/Zod/Express, Java OkHttp/HTTPX/Go retry, Jinja2/Marked/Go docs, and other cross-runtime package combinations.
+
+## Boundary contracts
+
+The suite expects the automatic boundary model:
+
+- primitives cross by value
+- complex objects cross as live proxies/handles
+- tabular and contiguous typed data prefer the Arrow/shared-buffer path
+- streams and iterables stay lazy instead of being serialized eagerly
+- JSON is application data, not the default glue between runtimes
+
+Those contracts are also covered by the edge fixtures for resource/job handles, table bridges, stream proxies, request-like objects, function proxies, finalizers, chatty proxy materialization, and Java/Ruby/Python/JS/Go object member access.
+
+## Useful commands
+
+```bash
+make test-manifests
+make test-libomnivm-manifests
+make test-libomnivm-stress
+make test-poly-libomnivm-smoke
+```
+
+The last command expects the sibling Garbage checkout and compiles selected `.poly` examples before running them through CPython-hosted `libomnivm`.

@@ -11,6 +11,7 @@ package ruby
 #include <ruby/debug.h>
 #include <ruby/encoding.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -732,6 +733,25 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     return err;
 }
 
+static int omnivm_ruby_eval_bootstrap(const char* label, const char* code) {
+    int state = 0;
+    VALUE result = rb_eval_string_protect(code, &state);
+    (void)result;
+    if (!state) return 0;
+
+    VALUE exception = rb_errinfo();
+    rb_set_errinfo(Qnil);
+    char* msg = NULL;
+    if (exception != Qnil) {
+        msg = omnivm_ruby_safe_error_msg(exception);
+    } else {
+        msg = strdup("RubyError: unknown error");
+    }
+    fprintf(stderr, "OmniVM Ruby bootstrap failed in %s: %s\n", label, msg);
+    free(msg);
+    return -1;
+}
+
 static int omnivm_ruby_init(void) {
     if (ruby_initialized) return -1;
 
@@ -758,140 +778,150 @@ static int omnivm_ruby_init(void) {
     // ruby_init() alone doesn't load them. ruby_options() loads them but
     // breaks the watchdog interrupt mechanism. Instead, polyfill the
     // methods we need using rb_eval_string_protect.
-    {
-        int state = 0;
-        rb_eval_string_protect(
-            "class Integer\n"
-            "  def to_i\n"
-            "    self\n"
-            "  end\n"
-            "  def size\n"
-            "    8\n"
-            "  end\n"
-            "  def ~\n"
-            "    -self - 1\n"
-            "  end\n"
-            "  def times\n"
-            "    return to_enum(:times) { self } unless block_given?\n"
-            "    i = 0\n"
-            "    while i < self\n"
-            "      yield i\n"
-            "      i += 1\n"
-            "    end\n"
-            "    self\n"
-            "  end\n"
-            "  def upto(max)\n"
-            "    return to_enum(:upto, max) unless block_given?\n"
-            "    i = self\n"
-            "    while i <= max\n"
-            "      yield i\n"
-            "      i += 1\n"
-            "    end\n"
-            "    self\n"
-            "  end\n"
-            "  def downto(min)\n"
-            "    return to_enum(:downto, min) unless block_given?\n"
-            "    i = self\n"
-            "    while i >= min\n"
-            "      yield i\n"
-            "      i -= 1\n"
-            "    end\n"
-            "    self\n"
-            "  end\n"
-            "end\n"
-            "class Array\n"
-            "  def last(n = nil)\n"
-            "    if n.nil?\n"
-            "      self[length - 1]\n"
-            "    else\n"
-            "      start = length - n\n"
-            "      start = 0 if start < 0\n"
-            "      self[start, n]\n"
-            "    end\n"
-            "  end\n"
-            "end\n"
-            "class Set\n"
-            "  def initialize(enum = [])\n"
-            "    @values = []\n"
-            "    i = 0\n"
-            "    while i < enum.length\n"
-            "      @values << enum[i]\n"
-            "      i += 1\n"
-            "    end\n"
-            "  end\n"
-            "  def include?(value)\n"
-            "    i = 0\n"
-            "    while i < @values.length\n"
-            "      return true if @values[i] == value\n"
-            "      i += 1\n"
-            "    end\n"
-            "    false\n"
-            "  end\n"
-            "end unless defined?(Set)\n"
-            "class Symbol\n"
-            "  def to_sym\n"
-            "    self\n"
-            "  end\n"
-            "end\n"
-            "class Dir\n"
-            "  def self.[](pattern, *flags)\n"
-            "    glob(pattern, *flags)\n"
-            "  end unless respond_to?(:[])\n"
-            "end\n"
-            "if defined?(Ractor)\n"
-            "  class Ractor\n"
-            "    def self.current\n"
-            "      @__omnivm_current ||= {}\n"
-            "    end unless respond_to?(:current)\n"
-            "    def self.make_shareable(obj, copy: false)\n"
-            "      obj\n"
-            "    end\n"
-            "  end\n"
-            "end\n"
-            "module GC\n"
-            "  def self.stat(hash = nil)\n"
-            "    stats = {heap_live_slots: 0, total_allocated_objects: 0, total_freed_objects: 0}\n"
-            "    if hash\n"
-            "      stats.each { |k, v| hash[k] = v }\n"
-            "      hash\n"
-            "    else\n"
-            "      stats\n"
-            "    end\n"
-            "  end unless respond_to?(:stat)\n"
-            "end\n"
-            "RUBY_DESCRIPTION = \"ruby #{RUBY_VERSION}\" unless defined?(RUBY_DESCRIPTION)\n"
-            "module Kernel\n"
-            "  def tap\n"
-            "    yield self if block_given?\n"
-            "    self\n"
-            "  end\n"
-            "  def loop\n"
-            "    return to_enum(:loop) unless block_given?\n"
-            "    begin\n"
-            "      while true\n"
-            "        yield\n"
-            "      end\n"
-            "    rescue StopIteration => e\n"
-            "      e.result\n"
-            "    end\n"
-            "  end\n"
-            "  module_function :loop\n"
-            "end\n",
-            &state
-        );
+    if (omnivm_ruby_eval_bootstrap("core prelude",
+        "class Integer\n"
+        "  def to_i\n"
+        "    self\n"
+        "  end\n"
+        "  def size\n"
+        "    8\n"
+        "  end\n"
+        "  def ~\n"
+        "    -self - 1\n"
+        "  end\n"
+        "  def times\n"
+        "    return to_enum(:times) { self } unless block_given?\n"
+        "    i = 0\n"
+        "    while i < self\n"
+        "      yield i\n"
+        "      i += 1\n"
+        "    end\n"
+        "    self\n"
+        "  end\n"
+        "  def upto(max)\n"
+        "    return to_enum(:upto, max) unless block_given?\n"
+        "    i = self\n"
+        "    while i <= max\n"
+        "      yield i\n"
+        "      i += 1\n"
+        "    end\n"
+        "    self\n"
+        "  end\n"
+        "  def downto(min)\n"
+        "    return to_enum(:downto, min) unless block_given?\n"
+        "    i = self\n"
+        "    while i >= min\n"
+        "      yield i\n"
+        "      i -= 1\n"
+        "    end\n"
+        "    self\n"
+        "  end\n"
+        "end\n"
+        "class Array\n"
+        "  def last(n = nil)\n"
+        "    if n.nil?\n"
+        "      self[length - 1]\n"
+        "    else\n"
+        "      start = length - n\n"
+        "      start = 0 if start < 0\n"
+        "      self[start, n]\n"
+        "    end\n"
+        "  end\n"
+        "end\n"
+        "class Set\n"
+        "  def initialize(enum = [])\n"
+        "    @values = []\n"
+        "    i = 0\n"
+        "    while i < enum.length\n"
+        "      @values << enum[i]\n"
+        "      i += 1\n"
+        "    end\n"
+        "  end\n"
+        "  def include?(value)\n"
+        "    i = 0\n"
+        "    while i < @values.length\n"
+        "      return true if @values[i] == value\n"
+        "      i += 1\n"
+        "    end\n"
+        "    false\n"
+        "  end\n"
+        "end unless defined?(Set)\n"
+        "class Symbol\n"
+        "  def to_sym\n"
+        "    self\n"
+        "  end\n"
+        "end\n"
+        "class Dir\n"
+        "  def self.[](pattern, *flags)\n"
+        "    glob(pattern, *flags)\n"
+        "  end unless respond_to?(:[])\n"
+        "end\n"
+        "if defined?(Ractor)\n"
+        "  class Ractor\n"
+        "    def self.current\n"
+        "      @__omnivm_current ||= {}\n"
+        "    end unless respond_to?(:current)\n"
+        "    def self.make_shareable(obj, copy: false)\n"
+        "      obj\n"
+        "    end\n"
+        "  end\n"
+        "end\n"
+        "module GC\n"
+        "  def self.stat(hash = nil)\n"
+        "    stats = {heap_live_slots: 0, total_allocated_objects: 0, total_freed_objects: 0}\n"
+        "    if hash\n"
+        "      stats.each { |k, v| hash[k] = v }\n"
+        "      hash\n"
+        "    else\n"
+        "      stats\n"
+        "    end\n"
+        "  end unless respond_to?(:stat)\n"
+        "end\n"
+        "RUBY_DESCRIPTION = \"ruby #{RUBY_VERSION}\" unless defined?(RUBY_DESCRIPTION)\n"
+        "module Kernel\n"
+        "  def tap\n"
+        "    yield self if block_given?\n"
+        "    self\n"
+        "  end\n"
+        "  def loop\n"
+        "    return to_enum(:loop) unless block_given?\n"
+        "    begin\n"
+        "      while true\n"
+        "        yield\n"
+        "      end\n"
+        "    rescue StopIteration => e\n"
+        "      e.result\n"
+        "    end\n"
+        "  end\n"
+        "  module_function :loop\n"
+        "end\n") != 0) {
+        return -1;
     }
 
-    {
-        int state = 0;
-        rb_eval_string_protect(
-            "begin\n"
-            "  require 'enc/encdb'\n"
-            "  require 'rubygems'\n"
-            "  require 'set'\n"
-            "rescue LoadError\n"
-            "end\n",
-            &state
-        );
+    if (omnivm_ruby_eval_bootstrap("stdlib prelude",
+        "begin\n"
+        "  require 'enc/encdb'\n"
+        "  require 'rubygems'\n"
+        "  require 'set'\n"
+        "rescue LoadError\n"
+        "end\n") != 0) {
+        return -1;
+    }
+
+    if (omnivm_ruby_eval_bootstrap("bootstrap validation",
+        "missing = []\n"
+        "missing << 'Integer#times' unless 3.respond_to?(:times)\n"
+        "missing << 'Integer#upto' unless 1.respond_to?(:upto)\n"
+        "missing << 'Integer#~' unless (~0) == -1\n"
+        "missing << 'Array#last' unless [1, 2, 3].last(2) == [2, 3]\n"
+        "missing << 'Object#frozen?' unless Object.new.respond_to?(:frozen?)\n"
+        "missing << 'Dir.glob' unless Dir.respond_to?(:glob) && Dir.respond_to?(:[])\n"
+        "missing << 'Time.new' unless Time.new(2000, 1, 1, 0, 0, 0).respond_to?(:yday)\n"
+        "missing << 'GC.stat' unless GC.stat({}).is_a?(Hash)\n"
+        "missing << 'Ractor.current' if defined?(Ractor) && !Ractor.respond_to?(:current)\n"
+        "raise \"missing Ruby bootstrap surface: #{missing.join(', ')}\" unless missing.empty?\n"
+        "true\n") != 0) {
+        return -1;
     }
 
     // Install trace hook for interrupt delivery. The hook fires on every

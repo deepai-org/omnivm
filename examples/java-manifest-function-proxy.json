@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "func_def",
+      "name": "accept_payload",
+      "params": [
+        {
+          "name": "payload"
+        }
+      ],
+      "body": [
+        {
+          "op": "exec",
+          "runtime": "python",
+          "code": "assert payload.count == 42, payload.count\npayload.from_py = 'yes'"
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": "accepted"
+          }
+        }
+      ]
+    },
+    {
+      "op": "func_def",
+      "name": "class",
+      "params": [
+        {
+          "name": "payload"
+        }
+      ],
+      "body": [
+        {
+          "op": "exec",
+          "runtime": "python",
+          "code": "assert payload.count == 43, payload.count\npayload.from_py = 'yes'"
+        },
+        {
+          "op": "return",
+          "value": {
+            "kind": "literal",
+            "value": "accepted"
+          }
+        }
+      ]
+    },
+    {
+      "op": "exec",
+      "runtime": "java",
+      "code": "import java.util.*;\nMap<String,Object> payload = new LinkedHashMap<>();\npayload.put(\"count\", 42);\nObject result = omnivm.OmniVMManifest.accept_payload(payload);\nif (!\"accepted\".equals(String.valueOf(result))) throw new RuntimeException(\"bad java result: \" + result);\nif (!\"yes\".equals(payload.get(\"from_py\"))) throw new RuntimeException(\"mutation did not reach original Java object: \" + payload.get(\"from_py\"));\nMap<String,Object> unsafe = new LinkedHashMap<>();\nunsafe.put(\"count\", 43);\nObject fallback = omnivm.OmniVMManifest.invoke(\"class\", unsafe);\nif (!\"accepted\".equals(String.valueOf(fallback))) throw new RuntimeException(\"bad fallback result: \" + fallback);\nif (!\"yes\".equals(unsafe.get(\"from_py\"))) throw new RuntimeException(\"fallback mutation did not reach original Java object: \" + unsafe.get(\"from_py\"));"
+    },
+    {
+      "op": "native",
+      "runtime": "python",
+      "code": "print('Java manifest function proxy accepted')"
+    }
+  ]
+}

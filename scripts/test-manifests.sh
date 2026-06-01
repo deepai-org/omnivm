@@ -90,6 +90,7 @@ run "Params, mutability, assign operators"     controlflow-manifest.json
 # ── Category 3: Cross-Runtime Functions ────────────────────────
 echo "── Cross-Runtime Functions ──"
 run "Round-trip, accumulate, recursive chains" crossruntime-manifest.json
+run "Java manifest function proxy regression"  java-manifest-function-proxy.json false "Java manifest function proxy accepted"
 
 # ── Category 4: Advanced Patterns ──────────────────────────────
 echo "── Advanced Patterns ──"

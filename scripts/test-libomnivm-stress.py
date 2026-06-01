@@ -11377,6 +11377,78 @@ assert body == b'poly:42'
         )
 
 
+def test_python3_polyscript_django_wsgi_smoke():
+    code = r"""
+import io
+import sys
+import types
+
+from django.conf import settings
+from django.http import HttpResponse
+from django.urls import path
+
+def poly_view(request):
+    import omnivm
+    return HttpResponse('django-poly:' + omnivm.call('javascript', '21 * 2'))
+
+urls = types.ModuleType('polyscript_django_urls')
+urls.urlpatterns = [path('poly/', poly_view)]
+sys.modules['polyscript_django_urls'] = urls
+
+settings.configure(
+    DEBUG=False,
+    SECRET_KEY='polyscript-test',
+    ROOT_URLCONF='polyscript_django_urls',
+    ALLOWED_HOSTS=['*'],
+    MIDDLEWARE=[],
+    INSTALLED_APPS=[],
+)
+
+from django.core.wsgi import get_wsgi_application
+
+import omnivm
+omnivm.init_runtimes(['javascript', 'java', 'ruby'])
+application = get_wsgi_application()
+
+captured = {}
+def start_response(status, headers):
+    captured['status'] = status
+    captured['headers'] = dict(headers)
+
+environ = {
+    'REQUEST_METHOD': 'GET',
+    'PATH_INFO': '/poly/',
+    'SCRIPT_NAME': '',
+    'SERVER_NAME': 'testserver',
+    'SERVER_PORT': '80',
+    'SERVER_PROTOCOL': 'HTTP/1.1',
+    'wsgi.version': (1, 0),
+    'wsgi.url_scheme': 'http',
+    'wsgi.input': io.BytesIO(b''),
+    'wsgi.errors': sys.stderr,
+    'wsgi.multithread': False,
+    'wsgi.multiprocess': True,
+    'wsgi.run_once': False,
+}
+body = b''.join(application(environ, start_response))
+omnivm.shutdown()
+assert captured['status'].startswith('200'), captured
+assert body == b'django-poly:42', body
+"""
+    proc = subprocess.run(
+        ["python3-polyscript", "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"python3-polyscript Django WSGI smoke exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def test_wsgi_prefork_worker_lifecycle_harness():
     code = """
 import os
@@ -11448,6 +11520,22 @@ if failures:
         )
 
 
+def test_ruby_bootstrap_core_surface():
+    got = omnivm.call(
+        "ruby",
+        "checks = ["
+        "3.times.map { |i| i }.join(','), "
+        "(~0).to_s, "
+        "[1, 2, 3].last(2).join(','), "
+        "Dir['/tmp'].is_a?(Array).to_s, "
+        "Time.new(2000, 1, 1, 0, 0, 0).yday.to_s, "
+        "GC.stat({}).is_a?(Hash).to_s"
+        "]; checks.join('|')",
+    )
+    if got != "0,1,2|-1|2,3|true|1|true":
+        raise AssertionError(f"Ruby bootstrap surface mismatch: {got}")
+
+
 def main():
     print("=== libomnivm CPython Host Stress Tests ===")
     omnivm.init_runtimes(["javascript", "java", "ruby"])
@@ -11497,6 +11585,7 @@ def main():
         check("Ruby Fiber cooperative bridge (C stack switching)", test_ruby_fiber_cooperative_bridge)
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
+        check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
         check("JS try/finally with bridge throw + bridge in finally", test_js_try_finally_bridge_throw)
         check("4-runtime mutual recursion (18 levels deep)", test_four_runtime_mutual_recursion)
         check("Rogue guest preemption (JS+Ruby infinite loops)", test_rogue_guest_preemption)
@@ -11702,6 +11791,7 @@ def main():
     check("Multiple prefork workers initialize independently", test_multiple_prefork_workers)
     check("Recycled worker processes initialize cleanly", test_recycled_worker_processes)
     check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
+    check("python3-polyscript Django WSGI smoke", test_python3_polyscript_django_wsgi_smoke)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     print(f"\nResults: {PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
