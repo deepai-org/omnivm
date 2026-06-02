@@ -3051,9 +3051,10 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 			expr = fmt.Sprintf("(lambda __o, __args, __kwargs: __o(*__args, **__kwargs))(%s, %s, %s)", base, argsLit, kwargsLit)
 		case "ruby":
 			if len(kwargs) > 0 {
-				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+				expr = fmt.Sprintf("(begin; __o = %s; __args = %s; __kwargs = (%s).transform_keys { |k| k.respond_to?(:to_sym) ? k.to_sym : k }; __o.call(*__args, **__kwargs); end)", base, argsLit, kwargsLit)
+			} else {
+				expr = fmt.Sprintf("(begin; __o = %s; __args = %s; __o.call(*__args); end)", base, argsLit)
 			}
-			expr = fmt.Sprintf("(begin; __o = %s; __args = %s; __o.call(*__args); end)", base, argsLit)
 		case "java":
 			if len(kwargs) > 0 {
 				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
@@ -3078,9 +3079,10 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))(*__args, **__kwargs))(%s, %s, %s, %s)", base, keyLit, argsLit, kwargsLit)
 	case "ruby":
 		if len(kwargs) > 0 {
-			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+			expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; __kwargs = (%s).transform_keys { |k| k.respond_to?(:to_sym) ? k.to_sym : k }; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args, **__kwargs) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args, **__kwargs) : __o[__k].call(*__args, **__kwargs)); end)", base, keyLit, argsLit, kwargsLit)
+		} else {
+			expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args) : __o[__k].call(*__args)); end)", base, keyLit, argsLit)
 		}
-		expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args) : __o[__k].call(*__args)); end)", base, keyLit, argsLit)
 	case "java":
 		if len(kwargs) > 0 {
 			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)

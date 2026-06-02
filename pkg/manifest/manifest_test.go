@@ -6349,6 +6349,19 @@ func TestRuntimeRefRubyZeroArgMethodsReadAsProperties(t *testing.T) {
 	if !strings.Contains(joinedExec, "public_send(__k)") || !strings.Contains(joinedExec, "join") || !strings.Contains(joinedExec, "tail") {
 		t.Fatalf("Ruby property/call dispatch should execute against live runtime object, got %q", joinedExec)
 	}
+
+	result, err = e.HandleCall(`{"op":"handle_call","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"join","args":["tail"],"kwargs":{"limit":2}}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_call join kwargs: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "string" || env.Value != "joined" {
+		t.Fatalf("Ruby keyword method call envelope = %#v, want joined", env)
+	}
+	keywordCalls := strings.Join(append(execCodes, mocks["ruby"].evalCalls...), "\n")
+	if !strings.Contains(keywordCalls, "**__kwargs") || !strings.Contains(keywordCalls, "transform_keys") || !strings.Contains(keywordCalls, "limit") {
+		t.Fatalf("Ruby keyword method call should execute through keyword splat dispatch, got %q", keywordCalls)
+	}
 }
 
 func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
@@ -6402,6 +6415,40 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 		t.Fatalf("python keyword runtime-ref values should be rematerialized, got %q", kwExpr)
 	}
 
+	rubyKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "ruby", VarName: "handler"},
+		"accept",
+		[]interface{}{"open"},
+		map[string]interface{}{
+			"limit":   2,
+			"payload": RuntimeRef{Runtime: "javascript", VarName: "kw_payload"},
+		},
+		&runtimeExprBuilder{executor: e, targetRuntime: "ruby"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder ruby kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(rubyKwExpr, "**__kwargs") || !strings.Contains(rubyKwExpr, "transform_keys") || !strings.Contains(rubyKwExpr, "limit") {
+		t.Fatalf("ruby keyword method call should pass symbolized kwargs through, got %q", rubyKwExpr)
+	}
+	if !strings.Contains(rubyKwExpr, "__omnivm_materialize_capture") || !strings.Contains(rubyKwExpr, "__omnivm_resource__") {
+		t.Fatalf("ruby keyword runtime-ref values should be rematerialized, got %q", rubyKwExpr)
+	}
+
+	rubyCallableKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "ruby", VarName: "handler"},
+		"",
+		[]interface{}{"open"},
+		map[string]interface{}{"limit": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "ruby"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder ruby callable kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(rubyCallableKwExpr, "__o.call(*__args, **__kwargs)") {
+		t.Fatalf("ruby keyword callable call should splat kwargs, got %q", rubyCallableKwExpr)
+	}
+
 	if _, _, err := runtimeRefCallExprWithBuilder(
 		RuntimeRef{Runtime: "javascript", VarName: "handler"},
 		"accept",
@@ -6410,6 +6457,16 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 		&runtimeExprBuilder{executor: e, targetRuntime: "javascript"},
 	); err == nil || !strings.Contains(err.Error(), "keyword") {
 		t.Fatalf("javascript keyword method call should fail explicitly, got %v", err)
+	}
+
+	if _, _, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "java", VarName: "handler"},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	); err == nil || !strings.Contains(err.Error(), "keyword") {
+		t.Fatalf("java keyword method call should fail explicitly, got %v", err)
 	}
 
 	javaExpr, ok, err := e.runtimeRefCallExpr(
