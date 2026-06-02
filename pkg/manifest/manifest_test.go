@@ -3862,6 +3862,12 @@ func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
 		"callable_shape": map[string]interface{}{
 			"acceptsOptionsObject": true,
 			"destructuredKeys":     []interface{}{"limit", "payload"},
+			"javaAdapter": map[string]interface{}{
+				"kind":       "map",
+				"method":     "accept",
+				"targetType": "com.example.Handler",
+				"keys":       []interface{}{"limit", "payload"},
+			},
 		},
 	})
 	ref, ok := decoded.(RuntimeRef)
@@ -3873,6 +3879,13 @@ func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
 	}
 	if ref.CallableShape == nil || !ref.CallableShape.AcceptsOptionsObject || strings.Join(ref.CallableShape.DestructuredKeys, ",") != "limit,payload" {
 		t.Fatalf("decoded callable shape = %#v", ref.CallableShape)
+	}
+	if ref.CallableShape.JavaAdapter == nil ||
+		ref.CallableShape.JavaAdapter.Kind != "map" ||
+		ref.CallableShape.JavaAdapter.Method != "accept" ||
+		ref.CallableShape.JavaAdapter.TargetType != "com.example.Handler" ||
+		strings.Join(ref.CallableShape.JavaAdapter.Keys, ",") != "limit,payload" {
+		t.Fatalf("decoded Java adapter shape = %#v", ref.CallableShape.JavaAdapter)
 	}
 }
 
@@ -6550,6 +6563,96 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
 	); err == nil || !strings.Contains(err.Error(), "keyword") {
 		t.Fatalf("java keyword method call should fail explicitly, got %v", err)
+	}
+
+	javaKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{
+					Kind:   "map",
+					Method: "accept",
+					Keys:   []string{"limit", "payload"},
+				},
+			},
+		},
+		"accept",
+		[]interface{}{"open"},
+		map[string]interface{}{
+			"limit":   2,
+			"payload": RuntimeRef{Runtime: "python", VarName: "kw_payload"},
+		},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder java map kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(javaKwExpr, "proxyCall") ||
+		!strings.Contains(javaKwExpr, "getCapture(\"handler\")") ||
+		!strings.Contains(javaKwExpr, "accept") ||
+		!strings.Contains(javaKwExpr, "omnivm.OmniVM.listOf") ||
+		!strings.Contains(javaKwExpr, "omnivm.OmniVM.mapOf") ||
+		!strings.Contains(javaKwExpr, "limit") {
+		t.Fatalf("java map-adapter keyword method should append kwargs map, got %q", javaKwExpr)
+	}
+	if !strings.Contains(javaKwExpr, "omnivm.OmniVM.materializeJsonCapture") || !strings.Contains(javaKwExpr, "__omnivm_resource__") {
+		t.Fatalf("java map-adapter keyword runtime-ref values should be rematerialized, got %q", javaKwExpr)
+	}
+
+	javaCallableKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{Kind: "map", Keys: []string{"limit"}},
+			},
+		},
+		"",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder java callable map kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(javaCallableKwExpr, "proxyCall") ||
+		!strings.Contains(javaCallableKwExpr, "getCapture(\"handler\")") ||
+		!strings.Contains(javaCallableKwExpr, `""`) ||
+		!strings.Contains(javaCallableKwExpr, "omnivm.OmniVM.mapOf") {
+		t.Fatalf("java map-adapter keyword callable should append kwargs map, got %q", javaCallableKwExpr)
+	}
+
+	if _, _, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{Kind: "map", Method: "other", Keys: []string{"limit"}},
+			},
+		},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	); err == nil || !strings.Contains(err.Error(), "keyword") {
+		t.Fatalf("java keyword method call should reject mismatched adapter method, got %v", err)
+	}
+
+	if _, _, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{Kind: "map", Method: "accept", Keys: []string{"limit"}},
+			},
+		},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"payload": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	); err == nil || !strings.Contains(err.Error(), "keyword") {
+		t.Fatalf("java keyword method call should reject unknown adapter key, got %v", err)
 	}
 
 	javaExpr, ok, err := e.runtimeRefCallExpr(

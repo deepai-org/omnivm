@@ -165,8 +165,15 @@ func callableShapeForParams(params []*Param) *CallableShape {
 			seenKeys[key] = true
 			shape.DestructuredKeys = append(shape.DestructuredKeys, key)
 		}
+		if shape.JavaAdapter == nil && param.CallableShape.JavaAdapter != nil {
+			adapter := *param.CallableShape.JavaAdapter
+			if len(param.CallableShape.JavaAdapter.Keys) > 0 {
+				adapter.Keys = append([]string(nil), param.CallableShape.JavaAdapter.Keys...)
+			}
+			shape.JavaAdapter = &adapter
+		}
 	}
-	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 {
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && shape.JavaAdapter == nil {
 		return nil
 	}
 	return &shape
@@ -545,10 +552,41 @@ func decodeCallableShape(value interface{}) *CallableShape {
 			}
 		}
 	}
-	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 {
+	if adapter := decodeJavaCallableAdapter(m["javaAdapter"]); adapter != nil {
+		shape.JavaAdapter = adapter
+	}
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && shape.JavaAdapter == nil {
 		return nil
 	}
 	return &shape
+}
+
+func decodeJavaCallableAdapter(value interface{}) *JavaCallableAdapter {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var adapter JavaCallableAdapter
+	if kind, ok := m["kind"].(string); ok {
+		adapter.Kind = kind
+	}
+	if method, ok := m["method"].(string); ok {
+		adapter.Method = method
+	}
+	if targetType, ok := m["targetType"].(string); ok {
+		adapter.TargetType = targetType
+	}
+	if keys, ok := m["keys"].([]interface{}); ok {
+		for _, key := range keys {
+			if s, ok := key.(string); ok && s != "" {
+				adapter.Keys = append(adapter.Keys, s)
+			}
+		}
+	}
+	if adapter.Kind == "" && adapter.Method == "" && adapter.TargetType == "" && len(adapter.Keys) == 0 {
+		return nil
+	}
+	return &adapter
 }
 
 func (e *Executor) marshalReturnResult(val interface{}) (string, error) {
@@ -3132,9 +3170,17 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 			}
 		case "java":
 			if len(kwargs) > 0 {
-				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+				if !runtimeRefAcceptsJavaMapKwargs(ref, "", kwargs) {
+					return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls without Java map adapter callable shape metadata", ref.Runtime)
+				}
+				adapterArgsLit, err := builder.expr(appendRuntimeRefKwargsArg(args, kwargs))
+				if err != nil {
+					return "", false, err
+				}
+				expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, \"\", %s)", base, adapterArgsLit)
+			} else {
+				expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, \"\", %s)", base, argsLit)
 			}
-			expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, \"\", %s)", base, argsLit)
 		default:
 			return "", false, nil
 		}
@@ -3160,13 +3206,28 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		}
 	case "java":
 		if len(kwargs) > 0 {
-			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+			if !runtimeRefAcceptsJavaMapKwargs(ref, key, kwargs) {
+				return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls without Java map adapter callable shape metadata", ref.Runtime)
+			}
+			adapterArgsLit, err := builder.expr(appendRuntimeRefKwargsArg(args, kwargs))
+			if err != nil {
+				return "", false, err
+			}
+			expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, %s, %s)", base, keyLit, adapterArgsLit)
+		} else {
+			expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, %s, %s)", base, keyLit, argsLit)
 		}
-		expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, %s, %s)", base, keyLit, argsLit)
 	default:
 		return "", false, nil
 	}
 	return expr, true, nil
+}
+
+func appendRuntimeRefKwargsArg(args []interface{}, kwargs map[string]interface{}) []interface{} {
+	out := make([]interface{}, 0, len(args)+1)
+	out = append(out, args...)
+	out = append(out, kwargs)
+	return out
 }
 
 func runtimeRefAcceptsJSOptionsKwargs(ref RuntimeRef, kwargs map[string]interface{}) bool {
@@ -3179,6 +3240,36 @@ func runtimeRefAcceptsJSOptionsKwargs(ref RuntimeRef, kwargs map[string]interfac
 	}
 	allowed := make(map[string]bool, len(shape.DestructuredKeys))
 	for _, key := range shape.DestructuredKeys {
+		allowed[key] = true
+	}
+	for key := range kwargs {
+		if !allowed[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func runtimeRefAcceptsJavaMapKwargs(ref RuntimeRef, method string, kwargs map[string]interface{}) bool {
+	shape := ref.CallableShape
+	if shape == nil || shape.JavaAdapter == nil || shape.JavaAdapter.Kind != "map" {
+		return false
+	}
+	if method != "" && shape.JavaAdapter.Method != method {
+		return false
+	}
+	if method == "" && shape.JavaAdapter.Method != "" {
+		return false
+	}
+	allowedKeys := shape.JavaAdapter.Keys
+	if len(allowedKeys) == 0 {
+		allowedKeys = shape.DestructuredKeys
+	}
+	if len(allowedKeys) == 0 {
+		return true
+	}
+	allowed := make(map[string]bool, len(allowedKeys))
+	for _, key := range allowedKeys {
 		allowed[key] = true
 	}
 	for key := range kwargs {

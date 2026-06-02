@@ -68,9 +68,18 @@ type TableMetadata struct {
 // It is advisory: runtimes may use it to choose a safer adapter path, but they
 // must keep unsupported cases explicit when shape evidence is absent.
 type CallableShape struct {
-	AcceptsKwargs        bool     `json:"acceptsKwargs,omitempty"`
-	AcceptsOptionsObject bool     `json:"acceptsOptionsObject,omitempty"`
-	DestructuredKeys     []string `json:"destructuredKeys,omitempty"`
+	AcceptsKwargs        bool                 `json:"acceptsKwargs,omitempty"`
+	AcceptsOptionsObject bool                 `json:"acceptsOptionsObject,omitempty"`
+	DestructuredKeys     []string             `json:"destructuredKeys,omitempty"`
+	JavaAdapter          *JavaCallableAdapter `json:"javaAdapter,omitempty"`
+}
+
+// JavaCallableAdapter describes a proven Java named-argument adapter shape.
+type JavaCallableAdapter struct {
+	Kind       string   `json:"kind,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	TargetType string   `json:"targetType,omitempty"`
+	Keys       []string `json:"keys,omitempty"`
 }
 
 // Op represents a single operation in the manifest.
