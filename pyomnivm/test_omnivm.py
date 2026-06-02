@@ -296,6 +296,47 @@ class TestCallWithMockLib(unittest.TestCase):
         assert arg["var"].startswith("__omnivm_arg_refs['py_")
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
 
+    def test_manifest_call_wraps_complex_return_proxy(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "request":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 42,
+                    "runtime": "python",
+                    "kind": "request",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_get" and request.get("key") == "path":
+                return envelope("/orders")
+            if request.get("op") == "handle_get" and request.get("key") == "items":
+                return envelope({"__omnivm_callable__": True, "key": "items"})
+            if request.get("op") == "handle_call" and request.get("key") == "items":
+                return envelope(["a", "b"])
+            if request.get("op") == "handle_release_finalizer":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        proxy = omnivm_mod.manifest_call("demo", "request")
+
+        assert isinstance(proxy, omnivm_mod.ManifestProxy)
+        assert proxy.path == "/orders"
+        assert proxy.items("open") == ["a", "b"]
+        proxy.close()
+        assert requests[0] == {"func": "request", "args": []}
+        assert requests[1] == {"op": "handle_adopt", "id": 42}
+        assert requests[-1] == {"op": "handle_release_finalizer", "id": 42}
+
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0
         omnivm_mod.set_buffer("payload", b"abc", 7)

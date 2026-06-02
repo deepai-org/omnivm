@@ -40,6 +40,7 @@ __all__ = [
     "run_manifest",
     "load_manifest_module",
     "manifest_call",
+    "ManifestProxy",
     "set_task_timeout",
     "host_thread_id",
     "watchdog_capabilities",
@@ -607,13 +608,17 @@ def manifest_call(module_id, func, args=()):
             "func": str(func),
             "args": [_manifest_arg(arg, retained_keys) for arg in args],
         }
-        result = _lib.OmniManifestCall(
-            str(module_id).encode("utf-8"),
-            json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        )
-        return _decode_manifest_result(_check_result(result))
+        return _manifest_bridge_call(module_id, payload)
     finally:
         _release_manifest_args(retained_keys)
+
+
+def _manifest_bridge_call(module_id, payload):
+    result = _lib.OmniManifestCall(
+        str(module_id).encode("utf-8"),
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+    )
+    return _decode_manifest_result(_check_result(result), module_id=module_id)
 
 
 def _manifest_arg(value, retained_keys):
@@ -652,7 +657,7 @@ def _release_manifest_args(keys):
             refs.pop(key, None)
 
 
-def _decode_manifest_result(result):
+def _decode_manifest_result(result, module_id=None):
     if result == "":
         return None
     try:
@@ -660,10 +665,174 @@ def _decode_manifest_result(result):
     except json.JSONDecodeError:
         return result
     if not isinstance(envelope, dict) or not envelope.get("__omnivm_result__"):
-        return envelope
+        return _wrap_manifest_value(module_id, envelope)
     if envelope.get("kind") == "null":
         return None
-    return envelope.get("value")
+    return _wrap_manifest_value(module_id, envelope.get("value"))
+
+
+def _wrap_manifest_value(module_id, value):
+    if isinstance(value, dict):
+        if _is_manifest_proxy_descriptor(value) and module_id is not None:
+            return ManifestProxy(module_id, value)
+        return {key: _wrap_manifest_value(module_id, item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_wrap_manifest_value(module_id, item) for item in value]
+    return value
+
+
+def _is_manifest_proxy_descriptor(value):
+    return (
+        value.get("__omnivm_resource__") is True
+        or value.get("__omnivm_table__") is True
+        or value.get("__omnivm_stream__") is True
+        or value.get("__omnivm_channel__") is True
+        or value.get("__omnivm_job__") is True
+    ) and value.get("id") is not None
+
+
+def _manifest_proxy_release(module_id, handle_id):
+    try:
+        if _lib is None or not hasattr(_lib, "OmniManifestCall"):
+            return
+        _manifest_bridge_call(module_id, {"op": "handle_release_finalizer", "id": handle_id})
+    except Exception:
+        pass
+
+
+class ManifestProxy:
+    """Python wrapper for a live object returned by a retained manifest."""
+
+    def __init__(self, module_id, descriptor):
+        object.__setattr__(self, "_module_id", str(module_id))
+        object.__setattr__(self, "_descriptor", dict(descriptor))
+        object.__setattr__(self, "_handle_id", int(descriptor["id"]))
+        if descriptor.get("transfer") is True:
+            _manifest_bridge_call(module_id, {"op": "handle_adopt", "id": self._handle_id})
+        else:
+            _manifest_bridge_call(module_id, {"op": "handle_retain", "id": self._handle_id})
+        object.__setattr__(
+            self,
+            "_finalizer",
+            weakref.finalize(self, _manifest_proxy_release, self._module_id, self._handle_id),
+        )
+
+    @property
+    def __omnivm_descriptor__(self):
+        return dict(self._descriptor)
+
+    @property
+    def __omnivm_handle_id__(self):
+        return self._handle_id
+
+    def close(self):
+        finalizer = object.__getattribute__(self, "_finalizer")
+        if finalizer.alive:
+            finalizer()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
+        return False
+
+    def __repr__(self):
+        descriptor = object.__getattribute__(self, "_descriptor")
+        runtime = descriptor.get("runtime", "unknown")
+        kind = descriptor.get("kind", "object")
+        return f"<omnivm.ManifestProxy {runtime}:{kind}#{self._handle_id}>"
+
+    def __getattr__(self, key):
+        result = self._op({"op": "handle_get", "id": self._handle_id, "key": key})
+        if isinstance(result, dict) and result.get("__omnivm_callable__") is True:
+            return _ManifestProxyMethod(self, key)
+        return result
+
+    def __getitem__(self, key):
+        return self._op({"op": "handle_index", "id": self._handle_id, "value": key})
+
+    def __setitem__(self, key, value):
+        retained_keys = []
+        try:
+            self._op({"op": "handle_set", "id": self._handle_id, "key": str(key), "value": self._arg(value, retained_keys)})
+        finally:
+            _release_manifest_args(retained_keys)
+
+    def __setattr__(self, key, value):
+        if key.startswith("_"):
+            object.__setattr__(self, key, value)
+            return
+        retained_keys = []
+        try:
+            self._op({"op": "handle_set", "id": self._handle_id, "key": key, "value": self._arg(value, retained_keys)})
+        finally:
+            _release_manifest_args(retained_keys)
+
+    def __len__(self):
+        return int(self._op({"op": "handle_len", "id": self._handle_id}))
+
+    def __iter__(self):
+        if self._descriptor.get("__omnivm_stream__") is True or self._descriptor.get("__omnivm_channel__") is True:
+            return _ManifestStreamIterator(self)
+        mode = "values" if self._descriptor.get("kind") == "sequence" or self._descriptor.get("__omnivm_table__") is True else "keys"
+        return iter(self._op({"op": "handle_iter", "id": self._handle_id, "mode": mode}))
+
+    def __contains__(self, value):
+        retained_keys = []
+        try:
+            return bool(self._op({"op": "handle_contains", "id": self._handle_id, "value": self._arg(value, retained_keys)}))
+        finally:
+            _release_manifest_args(retained_keys)
+
+    def _method_call(self, key, args):
+        retained_keys = []
+        try:
+            return self._op({
+                "op": "handle_call",
+                "id": self._handle_id,
+                "key": key,
+                "args": [self._arg(arg, retained_keys) for arg in args],
+            })
+        finally:
+            _release_manifest_args(retained_keys)
+
+    def _op(self, payload):
+        return _manifest_bridge_call(self._module_id, payload)
+
+    def _arg(self, value, retained_keys=None):
+        if isinstance(value, ManifestProxy):
+            return value.__omnivm_descriptor__
+        retained = retained_keys if retained_keys is not None else []
+        return _manifest_arg(value, retained)
+
+
+class _ManifestProxyMethod:
+    def __init__(self, proxy, key):
+        self._proxy = proxy
+        self._key = key
+
+    def __call__(self, *args, **kwargs):
+        if kwargs:
+            raise TypeError(f"{self._key}() does not accept keyword arguments yet")
+        return self._proxy._method_call(self._key, args)
+
+    def __repr__(self):
+        return f"<omnivm.ManifestProxyMethod {self._key}>"
+
+
+class _ManifestStreamIterator:
+    def __init__(self, proxy):
+        self._proxy = proxy
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
+        if item.get("done") is True:
+            raise StopIteration
+        return item.get("value")
 
 
 def set_task_timeout(ms):

@@ -42,17 +42,43 @@ class PolyScriptError(RuntimeError):
 class PolyScriptFunction:
     """Python-callable proxy for a retained manifest ``func_def``."""
 
-    def __init__(self, module_id: str, name: str):
+    def __init__(self, module_id: str, name: str, params: list[dict] | None = None):
         self.__module_id__ = module_id
         self.__name__ = name
         self.__qualname__ = name
+        self.__poly_params__ = params or []
 
     def __call__(self, *args, **kwargs):
-        if kwargs:
-            raise TypeError(f"{self.__name__}() does not accept keyword arguments yet")
         import omnivm
 
-        return omnivm.manifest_call(self.__module_id__, self.__name__, args)
+        return omnivm.manifest_call(self.__module_id__, self.__name__, self._bind_args(args, kwargs))
+
+    def _bind_args(self, args, kwargs):
+        if not kwargs:
+            return args
+        params = self.__poly_params__
+        if not params:
+            raise TypeError(f"{self.__name__}() does not accept keyword arguments")
+        if len(args) > len(params):
+            raise TypeError(f"{self.__name__}() takes at most {len(params)} positional arguments")
+
+        values = list(args)
+        consumed = set()
+        for index, param in enumerate(params[len(values):], start=len(values)):
+            name = param.get("name")
+            if name in kwargs:
+                values.append(kwargs[name])
+                consumed.add(name)
+            elif "defaultValue" in param:
+                values.append(_manifest_default_value(param["defaultValue"]))
+            else:
+                break
+
+        extra = set(kwargs) - consumed
+        if extra:
+            names = ", ".join(sorted(extra))
+            raise TypeError(f"{self.__name__}() got unexpected keyword argument(s): {names}")
+        return tuple(values)
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostic only
         return f"<polyscript function {self.__name__}>"
@@ -212,11 +238,12 @@ def load_poly_module(source: os.PathLike | str, module: ModuleType) -> PolyScrip
     module_id = _module_id(module.__name__, manifest_path)
     if _should_run_manifest_in_process():
         process = _load_manifest_module_in_process(module_id, manifest_path)
-        function_names = _manifest_function_names(manifest_path)
+        functions = _manifest_functions(manifest_path)
+        function_names = list(functions)
         module.__all__ = function_names
         module.__poly_exports__ = function_names
-        for name in function_names:
-            setattr(module, name, PolyScriptFunction(module_id, name))
+        for name, meta in functions.items():
+            setattr(module, name, PolyScriptFunction(module_id, name, meta.get("params", [])))
     else:
         process = run_manifest(manifest_path)
         module.__all__ = []
@@ -355,16 +382,22 @@ def _module_id(fullname: str, manifest: Path) -> str:
     return f"{fullname}:{manifest.resolve()}"
 
 
-def _manifest_function_names(path: Path) -> list[str]:
+def _manifest_functions(path: Path) -> dict[str, dict]:
     with path.open("r", encoding="utf-8") as f:
         manifest = json.load(f)
-    names: list[str] = []
+    functions: dict[str, dict] = {}
     for op in manifest.get("ops", []):
         if isinstance(op, dict) and op.get("op") == "func_def":
             name = op.get("name")
-            if isinstance(name, str) and name and name not in names:
-                names.append(name)
-    return names
+            if isinstance(name, str) and name and name not in functions:
+                functions[name] = {"params": op.get("params", [])}
+    return functions
+
+
+def _manifest_default_value(value):
+    if isinstance(value, dict) and value.get("kind") == "literal":
+        return value.get("value")
+    return value
 
 
 def _format_failure(phase: str, result: subprocess.CompletedProcess) -> str:

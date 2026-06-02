@@ -1,6 +1,7 @@
 """Tests for the PolyScript Python compatibility layer."""
 
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -163,7 +164,18 @@ class TestPolyScriptImportHook(unittest.TestCase):
             root = Path(tmp)
             manifest = root / "demo.manifest.json"
             manifest.write_text(
-                '{"version":1,"ops":[{"op":"func_def","name":"rank_user","params":[],"body":[]}]}',
+                json.dumps({
+                    "version": 1,
+                    "ops": [{
+                        "op": "func_def",
+                        "name": "rank_user",
+                        "params": [
+                            {"name": "request"},
+                            {"name": "weight", "defaultValue": {"kind": "literal", "value": 3}},
+                        ],
+                        "body": [],
+                    }],
+                }),
                 encoding="utf-8",
             )
             source = root / "demo_poly_module.poly"
@@ -174,16 +186,19 @@ class TestPolyScriptImportHook(unittest.TestCase):
                 try:
                     polyscript.install()
                     module = importlib.import_module("demo_poly_module")
-                    call_result = module.rank_user({"path": "/orders"})
+                    call_result = module.rank_user({"path": "/orders"}, weight=5)
+                    default_result = module.rank_user({"path": "/default"})
                 finally:
                     sys.path.remove(tmp)
 
         self.assertEqual(module.__all__, ["rank_user"])
         self.assertEqual(call_result, "ranked")
+        self.assertEqual(default_result, "ranked")
         module_id = module.__poly_result__.module_id
         self.assertEqual(calls[0], ("init", ["javascript", "java", "ruby"]))
         self.assertEqual(calls[1], ("load", module_id, str(manifest)))
-        self.assertEqual(calls[2], ("call", module_id, "rank_user", [{"path": "/orders"}]))
+        self.assertEqual(calls[2], ("call", module_id, "rank_user", [{"path": "/orders"}, 5]))
+        self.assertEqual(calls[3], ("call", module_id, "rank_user", [{"path": "/default"}]))
 
     @patch("polyscript._compiler_cache_identity", return_value="test-compiler")
     def test_manifest_cache_key_uses_source_hash(self, _):
