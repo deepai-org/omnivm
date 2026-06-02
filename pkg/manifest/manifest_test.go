@@ -6662,6 +6662,12 @@ func TestOpImportGoRecordsCompileTimeBinding(t *testing.T) {
 	if ref.Runtime != "go" || ref.Name != "net/http" {
 		t.Fatalf("go default import ref = %#v", ref)
 	}
+	if _, err := goToolPath(); err != nil {
+		t.Skipf("go toolchain unavailable: %v", err)
+	}
+	if got := e.normalizeGoArg("http.StatusAccepted"); got != 202 {
+		t.Fatalf("go selector constant arg = %#v (%T), want 202", got, got)
+	}
 
 	if _, err := e.opImport(&Op{
 		Runtime: "go",

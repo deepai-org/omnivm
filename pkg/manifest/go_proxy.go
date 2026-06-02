@@ -534,6 +534,11 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 			out = append(out, e.normalizeGoArg(item))
 		}
 		return out
+	case string:
+		if value, ok := e.resolveGoSelectorConstant(v); ok {
+			return value
+		}
+		return normalizeArg(arg)
 	default:
 		if isReceivableChannelValue(arg) || isReaderStreamValue(arg) {
 			id, err := e.genericStreamHandle("go", arg)

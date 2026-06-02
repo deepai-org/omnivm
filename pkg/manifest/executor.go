@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -1529,6 +1530,94 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 	}
 
 	return e.callGoFunc(funcName, args, op.Bind)
+}
+
+func (e *Executor) resolveGoSelectorConstant(expr string) (interface{}, bool) {
+	expr = strings.TrimSpace(expr)
+	parts := strings.Split(expr, ".")
+	if len(parts) < 2 || !goIdentifierRE.MatchString(parts[0]) {
+		return nil, false
+	}
+	for _, part := range parts[1:] {
+		if !goIdentifierRE.MatchString(part) {
+			return nil, false
+		}
+	}
+	binding, ok := e.getBinding(parts[0])
+	if !ok {
+		return nil, false
+	}
+	ref, ok := binding.(ImportRef)
+	if !ok || ref.Runtime != "go" || ref.Name == "" {
+		return nil, false
+	}
+	goTool, err := goToolPath()
+	if err != nil {
+		return nil, false
+	}
+	tmpDir, err := os.MkdirTemp("", "omnivm-go-const-*")
+	if err != nil {
+		return nil, false
+	}
+	defer os.RemoveAll(tmpDir)
+
+	source := fmt.Sprintf(`package main
+
+import (
+	__omnivm_json "encoding/json"
+	__omnivm_os "os"
+	%s %q
+)
+
+func main() {
+	value := %s
+	payload, err := __omnivm_json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	_, _ = __omnivm_os.Stdout.Write(payload)
+}
+`, parts[0], ref.Name, expr)
+	sourcePath := tmpDir + "/main.go"
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		return nil, false
+	}
+	cmd := exec.Command(goTool, "run", sourcePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, false
+	}
+	var value interface{}
+	if err := json.Unmarshal(out, &value); err != nil {
+		return nil, false
+	}
+	return normalizeGoConstantJSONValue(value), true
+}
+
+func normalizeGoConstantJSONValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case float64:
+		maxInt := int(^uint(0) >> 1)
+		minInt := -maxInt - 1
+		if v == math.Trunc(v) && v >= float64(minInt) && v <= float64(maxInt) {
+			return int(v)
+		}
+		return v
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = normalizeGoConstantJSONValue(item)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[key] = normalizeGoConstantJSONValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // resolveValueExpr resolves a ValueExpr to its Go value.
