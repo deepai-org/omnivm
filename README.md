@@ -90,11 +90,10 @@ docker run --rm --entrypoint python3-polyscript omnivm \
   -c "import polyscript, sys; print(polyscript.is_enabled(), sys.version)"
 ```
 
-The hook compiles `.poly` files with `POLYSCRIPT_COMPILER` (default: `polyc`) and runs the generated manifest with `POLYSCRIPT_MANIFEST_RUNNER` (default: `manifest-runner`). Existing Python imports keep using CPython; only `.poly` files enter the manifest runner. If you want in-process OmniVM calls, call `omnivm.init_runtimes(...)` after fork, inside the worker. This keeps `python3-polyscript` suitable for Passenger/Gunicorn: the master remains ordinary CPython and each worker loads `libomnivm.so` only after it has forked.
+The hook compiles `.poly` files with `POLYSCRIPT_COMPILER` (default: `polyc`). Under `python3-polyscript`, imported `.poly` modules run the generated manifest in-process through CPython-hosted `libomnivm` by default; setting `POLYSCRIPT_MANIFEST_RUNNER` explicitly switches back to an external manifest runner. Existing Python imports keep using CPython; only `.poly` files enter PolyScript. This keeps `python3-polyscript` suitable for Passenger/Gunicorn: the master remains ordinary CPython and each worker loads `libomnivm.so` lazily after it has forked.
 
 ```bash
 export POLYSCRIPT_COMPILER="polyc"
-export POLYSCRIPT_MANIFEST_RUNNER="manifest-runner"
 export POLYSCRIPT_CACHE_DIR="/tmp/polyscript-cache"
 python3-polyscript manage.py runserver
 ```

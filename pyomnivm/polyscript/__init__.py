@@ -11,6 +11,7 @@ import hashlib
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shlex
@@ -156,6 +157,9 @@ def compile_manifest(source: os.PathLike | str, output: os.PathLike | str | None
 def run_manifest(manifest: os.PathLike | str) -> subprocess.CompletedProcess:
     """Run an OmniVM manifest with the configured manifest runner."""
 
+    if _should_run_manifest_in_process():
+        return _run_manifest_in_process(Path(manifest))
+
     command = _command_from_env("POLYSCRIPT_MANIFEST_RUNNER", ["manifest-runner"])
     result = subprocess.run(
         [*command, str(manifest)],
@@ -173,6 +177,67 @@ def run_poly(source: os.PathLike | str) -> PolyScriptRunResult:
 
     manifest_path = compile_manifest(source)
     return PolyScriptRunResult(manifest_path, run_manifest(manifest_path))
+
+
+def _should_run_manifest_in_process() -> bool:
+    if os.environ.get("POLYSCRIPT_MANIFEST_RUNNER"):
+        return False
+    if os.environ.get("POLYSCRIPT_IN_PROCESS") == "0":
+        return False
+    return is_enabled()
+
+
+def _run_manifest_in_process(manifest: Path) -> subprocess.CompletedProcess:
+    import omnivm
+
+    try:
+        omnivm.status()
+    except Exception:
+        try:
+            omnivm.init_runtimes(_configured_runtimes(manifest))
+        except Exception as exc:
+            raise PolyScriptError(f"PolyScript run failed during libomnivm initialization: {exc}") from exc
+
+    try:
+        stdout = omnivm.run_manifest(manifest)
+    except Exception as exc:
+        raise PolyScriptError(f"PolyScript run failed during in-process manifest execution: {exc}") from exc
+    return subprocess.CompletedProcess(
+        ["omnivm.run_manifest", str(manifest)],
+        0,
+        stdout=stdout,
+        stderr="",
+    )
+
+
+def _configured_runtimes(manifest: Path) -> list[str]:
+    configured = os.environ.get("POLYSCRIPT_RUNTIMES")
+    if configured:
+        configured = configured.strip()
+        if configured == "infer":
+            return _manifest_runtimes(manifest)
+        return [name.strip() for name in configured.split(",") if name.strip()]
+    return ["javascript", "java", "ruby"]
+
+
+def _manifest_runtimes(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    runtimes: set[str] = set()
+    _collect_runtimes(manifest, runtimes)
+    return [name for name in ("go", "javascript", "java", "ruby") if name in runtimes]
+
+
+def _collect_runtimes(value, out: set[str]) -> None:
+    if isinstance(value, dict):
+        runtime = value.get("runtime")
+        if runtime in {"go", "javascript", "java", "ruby"}:
+            out.add(runtime)
+        for child in value.values():
+            _collect_runtimes(child, out)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_runtimes(child, out)
 
 
 def _command_from_env(name: str, default: Iterable[str]) -> list[str]:

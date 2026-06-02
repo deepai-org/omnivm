@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,60 @@ class TestPolyScriptCommands(unittest.TestCase):
 
         self.assertEqual(result.stdout, "ok")
         self.assertEqual(run.call_args[0][0], ["manifest-runner", "--trace", "/tmp/demo.manifest.json"])
+
+    @patch.dict(os.environ, {"POLYSCRIPT_PYTHON": "1"}, clear=True)
+    def test_run_manifest_uses_libomnivm_in_polyscript_mode(self):
+        fake = types.ModuleType("omnivm")
+        calls = []
+
+        class OmniError(RuntimeError):
+            pass
+
+        def status():
+            raise OmniError("not initialized")
+
+        def init_runtimes(runtimes):
+            calls.append(("init", list(runtimes)))
+
+        def run_manifest(path):
+            calls.append(("run", str(path)))
+            return "ok"
+
+        fake.RuntimeError = OmniError
+        fake.status = status
+        fake.init_runtimes = init_runtimes
+        fake.run_manifest = run_manifest
+
+        with patch.dict(sys.modules, {"omnivm": fake}):
+            result = polyscript.run_manifest("/tmp/demo.manifest.json")
+
+        self.assertEqual(result.stdout, "ok")
+        self.assertEqual(calls, [("init", ["javascript", "java", "ruby"]), ("run", "/tmp/demo.manifest.json")])
+
+    @patch.dict(os.environ, {"POLYSCRIPT_PYTHON": "1", "POLYSCRIPT_RUNTIMES": "infer"}, clear=True)
+    def test_run_manifest_can_infer_libomnivm_runtimes(self):
+        fake = types.ModuleType("omnivm")
+        calls = []
+
+        class OmniError(RuntimeError):
+            pass
+
+        fake.RuntimeError = OmniError
+        fake.status = lambda: (_ for _ in ()).throw(OmniError("not initialized"))
+        fake.init_runtimes = lambda runtimes: calls.append(("init", list(runtimes)))
+        fake.run_manifest = lambda path: calls.append(("run", str(path))) or "ok"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp, "demo.manifest.json")
+            manifest.write_text(
+                '{"version":1,"defaultRuntime":"python","ops":[{"op":"exec","runtime":"javascript","code":"1+1"}]}',
+                encoding="utf-8",
+            )
+            with patch.dict(sys.modules, {"omnivm": fake}):
+                result = polyscript.run_manifest(manifest)
+
+        self.assertEqual(result.stdout, "ok")
+        self.assertEqual(calls, [("init", ["javascript"]), ("run", str(manifest))])
 
     @patch("subprocess.run")
     def test_compile_failure_is_actionable(self, run):

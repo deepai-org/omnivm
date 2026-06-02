@@ -1,0 +1,3 @@
+from pathlib import Path
+
+Path("/tmp/polyscript-passenger-marker.txt").write_text("poly-feature-ok", encoding="utf-8")
