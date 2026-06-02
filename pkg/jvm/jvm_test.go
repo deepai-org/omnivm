@@ -2,6 +2,7 @@ package jvm
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,9 @@ func TestJVMExecuteSimple(t *testing.T) {
 	// Using JavaScript via ScriptEngine (Nashorn or GraalJS)
 	result := r.Execute("print('hello from jvm')")
 	if result.Err != nil {
+		if strings.Contains(result.Err.Error(), "No script engine available") {
+			t.Skipf("JDK has no JavaScript ScriptEngine: %v", result.Err)
+		}
 		t.Fatalf("Execute failed: %v", result.Err)
 	}
 	if result.Output == "" {
@@ -74,6 +78,9 @@ func TestJVMExecuteError(t *testing.T) {
 	defer r.Shutdown()
 
 	result := r.Execute("throw 'test error'")
+	if result.Err != nil && strings.Contains(result.Err.Error(), "No script engine available") {
+		t.Skipf("JDK has no JavaScript ScriptEngine: %v", result.Err)
+	}
 	// This should produce an error
 	if result.Err == nil {
 		t.Log("Warning: error handling depends on script engine availability")

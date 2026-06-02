@@ -4,8 +4,8 @@
 package jvm
 
 /*
-#cgo CFLAGS: -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux
-#cgo LDFLAGS: -L${JAVA_HOME}/lib/server -ljvm -Wl,-rpath,${JAVA_HOME}/lib/server
+#cgo linux CFLAGS: -I/usr/lib/jvm/default-java/include -I/usr/lib/jvm/default-java/include/linux
+#cgo linux LDFLAGS: -L/usr/lib/jvm/default-java/lib/server -ljvm -Wl,-rpath,/usr/lib/jvm/default-java/lib/server
 
 #include <jni.h>
 #include <stdlib.h>
@@ -19,6 +19,16 @@ static omni_free_fn g_bridge_free = NULL;
 
 static JavaVM* jvm = NULL;
 static JNIEnv* env = NULL;
+
+static JNIEnv* omnivm_jvm_current_env(void) {
+    JNIEnv* current = NULL;
+    if (!jvm) return NULL;
+    jint rc = (*jvm)->GetEnv(jvm, (void**)&current, JNI_VERSION_10);
+    if (rc == JNI_OK) return current;
+    rc = (*jvm)->AttachCurrentThreadAsDaemon(jvm, (void**)&current, NULL);
+    if (rc != JNI_OK) return NULL;
+    return current;
+}
 
 // Initialize the JVM with reduced signal handling (-Xrs)
 static int omnivm_jvm_init(void) {
@@ -41,6 +51,7 @@ static int omnivm_jvm_init(void) {
 
 // Execute a Java expression via ScriptEngine
 static char* omnivm_jvm_exec(const char* code) {
+    JNIEnv* env = omnivm_jvm_current_env();
     if (!env) return strdup("JVM not initialized");
 
     jclass se_mgr_class = (*env)->FindClass(env, "javax/script/ScriptEngineManager");
