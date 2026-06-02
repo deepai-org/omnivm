@@ -105,7 +105,8 @@ environ = {
 }
 body = b"".join(application(environ, start_response)).decode()
 assert captured["status"].startswith("200"), captured
-assert body == "poly-feature-ok:GET:/poly/", body
+assert captured["headers"].get("X-Poly-Fixture") == "middleware", captured
+assert body == "poly-feature-ok:GET:/poly/:u-42:poly", body
 print(body)'
 done
 

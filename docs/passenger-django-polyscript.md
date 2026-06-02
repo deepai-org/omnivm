@@ -85,4 +85,4 @@ Set `POLYSCRIPT_COMPILER` to the installed Garbage compiler command and `POLYSCR
 - `python3-polyscript` Django `get_wsgi_application()` smoke
 - a prefork WSGI worker lifecycle harness
 
-`make test-poly-libomnivm-smoke` compiles selected sibling Garbage `.poly` examples, executes the generated manifests through CPython-hosted `libomnivm`, and runs the checked-in `test/fixtures/passenger-django-polyscript` fixture where a Django route imports a `.poly` module through `python3-polyscript`.
+`make test-poly-libomnivm-smoke` compiles selected sibling Garbage `.poly` examples, executes the generated manifests through CPython-hosted `libomnivm`, and runs the checked-in `test/fixtures/passenger-django-polyscript` fixture. The fixture keeps the Django stack realistic enough to catch migration issues: a middleware attaches request/session-style state, a normal Python service module imports the `.poly` feature module, and the route returns the PolyScript result through Django's WSGI handler.

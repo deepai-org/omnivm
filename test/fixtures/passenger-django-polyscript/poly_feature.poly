@@ -1,2 +1,2 @@
 def describe_request(request):
-    return "poly-feature-ok:" + request.method + ":" + request.path
+    return "poly-feature-ok:" + request.method + ":" + request.path + ":" + request.fixture_user_id + ":" + request.session["feature"]
