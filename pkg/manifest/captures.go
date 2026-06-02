@@ -2249,11 +2249,6 @@ func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref R
 			return "", fmt.Errorf("marshal fallback after serialize error %v: %w", err, fallbackErr)
 		}
 		jsonVal = fallback
-		reason := "source runtime serialization failed; using cached manifest value"
-		e.recordJSONFallback(reason)
-		if !e.hasBridgeOps(binding, ref.Runtime, targetRuntime) {
-			e.warnBoundaryFallback(binding, ref.Runtime, targetRuntime, reason)
-		}
 	} else if e.isAmbiguousBoundary(binding, ref.Runtime, targetRuntime, jsonVal) {
 		if !e.hasBridgeOps(binding, ref.Runtime, targetRuntime) {
 			return e.runtimeRefProxyCaptureJSON(ref)

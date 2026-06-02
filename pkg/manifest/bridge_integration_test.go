@@ -684,7 +684,7 @@ func TestBridgeIntegration_ExplicitRubyBridgeSerializesGlobalBinding(t *testing.
 	}
 }
 
-func TestBridgeIntegration_JSONFallbackRecordsReason(t *testing.T) {
+func TestBridgeIntegration_CachedPrimitiveDoesNotRecordJSONFallback(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.bridgeOps = buildBridgeIndex(nil)
 	e.setBinding("score", RuntimeRef{Runtime: "missing", Value: 42})
@@ -695,15 +695,15 @@ func TestBridgeIntegration_JSONFallbackRecordsReason(t *testing.T) {
 			t.Fatalf("wrapWithCaptures: %v", err)
 		}
 		if !contains(wrapped, "globalThis.__omnivm_materialize_capture(42)") {
-			t.Fatalf("expected cached primitive JSON fallback injection, got %q", wrapped)
+			t.Fatalf("expected cached primitive capture injection, got %q", wrapped)
 		}
 	})
-	if !contains(stderr, "source runtime serialization failed; using cached manifest value") {
-		t.Fatalf("expected fallback warning, got %q", stderr)
+	if contains(stderr, "source runtime serialization failed; using cached manifest value") {
+		t.Fatalf("cached primitive copy should not warn as JSON fallback, got %q", stderr)
 	}
 	stats := e.BoundaryStats()
-	if stats.JSONFallbacks != 1 || stats.LastJSONFallbackReason != "source runtime serialization failed; using cached manifest value" || stats.BoundaryWarnings != 1 {
-		t.Fatalf("unexpected fallback stats: %+v", stats)
+	if stats.JSONFallbacks != 0 || stats.LastJSONFallbackReason != "" || stats.BoundaryWarnings != 0 {
+		t.Fatalf("cached primitive should not record JSON fallback stats: %+v", stats)
 	}
 }
 
