@@ -489,7 +489,7 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 			"kind":                v.Kind,
 			"disposer":            v.Disposer,
 			"closed":              v.Closed,
-		}, e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCall, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
+		}, e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCallPositional, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
 	case *TableRef:
 		return newGoHandleProxy(v.ID, e.ensureHandleTable(), "table", map[string]interface{}{
 			"__omnivm_table__": true,
@@ -500,7 +500,7 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 			"release":          v.Release,
 			"metadata":         v.Metadata,
 			"released":         v.Released,
-		}, e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCall, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
+		}, e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCallPositional, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
 	case *JobHandle:
 		return newGoHandleProxy(0, nil, "job", map[string]interface{}{
 			"__omnivm_job__": true,
@@ -525,7 +525,7 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 			if kind == "job" {
 				id = 0
 			}
-			return newGoHandleProxy(id, e.ensureHandleTable(), kind, normalizeGoMap(v, e.normalizeGoArg), e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCall, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
+			return newGoHandleProxy(id, e.ensureHandleTable(), kind, normalizeGoMap(v, e.normalizeGoArg), e.handleProperty, e.handleIndex, e.handleSetForProxy, e.handleLen, e.handleIter, e.handleContains, e.handleMethodCallPositional, e.normalizeGoArg, e.normalizeGoBoundaryValue, e.recordProxyMaterialization)
 		}
 		return normalizeGoMap(v, e.normalizeGoArg)
 	case []interface{}:

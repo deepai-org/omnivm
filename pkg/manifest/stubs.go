@@ -339,17 +339,18 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 
 	// Deserialize the call request
 	var req struct {
-		Func        string        `json:"func"`
-		Op          string        `json:"op"`
-		Args        []interface{} `json:"args"`
-		ID          interface{}   `json:"id"`
-		From        interface{}   `json:"from"`
-		To          interface{}   `json:"to"`
-		Kind        string        `json:"kind"`
-		Mode        string        `json:"mode"`
-		Key         string        `json:"key"`
-		Value       interface{}   `json:"value"`
-		Materialize bool          `json:"materialize"`
+		Func        string                 `json:"func"`
+		Op          string                 `json:"op"`
+		Args        []interface{}          `json:"args"`
+		Kwargs      map[string]interface{} `json:"kwargs"`
+		ID          interface{}            `json:"id"`
+		From        interface{}            `json:"from"`
+		To          interface{}            `json:"to"`
+		Kind        string                 `json:"kind"`
+		Mode        string                 `json:"mode"`
+		Key         string                 `json:"key"`
+		Value       interface{}            `json:"value"`
+		Materialize bool                   `json:"materialize"`
 	}
 	if err := json.Unmarshal([]byte(code), &req); err != nil {
 		return "", fmt.Errorf("manifest HandleCall: invalid request: %w", err)
@@ -430,6 +431,17 @@ func decodeRuntimeRefArgs(args []interface{}) []interface{} {
 	out := make([]interface{}, len(args))
 	for i, arg := range args {
 		out[i] = decodeRuntimeRefArg(arg)
+	}
+	return out
+}
+
+func decodeRuntimeRefKwargs(kwargs map[string]interface{}) map[string]interface{} {
+	if len(kwargs) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(kwargs))
+	for key, value := range kwargs {
+		out[key] = decodeRuntimeRefArg(value)
 	}
 	return out
 }
@@ -705,17 +717,18 @@ func runtimeRefNeedsProxy(ref RuntimeRef) bool {
 }
 
 func (e *Executor) handleInternalBridgeOp(op string, req struct {
-	Func        string        `json:"func"`
-	Op          string        `json:"op"`
-	Args        []interface{} `json:"args"`
-	ID          interface{}   `json:"id"`
-	From        interface{}   `json:"from"`
-	To          interface{}   `json:"to"`
-	Kind        string        `json:"kind"`
-	Mode        string        `json:"mode"`
-	Key         string        `json:"key"`
-	Value       interface{}   `json:"value"`
-	Materialize bool          `json:"materialize"`
+	Func        string                 `json:"func"`
+	Op          string                 `json:"op"`
+	Args        []interface{}          `json:"args"`
+	Kwargs      map[string]interface{} `json:"kwargs"`
+	ID          interface{}            `json:"id"`
+	From        interface{}            `json:"from"`
+	To          interface{}            `json:"to"`
+	Kind        string                 `json:"kind"`
+	Mode        string                 `json:"mode"`
+	Key         string                 `json:"key"`
+	Value       interface{}            `json:"value"`
+	Materialize bool                   `json:"materialize"`
 }) (string, error) {
 	switch op {
 	case "handle_retain":
@@ -933,10 +946,14 @@ func (e *Executor) handleInternalBridgeOp(op string, req struct {
 			return "", err
 		}
 		args := decodeRuntimeRefArgs(req.Args)
+		kwargs := decodeRuntimeRefKwargs(req.Kwargs)
 		if err := e.recordValueReferences(id, args, "call_arg"); err != nil {
 			return "", err
 		}
-		value, err := e.handleMethodCall(id, req.Key, args)
+		if err := e.recordValueReferences(id, kwargs, "call_arg"); err != nil {
+			return "", err
+		}
+		value, err := e.handleMethodCall(id, req.Key, args, kwargs)
 		if err != nil {
 			return "", err
 		}
@@ -2038,7 +2055,7 @@ func errOrNotOK(ok bool, err error) error {
 	return nil
 }
 
-func (e *Executor) handleMethodCall(id handles.ID, key string, args []interface{}) (interface{}, error) {
+func (e *Executor) handleMethodCall(id handles.ID, key string, args []interface{}, kwargs map[string]interface{}) (interface{}, error) {
 	entry, ok := e.ensureHandleTable().Get(id)
 	if !ok {
 		return nil, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
@@ -2047,13 +2064,16 @@ func (e *Executor) handleMethodCall(id handles.ID, key string, args []interface{
 		return nil, err
 	}
 	if ref, ok := runtimeRefFromHandleValue(entry.Value); ok {
-		value, ok, err := e.runtimeRefCall(id, ref, key, args)
+		value, ok, err := e.runtimeRefCall(id, ref, key, args, kwargs)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
 			return value, nil
 		}
+	}
+	if len(kwargs) > 0 {
+		return nil, fmt.Errorf("manifest HandleCall: handle %d method %q does not support keyword arguments", id, key)
 	}
 	value, ok, err := genericCall(entry.Value, key, args)
 	if err != nil {
@@ -2063,6 +2083,10 @@ func (e *Executor) handleMethodCall(id handles.ID, key string, args []interface{
 		return nil, fmt.Errorf("manifest HandleCall: handle %d has no callable property %q", id, key)
 	}
 	return value, nil
+}
+
+func (e *Executor) handleMethodCallPositional(id handles.ID, key string, args []interface{}) (interface{}, error) {
+	return e.handleMethodCall(id, key, args, nil)
 }
 
 func runtimeRefFromHandleValue(value interface{}) (RuntimeRef, bool) {
@@ -2256,9 +2280,9 @@ func (e *Executor) runtimeRefCallable(ref RuntimeRef, key string) (bool, error) 
 	return callable, nil
 }
 
-func (e *Executor) runtimeRefCall(parent handles.ID, ref RuntimeRef, key string, args []interface{}) (interface{}, bool, error) {
+func (e *Executor) runtimeRefCall(parent handles.ID, ref RuntimeRef, key string, args []interface{}, kwargs map[string]interface{}) (interface{}, bool, error) {
 	builder := &runtimeExprBuilder{executor: e, targetRuntime: ref.Runtime}
-	expr, ok, err := runtimeRefCallExprWithBuilder(ref, key, args, builder)
+	expr, ok, err := runtimeRefCallExprWithBuilder(ref, key, args, kwargs, builder)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -3009,25 +3033,41 @@ func runtimeRefCallExpr(ref RuntimeRef, key string, args []interface{}) (string,
 
 func (e *Executor) runtimeRefCallExpr(ref RuntimeRef, key string, args []interface{}) (string, bool, error) {
 	builder := &runtimeExprBuilder{executor: e, targetRuntime: ref.Runtime}
-	return runtimeRefCallExprWithBuilder(ref, key, args, builder)
+	return runtimeRefCallExprWithBuilder(ref, key, args, nil, builder)
 }
 
-func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{}, builder *runtimeExprBuilder) (string, bool, error) {
+func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{}, kwargs map[string]interface{}, builder *runtimeExprBuilder) (string, bool, error) {
 	argsLit, err := builder.expr(args)
 	if err != nil {
 		return "", false, err
+	}
+	kwargsLit := "{}"
+	if len(kwargs) > 0 {
+		kwargsLit, err = builder.expr(kwargs)
+		if err != nil {
+			return "", false, err
+		}
 	}
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	var expr string
 	if key == "" {
 		switch ref.Runtime {
 		case "javascript":
+			if len(kwargs) > 0 {
+				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+			}
 			expr = fmt.Sprintf("(%s).apply(undefined, %s)", base, argsLit)
 		case "python":
-			expr = fmt.Sprintf("(lambda __o, __args: __o(*__args))(%s, %s)", base, argsLit)
+			expr = fmt.Sprintf("(lambda __o, __args, __kwargs: __o(*__args, **__kwargs))(%s, %s, %s)", base, argsLit, kwargsLit)
 		case "ruby":
+			if len(kwargs) > 0 {
+				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+			}
 			expr = fmt.Sprintf("(begin; __o = %s; __args = %s; __o.call(*__args); end)", base, argsLit)
 		case "java":
+			if len(kwargs) > 0 {
+				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+			}
 			expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, \"\", %s)", base, argsLit)
 		default:
 			return "", false, nil
@@ -3040,12 +3080,21 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 	}
 	switch ref.Runtime {
 	case "javascript":
+		if len(kwargs) > 0 {
+			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+		}
 		expr = fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k, __args: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))(*__args))(%s, %s, %s)", base, keyLit, argsLit)
+		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))(*__args, **__kwargs))(%s, %s, %s, %s)", base, keyLit, argsLit, kwargsLit)
 	case "ruby":
+		if len(kwargs) > 0 {
+			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+		}
 		expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args) : __o[__k].call(*__args)); end)", base, keyLit, argsLit)
 	case "java":
+		if len(kwargs) > 0 {
+			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+		}
 		expr = fmt.Sprintf("omnivm.OmniVM.proxyCall(%s, %s, %s)", base, keyLit, argsLit)
 	default:
 		return "", false, nil

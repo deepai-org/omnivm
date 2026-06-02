@@ -6382,6 +6382,36 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 		t.Fatalf("runtime-ref arguments should not degrade into JSON runtime-ref structs, got %q", callExpr)
 	}
 
+	kwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "python", VarName: "handler"},
+		"accept",
+		[]interface{}{"open"},
+		map[string]interface{}{
+			"limit":   2,
+			"payload": RuntimeRef{Runtime: "javascript", VarName: "kw_payload"},
+		},
+		&runtimeExprBuilder{executor: e, targetRuntime: "python"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder python kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(kwExpr, "**__kwargs") || !strings.Contains(kwExpr, "limit") {
+		t.Fatalf("python keyword method call should pass kwargs through, got %q", kwExpr)
+	}
+	if !strings.Contains(kwExpr, "__omnivm_materialize_capture") || !strings.Contains(kwExpr, "__omnivm_resource__") {
+		t.Fatalf("python keyword runtime-ref values should be rematerialized, got %q", kwExpr)
+	}
+
+	if _, _, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "javascript", VarName: "handler"},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "javascript"},
+	); err == nil || !strings.Contains(err.Error(), "keyword") {
+		t.Fatalf("javascript keyword method call should fail explicitly, got %v", err)
+	}
+
 	javaExpr, ok, err := e.runtimeRefCallExpr(
 		RuntimeRef{Runtime: "java", VarName: "sink"},
 		"accept",

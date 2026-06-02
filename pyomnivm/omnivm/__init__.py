@@ -785,15 +785,21 @@ class ManifestProxy:
         finally:
             _release_manifest_args(retained_keys)
 
-    def _method_call(self, key, args):
+    def _method_call(self, key, args, kwargs=None):
         retained_keys = []
         try:
-            return self._op({
+            payload = {
                 "op": "handle_call",
                 "id": self._handle_id,
                 "key": key,
                 "args": [self._arg(arg, retained_keys) for arg in args],
-            })
+            }
+            if kwargs:
+                payload["kwargs"] = {
+                    str(name): self._arg(value, retained_keys)
+                    for name, value in kwargs.items()
+                }
+            return self._op(payload)
         finally:
             _release_manifest_args(retained_keys)
 
@@ -813,9 +819,7 @@ class _ManifestProxyMethod:
         self._key = key
 
     def __call__(self, *args, **kwargs):
-        if kwargs:
-            raise TypeError(f"{self._key}() does not accept keyword arguments yet")
-        return self._proxy._method_call(self._key, args)
+        return self._proxy._method_call(self._key, args, kwargs)
 
     def __repr__(self):
         return f"<omnivm.ManifestProxyMethod {self._key}>"

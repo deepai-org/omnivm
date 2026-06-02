@@ -2,6 +2,17 @@
 
 The example suite is meant to prove real ecosystem shapes, not just toy arithmetic. The current manifest examples exercise these runtimes under both `manifest-runner` and CPython-hosted `libomnivm`.
 
+## Current milestone
+
+The CPython-hosted `libomnivm` path now runs the checked-in manifest examples,
+the selected sibling Garbage `.poly` examples, and the Passenger/Django import
+fixture with Python as the parent process. That coverage includes Go selector
+constants such as `http.StatusAccepted`, Go `main()` entrypoints compiled from
+`.go` examples, imported `.poly` functions returning nested proxy descriptors,
+and boundary counters that do not count cached primitive movement as JSON
+fallback. The intended invariant is that ordinary `.poly` code does not need
+manual JSON encode/decode glue for runtime boundaries.
+
 | Example | Main coverage |
 | --- | --- |
 | `python-fastapi-sqlalchemy-polars-docs.json` | Python framework, ORM, and dataframe-style shapes |
@@ -28,10 +39,13 @@ Those contracts are also covered by the edge fixtures for resource/job handles, 
 ## Useful commands
 
 ```bash
+make test-all
 make test-manifests
 make test-libomnivm-manifests
 make test-libomnivm-stress
 make test-poly-libomnivm-smoke
 ```
 
-The last command expects the sibling Garbage checkout and compiles selected `.poly` examples before running them through CPython-hosted `libomnivm`.
+`make test-all` is the canonical local and CI gate. The last command expects
+the sibling Garbage checkout and compiles selected `.poly` examples before
+running them through CPython-hosted `libomnivm`.

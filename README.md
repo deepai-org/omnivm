@@ -805,13 +805,13 @@ Make targets:
 
 ```bash
 make build                # Build Docker image
+make test-all             # Canonical local/CI gate: local, Docker, manifest, stress, and libomnivm tests
 make test-cli             # CLI integration tests (29 tests in Docker)
 make test-manifests       # Run manifest examples and edge contract fixtures
 make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
 make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
 make test-poly-libomnivm-smoke # Compile selected Garbage .poly examples, then run via CPython + libomnivm
 make test-stress          # Run 71 stress tests
-make test-all             # Everything: build + CLI + stress + manifests + libomnivm
 ```
 
 The cross-repo `.poly` smoke expects a sibling `../garbage` checkout by default:
@@ -829,6 +829,7 @@ npm run build
 node scripts/audit-manifests.js
 
 # omnivm
+make test-all
 make test-poly-libomnivm-smoke
 make test-libomnivm-manifests
 make test-libomnivm-stress

@@ -331,11 +331,62 @@ class TestCallWithMockLib(unittest.TestCase):
 
         assert isinstance(proxy, omnivm_mod.ManifestProxy)
         assert proxy.path == "/orders"
-        assert proxy.items("open") == ["a", "b"]
+        assert proxy.items("open", limit=2) == ["a", "b"]
         proxy.close()
         assert requests[0] == {"func": "request", "args": []}
         assert requests[1] == {"op": "handle_adopt", "id": 42}
+        assert requests[4] == {
+            "op": "handle_call",
+            "id": 42,
+            "key": "items",
+            "args": ["open"],
+            "kwargs": {"limit": 2},
+        }
         assert requests[-1] == {"op": "handle_release_finalizer", "id": 42}
+
+    def test_manifest_call_wraps_nested_complex_return_proxies(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def descriptor(handle_id, transfer=True):
+            return {
+                "__omnivm_resource__": True,
+                "id": handle_id,
+                "runtime": "python",
+                "kind": "object",
+                "transfer": transfer,
+            }
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "nested":
+                return envelope({
+                    "items": [descriptor(7)],
+                    "meta": {"primary": descriptor(8, transfer=False)},
+                })
+            if request.get("op") in {"handle_adopt", "handle_retain", "handle_release_finalizer"}:
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        result = omnivm_mod.manifest_call("demo", "nested")
+
+        child = result["items"][0]
+        primary = result["meta"]["primary"]
+        assert isinstance(child, omnivm_mod.ManifestProxy)
+        assert isinstance(primary, omnivm_mod.ManifestProxy)
+        assert child.__omnivm_handle_id__ == 7
+        assert primary.__omnivm_handle_id__ == 8
+        child.close()
+        primary.close()
+        assert {"op": "handle_adopt", "id": 7} in requests
+        assert {"op": "handle_retain", "id": 8} in requests
+        assert {"op": "handle_release_finalizer", "id": 7} in requests
+        assert {"op": "handle_release_finalizer", "id": 8} in requests
 
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0
