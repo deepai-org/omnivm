@@ -53,12 +53,20 @@ for example in "${examples[@]}"; do
   (cd "$GARBAGE_DIR" && npm run polyc -- "examples/$example" -o "$manifest" >/dev/null)
 
   echo "run $example"
-  docker run --rm \
-    --entrypoint "$PYTHON_BIN" \
-    -v "$TMP/manifests":/tmp/poly-libomnivm-smoke:ro \
-    -v "$TMP/var-data":/var/data:ro \
-    "$IMAGE" \
-    "$RUNNER" "/tmp/poly-libomnivm-smoke/$name.json"
+  if ! output=$(docker run --rm \
+      --entrypoint "$PYTHON_BIN" \
+      -v "$TMP/manifests":/tmp/poly-libomnivm-smoke:ro \
+      -v "$TMP/var-data":/var/data:ro \
+      "$IMAGE" \
+      "$RUNNER" "/tmp/poly-libomnivm-smoke/$name.json" 2>&1); then
+    printf '%s\n' "$output"
+    exit 1
+  fi
+  printf '%s\n' "$output"
+  if [ "$example" = "compat-go-status.go" ] && [[ "$output" != *"ok:200"* ]]; then
+    echo "expected compat-go-status.go main() output to contain ok:200, got: $output" >&2
+    exit 1
+  fi
 done
 
 fixture="$TMP/passenger-django"
