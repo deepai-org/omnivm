@@ -61,15 +61,16 @@ done
 fixture="$TMP/passenger-django"
 cp -R "$PASSENGER_FIXTURE" "$fixture"
 
-echo "run Passenger-style Django .poly import fixture"
-docker run --rm \
-  --entrypoint python3-polyscript \
-  -e POLYSCRIPT_COMPILER="node /garbage/dist/cli-manifest.js" \
-  -e POLYSCRIPT_CACHE_DIR=/tmp/polyscript-cache \
-  -v "$fixture":/tmp/passenger-django:ro \
-  -v "$GARBAGE_DIR":/garbage:ro \
-  "$IMAGE" \
-  -c 'import io, sys
+echo "run Passenger-style Django .poly import fixture across fresh workers"
+for worker in 1 2 3; do
+  docker run --rm \
+    --entrypoint python3-polyscript \
+    -e POLYSCRIPT_COMPILER="node /garbage/dist/cli-manifest.js" \
+    -e POLYSCRIPT_CACHE_DIR=/tmp/polyscript-cache \
+    -v "$fixture":/tmp/passenger-django:ro \
+    -v "$GARBAGE_DIR":/garbage:ro \
+    "$IMAGE" \
+    -c 'import io, sys
 sys.path.insert(0, "/tmp/passenger-django")
 from passenger_wsgi import application
 captured = {}
@@ -93,7 +94,8 @@ environ = {
 }
 body = b"".join(application(environ, start_response)).decode()
 assert captured["status"].startswith("200"), captured
-assert body == "poly-feature-ok:.json", body
+assert body == "poly-feature-ok:GET:/poly/", body
 print(body)'
+done
 
-echo "poly libomnivm smoke passed (${#examples[@]} examples + Passenger-style Django import fixture)"
+echo "poly libomnivm smoke passed (${#examples[@]} examples + Passenger-style Django import fixture x3)"

@@ -121,15 +121,15 @@ class TestPolyScriptImportHook(unittest.TestCase):
         polyscript.install()
         self.assertEqual(sum(1 for item in sys.meta_path if item is finder), 1)
 
-    @patch("polyscript.run_poly")
-    def test_import_poly_module_runs_manifest(self, run_poly):
+    @patch("polyscript.load_poly_module")
+    def test_import_poly_module_runs_manifest(self, load_poly_module):
         class Result:
             manifest_path = Path("/tmp/demo.manifest.json")
             stdout = "ok"
             stderr = ""
             returncode = 0
 
-        run_poly.return_value = Result()
+        load_poly_module.return_value = Result()
 
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "demo_poly_module.poly").write_text('console.log("hello")\n')
@@ -140,9 +140,61 @@ class TestPolyScriptImportHook(unittest.TestCase):
             finally:
                 sys.path.remove(tmp)
 
-        run_poly.assert_called_once()
+        load_poly_module.assert_called_once()
         self.assertEqual(module.__poly_manifest__, "/tmp/demo.manifest.json")
-        self.assertIs(module.__poly_result__, run_poly.return_value)
+        self.assertIs(module.__poly_result__, load_poly_module.return_value)
+
+    @patch.dict(os.environ, {"POLYSCRIPT_PYTHON": "1"}, clear=True)
+    @patch("polyscript._compiler_cache_identity", return_value="test-compiler")
+    def test_import_poly_module_exposes_manifest_functions(self, _):
+        fake = types.ModuleType("omnivm")
+        calls = []
+
+        class OmniError(RuntimeError):
+            pass
+
+        fake.RuntimeError = OmniError
+        fake.status = lambda: (_ for _ in ()).throw(OmniError("not initialized"))
+        fake.init_runtimes = lambda runtimes: calls.append(("init", list(runtimes)))
+        fake.load_manifest_module = lambda module_id, path: calls.append(("load", module_id, str(path))) or "OK"
+        fake.manifest_call = lambda module_id, func, args: calls.append(("call", module_id, func, list(args))) or "ranked"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "demo.manifest.json"
+            manifest.write_text(
+                '{"version":1,"ops":[{"op":"func_def","name":"rank_user","params":[],"body":[]}]}',
+                encoding="utf-8",
+            )
+            source = root / "demo_poly_module.poly"
+            source.write_text("def rank_user(request):\n    return 'ranked'\n", encoding="utf-8")
+
+            with patch("polyscript.compile_manifest", return_value=manifest), patch.dict(sys.modules, {"omnivm": fake}):
+                sys.path.insert(0, tmp)
+                try:
+                    polyscript.install()
+                    module = importlib.import_module("demo_poly_module")
+                    call_result = module.rank_user({"path": "/orders"})
+                finally:
+                    sys.path.remove(tmp)
+
+        self.assertEqual(module.__all__, ["rank_user"])
+        self.assertEqual(call_result, "ranked")
+        module_id = module.__poly_result__.module_id
+        self.assertEqual(calls[0], ("init", ["javascript", "java", "ruby"]))
+        self.assertEqual(calls[1], ("load", module_id, str(manifest)))
+        self.assertEqual(calls[2], ("call", module_id, "rank_user", [{"path": "/orders"}]))
+
+    @patch("polyscript._compiler_cache_identity", return_value="test-compiler")
+    def test_manifest_cache_key_uses_source_hash(self, _):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, "demo.poly")
+            source.write_text("alpha", encoding="utf-8")
+            first = polyscript._default_manifest_path(source)
+            source.write_text("bravo", encoding="utf-8")
+            second = polyscript._default_manifest_path(source)
+
+        self.assertNotEqual(first, second)
 
 
 class TestPolyScriptMode(unittest.TestCase):

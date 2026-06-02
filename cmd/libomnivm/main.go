@@ -14,6 +14,8 @@
 //	OmniInit(runtimes *C.char) *C.char
 //	OmniCall(runtime, code *C.char) *C.char
 //	OmniExec(runtime, code *C.char) *C.char
+//	OmniLoadManifestModule(moduleID, path *C.char) *C.char
+//	OmniManifestCall(moduleID, requestJSON *C.char) *C.char
 //	OmniLoadPlugin(runtime, path *C.char) *C.char
 //	OmniShutdown()
 //	OmniFree(ptr *C.char)
@@ -139,6 +141,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -166,6 +169,8 @@ func init() {
 // eng is the shared engine managing all runtimes.
 var eng *engine.Engine
 var manifestExecutor *manifest.Executor
+var manifestExecutionMu sync.Mutex
+var manifestModules = make(map[string]*manifest.Executor)
 
 // goPlugins maps plugin names to dlopen handles for c-shared Go plugins.
 type goPlugin struct {
@@ -658,14 +663,17 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 	}
 
 	executor := manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles)
+	manifestExecutionMu.Lock()
+	prevExecutor := manifestExecutor
 	manifestExecutor = executor
 	prevGoSourceFallback := manifest.UseGoSourceFallback
 	manifest.UseGoSourceFallback = true
-	defer drainFinalizerReleasesOnHostBoundary(threadID)
 	defer func() {
 		lastBoundaryStats.Store(executor.BoundaryStats())
-		manifestExecutor = nil
+		manifestExecutor = prevExecutor
 		manifest.UseGoSourceFallback = prevGoSourceFallback
+		drainFinalizerReleasesOnHostBoundary(threadID)
+		manifestExecutionMu.Unlock()
 	}()
 
 	if err := executor.Execute(m); err != nil {
@@ -673,6 +681,98 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 	}
 
 	return C.CString("OK")
+}
+
+//export OmniLoadManifestModule
+func OmniLoadManifestModule(cModuleID *C.char, cPath *C.char) *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	done, err := beginExternalCall("load_manifest_module")
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
+	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
+	moduleID := C.GoString(cModuleID)
+	if moduleID == "" {
+		return C.CString("ERR:load manifest module: empty module id")
+	}
+
+	path := C.GoString(cPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return C.CString("ERR:read manifest: " + err.Error())
+	}
+
+	m, err := manifest.ParseManifest(data)
+	if err != nil {
+		return C.CString("ERR:parse manifest: " + err.Error())
+	}
+
+	executor := manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles)
+	manifestExecutionMu.Lock()
+	prevExecutor := manifestExecutor
+	manifestExecutor = executor
+	prevGoSourceFallback := manifest.UseGoSourceFallback
+	manifest.UseGoSourceFallback = true
+	defer func() {
+		lastBoundaryStats.Store(executor.BoundaryStats())
+		manifestExecutor = prevExecutor
+		manifest.UseGoSourceFallback = prevGoSourceFallback
+		drainFinalizerReleasesOnHostBoundary(threadID)
+		manifestExecutionMu.Unlock()
+	}()
+
+	if err := executor.Execute(m); err != nil {
+		return C.CString("ERR:execute manifest: " + err.Error())
+	}
+	manifestModules[moduleID] = executor
+
+	return C.CString("OK")
+}
+
+//export OmniManifestCall
+func OmniManifestCall(cModuleID *C.char, cRequest *C.char) *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	done, err := beginExternalCall("manifest_call")
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
+	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
+	moduleID := C.GoString(cModuleID)
+	request := C.GoString(cRequest)
+
+	manifestExecutionMu.Lock()
+	executor, ok := manifestModules[moduleID]
+	if !ok {
+		manifestExecutionMu.Unlock()
+		return C.CString("ERR:manifest module not loaded: " + moduleID)
+	}
+
+	prevExecutor := manifestExecutor
+	manifestExecutor = executor
+	defer func() {
+		lastBoundaryStats.Store(executor.BoundaryStats())
+		manifestExecutor = prevExecutor
+		drainFinalizerReleasesOnHostBoundary(threadID)
+		manifestExecutionMu.Unlock()
+	}()
+
+	result, err := executor.HandleCall(request)
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	return C.CString("OK:" + result)
 }
 
 //export OmniLoadPlugin
@@ -722,6 +822,10 @@ func OmniShutdown() {
 		shutdownWhileActiveCount.Add(1)
 	}
 	eng.Shutdown()
+	manifestExecutionMu.Lock()
+	manifestExecutor = nil
+	manifestModules = make(map[string]*manifest.Executor)
+	manifestExecutionMu.Unlock()
 	// Go plugins are c-shared libs — dlclose not needed, process exit cleans up
 	initialized = false
 	initPID = 0

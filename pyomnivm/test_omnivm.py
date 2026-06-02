@@ -7,6 +7,7 @@ without requiring libomnivm.so to be present.
 import builtins
 import ctypes
 import gc
+import json
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -254,6 +255,46 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.run_manifest("/tmp/bad.manifest.json")
         assert "bad op" in str(ctx.exception)
+
+    def test_load_manifest_module_calls_lib(self):
+        self.mock_lib.OmniLoadManifestModule.return_value = b"OK"
+        result = omnivm_mod.load_manifest_module("demo", "/tmp/app.manifest.json")
+        assert result == "OK"
+        self.mock_lib.OmniLoadManifestModule.assert_called_once_with(
+            b"demo", b"/tmp/app.manifest.json"
+        )
+
+    def test_manifest_call_decodes_return_envelope(self):
+        self.mock_lib.OmniManifestCall.return_value = (
+            b'OK:{"__omnivm_result__":true,"kind":"string","value":"ranked"}'
+        )
+        result = omnivm_mod.manifest_call("demo", "rank_user", args=("user-1",))
+        assert result == "ranked"
+        module_id, payload = self.mock_lib.OmniManifestCall.call_args.args
+        assert module_id == b"demo"
+        assert json.loads(payload.decode("utf-8")) == {
+            "func": "rank_user",
+            "args": ["user-1"],
+        }
+
+    def test_manifest_call_passes_complex_args_as_runtime_refs(self):
+        request = object()
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+        self.mock_lib.OmniManifestCall.return_value = (
+            b'OK:{"__omnivm_result__":true,"kind":"string","value":"ok"}'
+        )
+
+        result = omnivm_mod.manifest_call("demo", "rank_user", args=(request,))
+
+        assert result == "ok"
+        _module_id, payload = self.mock_lib.OmniManifestCall.call_args.args
+        arg = json.loads(payload.decode("utf-8"))["args"][0]
+        assert arg["__omnivm_runtime_ref__"] is True
+        assert arg["runtime"] == "python"
+        assert arg["var"].startswith("__omnivm_arg_refs['py_")
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
 
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0

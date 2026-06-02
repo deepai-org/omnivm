@@ -1,3 +1,2 @@
-from pathlib import Path
-
-Path("/tmp/polyscript-passenger-marker.txt").write_text("poly-feature-ok", encoding="utf-8")
+def describe_request(request):
+    return "poly-feature-ok:" + request.method + ":" + request.path

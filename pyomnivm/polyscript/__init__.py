@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import shlex
 import subprocess
 import sys
@@ -27,6 +28,7 @@ __all__ = [
     "compile_manifest",
     "install",
     "is_enabled",
+    "load_poly_module",
     "run_manifest",
     "run_poly",
     "uninstall",
@@ -37,8 +39,27 @@ class PolyScriptError(RuntimeError):
     """Raised when a PolyScript compile or manifest run command fails."""
 
 
+class PolyScriptFunction:
+    """Python-callable proxy for a retained manifest ``func_def``."""
+
+    def __init__(self, module_id: str, name: str):
+        self.__module_id__ = module_id
+        self.__name__ = name
+        self.__qualname__ = name
+
+    def __call__(self, *args, **kwargs):
+        if kwargs:
+            raise TypeError(f"{self.__name__}() does not accept keyword arguments yet")
+        import omnivm
+
+        return omnivm.manifest_call(self.__module_id__, self.__name__, args)
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        return f"<polyscript function {self.__name__}>"
+
+
 class PolyScriptLoader(importlib.abc.Loader):
-    """Import loader for side-effect-oriented ``.poly`` modules."""
+    """Import loader for ``.poly`` modules."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -47,12 +68,11 @@ class PolyScriptLoader(importlib.abc.Loader):
         return None
 
     def exec_module(self, module: ModuleType) -> None:
-        result = run_poly(self.path)
+        result = load_poly_module(self.path, module)
         module.__file__ = str(self.path)
         module.__loader__ = self
         module.__poly_manifest__ = str(result.manifest_path)
         module.__poly_result__ = result
-        module.__all__ = []
 
 
 class PolyScriptFinder(importlib.abc.MetaPathFinder):
@@ -92,9 +112,15 @@ class PolyScriptFinder(importlib.abc.MetaPathFinder):
 class PolyScriptRunResult:
     """Result returned by ``run_poly``."""
 
-    def __init__(self, manifest_path: Path, process: subprocess.CompletedProcess):
+    def __init__(
+        self,
+        manifest_path: Path,
+        process: subprocess.CompletedProcess,
+        module_id: str | None = None,
+    ):
         self.manifest_path = manifest_path
         self.process = process
+        self.module_id = module_id
 
     @property
     def stdout(self) -> str:
@@ -179,6 +205,25 @@ def run_poly(source: os.PathLike | str) -> PolyScriptRunResult:
     return PolyScriptRunResult(manifest_path, run_manifest(manifest_path))
 
 
+def load_poly_module(source: os.PathLike | str, module: ModuleType) -> PolyScriptRunResult:
+    """Compile, run, and expose callable manifest functions on ``module``."""
+
+    manifest_path = compile_manifest(source)
+    module_id = _module_id(module.__name__, manifest_path)
+    if _should_run_manifest_in_process():
+        process = _load_manifest_module_in_process(module_id, manifest_path)
+        function_names = _manifest_function_names(manifest_path)
+        module.__all__ = function_names
+        module.__poly_exports__ = function_names
+        for name in function_names:
+            setattr(module, name, PolyScriptFunction(module_id, name))
+    else:
+        process = run_manifest(manifest_path)
+        module.__all__ = []
+        module.__poly_exports__ = []
+    return PolyScriptRunResult(manifest_path, process, module_id=module_id)
+
+
 def _should_run_manifest_in_process() -> bool:
     if os.environ.get("POLYSCRIPT_MANIFEST_RUNNER"):
         return False
@@ -190,13 +235,7 @@ def _should_run_manifest_in_process() -> bool:
 def _run_manifest_in_process(manifest: Path) -> subprocess.CompletedProcess:
     import omnivm
 
-    try:
-        omnivm.status()
-    except Exception:
-        try:
-            omnivm.init_runtimes(_configured_runtimes(manifest))
-        except Exception as exc:
-            raise PolyScriptError(f"PolyScript run failed during libomnivm initialization: {exc}") from exc
+    _ensure_omnivm_initialized(omnivm, manifest)
 
     try:
         stdout = omnivm.run_manifest(manifest)
@@ -208,6 +247,33 @@ def _run_manifest_in_process(manifest: Path) -> subprocess.CompletedProcess:
         stdout=stdout,
         stderr="",
     )
+
+
+def _load_manifest_module_in_process(module_id: str, manifest: Path) -> subprocess.CompletedProcess:
+    import omnivm
+
+    _ensure_omnivm_initialized(omnivm, manifest)
+
+    try:
+        stdout = omnivm.load_manifest_module(module_id, manifest)
+    except Exception as exc:
+        raise PolyScriptError(f"PolyScript import failed during in-process manifest load: {exc}") from exc
+    return subprocess.CompletedProcess(
+        ["omnivm.load_manifest_module", module_id, str(manifest)],
+        0,
+        stdout=stdout,
+        stderr="",
+    )
+
+
+def _ensure_omnivm_initialized(omnivm, manifest: Path) -> None:
+    try:
+        omnivm.status()
+    except Exception:
+        try:
+            omnivm.init_runtimes(_configured_runtimes(manifest))
+        except Exception as exc:
+            raise PolyScriptError(f"PolyScript run failed during libomnivm initialization: {exc}") from exc
 
 
 def _configured_runtimes(manifest: Path) -> list[str]:
@@ -250,12 +316,55 @@ def _command_from_env(name: str, default: Iterable[str]) -> list[str]:
 def _default_manifest_path(source: Path) -> Path:
     cache_root = Path(os.environ.get("POLYSCRIPT_CACHE_DIR", ".polyscript-cache"))
     try:
-        stat = source.stat()
-        fingerprint_input = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        source_bytes = source.read_bytes()
+        source_hash = hashlib.sha256(source_bytes).hexdigest()
+        source_id = str(source.resolve())
     except FileNotFoundError:
-        fingerprint_input = str(source)
+        source_hash = "missing"
+        source_id = str(source)
+    fingerprint_input = json.dumps(
+        {
+            "compiler": _compiler_cache_identity(),
+            "source": source_hash,
+            "path": source_id,
+        },
+        sort_keys=True,
+    )
     fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
     return cache_root / f"{source.stem}-{fingerprint}.manifest.json"
+
+
+def _compiler_cache_identity() -> str:
+    command = _command_from_env("POLYSCRIPT_COMPILER", ["polyc"])
+    executable = shutil.which(command[0]) if command else None
+    parts = ["\0".join(command)]
+    if executable:
+        try:
+            path = Path(executable)
+            stat = path.stat()
+            parts.append(f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            parts.append(executable)
+    version = os.environ.get("POLYSCRIPT_COMPILER_VERSION")
+    if version:
+        parts.append(version)
+    return "\0".join(parts)
+
+
+def _module_id(fullname: str, manifest: Path) -> str:
+    return f"{fullname}:{manifest.resolve()}"
+
+
+def _manifest_function_names(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    names: list[str] = []
+    for op in manifest.get("ops", []):
+        if isinstance(op, dict) and op.get("op") == "func_def":
+            name = op.get("name")
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+    return names
 
 
 def _format_failure(phase: str, result: subprocess.CompletedProcess) -> str:

@@ -29,6 +29,7 @@ import ctypes.util
 import json
 import os
 import threading
+import uuid
 import weakref
 
 __all__ = [
@@ -37,6 +38,8 @@ __all__ = [
     "call_typed",
     "execute",
     "run_manifest",
+    "load_manifest_module",
+    "manifest_call",
     "set_task_timeout",
     "host_thread_id",
     "watchdog_capabilities",
@@ -69,6 +72,7 @@ class RuntimeError(_builtins.RuntimeError):
 # runtime before fork(). Each worker loads it independently post-fork.
 _lib = None
 _lock = threading.Lock()
+_manifest_arg_refs_lock = threading.Lock()
 
 # Thread-local metrics
 _local = threading.local()
@@ -142,6 +146,14 @@ def _load_lib():
 
         lib.OmniRunManifestFile.argtypes = [ctypes.c_char_p]
         lib.OmniRunManifestFile.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniLoadManifestModule"):
+            lib.OmniLoadManifestModule.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            lib.OmniLoadManifestModule.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniManifestCall"):
+            lib.OmniManifestCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            lib.OmniManifestCall.restype = ctypes.c_char_p
 
         lib.OmniBufGet.argtypes = [
             ctypes.c_char_p,
@@ -556,6 +568,102 @@ def run_manifest(path):
         raise RuntimeError("omnivm not initialized — call init_runtimes() first")
     result = _lib.OmniRunManifestFile(os.fsencode(path))
     return _check_result(result)
+
+
+def load_manifest_module(module_id, path):
+    """
+    Load an OmniVM manifest as a retained callable module.
+
+    Top-level manifest operations execute once during load. Manifest
+    ``func_def`` entries remain callable through manifest_call().
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    if not hasattr(_lib, "OmniLoadManifestModule"):
+        raise RuntimeError("libomnivm does not expose OmniLoadManifestModule")
+    result = _lib.OmniLoadManifestModule(
+        str(module_id).encode("utf-8"),
+        os.fsencode(path),
+    )
+    return _check_result(result)
+
+
+def manifest_call(module_id, func, args=()):
+    """
+    Call a retained manifest function and decode its return envelope.
+
+    Primitive values cross by value. Complex Python objects are passed as
+    host-runtime references so framework objects, request objects, and other
+    live values do not fall back to JSON serialization.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    if not hasattr(_lib, "OmniManifestCall"):
+        raise RuntimeError("libomnivm does not expose OmniManifestCall")
+
+    retained_keys = []
+    try:
+        payload = {
+            "func": str(func),
+            "args": [_manifest_arg(arg, retained_keys) for arg in args],
+        }
+        result = _lib.OmniManifestCall(
+            str(module_id).encode("utf-8"),
+            json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        )
+        return _decode_manifest_result(_check_result(result))
+    finally:
+        _release_manifest_args(retained_keys)
+
+
+def _manifest_arg(value, retained_keys):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    key = _retain_manifest_arg(value)
+    retained_keys.append(key)
+    return {
+        "__omnivm_runtime_ref__": True,
+        "runtime": "python",
+        "var": f"__omnivm_arg_refs[{key!r}]",
+        "callable": callable(value),
+    }
+
+
+def _retain_manifest_arg(value):
+    key = f"py_{uuid.uuid4().hex}"
+    with _manifest_arg_refs_lock:
+        refs = getattr(_builtins, "__omnivm_arg_refs", None)
+        if refs is None:
+            refs = {}
+            setattr(_builtins, "__omnivm_arg_refs", refs)
+        refs[key] = value
+    execute("python", "import builtins\n__omnivm_arg_refs = builtins.__omnivm_arg_refs")
+    return key
+
+
+def _release_manifest_args(keys):
+    if not keys:
+        return
+    with _manifest_arg_refs_lock:
+        refs = getattr(_builtins, "__omnivm_arg_refs", None)
+        if refs is None:
+            return
+        for key in keys:
+            refs.pop(key, None)
+
+
+def _decode_manifest_result(result):
+    if result == "":
+        return None
+    try:
+        envelope = json.loads(result)
+    except json.JSONDecodeError:
+        return result
+    if not isinstance(envelope, dict) or not envelope.get("__omnivm_result__"):
+        return envelope
+    if envelope.get("kind") == "null":
+        return None
+    return envelope.get("value")
 
 
 def set_task_timeout(ms):
