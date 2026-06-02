@@ -33,7 +33,7 @@ func (e *Executor) registerStubs(fd *FuncDef) error {
 		var code string
 		switch name {
 		case "javascript":
-			code = jsStub(fd.Name, paramNames)
+			code = jsStub(fd.Name, fd.Params)
 		case "python":
 			code = pythonStub(fd.Name, paramNames)
 		case "ruby":
@@ -145,12 +145,55 @@ func isJavaReservedWord(name string) bool {
 	}
 }
 
+func callableShapeForParams(params []*Param) *CallableShape {
+	var shape CallableShape
+	seenKeys := make(map[string]bool)
+	for _, param := range params {
+		if param == nil || param.CallableShape == nil {
+			continue
+		}
+		if param.CallableShape.AcceptsKwargs {
+			shape.AcceptsKwargs = true
+		}
+		if param.CallableShape.AcceptsOptionsObject {
+			shape.AcceptsOptionsObject = true
+		}
+		for _, key := range param.CallableShape.DestructuredKeys {
+			if key == "" || seenKeys[key] {
+				continue
+			}
+			seenKeys[key] = true
+			shape.DestructuredKeys = append(shape.DestructuredKeys, key)
+		}
+	}
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 {
+		return nil
+	}
+	return &shape
+}
+
+func callableShapeJSONForParams(params []*Param) string {
+	shape := callableShapeForParams(params)
+	if shape == nil {
+		return ""
+	}
+	b, err := json.Marshal(shape)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // jsStub generates a JavaScript function that calls back into the manifest executor.
 // The bridge itself returns a string, but manifest return values are enveloped
 // as JSON and decoded here so guest code receives native JS values.
-func jsStub(funcName string, params []string) string {
-	_ = params
+func jsStub(funcName string, params []*Param) string {
 	funcLiteral := strconv.Quote(funcName)
+	shapeJSON := callableShapeJSONForParams(params)
+	shapeAssignment := ""
+	if shapeJSON != "" {
+		shapeAssignment = fmt.Sprintf("\nglobalThis[%s].__omnivm_callable_shape__ = %s;", funcLiteral, shapeJSON)
+	}
 
 	return jsChannelMaterializer() + "\n" + fmt.Sprintf(`globalThis.__omnivm_decode_result = globalThis.__omnivm_decode_result || function(raw) {
   try {
@@ -166,7 +209,9 @@ globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(valu
   if (value && value.__omnivm_proxy__ === true && value.__omnivm_descriptor__) return value.__omnivm_descriptor__;
   var id = "arg_" + (++globalThis.__omnivm_arg_ref_counter);
   globalThis.__omnivm_arg_refs[id] = value;
-  return {__omnivm_runtime_ref__: true, runtime: "javascript", var: "__omnivm_arg_refs[" + JSON.stringify(id) + "]", callable: typeof value === "function"};
+  var descriptor = {__omnivm_runtime_ref__: true, runtime: "javascript", var: "__omnivm_arg_refs[" + JSON.stringify(id) + "]", callable: typeof value === "function"};
+  if (typeof value === "function" && value.__omnivm_callable_shape__) descriptor.callable_shape = value.__omnivm_callable_shape__;
+  return descriptor;
 };
 globalThis.__omnivm_manifest_invoke = globalThis.__omnivm_manifest_invoke || function(func, args) {
   var __req = JSON.stringify({func: func, args: args.map(globalThis.__omnivm_encode_arg)});
@@ -174,7 +219,7 @@ globalThis.__omnivm_manifest_invoke = globalThis.__omnivm_manifest_invoke || fun
 };
 globalThis[%s] = function() {
   return globalThis.__omnivm_manifest_invoke(%s, Array.prototype.slice.call(arguments));
-};`, funcLiteral, funcLiteral)
+};%s`, funcLiteral, funcLiteral, shapeAssignment)
 }
 
 // pythonStub generates a Python function that calls back into the manifest executor.
@@ -467,6 +512,7 @@ func decodeRuntimeRefArg(arg interface{}) interface{} {
 					ref.CallableKnown = true
 					ref.Callable = callable
 				}
+				ref.CallableShape = decodeCallableShape(v["callable_shape"])
 				return ref
 			}
 		}
@@ -478,6 +524,31 @@ func decodeRuntimeRefArg(arg interface{}) interface{} {
 	default:
 		return arg
 	}
+}
+
+func decodeCallableShape(value interface{}) *CallableShape {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var shape CallableShape
+	if accepts, ok := m["acceptsKwargs"].(bool); ok {
+		shape.AcceptsKwargs = accepts
+	}
+	if accepts, ok := m["acceptsOptionsObject"].(bool); ok {
+		shape.AcceptsOptionsObject = accepts
+	}
+	if keys, ok := m["destructuredKeys"].([]interface{}); ok {
+		for _, key := range keys {
+			if s, ok := key.(string); ok && s != "" {
+				shape.DestructuredKeys = append(shape.DestructuredKeys, s)
+			}
+		}
+	}
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 {
+		return nil
+	}
+	return &shape
 }
 
 func (e *Executor) marshalReturnResult(val interface{}) (string, error) {
@@ -3044,9 +3115,13 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		switch ref.Runtime {
 		case "javascript":
 			if len(kwargs) > 0 {
-				return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls", ref.Runtime)
+				if !runtimeRefAcceptsJSOptionsKwargs(ref, kwargs) {
+					return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls without callable shape metadata", ref.Runtime)
+				}
+				expr = fmt.Sprintf("(function(__fn, __args, __kwargs) { return __fn.apply(undefined, __args.concat([__kwargs])); })(%s, %s, %s)", base, argsLit, kwargsLit)
+			} else {
+				expr = fmt.Sprintf("(%s).apply(undefined, %s)", base, argsLit)
 			}
-			expr = fmt.Sprintf("(%s).apply(undefined, %s)", base, argsLit)
 		case "python":
 			expr = fmt.Sprintf("(lambda __o, __args, __kwargs: __o(*__args, **__kwargs))(%s, %s, %s)", base, argsLit, kwargsLit)
 		case "ruby":
@@ -3092,6 +3167,26 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		return "", false, nil
 	}
 	return expr, true, nil
+}
+
+func runtimeRefAcceptsJSOptionsKwargs(ref RuntimeRef, kwargs map[string]interface{}) bool {
+	shape := ref.CallableShape
+	if shape == nil || !shape.AcceptsOptionsObject {
+		return false
+	}
+	if len(shape.DestructuredKeys) == 0 {
+		return true
+	}
+	allowed := make(map[string]bool, len(shape.DestructuredKeys))
+	for _, key := range shape.DestructuredKeys {
+		allowed[key] = true
+	}
+	for key := range kwargs {
+		if !allowed[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeValueLiteral(rtName string, value interface{}) (string, error) {

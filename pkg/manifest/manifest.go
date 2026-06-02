@@ -64,6 +64,15 @@ type TableMetadata struct {
 	ReadOnly    bool    `json:"read_only"`
 }
 
+// CallableShape carries compiler- or runtime-probed callable boundary evidence.
+// It is advisory: runtimes may use it to choose a safer adapter path, but they
+// must keep unsupported cases explicit when shape evidence is absent.
+type CallableShape struct {
+	AcceptsKwargs        bool     `json:"acceptsKwargs,omitempty"`
+	AcceptsOptionsObject bool     `json:"acceptsOptionsObject,omitempty"`
+	DestructuredKeys     []string `json:"destructuredKeys,omitempty"`
+}
+
 // Op represents a single operation in the manifest.
 type Op struct {
 	OpType  string `json:"op"`
@@ -154,9 +163,10 @@ type Op struct {
 
 // Param represents a function parameter in a func_def.
 type Param struct {
-	Name         string      `json:"name"`
-	Spread       bool        `json:"spread,omitempty"`
-	DefaultValue interface{} `json:"defaultValue,omitempty"`
+	Name          string         `json:"name"`
+	Spread        bool           `json:"spread,omitempty"`
+	DefaultValue  interface{}    `json:"defaultValue,omitempty"`
+	CallableShape *CallableShape `json:"callableShape,omitempty"`
 }
 
 // IfArm represents a single condition+body branch in an if op.

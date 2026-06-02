@@ -307,6 +307,9 @@ func encodeCSharedHandlePayloadValue(value interface{}) interface{} {
 		if v.CallableKnown {
 			out["callable"] = v.Callable
 		}
+		if v.CallableShape != nil {
+			out["callable_shape"] = v.CallableShape
+		}
 		return out
 	case *RuntimeRef:
 		if v == nil {

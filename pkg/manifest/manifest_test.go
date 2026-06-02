@@ -3819,7 +3819,7 @@ func TestHandleCallSpread(t *testing.T) {
 // --- Stub generation tests ---
 
 func TestJSStub(t *testing.T) {
-	code := jsStub("add", []string{"a", "b"})
+	code := jsStub("add", []*Param{{Name: "a"}, {Name: "b"}})
 	if !contains(code, `globalThis["add"]`) {
 		t.Error("JS stub should set a global function property")
 	}
@@ -3837,8 +3837,47 @@ func TestJSStub(t *testing.T) {
 	}
 }
 
+func TestJSStubCallableShape(t *testing.T) {
+	code := jsStub("render", []*Param{{
+		Name: "__options",
+		CallableShape: &CallableShape{
+			AcceptsOptionsObject: true,
+			DestructuredKeys:     []string{"limit", "payload"},
+		},
+	}})
+	if !contains(code, "__omnivm_callable_shape__") || !contains(code, "callable_shape") {
+		t.Fatalf("JS stub should attach callable shape to runtime-ref descriptors, got %q", code)
+	}
+	if !contains(code, `"acceptsOptionsObject":true`) || !contains(code, `"destructuredKeys":["limit","payload"]`) {
+		t.Fatalf("JS stub should encode options-object callable shape, got %q", code)
+	}
+}
+
+func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
+	decoded := decodeRuntimeRefArg(map[string]interface{}{
+		"__omnivm_runtime_ref__": true,
+		"runtime":                "javascript",
+		"var":                    "render",
+		"callable":               true,
+		"callable_shape": map[string]interface{}{
+			"acceptsOptionsObject": true,
+			"destructuredKeys":     []interface{}{"limit", "payload"},
+		},
+	})
+	ref, ok := decoded.(RuntimeRef)
+	if !ok {
+		t.Fatalf("decodeRuntimeRefArg = %T, want RuntimeRef", decoded)
+	}
+	if !ref.CallableKnown || !ref.Callable {
+		t.Fatalf("decoded callable flags = known:%v callable:%v", ref.CallableKnown, ref.Callable)
+	}
+	if ref.CallableShape == nil || !ref.CallableShape.AcceptsOptionsObject || strings.Join(ref.CallableShape.DestructuredKeys, ",") != "limit,payload" {
+		t.Fatalf("decoded callable shape = %#v", ref.CallableShape)
+	}
+}
+
 func TestJSStubUnsafeName(t *testing.T) {
-	code := jsStub("bad-name", []string{"class"})
+	code := jsStub("bad-name", []*Param{{Name: "class"}})
 	if contains(code, "globalThis.bad-name") {
 		t.Fatalf("JS stub should not emit unsafe property syntax, got %q", code)
 	}
@@ -6447,6 +6486,50 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 	}
 	if !strings.Contains(rubyCallableKwExpr, "__o.call(*__args, **__kwargs)") {
 		t.Fatalf("ruby keyword callable call should splat kwargs, got %q", rubyCallableKwExpr)
+	}
+
+	jsOptionsKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "javascript",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				AcceptsOptionsObject: true,
+				DestructuredKeys:     []string{"limit", "payload"},
+			},
+		},
+		"",
+		[]interface{}{"open"},
+		map[string]interface{}{
+			"limit":   2,
+			"payload": RuntimeRef{Runtime: "python", VarName: "kw_payload"},
+		},
+		&runtimeExprBuilder{executor: e, targetRuntime: "javascript"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder javascript options kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(jsOptionsKwExpr, ".concat([__kwargs])") || !strings.Contains(jsOptionsKwExpr, "limit") {
+		t.Fatalf("javascript options-object callable should append kwargs object, got %q", jsOptionsKwExpr)
+	}
+	if !strings.Contains(jsOptionsKwExpr, "__omnivm_materialize_capture") || !strings.Contains(jsOptionsKwExpr, "__omnivm_resource__") {
+		t.Fatalf("javascript options-object kwargs should rematerialize runtime-ref values, got %q", jsOptionsKwExpr)
+	}
+
+	if _, _, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "javascript",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				AcceptsOptionsObject: true,
+				DestructuredKeys:     []string{"limit"},
+			},
+		},
+		"",
+		[]interface{}{},
+		map[string]interface{}{"payload": 2},
+		&runtimeExprBuilder{executor: e, targetRuntime: "javascript"},
+	); err == nil || !strings.Contains(err.Error(), "keyword") {
+		t.Fatalf("javascript options-object callable should reject unknown keyword shape, got %v", err)
 	}
 
 	if _, _, err := runtimeRefCallExprWithBuilder(

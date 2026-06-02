@@ -51,6 +51,7 @@ type RuntimeRef struct {
 	Opaque        bool        // true when the live value is complex and must stay behind a handle
 	CallableKnown bool        // true when the source runtime classified callability
 	Callable      bool        // true when the source runtime value can be called directly
+	CallableShape *CallableShape
 }
 
 type bridgeIdentity struct {
