@@ -1,4 +1,4 @@
-.PHONY: build test test-local test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-all run clean
+.PHONY: build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -7,10 +7,14 @@ IMAGE_TAG := latest
 build:
 	docker build --target builder -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
-# Run local tests (dispatcher, signals, arrow, handles, cli, errmsg, golang — no cgo runtimes needed)
+# Run local Go tests that do not require the Docker-provided Python/JS/Ruby cgo toolchains.
 test-local:
 	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/handles/ ./pkg/cli/ ./pkg/errmsg/
-	go test -v -count=1 ./pkg/golang/
+	go test -v -count=1 ./pkg/golang/ ./pkg/manifest/ ./pkg/jvm/
+
+# Run Python package tests against the checked-out pyomnivm package.
+test-python:
+	PYTHONPATH=pyomnivm python3 -m unittest discover -s pyomnivm -p 'test_*.py' -v
 
 # Run Go, cgo runtime, integration, and Python package tests inside Docker.
 test-unit:
@@ -51,8 +55,9 @@ test-stress: build
 # Run the canonical full test suite.
 test: test-all
 
-# Run everything: unit/integration tests, smoke tests, CLI tests, stress tests, manifest tests
-test-all: test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress
+# Run everything: local unit checks, Docker unit/integration tests, smoke tests,
+# CLI/stress/manifest suites, CPython-hosted libomnivm, and sibling Garbage .poly examples.
+test-all: test-local test-python test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke
 
 # Start the REPL
 run: build
