@@ -116,6 +116,7 @@ class TestPolyScriptImportHook(unittest.TestCase):
     def tearDown(self):
         polyscript.uninstall()
         sys.modules.pop("demo_poly_module", None)
+        sys.modules.pop("billing_rules", None)
 
     def test_install_is_idempotent(self):
         finder = polyscript.install()
@@ -199,6 +200,58 @@ class TestPolyScriptImportHook(unittest.TestCase):
         self.assertEqual(calls[1], ("load", module_id, str(manifest)))
         self.assertEqual(calls[2], ("call", module_id, "rank_user", [{"path": "/orders"}, 5]))
         self.assertEqual(calls[3], ("call", module_id, "rank_user", [{"path": "/default"}]))
+
+    @patch.dict(os.environ, {"POLYSCRIPT_PYTHON": "1"}, clear=True)
+    @patch("polyscript._compiler_cache_identity", return_value="test-compiler")
+    def test_from_import_poly_module_exposes_manifest_functions(self, _):
+        fake = types.ModuleType("omnivm")
+        calls = []
+
+        class OmniError(RuntimeError):
+            pass
+
+        fake.RuntimeError = OmniError
+        fake.status = lambda: (_ for _ in ()).throw(OmniError("not initialized"))
+        fake.init_runtimes = lambda runtimes: calls.append(("init", list(runtimes)))
+        fake.load_manifest_module = lambda module_id, path: calls.append(("load", module_id, str(path))) or "OK"
+        fake.manifest_call = lambda module_id, func, args: calls.append(("call", module_id, func, list(args))) or "ranked"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "billing_rules.manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "version": 1,
+                    "ops": [{
+                        "op": "func_def",
+                        "name": "rank_user",
+                        "params": [{"name": "request"}],
+                        "body": [],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            source = root / "billing_rules.poly"
+            source.write_text("def rank_user(request):\n    return 'ranked'\n", encoding="utf-8")
+
+            with patch("polyscript.compile_manifest", return_value=manifest), patch.dict(sys.modules, {"omnivm": fake}):
+                sys.path.insert(0, tmp)
+                try:
+                    polyscript.install()
+                    namespace = {}
+                    exec("from billing_rules import rank_user", namespace)
+                    result = namespace["rank_user"]({"path": "/orders"})
+                    module = sys.modules["billing_rules"]
+                    module_id = module.__poly_result__.module_id
+                    module_all = module.__all__
+                finally:
+                    sys.path.remove(tmp)
+
+        self.assertEqual(result, "ranked")
+        self.assertEqual(module_all, ["rank_user"])
+        self.assertEqual(calls[0], ("init", ["javascript", "java", "ruby"]))
+        self.assertEqual(calls[1], ("load", module_id, str(manifest)))
+        self.assertEqual(calls[2], ("call", module_id, "rank_user", [{"path": "/orders"}]))
 
     @patch("polyscript._compiler_cache_identity", return_value="test-compiler")
     def test_manifest_cache_key_uses_source_hash(self, _):

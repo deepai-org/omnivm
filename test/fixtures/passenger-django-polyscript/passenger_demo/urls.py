@@ -3,9 +3,9 @@ from django.urls import path
 
 
 def poly_view(request):
-    import poly_feature
+    from poly_feature import describe_request
 
-    return HttpResponse(poly_feature.describe_request(request))
+    return HttpResponse(describe_request(request))
 
 
 urlpatterns = [path("poly/", poly_view)]

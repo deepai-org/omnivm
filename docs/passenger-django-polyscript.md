@@ -36,9 +36,13 @@ Django modules can then import `.poly` files normally:
 
 ```python
 import fraud_scoring
+from billing_rules import rank_user
 ```
 
-No app-level `omnivm.init_runtimes()` hook is required for imported `.poly` modules. The runtime initialization is lazy and worker-local.
+No app-level `omnivm.init_runtimes()` hook is required for imported `.poly`
+modules. The runtime initialization is lazy and worker-local. Top-level
+manifest functions are exposed as Python callables, so `from ... import ...`
+works for progressively converted service/helper modules.
 
 ## Passengerfile shape
 

@@ -327,6 +327,22 @@ func isASCIIIdentifier(name string, allowDollar bool) bool {
 	return true
 }
 
+// BridgeRequest is the JSON request shape accepted by runtime "__manifest".
+type BridgeRequest struct {
+	Func        string                 `json:"func"`
+	Op          string                 `json:"op"`
+	Args        []interface{}          `json:"args"`
+	Kwargs      map[string]interface{} `json:"kwargs"`
+	ID          interface{}            `json:"id"`
+	From        interface{}            `json:"from"`
+	To          interface{}            `json:"to"`
+	Kind        string                 `json:"kind"`
+	Mode        string                 `json:"mode"`
+	Key         string                 `json:"key"`
+	Value       interface{}            `json:"value"`
+	Materialize bool                   `json:"materialize"`
+}
+
 // HandleCall is invoked when the bridge receives a call to runtime "__manifest".
 // It deserializes {func, args}, pushes a new scope, binds args to params,
 // executes the func_def body, pops the scope, and returns the result.
@@ -338,20 +354,7 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 	}()
 
 	// Deserialize the call request
-	var req struct {
-		Func        string                 `json:"func"`
-		Op          string                 `json:"op"`
-		Args        []interface{}          `json:"args"`
-		Kwargs      map[string]interface{} `json:"kwargs"`
-		ID          interface{}            `json:"id"`
-		From        interface{}            `json:"from"`
-		To          interface{}            `json:"to"`
-		Kind        string                 `json:"kind"`
-		Mode        string                 `json:"mode"`
-		Key         string                 `json:"key"`
-		Value       interface{}            `json:"value"`
-		Materialize bool                   `json:"materialize"`
-	}
+	var req BridgeRequest
 	if err := json.Unmarshal([]byte(code), &req); err != nil {
 		return "", fmt.Errorf("manifest HandleCall: invalid request: %w", err)
 	}
@@ -716,20 +719,7 @@ func runtimeRefNeedsProxy(ref RuntimeRef) bool {
 	return ref.Value == nil || !isBridgePrimitive(ref.Value)
 }
 
-func (e *Executor) handleInternalBridgeOp(op string, req struct {
-	Func        string                 `json:"func"`
-	Op          string                 `json:"op"`
-	Args        []interface{}          `json:"args"`
-	Kwargs      map[string]interface{} `json:"kwargs"`
-	ID          interface{}            `json:"id"`
-	From        interface{}            `json:"from"`
-	To          interface{}            `json:"to"`
-	Kind        string                 `json:"kind"`
-	Mode        string                 `json:"mode"`
-	Key         string                 `json:"key"`
-	Value       interface{}            `json:"value"`
-	Materialize bool                   `json:"materialize"`
-}) (string, error) {
+func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string, error) {
 	switch op {
 	case "handle_retain":
 		id, err := bridgeHandleID(req.ID)

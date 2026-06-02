@@ -109,7 +109,7 @@ os.environ.setdefault("POLYSCRIPT_CACHE_DIR", "/tmp/polyscript-cache")
 from mysite.wsgi import application
 ```
 
-As modules are converted, `import billing_rules` can resolve `billing_rules.poly` automatically. Side-effect modules work today; returning Python symbols from `.poly` modules needs an explicit exported-symbol contract before it should be used for model/view modules that define import-time Python objects.
+As modules are converted, `import billing_rules` can resolve `billing_rules.poly` automatically, and retained manifest functions are exposed as Python callables. That means Django code can use normal imports such as `from billing_rules import rank_user` while the module body still executes through CPython-hosted `libomnivm` inside the worker.
 
 `python3-omnivm` is still available for single-process tools and development. It is Go-hosted CPython and therefore loads the Go runtime before Python starts; use `python3-polyscript` for prefork deployments.
 
