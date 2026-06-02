@@ -39,6 +39,9 @@ examples=(
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
+  "compat-python-service.py"
+  "compat-go-status.go"
+  "compat-order-schema.ts"
 )
 
 echo "=== .poly -> manifest -> CPython-hosted libomnivm smoke ==="
