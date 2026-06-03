@@ -4966,6 +4966,102 @@ def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"FastAPI request used JSON fallback: {boundary}")
 
 
+def test_manifest_starlette_request_disconnect_lifecycle_survives_capture():
+    before_boundary = omnivm.status().get("boundary", {})
+    setup = r'''
+import asyncio
+from starlette.requests import Request
+
+messages = [
+    {"type": "http.request", "body": b"hello", "more_body": False},
+    {"type": "http.disconnect"},
+]
+receive_count = 0
+body_text = None
+disconnected = None
+
+async def receive():
+    global receive_count
+    receive_count += 1
+    if messages:
+        return messages.pop(0)
+    return {"type": "http.disconnect"}
+
+scope = {
+    "type": "http",
+    "method": "POST",
+    "path": "/asgi/disconnect",
+    "raw_path": b"/asgi/disconnect",
+    "query_string": b"mode=poly",
+    "headers": [(b"x-request-id", b"asgi-42"), (b"host", b"example.test")],
+    "scheme": "https",
+    "server": ("example.test", 443),
+    "client": ("127.0.0.1", 5000),
+}
+req = Request(scope, receive)
+'''
+    lifecycle_probe = r'''
+import asyncio
+
+async def probe_request():
+    global body_text, disconnected
+    body_text = (await req.body()).decode()
+    disconnected = await req.is_disconnected()
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(probe_request())
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if body_text != "hello":
+    raise AssertionError(f"request body was drained or corrupted: {body_text!r}")
+if disconnected is not True:
+    raise AssertionError(f"disconnect was not observable after body read: {disconnected!r}")
+if receive_count != 2:
+    raise AssertionError(f"unexpected ASGI receive count: {receive_count!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (req.method !== 'POST') throw new Error('bad ASGI method: ' + req.method); "
+                    "if (req.url.path !== '/asgi/disconnect') throw new Error('bad ASGI path: ' + req.url.path); "
+                    "if (req.url.query !== 'mode=poly') throw new Error('bad ASGI query: ' + req.url.query);"
+                ),
+                "captures": {"req": "req"},
+            },
+            {"op": "exec", "runtime": "python", "code": lifecycle_probe},
+        ],
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after_boundary = omnivm.status().get("boundary", {})
+    if after_boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Starlette request did not cross as a live proxy: {after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Starlette request crossed as a stream: {after_boundary}")
+    if after_boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"Starlette request should not claim table transfer: {after_boundary}")
+    if after_boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Starlette request should not claim Arrow transfer: {after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Starlette request used JSON fallback: {after_boundary}")
+
+
 def test_manifest_django_queryset_transaction_rollback_cross_runtime():
     before = omnivm.status()
     setup = r'''
@@ -13135,6 +13231,7 @@ def main():
         check("Manifest heterogeneous DataFrame capture uses proxy not JSON", test_manifest_heterogeneous_dataframe_capture_uses_proxy_not_json)
         check("Manifest Django request capture uses proxy not JSON", test_manifest_django_request_capture_uses_proxy_not_json)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
+        check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
