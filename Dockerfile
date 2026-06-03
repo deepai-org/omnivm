@@ -43,8 +43,8 @@ RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -r
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 
-# ---- PostgreSQL fixture deps for database ecosystem stress checks ----
-RUN apt-get update && apt-get install -y postgresql && rm -rf /var/lib/apt/lists/*
+# ---- Database fixture deps for ecosystem stress checks ----
+RUN apt-get update && apt-get install -y postgresql redis-server && rm -rf /var/lib/apt/lists/*
 
 # ---- Ruby dev ----
 RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri ruby-rack libsqlite3-dev && rm -rf /var/lib/apt/lists/*
@@ -98,6 +98,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       "psycopg[binary]" \
       asyncpg \
       boto3 \
+      redis \
       Jinja2 \
       Markdown \
       httpx \

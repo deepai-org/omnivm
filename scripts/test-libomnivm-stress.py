@@ -258,6 +258,73 @@ def start_postgres_fixture():
         raise
 
 
+def start_redis_fixture():
+    port = free_tcp_port()
+    tmp = tempfile.TemporaryDirectory(prefix="omnivm-redis-")
+    log_path = os.path.join(tmp.name, "redis.log")
+    proc = subprocess.Popen(
+        [
+            "redis-server",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+            "--dir",
+            tmp.name,
+            "--logfile",
+            log_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate(timeout=1)
+                log = ""
+                if os.path.exists(log_path):
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        log = f.read()
+                raise AssertionError(
+                    f"redis-server exited {proc.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}\nlog:\n{log}"
+                )
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("redis-server did not accept connections")
+
+        def stop():
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            tmp.cleanup()
+
+        return {"host": "127.0.0.1", "port": port}, stop
+    except Exception:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        tmp.cleanup()
+        raise
+
+
 def test_simple_reentry():
     expect(omnivm.call("javascript", "2 + 2"), "4")
 
@@ -6772,6 +6839,174 @@ for name, pager in (
         raise AssertionError(f"boto3 paginator used JSON fallback: before={before_boundary}, after={boundary}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
         raise AssertionError(f"boto3 paginator streams did not release: before={before_handles}, after={handles}")
+
+
+def test_manifest_redis_scan_iter_is_lazy_and_cancellable():
+    redis_fixture, stop_redis = start_redis_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        setup = f'''
+import redis
+
+redis_kwargs = {redis_fixture!r}
+redis.Redis(decode_responses=True, **redis_kwargs).flushdb()
+
+def make_redis_scan(label):
+    client = redis.Redis(decode_responses=True, **redis_kwargs)
+    for idx in range(40):
+        client.hset(
+            f"{{label}}:order:{{idx:02d}}",
+            mapping={{
+                "name": f"{{label}}-{{idx:02d}}",
+                "items": "field-items",
+                "keys": "field-keys",
+                "count": str(idx),
+                "then": "field-then",
+                "length": "2",
+                "close": "field-close",
+            }},
+        )
+
+    original_scan = client.scan
+
+    class RedisScanOwner:
+        def __init__(self):
+            self.label = label
+            self.client = client
+            self.scan_calls = 0
+            self.items_yielded = 0
+            self.closed = False
+            self.iterator = client.scan_iter(match=f"{{label}}:order:*", count=1)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            key = next(self.iterator)
+            self.items_yielded += 1
+            data = self.client.hgetall(key)
+            return {{
+                "key": key,
+                "name": data["name"],
+                "items": data["items"],
+                "keys": data["keys"],
+                "count": int(data["count"]),
+                "then": data["then"],
+                "length": int(data["length"]),
+                "close": data["close"],
+            }}
+
+        def close(self):
+            self.closed = True
+            close_iter = getattr(self.iterator, "close", None)
+            if callable(close_iter):
+                close_iter()
+            self.client.close()
+            self.client.connection_pool.disconnect()
+
+    owner = RedisScanOwner()
+
+    def counted_scan(*args, **kwargs):
+        owner.scan_calls += 1
+        return original_scan(*args, **kwargs)
+
+    client.scan = counted_scan
+    return owner
+
+redis_scan_js = make_redis_scan("js")
+redis_scan_ruby = make_redis_scan("ruby")
+redis_scan_java = make_redis_scan("java")
+'''
+        verify = r'''
+for name, scan in (
+    ("javascript", redis_scan_js),
+    ("ruby", redis_scan_ruby),
+    ("java", redis_scan_java),
+):
+    if scan.items_yielded != 1:
+        raise AssertionError(f"{name} Redis scan yielded {scan.items_yielded} items instead of one")
+    if scan.scan_calls <= 0:
+        raise AssertionError(f"{name} Redis scan did not call SCAN")
+    if scan.scan_calls >= 40:
+        raise AssertionError(f"{name} Redis scan drained too many windows before cancellation: {scan.scan_calls}")
+    if not scan.closed:
+        raise AssertionError(f"{name} Redis scan owner was not closed by stream cancellation")
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "python", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"redis_scan_js": "redis_scan_js"},
+                    "code": (
+                        "const it = redis_scan_js[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('Redis scan was empty'); "
+                        "const row = first.value; "
+                        "if (!String(row.key).startsWith('js:order:')) throw new Error('bad Redis JS key: ' + row.key); "
+                        "if (!String(row.name).startsWith('js-')) throw new Error('bad Redis JS name: ' + row.name); "
+                        "if (row.items !== 'field-items' || row.keys !== 'field-keys' || row.then !== 'field-then' || String(row.length) !== '2' || row.close !== 'field-close') throw new Error('Redis JS collision fields lost: ' + JSON.stringify(row)); "
+                        "if (redis_scan_js.cancel('client-stop') !== true) throw new Error('Redis JS cancel failed');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"redis_scan_ruby": "redis_scan_ruby"},
+                    "code": (
+                        "row = redis_scan_ruby.first; "
+                        "raise 'Redis scan was empty' if row.nil?; "
+                        "raise \"bad Redis Ruby key #{row['key']}\" unless row['key'].start_with?('ruby:order:'); "
+                        "raise \"bad Redis Ruby name #{row['name']}\" unless row['name'].start_with?('ruby-'); "
+                        "raise 'Redis Ruby items field lost' unless row['items'] == 'field-items'; "
+                        "raise 'Redis Ruby keys field lost' unless row['keys'] == 'field-keys'; "
+                        "raise 'Redis Ruby then field lost' unless row['then'] == 'field-then'; "
+                        "raise 'Redis Ruby length field lost' unless row['length'].to_s == '2'; "
+                        "raise 'Redis Ruby close field lost' unless row['close'] == 'field-close'; "
+                        "redis_scan_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"redis_scan_java": "redis_scan_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"redis_scan_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"Redis scan should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"Redis scan was empty\"); "
+                        "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
+                        "if (!String.valueOf(row.get(\"key\")).startsWith(\"java:order:\")) throw new RuntimeException(\"bad Redis Java key: \" + row.get(\"key\")); "
+                        "if (!String.valueOf(row.get(\"name\")).startsWith(\"java-\")) throw new RuntimeException(\"bad Redis Java name: \" + row.get(\"name\")); "
+                        "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"Redis Java items field lost\"); "
+                        "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"Redis Java keys field lost\"); "
+                        "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"Redis Java then field lost\"); "
+                        "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"Redis Java length field lost\"); "
+                        "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"Redis Java close field lost\"); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"Redis Java cancel failed\");"
+                    ),
+                },
+                {"op": "exec", "runtime": "python", "code": verify},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+            raise AssertionError(f"Redis scan cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"Redis scan cursor used JSON fallback: before={before_boundary}, after={boundary}")
+        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+            raise AssertionError(f"Redis scan cursor streams did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_redis()
 
 
 def test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback():
@@ -17057,6 +17292,7 @@ def main():
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
+        check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
