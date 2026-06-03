@@ -12819,6 +12819,88 @@ User(age=0)
         raise AssertionError(f"JS Java error should not invent original handle: {envelope}")
 
 
+def test_python_native_runtime_error_fields_cross_runtime_calls():
+    result = omnivm.call(
+        "python",
+        r'''(lambda ns: (__import__('builtins').exec(r"""
+import json
+import omnivm
+out = {}
+try:
+    omnivm.call("javascript", "(function() { throw new Error('outer', { cause: new TypeError('inner') }); })()")
+except Exception as e:
+    out["javascript"] = {
+        "isRuntimeError": isinstance(e, omnivm.RuntimeError),
+        "isBuiltinRuntimeError": isinstance(e, RuntimeError),
+        "className": e.__class__.__module__ + "." + e.__class__.__name__,
+        "runtime": getattr(e, "runtime", None),
+        "type": getattr(e, "type", None),
+        "message": getattr(e, "message", None),
+        "traceback": getattr(e, "traceback", None),
+        "boundaryPath": getattr(e, "boundary_path", None),
+        "causeChain": getattr(e, "cause_chain", None),
+        "originalErrorHandle": getattr(e, "original_error_handle", "missing"),
+        "dict": e.to_dict() if hasattr(e, "to_dict") else None,
+    }
+try:
+    omnivm.call("java", '((java.util.concurrent.Callable<String>)(() -> { throw new RuntimeException("outer", new IllegalArgumentException("inner")); })).call()')
+except Exception as e:
+    out["java"] = {
+        "isRuntimeError": isinstance(e, omnivm.RuntimeError),
+        "isBuiltinRuntimeError": isinstance(e, RuntimeError),
+        "className": e.__class__.__module__ + "." + e.__class__.__name__,
+        "runtime": getattr(e, "runtime", None),
+        "type": getattr(e, "type", None),
+        "message": getattr(e, "message", None),
+        "traceback": getattr(e, "traceback", None),
+        "boundaryPath": getattr(e, "boundary_path", None),
+        "causeChain": getattr(e, "cause_chain", None),
+        "originalErrorHandle": getattr(e, "original_error_handle", "missing"),
+        "dict": e.to_dict() if hasattr(e, "to_dict") else None,
+    }
+result = json.dumps(out)
+""", ns), ns["result"])[1])({})'''
+    )
+    envelope = json.loads(result)
+    js_error = envelope.get("javascript") or {}
+    if not js_error.get("isRuntimeError") or not js_error.get("isBuiltinRuntimeError"):
+        raise AssertionError(f"Python catch did not receive omnivm.RuntimeError for JS failure: {envelope}")
+    if js_error.get("className") != "omnivm.RuntimeError":
+        raise AssertionError(f"Python JS error class lost: {envelope}")
+    if js_error.get("runtime") != "javascript" or js_error.get("type") != "Error":
+        raise AssertionError(f"Python JS error runtime/type lost: {envelope}")
+    if "outer" not in js_error.get("message", ""):
+        raise AssertionError(f"Python JS error message lost: {envelope}")
+    if js_error.get("boundaryPath") != "call[javascript]":
+        raise AssertionError(f"Python JS boundary path lost: {envelope}")
+    causes = js_error.get("causeChain") or []
+    if not causes or causes[0].get("type") != "TypeError" or "inner" not in causes[0].get("message", ""):
+        raise AssertionError(f"Python JS cause chain lost: {envelope}")
+    if js_error.get("originalErrorHandle") is not None:
+        raise AssertionError(f"Python JS error should not invent original handle: {envelope}")
+    if (js_error.get("dict") or {}).get("boundary_path") != "call[javascript]":
+        raise AssertionError(f"Python JS to_dict boundary path lost: {envelope}")
+
+    java_error = envelope.get("java") or {}
+    if not java_error.get("isRuntimeError") or not java_error.get("isBuiltinRuntimeError"):
+        raise AssertionError(f"Python catch did not receive omnivm.RuntimeError for Java failure: {envelope}")
+    if java_error.get("className") != "omnivm.RuntimeError":
+        raise AssertionError(f"Python Java error class lost: {envelope}")
+    if java_error.get("runtime") != "java" or java_error.get("type") != "java.lang.RuntimeException":
+        raise AssertionError(f"Python Java error runtime/type lost: {envelope}")
+    if "outer" not in java_error.get("message", ""):
+        raise AssertionError(f"Python Java error message lost: {envelope}")
+    if java_error.get("boundaryPath") != "call[java]":
+        raise AssertionError(f"Python Java boundary path lost: {envelope}")
+    causes = java_error.get("causeChain") or []
+    if not causes or causes[0].get("type") != "java.lang.IllegalArgumentException" or "inner" not in causes[0].get("message", ""):
+        raise AssertionError(f"Python Java cause chain lost: {envelope}")
+    if java_error.get("originalErrorHandle") is not None:
+        raise AssertionError(f"Python Java error should not invent original handle: {envelope}")
+    if (java_error.get("dict") or {}).get("boundary_path") != "call[java]":
+        raise AssertionError(f"Python Java to_dict boundary path lost: {envelope}")
+
+
 def test_ruby_native_runtime_error_fields_cross_runtime_calls():
     java_source = json.dumps(
         '((java.util.concurrent.Callable<String>)(() -> { '
@@ -19030,6 +19112,7 @@ def main():
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
+        check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
         check("Java native RuntimeError fields cross runtime calls", test_java_native_runtime_error_fields_cross_runtime_calls)

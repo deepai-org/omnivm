@@ -52,6 +52,132 @@ static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
     g_buf_release = release_fn;
 }
 
+static const char* omnivm_py_runtime_error_code =
+"import builtins as __omnivm_builtins\n"
+"import re as __omnivm_re\n"
+"class RuntimeError(__omnivm_builtins.RuntimeError):\n"
+"    def __init__(self, message, runtime=None, boundary_path=None):\n"
+"        super().__init__(message)\n"
+"        parsed = _parse_runtime_error_text(str(message), runtime=runtime or None, boundary_path=boundary_path or None)\n"
+"        self.runtime = parsed['runtime']\n"
+"        self.type = parsed['type']\n"
+"        self.message = parsed['message']\n"
+"        self.traceback = parsed['traceback']\n"
+"        self.cause_chain = parsed['cause_chain']\n"
+"        self.boundary_path = parsed['boundary_path']\n"
+"        self.original_error_handle = parsed['original_error_handle']\n"
+"    def to_dict(self):\n"
+"        return {'runtime': self.runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'cause_chain': list(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle}\n"
+"def _is_error_type_candidate(candidate):\n"
+"    return bool(__omnivm_re.match(r'^[A-Za-z_][A-Za-z0-9_.$:]*$', candidate or ''))\n"
+"def _parse_runtime_error_text(text, runtime=None, boundary_path=None):\n"
+"    source_runtime = runtime\n"
+"    body = text[4:] if text.startswith('ERR:') else text\n"
+"    boundary_parts = []\n"
+"    for marker, label in (('execute manifest: ', 'execute manifest'), ('load manifest module: ', 'load manifest module'), ('manifest module call: ', 'manifest module call')):\n"
+"        if body.startswith(marker):\n"
+"            boundary_parts.append(label)\n"
+"            body = body[len(marker):]\n"
+"            break\n"
+"    op_match = __omnivm_re.match(r'(?P<op>[A-Za-z_][A-Za-z0-9_]*) \\[(?P<runtime>[A-Za-z0-9_-]+)\\]: (?P<body>.*)', body, __omnivm_re.S)\n"
+"    if op_match:\n"
+"        boundary_parts.append(f\"{op_match.group('op')}[{op_match.group('runtime')}]\")\n"
+"        source_runtime = op_match.group('runtime')\n"
+"        body = op_match.group('body')\n"
+"    for prefix, canonical in (('javascript: ', 'javascript'), ('python: ', 'python'), ('ruby: ', 'ruby'), ('jvm: ', 'java'), ('java: ', 'java'), ('go: ', 'go')):\n"
+"        if body.startswith(prefix):\n"
+"            source_runtime = canonical\n"
+"            body = body[len(prefix):]\n"
+"            break\n"
+"    first_line, _, rest = body.partition('\\n')\n"
+"    err_type = ''\n"
+"    detail = first_line\n"
+"    handle_match = __omnivm_re.search(r'(?im)^\\s*(?:Original[- ]error[- ]handle|original_error_handle):\\s*(?P<handle>\\S+)\\s*$', body)\n"
+"    original_error_handle = handle_match.group('handle') if handle_match else None\n"
+"    parse_line = first_line\n"
+"    traceback = rest\n"
+"    if first_line.startswith('Traceback '):\n"
+"        traceback = body\n"
+"        for line in reversed([line.strip() for line in body.splitlines() if line.strip()]):\n"
+"            if ': ' not in line:\n"
+"                continue\n"
+"            candidate, _tail = line.split(': ', 1)\n"
+"            if _is_error_type_candidate(candidate):\n"
+"                parse_line = line\n"
+"                break\n"
+"    if ': ' in parse_line:\n"
+"        candidate, tail = parse_line.split(': ', 1)\n"
+"        if _is_error_type_candidate(candidate):\n"
+"            if source_runtime == 'python' and '.' in candidate:\n"
+"                candidate = candidate.rsplit('.', 1)[-1]\n"
+"            err_type = candidate\n"
+"            detail = tail\n"
+"    cause_chain = []\n"
+"    for line in rest.splitlines():\n"
+"        stripped = line.strip()\n"
+"        if not stripped.startswith('Caused by: '):\n"
+"            continue\n"
+"        cause_text = stripped[len('Caused by: '):]\n"
+"        cause_type = ''\n"
+"        cause_message = cause_text\n"
+"        if ': ' in cause_text:\n"
+"            candidate, tail = cause_text.split(': ', 1)\n"
+"            if _is_error_type_candidate(candidate):\n"
+"                cause_type = candidate\n"
+"                cause_message = tail\n"
+"        cause_chain.append({'type': cause_type, 'message': cause_message})\n"
+"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or boundary_path, 'original_error_handle': original_error_handle}\n"
+;
+
+static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
+    PyObject* mod = PyImport_ImportModule("omnivm");
+    PyObject* cls = mod ? PyObject_GetAttrString(mod, "RuntimeError") : NULL;
+    if (!cls) {
+        Py_XDECREF(mod);
+        PyErr_SetString(PyExc_RuntimeError, message ? message : "runtime error");
+        return;
+    }
+    PyObject* args = PyTuple_New(1);
+    PyObject* msg = PyUnicode_FromString(message ? message : "");
+    if (!args || !msg) {
+        Py_XDECREF(args);
+        Py_XDECREF(msg);
+        Py_DECREF(cls);
+        Py_XDECREF(mod);
+        PyErr_SetString(PyExc_RuntimeError, message ? message : "runtime error");
+        return;
+    }
+    PyTuple_SET_ITEM(args, 0, msg);
+    PyObject* kwargs = PyDict_New();
+    if (kwargs) {
+        if (runtime && runtime[0]) {
+            PyObject* rt = PyUnicode_FromString(runtime);
+            if (rt) {
+                PyDict_SetItemString(kwargs, "runtime", rt);
+                Py_DECREF(rt);
+            }
+        }
+        if (boundary_path && boundary_path[0]) {
+            PyObject* path = PyUnicode_FromString(boundary_path);
+            if (path) {
+                PyDict_SetItemString(kwargs, "boundary_path", path);
+                Py_DECREF(path);
+            }
+        }
+    }
+    PyObject* exc = PyObject_Call(cls, args, kwargs);
+    Py_DECREF(args);
+    Py_XDECREF(kwargs);
+    if (exc) {
+        PyErr_SetObject(cls, exc);
+        Py_DECREF(exc);
+    } else {
+        PyErr_SetString(PyExc_RuntimeError, message ? message : "runtime error");
+    }
+    Py_DECREF(cls);
+    Py_XDECREF(mod);
+}
+
 typedef struct ArrowSchema {
     const char* format;
     const char* name;
@@ -2345,7 +2471,9 @@ static PyObject* py_omnivm_call(PyObject* self, PyObject* args) {
 
     // Check for error prefix
     if (strncmp(result, "ERR:", 4) == 0) {
-        PyErr_SetString(PyExc_RuntimeError, result + 4);
+        char boundary[256];
+        snprintf(boundary, sizeof(boundary), "call[%s]", runtime ? runtime : "");
+        omnivm_py_raise_runtime_error(runtime, result + 4, boundary);
         if (g_bridge_free) g_bridge_free(result);
         return NULL;
     }
@@ -2795,11 +2923,17 @@ PyMODINIT_FUNC PyInit_omnivm(void) {
     PyObject* mod = PyModule_Create(&omnivm_pymode_module_def);
     if (!mod) return NULL;
 
-    // Add RuntimeError subclass for omnivm-specific errors
-    PyObject* base = PyExc_RuntimeError;
-    PyObject* exc = PyErr_NewException("omnivm.RuntimeError", base, NULL);
-    if (exc) {
-        PyModule_AddObject(mod, "RuntimeError", exc);
+    PyObject* dict = PyModule_GetDict(mod);
+    PyObject* runtime_error_def = dict ? PyRun_String(omnivm_py_runtime_error_code, Py_file_input, dict, dict) : NULL;
+    if (runtime_error_def) {
+        Py_DECREF(runtime_error_def);
+    } else {
+        PyErr_Clear();
+        PyObject* base = PyExc_RuntimeError;
+        PyObject* exc = PyErr_NewException("omnivm.RuntimeError", base, NULL);
+        if (exc) {
+            PyModule_AddObject(mod, "RuntimeError", exc);
+        }
     }
 
     return mod;
