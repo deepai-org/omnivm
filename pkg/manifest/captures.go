@@ -155,15 +155,6 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			continue
 		}
 
-		// Stream-like values carry lazy descriptors instead of draining to JSON.
-		if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
-			if err != nil {
-				return "", fmt.Errorf("capture %q: stream: %w", varName, err)
-			}
-			resolved[varName] = jsonVal
-			continue
-		}
-
 		if _, ok := val.(*SpawnHandle); ok {
 			continue
 		}
@@ -189,6 +180,15 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
 				return "", fmt.Errorf("capture %q: RuntimeRef: %w", varName, err)
+			}
+			resolved[varName] = jsonVal
+			continue
+		}
+
+		// Stream-like values carry lazy descriptors instead of draining to JSON.
+		if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
+			if err != nil {
+				return "", fmt.Errorf("capture %q: stream: %w", varName, err)
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -370,13 +370,6 @@ func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[strin
 			if _, already := resolved[varName]; already {
 				continue // shadowed by higher scope
 			}
-			if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
-				if err != nil {
-					continue
-				}
-				resolved[varName] = jsonVal
-				continue
-			}
 			if _, ok := val.(*SpawnHandle); ok {
 				continue
 			}
@@ -388,6 +381,13 @@ func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[strin
 					continue // already in scope
 				}
 				jsonVal, err := e.resolveRuntimeRefCapture(varName, rtName, ref)
+				if err != nil {
+					continue
+				}
+				resolved[varName] = jsonVal
+				continue
+			}
+			if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
 				if err != nil {
 					continue
 				}
@@ -449,13 +449,6 @@ func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]
 			resolved[varName] = jsonVal
 			continue
 		}
-		if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
-			if err != nil {
-				return captureInjection{err: fmt.Errorf("capture %q: stream: %w", varName, err)}
-			}
-			resolved[varName] = jsonVal
-			continue
-		}
 		if _, ok := val.(*SpawnHandle); ok {
 			continue
 		}
@@ -471,6 +464,13 @@ func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]
 			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
 				return captureInjection{err: fmt.Errorf("capture %q: RuntimeRef: %w", varName, err)}
+			}
+			resolved[varName] = jsonVal
+			continue
+		}
+		if jsonVal, ok, err := e.localStreamCaptureJSON(val, "go"); ok || err != nil {
+			if err != nil {
+				return captureInjection{err: fmt.Errorf("capture %q: stream: %w", varName, err)}
 			}
 			resolved[varName] = jsonVal
 			continue
@@ -1479,6 +1479,16 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     return globalThis.__omnivm_materialize_capture(v);
   }) : null;
   var localIndex = 0;
+  var remoteClosed = false;
+  var closeRemote = function() {
+    if (remoteClosed) return;
+    remoteClosed = true;
+    try {
+      if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
+      }
+    } catch (_e) {}
+  };
   var nextValue = function() {
     if (localValues) {
       if (localIndex >= localValues.length) return {done: true};
@@ -1489,10 +1499,15 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true && env.value) {
-        if (env.value.done === true) return {done: true};
+        if (env.value.done === true) {
+          closeRemote();
+          return {done: true};
+        }
         return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
       }
-    } catch (_e) {}
+    } catch (_e) {
+      throw _e;
+    }
     return {done: true};
   };
     var stream = {
@@ -1500,11 +1515,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     kind: value.kind,
     cancel: function(reason) {
       this.cancelled = reason || true;
-      try {
-        if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-          omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
-        }
-      } catch (_e) {}
+      closeRemote();
       return true;
     },
     toArray: function() {
@@ -2403,8 +2414,10 @@ func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref R
 	if jsonVal, ok, err := e.runtimeRefBulkTableCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
 		return jsonVal, err
 	}
-	if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
-		return jsonVal, err
+	if _, rubyString := ref.Value.(string); !(ref.Runtime == "ruby" && rubyString) {
+		if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
+			return jsonVal, err
+		}
 	}
 	if jsonVal, ok, err := e.runtimeRefStreamCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
 		return jsonVal, err

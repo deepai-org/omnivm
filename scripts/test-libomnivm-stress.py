@@ -17073,6 +17073,155 @@ def test_manifest_java_base_stream_body_capture_as_lazy_stream():
         raise AssertionError(f"Java BaseStream body stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_inputstream_reader_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_input_cancel_closed",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_input_cancel_reads",
+                "code": "new java.util.concurrent.atomic.AtomicInteger(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_input_cancel_body",
+                "code": (
+                    "new java.io.InputStream() { "
+                    "private final byte[] data = \"firstsecond\".getBytes(java.nio.charset.StandardCharsets.UTF_8); "
+                    "private int offset = 0; "
+                    "private boolean closed = false; "
+                    "public int read() throws java.io.IOException { "
+                    "if (closed) throw new java.io.IOException(\"closed\"); "
+                    "if (offset >= data.length) return -1; "
+                    "((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_input_cancel_reads\")).incrementAndGet(); "
+                    "return data[offset++] & 0xff; "
+                    "} "
+                    "public int read(byte[] b, int off, int len) throws java.io.IOException { "
+                    "if (closed) throw new java.io.IOException(\"closed\"); "
+                    "if (offset >= data.length) return -1; "
+                    "((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_input_cancel_reads\")).incrementAndGet(); "
+                    "int n = Math.min(Math.min(len, data.length - offset), 5); "
+                    "System.arraycopy(data, offset, b, off, n); "
+                    "offset += n; "
+                    "return n; "
+                    "} "
+                    "public void close() throws java.io.IOException { "
+                    "closed = true; "
+                    "((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_input_cancel_closed\")).set(true); "
+                    "} "
+                    "}"
+                ),
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_reader_cancel_closed",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_reader_cancel_reads",
+                "code": "new java.util.concurrent.atomic.AtomicInteger(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_reader_cancel_body",
+                "code": (
+                    "new java.io.Reader() { "
+                    "private final String data = \"firstsecond\"; "
+                    "private int offset = 0; "
+                    "private boolean closed = false; "
+                    "public int read(char[] cbuf, int off, int len) throws java.io.IOException { "
+                    "if (closed) throw new java.io.IOException(\"closed\"); "
+                    "if (offset >= data.length()) return -1; "
+                    "((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_reader_cancel_reads\")).incrementAndGet(); "
+                    "int n = Math.min(Math.min(len, data.length() - offset), 5); "
+                    "data.getChars(offset, offset + n, cbuf, off); "
+                    "offset += n; "
+                    "return n; "
+                    "} "
+                    "public void close() throws java.io.IOException { "
+                    "closed = true; "
+                    "((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_reader_cancel_closed\")).set(true); "
+                    "} "
+                    "}"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_input_cancel_body": "java_input_cancel_body"},
+                "code": (
+                    "const it = java_input_cancel_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const text = String.fromCharCode(...Array.from(first.value)); "
+                    "if (first.done || text !== 'first') throw new Error('bad Java InputStream first chunk: ' + JSON.stringify(first)); "
+                    "if (java_input_cancel_body.cancel('client-stop') !== true) throw new Error('Java InputStream cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"java_reader_cancel_body": "java_reader_cancel_body"},
+                "code": (
+                    "chunk = java_reader_cancel_body.first; "
+                    "raise 'bad Java Reader first chunk: ' + chunk.inspect unless chunk == 'first'; "
+                    "java_reader_cancel_body.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_input_cancel_closed\")).get()) "
+                    "throw new RuntimeException(\"Java InputStream did not close after early cancel\"); "
+                    "int reads = ((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_input_cancel_reads\")).get(); "
+                    "if (reads != 1) throw new RuntimeException(\"Java InputStream read count after early cancel = \" + reads);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_reader_cancel_closed\")).get()) "
+                    "throw new RuntimeException(\"Java Reader did not close after early cancel\"); "
+                    "int reads = ((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_reader_cancel_reads\")).get(); "
+                    "if (reads != 1) throw new RuntimeException(\"Java Reader read count after early cancel = \" + reads);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2:
+        raise AssertionError(f"Java InputStream/Reader did not cross as stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java InputStream/Reader used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 2:
+        raise AssertionError(f"Java InputStream/Reader did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 2:
+        raise AssertionError(f"Java InputStream/Reader cancel did not release handles: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Java InputStream/Reader early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_readable_byte_channel_early_cancel_releases_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -22204,6 +22353,7 @@ def main():
         check("Manifest runtime readers capture as lazy streams", test_manifest_runtime_readers_capture_as_lazy_streams)
         check("Manifest Java iterable body capture is lazy stream", test_manifest_java_iterable_body_capture_as_lazy_stream)
         check("Manifest Java BaseStream body capture is lazy stream", test_manifest_java_base_stream_body_capture_as_lazy_stream)
+        check("Manifest Java InputStream and Reader early cancel releases owner", test_manifest_java_inputstream_reader_early_cancel_releases_owner)
         check("Manifest Java ReadableByteChannel early cancel releases owner", test_manifest_java_readable_byte_channel_early_cancel_releases_owner)
         check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
         check("Manifest Java RxJava Flowable early cancel releases owner", test_manifest_java_rxjava_flowable_early_cancel_releases_owner)

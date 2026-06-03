@@ -4096,7 +4096,7 @@ func TestRuntimeRefRubyStreamProbeTreatsResponseWritersAsResources(t *testing.T)
 	if !ok {
 		t.Fatal("ruby stream probe should be available")
 	}
-	for _, want := range []string{"respond_to?(:write)", "respond_to?(:close)", "respond_to?(:closed?)", "!__omnivm_response_writer"} {
+	for _, want := range []string{"respond_to?(:write)", "respond_to?(:close)", "respond_to?(:closed?)", "!__v.respond_to?(:read)", "!__omnivm_response_writer"} {
 		if !strings.Contains(expr, want) {
 			t.Fatalf("ruby stream probe missing response writer guard %q in %q", want, expr)
 		}
