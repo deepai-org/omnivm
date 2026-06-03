@@ -163,6 +163,7 @@ ARG OKIO_VERSION=1.17.5
 ARG JACKSON_VERSION=2.17.2
 ARG REACTOR_VERSION=3.6.6
 ARG REACTIVE_STREAMS_VERSION=1.0.4
+ARG RXJAVA_VERSION=3.1.10
 RUN mkdir -p /omnivm/libs && \
     curl -fsSL \
         "https://repo1.maven.org/maven2/com/google/code/gson/gson/${GSON_VERSION}/gson-${GSON_VERSION}.jar" \
@@ -193,7 +194,10 @@ RUN mkdir -p /omnivm/libs && \
         -o "/omnivm/libs/reactor-core-${REACTOR_VERSION}.jar" && \
     curl -fsSL \
         "https://repo1.maven.org/maven2/org/reactivestreams/reactive-streams/${REACTIVE_STREAMS_VERSION}/reactive-streams-${REACTIVE_STREAMS_VERSION}.jar" \
-        -o "/omnivm/libs/reactive-streams-${REACTIVE_STREAMS_VERSION}.jar"
+        -o "/omnivm/libs/reactive-streams-${REACTIVE_STREAMS_VERSION}.jar" && \
+    curl -fsSL \
+        "https://repo1.maven.org/maven2/io/reactivex/rxjava3/rxjava/${RXJAVA_VERSION}/rxjava-${RXJAVA_VERSION}.jar" \
+        -o "/omnivm/libs/rxjava-${RXJAVA_VERSION}.jar"
 
 # 5. Examples AFTER build (most frequent changes, no rebuild needed)
 COPY examples/ examples/

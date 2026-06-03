@@ -12408,6 +12408,54 @@ return combined;
             raise AssertionError(f"Java Reactor callback affinity was not safe or diagnostic: {result}")
 
 
+def test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newFixedThreadPool(2);
+try {
+    io.reactivex.rxjava3.core.Scheduler scheduler = io.reactivex.rxjava3.schedulers.Schedulers.from(exec);
+    io.reactivex.rxjava3.core.Single<String> pySingle =
+        io.reactivex.rxjava3.core.Single.fromCallable(() -> {
+            try {
+                return "OK:" + omnivm.OmniVM.call("python", "'from-rxjava-py'");
+            } catch (Throwable t) {
+                return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+            }
+        }).subscribeOn(scheduler).timeout(3, java.util.concurrent.TimeUnit.SECONDS);
+    io.reactivex.rxjava3.core.Single<String> jsSingle =
+        io.reactivex.rxjava3.core.Single.fromCallable(() -> {
+            try {
+                return "OK:" + omnivm.OmniVM.call("javascript", "'from-rxjava-js'");
+            } catch (Throwable t) {
+                return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+            }
+        }).subscribeOn(scheduler).timeout(3, java.util.concurrent.TimeUnit.SECONDS);
+    String pyResult = pySingle.blockingGet();
+    String jsResult = jsSingle.blockingGet();
+    String combined = pyResult + "|" + jsResult;
+    boolean pySafe = pyResult.equals("OK:from-rxjava-py");
+    boolean jsSafe = jsResult.equals("OK:from-rxjava-js");
+    boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
+    boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
+    if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python RxJava callback affinity was neither safe nor diagnostic: " + pyResult);
+    if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS RxJava callback affinity was neither safe nor diagnostic: " + jsResult);
+    return combined;
+} finally {
+    exec.shutdownNow();
+}
+})).call()
+'''
+    )
+    parts = result.split("|")
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java RxJava callback result: {result}")
+    for part in parts:
+        if not (part.startswith("OK:from-rxjava-") or ("ERR:" in part and "non-Golden Thread" in part)):
+            raise AssertionError(f"Java RxJava callback affinity was not safe or diagnostic: {result}")
+
+
 def test_nested_js_to_java_interrupt_timeout():
     child_check(
         """
@@ -13109,6 +13157,7 @@ def main():
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
+        check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:
