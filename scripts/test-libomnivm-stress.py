@@ -11505,6 +11505,73 @@ def test_manifest_java_base_stream_body_capture_as_lazy_stream():
         raise AssertionError(f"Java BaseStream body stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_reactor_flux_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "reactor_flux_cancelled",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "reactor_flux_requests",
+                "code": "new java.util.concurrent.atomic.AtomicLong(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "reactor_flux_body",
+                "code": (
+                    "reactor.core.publisher.Flux.just(\"first\", \"second\", \"third\")"
+                    ".doOnRequest(n -> ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"reactor_flux_requests\")).addAndGet(n))"
+                    ".doOnCancel(() -> ((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"reactor_flux_cancelled\")).set(true))"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"reactor_flux_body": "reactor_flux_body"},
+                "code": (
+                    "const it = reactor_flux_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done || first.value !== 'first') throw new Error('bad Reactor Flux first item: ' + JSON.stringify(first)); "
+                    "if (reactor_flux_body.cancel('client-stop') !== true) throw new Error('Reactor Flux cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"reactor_flux_cancelled\")).get()) "
+                    "throw new RuntimeException(\"Reactor Flux did not observe cancellation\"); "
+                    "long requests = ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"reactor_flux_requests\")).get(); "
+                    "if (requests < 1L) throw new RuntimeException(\"Reactor Flux did not receive demand\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Reactor Flux did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Reactor Flux used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Reactor Flux did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Reactor Flux stream did not release handle: before={before_handles}, after={handles}")
+
+
 def test_manifest_ruby_each_body_capture_as_lazy_stream():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -14168,6 +14235,7 @@ def main():
         check("Manifest runtime readers capture as lazy streams", test_manifest_runtime_readers_capture_as_lazy_streams)
         check("Manifest Java iterable body capture is lazy stream", test_manifest_java_iterable_body_capture_as_lazy_stream)
         check("Manifest Java BaseStream body capture is lazy stream", test_manifest_java_base_stream_body_capture_as_lazy_stream)
+        check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
         check("Manifest Ruby each body capture is lazy stream", test_manifest_ruby_each_body_capture_as_lazy_stream)
         check("Manifest Python iterable body capture is lazy stream", test_manifest_python_iterable_body_capture_as_lazy_stream)
         check("Manifest Python async iterable body capture is lazy stream", test_manifest_python_async_iterable_body_capture_as_lazy_stream)

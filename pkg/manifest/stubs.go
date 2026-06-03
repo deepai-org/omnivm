@@ -2740,10 +2740,14 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 		return fmt.Sprintf("(begin; __v = %s; __omnivm_method_like = __v.respond_to?(:request_method) || (begin; __v.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__v.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__v.respond_to?(:path) || __v.respond_to?(:url) || __v.respond_to?(:headers) || __v.respond_to?(:env) || __v.respond_to?(:path_info)); !__omnivm_http_message && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base), true
 	case "java":
 		httpMessage := javaHTTPMessageProbeExpr(base)
-		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, base, base, base, base), true
+		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaToStreamProbeExpr(base), base, base, base, base), true
 	default:
 		return "", false
 	}
+}
+
+func javaToStreamProbeExpr(base string) string {
+	return fmt.Sprintf("(%s != null && java.util.Arrays.stream(%s.getClass().getMethods()).anyMatch(__m -> __m.getName().equals(\"toStream\") && __m.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__m.getReturnType())))", base, base)
 }
 
 func pythonHTTPMessageProbeExpr(base string) string {
@@ -2888,10 +2892,131 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
 	case "ruby":
 		return fmt.Sprintf("begin; __omnivm_stream_obj = %s; __omnivm_method_like = __omnivm_stream_obj.respond_to?(:request_method) || (begin; __omnivm_stream_obj.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__omnivm_stream_obj.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__omnivm_stream_obj.respond_to?(:path) || __omnivm_stream_obj.respond_to?(:url) || __omnivm_stream_obj.respond_to?(:headers) || __omnivm_stream_obj.respond_to?(:env) || __omnivm_stream_obj.respond_to?(:path_info)); __omnivm_io = (!__omnivm_http_message && __omnivm_stream_obj.respond_to?(:to_io)) ? __omnivm_stream_obj.to_io : nil; if !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:next); $%s = __omnivm_stream_obj.next; $%s = false; elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:read); $%s = __omnivm_stream_obj.read(8192); $%s = ($%s.nil? || $%s == \"\"); elsif __omnivm_io.respond_to?(:read); $%s = __omnivm_io.read(8192); $%s = ($%s.nil? || $%s == \"\"); elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String); %s ||= __omnivm_stream_obj.each; $%s = %s.next; $%s = false; else; $%s = nil; $%s = true; end; rescue StopIteration, EOFError; %s = nil; $%s = nil; $%s = true; end", base, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, valueVar, doneVar, valueVar, valueVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "java":
+		return runtimeRefJavaStreamNextCode(base, valueVar, doneVar, stateVar), true
+	case "__java_legacy":
 		return fmt.Sprintf("Object __omnivm_stream_obj = %s; if (__omnivm_stream_obj instanceof java.util.Iterator) { java.util.Iterator __omnivm_next = (java.util.Iterator)(__omnivm_stream_obj); if (__omnivm_next.hasNext()) { omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_next.next()); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } else { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); } } else if (__omnivm_stream_obj instanceof java.io.InputStream) { try { byte[] __omnivm_buf = new byte[8192]; int __omnivm_n = ((java.io.InputStream)__omnivm_stream_obj).read(__omnivm_buf); if (__omnivm_n < 0) { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); } else { omnivm.OmniVM.setCaptureObject(\"%s\", java.util.Arrays.copyOf(__omnivm_buf, __omnivm_n)); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } } catch (java.io.IOException __omnivm_err) { throw new RuntimeException(__omnivm_err); } } else if (__omnivm_stream_obj instanceof java.nio.channels.ReadableByteChannel) { try { java.nio.ByteBuffer __omnivm_buf = java.nio.ByteBuffer.allocate(8192); int __omnivm_n = ((java.nio.channels.ReadableByteChannel)__omnivm_stream_obj).read(__omnivm_buf); if (__omnivm_n < 0) { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); } else { __omnivm_buf.flip(); byte[] __omnivm_out = new byte[__omnivm_buf.remaining()]; __omnivm_buf.get(__omnivm_out); omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_out); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } } catch (java.io.IOException __omnivm_err) { throw new RuntimeException(__omnivm_err); } } else if (__omnivm_stream_obj instanceof java.io.Reader) { try { char[] __omnivm_buf = new char[8192]; int __omnivm_n = ((java.io.Reader)__omnivm_stream_obj).read(__omnivm_buf); if (__omnivm_n < 0) { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); } else { omnivm.OmniVM.setCaptureObject(\"%s\", new String(__omnivm_buf, 0, __omnivm_n)); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } } catch (java.io.IOException __omnivm_err) { throw new RuntimeException(__omnivm_err); } } else if (__omnivm_stream_obj instanceof java.util.stream.BaseStream) { Object __omnivm_state = omnivm.OmniVM.getCapture(\"%s\"); java.util.Iterator __omnivm_next = (__omnivm_state instanceof java.util.Iterator) ? (java.util.Iterator)__omnivm_state : ((java.util.stream.BaseStream)__omnivm_stream_obj).iterator(); omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_next); if (__omnivm_next.hasNext()) { omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_next.next()); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } else { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); omnivm.OmniVM.setCaptureObject(\"%s\", null); } } else if ((__omnivm_stream_obj instanceof java.lang.Iterable) && !(__omnivm_stream_obj instanceof java.util.Collection) && !(__omnivm_stream_obj instanceof java.util.Map) && !(__omnivm_stream_obj instanceof java.lang.CharSequence)) { Object __omnivm_state = omnivm.OmniVM.getCapture(\"%s\"); java.util.Iterator __omnivm_next = (__omnivm_state instanceof java.util.Iterator) ? (java.util.Iterator)__omnivm_state : ((java.lang.Iterable)__omnivm_stream_obj).iterator(); omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_next); if (__omnivm_next.hasNext()) { omnivm.OmniVM.setCaptureObject(\"%s\", __omnivm_next.next()); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.FALSE); } else { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); omnivm.OmniVM.setCaptureObject(\"%s\", null); } } else { omnivm.OmniVM.setCaptureObject(\"%s\", null); omnivm.OmniVM.setCaptureObject(\"%s\", Boolean.TRUE); }", base, escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar), escapeJavaString(stateVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar), escapeJavaString(stateVar), escapeJavaString(stateVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar), escapeJavaString(valueVar), escapeJavaString(doneVar)), true
 	default:
 		return "", false
 	}
+}
+
+func runtimeRefJavaStreamNextCode(base, valueVar, doneVar, stateVar string) string {
+	return fmt.Sprintf(`Object __omnivm_stream_obj = %s;
+try {
+  if (__omnivm_stream_obj instanceof java.util.Iterator) {
+    java.util.Iterator __omnivm_next = (java.util.Iterator)(__omnivm_stream_obj);
+    if (__omnivm_next.hasNext()) {
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_next.next());
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    } else {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+    }
+  } else if (__omnivm_stream_obj instanceof java.io.InputStream) {
+    byte[] __omnivm_buf = new byte[8192];
+    int __omnivm_n = ((java.io.InputStream)__omnivm_stream_obj).read(__omnivm_buf);
+    if (__omnivm_n < 0) {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+    } else {
+      omnivm.OmniVM.setCaptureObject("%s", java.util.Arrays.copyOf(__omnivm_buf, __omnivm_n));
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    }
+  } else if (__omnivm_stream_obj instanceof java.nio.channels.ReadableByteChannel) {
+    java.nio.ByteBuffer __omnivm_buf = java.nio.ByteBuffer.allocate(8192);
+    int __omnivm_n = ((java.nio.channels.ReadableByteChannel)__omnivm_stream_obj).read(__omnivm_buf);
+    if (__omnivm_n < 0) {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+    } else {
+      __omnivm_buf.flip();
+      byte[] __omnivm_out = new byte[__omnivm_buf.remaining()];
+      __omnivm_buf.get(__omnivm_out);
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_out);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    }
+  } else if (__omnivm_stream_obj instanceof java.io.Reader) {
+    char[] __omnivm_buf = new char[8192];
+    int __omnivm_n = ((java.io.Reader)__omnivm_stream_obj).read(__omnivm_buf);
+    if (__omnivm_n < 0) {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+    } else {
+      omnivm.OmniVM.setCaptureObject("%s", new String(__omnivm_buf, 0, __omnivm_n));
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    }
+  } else if (__omnivm_stream_obj instanceof java.util.stream.BaseStream || %s) {
+    Object __omnivm_state = omnivm.OmniVM.getCapture("%s");
+    java.util.stream.BaseStream __omnivm_base_stream = null;
+    java.util.Iterator __omnivm_next = null;
+    if (__omnivm_state instanceof Object[]) {
+      Object[] __omnivm_pair = (Object[])__omnivm_state;
+      if (__omnivm_pair.length > 0 && __omnivm_pair[0] instanceof java.util.stream.BaseStream) {
+        __omnivm_base_stream = (java.util.stream.BaseStream)__omnivm_pair[0];
+      }
+      if (__omnivm_pair.length > 1 && __omnivm_pair[1] instanceof java.util.Iterator) {
+        __omnivm_next = (java.util.Iterator)__omnivm_pair[1];
+      }
+    } else if (__omnivm_state instanceof java.util.Iterator) {
+      __omnivm_next = (java.util.Iterator)__omnivm_state;
+    }
+    if (__omnivm_base_stream == null) {
+      if (__omnivm_stream_obj instanceof java.util.stream.BaseStream) {
+        __omnivm_base_stream = (java.util.stream.BaseStream)__omnivm_stream_obj;
+      } else {
+        for (java.lang.reflect.Method __omnivm_method : __omnivm_stream_obj.getClass().getMethods()) {
+          if (__omnivm_method.getName().equals("toStream") && __omnivm_method.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__omnivm_method.getReturnType())) {
+            Object __omnivm_converted = __omnivm_method.invoke(__omnivm_stream_obj);
+            if (__omnivm_converted instanceof java.util.stream.BaseStream) {
+              __omnivm_base_stream = (java.util.stream.BaseStream)__omnivm_converted;
+            }
+            break;
+          }
+        }
+      }
+    }
+    if (__omnivm_next == null && __omnivm_base_stream != null) {
+      __omnivm_next = __omnivm_base_stream.iterator();
+      omnivm.OmniVM.setCaptureObject("%s", new Object[] { __omnivm_base_stream, __omnivm_next });
+    }
+    if (__omnivm_next != null && __omnivm_next.hasNext()) {
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_next.next());
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    } else {
+      if (__omnivm_base_stream != null) {
+        __omnivm_base_stream.close();
+      }
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+      omnivm.OmniVM.setCaptureObject("%s", null);
+    }
+  } else if ((__omnivm_stream_obj instanceof java.lang.Iterable) && !(__omnivm_stream_obj instanceof java.util.Collection) && !(__omnivm_stream_obj instanceof java.util.Map) && !(__omnivm_stream_obj instanceof java.lang.CharSequence)) {
+    Object __omnivm_state = omnivm.OmniVM.getCapture("%s");
+    java.util.Iterator __omnivm_next = (__omnivm_state instanceof java.util.Iterator) ? (java.util.Iterator)__omnivm_state : ((java.lang.Iterable)__omnivm_stream_obj).iterator();
+    omnivm.OmniVM.setCaptureObject("%s", __omnivm_next);
+    if (__omnivm_next.hasNext()) {
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_next.next());
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    } else {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+      omnivm.OmniVM.setCaptureObject("%s", null);
+    }
+  } else {
+    omnivm.OmniVM.setCaptureObject("%s", null);
+    omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+  }
+} catch (Exception __omnivm_err) {
+  throw new RuntimeException(__omnivm_err);
+}`, base,
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
+		javaToStreamProbeExpr("__omnivm_stream_obj"), escapeJavaString(stateVar), escapeJavaString(stateVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar),
+		escapeJavaString(stateVar), escapeJavaString(stateVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar))
 }
 
 func runtimeRefStreamCloseCode(ref RuntimeRef, stateVar string) (string, bool) {
@@ -2940,10 +3065,31 @@ globals()[%q] = None`, base, stateVar, stateVar), true
 	case "ruby":
 		return fmt.Sprintf("begin; __omnivm_stream_obj = %s; __omnivm_io = __omnivm_stream_obj.respond_to?(:to_io) ? __omnivm_stream_obj.to_io : nil; if __omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close; elsif __omnivm_stream_obj.respond_to?(:return); __omnivm_stream_obj.return; elsif __omnivm_io.respond_to?(:close); __omnivm_io.close; end; %s = nil; end", base, stateRef), true
 	case "java":
-		return fmt.Sprintf("Object __omnivm_stream_obj = %s; Object __omnivm_state = omnivm.OmniVM.getCapture(\"%s\"); try { if (__omnivm_state instanceof AutoCloseable) { ((AutoCloseable)__omnivm_state).close(); } if (__omnivm_stream_obj instanceof AutoCloseable && __omnivm_stream_obj != __omnivm_state) { ((AutoCloseable)__omnivm_stream_obj).close(); } omnivm.OmniVM.setCaptureObject(\"%s\", null); } catch (Exception __omnivm_err) { throw new RuntimeException(__omnivm_err); }", base, escapeJavaString(stateVar), escapeJavaString(stateVar)), true
+		return runtimeRefJavaStreamCloseCode(base, stateVar), true
 	default:
 		return "", false
 	}
+}
+
+func runtimeRefJavaStreamCloseCode(base, stateVar string) string {
+	return fmt.Sprintf(`Object __omnivm_stream_obj = %s;
+Object __omnivm_state = omnivm.OmniVM.getCapture("%s");
+try {
+  if (__omnivm_state instanceof Object[]) {
+    Object[] __omnivm_pair = (Object[])__omnivm_state;
+    if (__omnivm_pair.length > 0 && __omnivm_pair[0] instanceof AutoCloseable) {
+      ((AutoCloseable)__omnivm_pair[0]).close();
+    }
+  } else if (__omnivm_state instanceof AutoCloseable) {
+    ((AutoCloseable)__omnivm_state).close();
+  }
+  if (__omnivm_stream_obj instanceof AutoCloseable && __omnivm_stream_obj != __omnivm_state) {
+    ((AutoCloseable)__omnivm_stream_obj).close();
+  }
+  omnivm.OmniVM.setCaptureObject("%s", null);
+} catch (Exception __omnivm_err) {
+  throw new RuntimeException(__omnivm_err);
+}`, base, escapeJavaString(stateVar), escapeJavaString(stateVar))
 }
 
 func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, bool, error) {
