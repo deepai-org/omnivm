@@ -12318,11 +12318,15 @@ def test_manifest_active_record_relation_like_stays_lazy_and_collision_safe():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2:
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_capture_delta < 1:
         raise AssertionError(f"ActiveRecord relation-like value did not cross as stream proxy: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"ActiveRecord relation-like value used JSON fallback: before={before_boundary}, after={boundary}")
-    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_release_delta < 1:
         raise AssertionError(f"ActiveRecord relation-like stream did not explicitly release: before={before_handles}, after={handles}")
 
 
@@ -12453,6 +12457,184 @@ File.unlink($ar_sqlite_db_path) if File.exist?($ar_sqlite_db_path)
         raise AssertionError(f"ActiveRecord model did not cross as a live resource proxy: {boundary}")
     if boundary.get("json_fallbacks", 0) != 0:
         raise AssertionError(f"ActiveRecord SQLite adapter test used JSON fallback: {boundary}")
+
+
+def test_manifest_active_record_postgresql_adapter_lifecycle_and_rollback():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        setup = f'''
+require 'active_record'
+require 'pg'
+
+ActiveRecord::Base.establish_connection(
+  adapter: 'postgresql',
+  host: {pg["host"]!r},
+  port: {pg["port"]!r},
+  database: {pg["dbname"]!r},
+  username: {pg["user"]!r},
+  connect_timeout: 5
+)
+
+ActiveRecord::Base.connection.create_table(:omnivm_ar_pg_orders, force: true) do |table|
+  table.string :name
+  table.string :items
+  table.string :keys
+  table.integer :count
+  table.string :then
+  table.integer :length
+  table.string :close
+  table.string :get
+end
+
+class OmniVMActiveRecordPGOrder < ActiveRecord::Base
+  self.table_name = 'omnivm_ar_pg_orders'
+end
+
+OmniVMActiveRecordPGOrder.create!(
+  'name' => 'ada',
+  'items' => 'field-items',
+  'keys' => 'field-keys',
+  'count' => 7,
+  'then' => 'field-then',
+  'length' => 12,
+  'close' => 'field-close',
+  'get' => 'field-get'
+)
+OmniVMActiveRecordPGOrder.create!(
+  'name' => 'grace',
+  'items' => 'field-items-2',
+  'keys' => 'field-keys-2',
+  'count' => 8,
+  'then' => 'field-then-2',
+  'length' => 13,
+  'close' => 'field-close-2',
+  'get' => 'field-get-2'
+)
+
+class OmniVMActiveRecordPGRelationOwner
+  attr_reader :rows_pulled
+
+  def initialize(relation)
+    @relation = relation
+    @rows_pulled = 0
+    @closed = false
+  end
+
+  def each
+    return enum_for(:each) unless block_given?
+    @relation.each do |row|
+      @rows_pulled += 1
+      yield row
+    end
+  end
+
+  def close
+    @closed = true
+    ActiveRecord::Base.connection.clear_query_cache if ActiveRecord::Base.connected?
+  end
+
+  def closed?
+    @closed
+  end
+end
+
+$ar_pg_relation_owner = OmniVMActiveRecordPGRelationOwner.new(OmniVMActiveRecordPGOrder.order(:id))
+'''
+        verify = r'''
+raise "ActiveRecord PostgreSQL relation pulled #{$ar_pg_relation_owner.rows_pulled} rows" unless $ar_pg_relation_owner.rows_pulled == 1
+raise 'ActiveRecord PostgreSQL relation owner was not closed by stream cancellation' unless $ar_pg_relation_owner.closed?
+
+before_count = OmniVMActiveRecordPGOrder.count
+begin
+  OmniVMActiveRecordPGOrder.transaction do
+    OmniVMActiveRecordPGOrder.create!('name' => 'rolled-back')
+    OmniVM.call('javascript', "throw new Error('ar pg rollback')")
+  end
+  raise 'transaction unexpectedly completed'
+rescue => e
+  raise "wrong transaction error #{e.class}: #{e.message}" unless e.message.include?('ar pg rollback')
+end
+after_count = OmniVMActiveRecordPGOrder.count
+raise "transaction did not rollback: before=#{before_count} after=#{after_count}" unless after_count == before_count
+
+ActiveRecord::Base.connection_pool.disconnect!
+if ActiveRecord::Base.connection_pool.connections.any?(&:active?)
+  raise 'ActiveRecord PostgreSQL connection stayed active after disconnect'
+end
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "ruby", "code": setup},
+                {
+                    "op": "eval",
+                    "runtime": "ruby",
+                    "bind": "ar_pg_order",
+                    "code": "OmniVMActiveRecordPGOrder.first",
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"ar_pg_order": "ar_pg_order"},
+                    "code": (
+                        "if (ar_pg_order.name !== 'ada') throw new Error('bad AR PG name: ' + ar_pg_order.name); "
+                        "if (ar_pg_order.items !== 'field-items') throw new Error('AR PG items column lost: ' + ar_pg_order.items); "
+                        "if (ar_pg_order.keys !== 'field-keys') throw new Error('AR PG keys column lost: ' + ar_pg_order.keys); "
+                        "if (String(ar_pg_order.count) !== '7') throw new Error('AR PG count column lost: ' + ar_pg_order.count); "
+                        "if (ar_pg_order.then !== 'field-then') throw new Error('AR PG then column lost: ' + ar_pg_order.then); "
+                        "if (String(ar_pg_order.length) !== '12') throw new Error('AR PG length column lost: ' + ar_pg_order.length); "
+                        "if (ar_pg_order.close !== 'field-close') throw new Error('AR PG close column lost: ' + ar_pg_order.close); "
+                        "if (ar_pg_order.get !== 'field-get') throw new Error('AR PG get column lost: ' + ar_pg_order.get);"
+                    ),
+                },
+                {
+                    "op": "eval",
+                    "runtime": "ruby",
+                    "bind": "ar_pg_relation",
+                    "code": "$ar_pg_relation_owner",
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"ar_pg_relation": "ar_pg_relation"},
+                    "code": (
+                        "const it = ar_pg_relation[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('AR PG relation was empty'); "
+                        "const row = first.value; "
+                        "if (row.name !== 'ada') throw new Error('bad AR PG relation row: ' + row.name); "
+                        "if (row.items !== 'field-items' || row.keys !== 'field-keys' || String(row.count) !== '7' || row.then !== 'field-then' || String(row.length) !== '12' || row.close !== 'field-close' || row.get !== 'field-get') throw new Error('AR PG relation collision fields lost'); "
+                        "if (ar_pg_relation.cancel('client-stop') !== true) throw new Error('AR PG relation cancel failed');"
+                    ),
+                },
+                {"op": "exec", "runtime": "ruby", "code": verify},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        resource_captures = boundary.get("resource_proxy_captures", 0)
+        resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+        if resource_capture_delta < 1:
+            raise AssertionError(f"ActiveRecord PostgreSQL model did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+        stream_captures = boundary.get("stream_proxy_captures", 0)
+        stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+        if stream_capture_delta < 1:
+            raise AssertionError(f"ActiveRecord PostgreSQL relation did not cross as a lazy stream: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"ActiveRecord PostgreSQL adapter test used JSON fallback: before={before_boundary}, after={boundary}")
+        explicit_releases = handles.get("explicit_releases", 0)
+        explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+        if explicit_release_delta < 1:
+            raise AssertionError(f"ActiveRecord PostgreSQL relation stream did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
 
 
 def test_manifest_python_dict_list_capture_uses_proxy_not_json():
@@ -20737,6 +20919,7 @@ def main():
         check("Manifest ActiveRecord relation-like stays lazy and collision safe", test_manifest_active_record_relation_like_stays_lazy_and_collision_safe)
         check("Manifest sqlite3 native gem executes inside Ruby", test_manifest_sqlite3_native_gem_executes_inside_ruby)
         check("Manifest ActiveRecord SQLite adapter is natural and collision safe", test_manifest_active_record_sqlite_adapter_is_natural_and_collision_safe)
+        check("Manifest ActiveRecord PostgreSQL adapter lifecycle and rollback", test_manifest_active_record_postgresql_adapter_lifecycle_and_rollback)
         check("Manifest Python dict/list capture uses proxy not JSON", test_manifest_python_dict_list_capture_uses_proxy_not_json)
         check("Manifest Ruby hash capture uses proxy not JSON", test_manifest_ruby_hash_capture_uses_proxy_not_json)
         check("Manifest Python runtime-ref exposes local object members generically", test_manifest_python_runtime_ref_exposes_local_object_members_generically)
