@@ -8332,6 +8332,119 @@ pg_loop.close()
         stop_postgres()
 
 
+def test_manifest_psycopg_server_side_cursor_early_cancel_closes_owner():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        conninfo = " ".join(f"{key}={value}" for key, value in pg.items())
+        setup = f'''
+import psycopg
+
+pg_server_cursor_conninfo = {conninfo!r}
+
+def pg_server_cursor_text(value):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8")
+    return str(value)
+
+class PsycopgServerSideCursorOwner:
+    def __init__(self, name):
+        self.name = name
+        self.conn = psycopg.connect(pg_server_cursor_conninfo)
+        self.cursor = self.conn.cursor(name=name)
+        self.cursor.itersize = 64
+        self.cursor.execute("""
+            SELECT n, 'row-' || n::text AS label
+            FROM generate_series(1, 5000) AS n
+            ORDER BY n
+        """)
+        self.rows_pulled = 0
+        self.closed = False
+        self.rollback_done = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.cursor)
+        self.rows_pulled += 1
+        return {{"n": int(row[0]), "label": pg_server_cursor_text(row[1])}}
+
+    def close(self):
+        self.closed = True
+        try:
+            self.cursor.close()
+        finally:
+            try:
+                self.conn.rollback()
+                self.rollback_done = True
+            finally:
+                self.conn.close()
+
+    @property
+    def cursor_closed(self):
+        return self.cursor.closed
+
+    @property
+    def connection_closed(self):
+        return self.conn.closed
+
+psycopg_server_cursor_js = PsycopgServerSideCursorOwner("omnivm_server_cursor_js")
+'''
+        verify = r'''
+if psycopg_server_cursor_js.rows_pulled != 1:
+    raise AssertionError(f"psycopg server-side cursor pulled {psycopg_server_cursor_js.rows_pulled} rows instead of one")
+if not psycopg_server_cursor_js.closed:
+    raise AssertionError("psycopg server-side cursor owner was not closed by stream cancellation")
+if not psycopg_server_cursor_js.cursor_closed:
+    raise AssertionError("psycopg server-side cursor remained open after stream cancellation")
+if not psycopg_server_cursor_js.connection_closed:
+    raise AssertionError("psycopg server-side cursor connection remained open after stream cancellation")
+if not psycopg_server_cursor_js.rollback_done:
+    raise AssertionError("psycopg server-side cursor transaction was not rolled back on close")
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "python", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"psycopg_server_cursor_js": "psycopg_server_cursor_js"},
+                    "code": (
+                        "const it = psycopg_server_cursor_js[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('psycopg server-side cursor was empty'); "
+                        "if (first.value.n !== 1) throw new Error('bad psycopg server-side cursor row number: ' + first.value.n); "
+                        "if (first.value.label !== 'row-1') throw new Error('bad psycopg server-side cursor label: ' + first.value.label); "
+                        "if (psycopg_server_cursor_js.cancel('client-stop') !== true) throw new Error('psycopg server-side cursor cancel failed');"
+                    ),
+                },
+                {"op": "exec", "runtime": "python", "code": verify},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        stream_captures = boundary.get("stream_proxy_captures", 0)
+        stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+        if stream_captures < 1 and stream_capture_delta < 1:
+            raise AssertionError(f"psycopg server-side cursor did not cross as a lazy stream: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"psycopg server-side cursor used JSON fallback: before={before_boundary}, after={boundary}")
+        explicit_releases = handles.get("explicit_releases", 0)
+        explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+        if explicit_releases < 1 and explicit_release_delta < 1:
+            raise AssertionError(f"psycopg server-side cursor stream did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
+
+
 def test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback():
     pg, stop_postgres = start_postgres_fixture()
     try:
@@ -20504,6 +20617,7 @@ def main():
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
+        check("Manifest psycopg server-side cursor early cancel closes owner", test_manifest_psycopg_server_side_cursor_early_cancel_closes_owner)
         check("Manifest SQLAlchemy async Result and AsyncSession lifecycle", test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
