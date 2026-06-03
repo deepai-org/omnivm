@@ -1221,6 +1221,28 @@ globalThis.__omnivm_proxy_handle_id = globalThis.__omnivm_proxy_handle_id || fun
   if (descriptor && descriptor.id != null) return descriptor.id;
   return obj && obj.id;
 };
+if (typeof omnivm !== 'undefined' && omnivm) {
+  if (typeof omnivm.proxyGet !== 'function') {
+    Object.defineProperty(omnivm, "proxyGet", {
+      configurable: true,
+      value: function(value, key, defaultValue) {
+        if (value && typeof value.__omnivm_get === 'function') return value.__omnivm_get(key, defaultValue);
+        if (value != null && Object.prototype.hasOwnProperty.call(Object(value), key)) return value[key];
+        return defaultValue;
+      }
+    });
+  }
+  if (typeof omnivm.proxyLen !== 'function') {
+    Object.defineProperty(omnivm, "proxyLen", {
+      configurable: true,
+      value: function(value, defaultValue) {
+        if (value && typeof value.__omnivm_len === 'function') return value.__omnivm_len(defaultValue);
+        if (value != null && typeof value.length === 'number') return value.length;
+        return defaultValue;
+      }
+    });
+  }
+}
 globalThis.__omnivm_arg_refs = globalThis.__omnivm_arg_refs || {};
 globalThis.__omnivm_arg_ref_counter = globalThis.__omnivm_arg_ref_counter || 0;
 globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(value) {
@@ -1264,7 +1286,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return Object.prototype.hasOwnProperty.call(obj, prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
-    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "toJSON";
+    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_len" || prop === "toJSON";
   };
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
@@ -1299,17 +1321,24 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       }
     }
   };
+  var bridgeLen = function(defaultValue) {
+    try {
+      return bridge({op: "handle_len"});
+    } catch (_e) {
+      return defaultValue;
+    }
+  };
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
+      if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
+      if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!isIndexedDescriptor()) {
           try {
             if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});
           } catch (_fieldLengthError) {}
         }
-        try {
-          return bridge({op: "handle_len"});
-        } catch (_e) {}
+        return bridgeLen(Reflect.get(obj, prop, receiver));
       }
       if (hasLocalProp(obj, prop)) return Reflect.get(obj, prop, receiver);
       if (prop !== 'toJSON' && prop !== Symbol.toStringTag && prop !== Symbol.iterator) {

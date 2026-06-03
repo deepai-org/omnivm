@@ -13733,7 +13733,11 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (py_payload.items !== 'js-items') throw new Error('bad items key: ' + py_payload.items); "
                     "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then); "
                     "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
+                    "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
+                    "if (omnivm.proxyLen(py_payload) !== 5) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
                     "py_payload.length = 11; "
+                    "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
+                    "if (omnivm.proxyLen(py_payload) !== 5) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
                     "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },

@@ -4720,6 +4720,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});`) {
 		t.Fatalf("JS materializer should prefer remote length fields before collection length on non-indexed proxies, got %q", code)
 	}
+	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") {
+		t.Fatalf("JS materializer should expose proxy-safe get/len helpers for collision cases, got %q", code)
+	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("JS materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}
