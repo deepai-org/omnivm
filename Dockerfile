@@ -85,6 +85,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       Pillow \
       polars \
       fastapi \
+      Flask \
       beautifulsoup4 \
       pydantic \
       SQLAlchemy \

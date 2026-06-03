@@ -5062,6 +5062,68 @@ if receive_count != 2:
         raise AssertionError(f"Starlette request used JSON fallback: {after_boundary}")
 
 
+def test_manifest_flask_localproxy_request_and_session_stay_live():
+    before_boundary = omnivm.status().get("boundary", {})
+    setup = r'''
+from flask import Flask, request, session
+
+app = Flask("omnivm_flask_probe")
+app.secret_key = "omnivm-secret"
+ctx = app.test_request_context(
+    "/flask/42?mode=poly",
+    method="POST",
+    data=b"hello",
+    headers={"X-Request-Id": "flask-42"},
+)
+ctx.push()
+request_proxy = request
+session_proxy = session
+session_proxy["user_id"] = "u-42"
+'''
+    lifecycle_probe = r'''
+try:
+    body_text = request_proxy.get_data(cache=False).decode()
+    if body_text != "hello":
+        raise AssertionError(f"request body was drained or corrupted: {body_text!r}")
+    if session_proxy.get("user_id") != "u-42":
+        raise AssertionError(f"session value was lost: {dict(session_proxy)!r}")
+    if session_proxy.get("from_js") != "yes":
+        raise AssertionError(f"session mutation from JS did not reach Flask: {dict(session_proxy)!r}")
+finally:
+    ctx.pop()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (req.method !== 'POST') throw new Error('bad Flask method: ' + req.method); "
+                    "if (req.path !== '/flask/42') throw new Error('bad Flask path: ' + req.path); "
+                    "if (req.args.get('mode') !== 'poly') throw new Error('bad Flask query: ' + req.args.get('mode')); "
+                    "if (req.headers.get('X-Request-Id') !== 'flask-42') throw new Error('bad Flask header: ' + req.headers.get('X-Request-Id')); "
+                    "if (sess.user_id !== 'u-42') throw new Error('bad Flask session: ' + sess.user_id); "
+                    "sess.from_js = 'yes';"
+                ),
+                "captures": {"req": "request_proxy", "sess": "session_proxy"},
+            },
+            {"op": "exec", "runtime": "python", "code": lifecycle_probe},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_boundary = omnivm.status().get("boundary", {})
+    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
+        raise AssertionError(f"Flask request/session did not cross as live proxies: {after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Flask request/session crossed as a stream: {after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Flask request/session used JSON fallback: {after_boundary}")
+
+
 def test_manifest_django_queryset_transaction_rollback_cross_runtime():
     before = omnivm.status()
     setup = r'''
@@ -13232,6 +13294,7 @@ def main():
         check("Manifest Django request capture uses proxy not JSON", test_manifest_django_request_capture_uses_proxy_not_json)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
+        check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
