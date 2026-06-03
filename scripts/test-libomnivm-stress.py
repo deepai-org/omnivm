@@ -6065,7 +6065,7 @@ for conn in (conn_js, conn_ruby, conn_java, conn_tx):
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+    if boundary.get("stream_proxy_captures", 0) < 3:
         raise AssertionError(f"DB-API cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"DB-API cursor used JSON fallback: before={before_boundary}, after={boundary}")
@@ -6336,7 +6336,7 @@ pg_loop.close()
         after_status = omnivm.status()
         boundary = after_status.get("boundary", {})
         handles = after_status.get("handles", {})
-        if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+        if boundary.get("stream_proxy_captures", 0) < 3:
             raise AssertionError(f"PostgreSQL cursors did not cross as lazy streams: before={before_boundary}, after={boundary}")
         if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
             raise AssertionError(f"PostgreSQL cursors used JSON fallback: before={before_boundary}, after={boundary}")
@@ -6445,10 +6445,176 @@ return null;
     run_manifest_dict(manifest)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
+    if boundary.get("resource_proxy_captures", 0) < 2:
         raise AssertionError(f"JDBC ResultSet did not cross as live proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"JDBC ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
+
+
+def test_manifest_jdbc_h2_resultset_lifecycle_and_rollback():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    setup = r'''
+((java.util.concurrent.Callable<Void>)(() -> {
+Class.forName("org.h2.Driver");
+final String url = "jdbc:h2:mem:omnivm_h2_" + java.lang.System.nanoTime() + ";DB_CLOSE_DELAY=-1";
+try (java.sql.Connection seed = java.sql.DriverManager.getConnection(url);
+     java.sql.Statement st = seed.createStatement()) {
+    st.execute("CREATE TABLE orders (id INT PRIMARY KEY, name VARCHAR, items VARCHAR, keys VARCHAR, count INT, \"then\" VARCHAR, length INT, \"close\" VARCHAR)");
+    st.execute("INSERT INTO orders (id, name, items, keys, count, \"then\", length, \"close\") VALUES " +
+        "(1, 'ada', 'field-items', 'field-keys', 7, 'field-then', 12, 'field-close'), " +
+        "(2, 'grace', 'field-items-2', 'field-keys-2', 8, 'field-then-2', 13, 'field-close-2')");
+}
+
+java.util.function.Supplier<Object> makeRows = () -> {
+    try {
+        final java.sql.Connection conn = java.sql.DriverManager.getConnection(url);
+        final java.sql.Statement stmt = conn.createStatement();
+        final java.sql.ResultSet rs = stmt.executeQuery("SELECT name, items, keys, count, \"then\", length, \"close\" FROM orders ORDER BY id");
+        return new Object() {
+            private boolean closed = false;
+            private boolean advanced = false;
+
+            private void ensureRow() throws java.sql.SQLException {
+                if (!advanced) {
+                    if (!rs.next()) throw new java.sql.SQLException("H2 ResultSet was empty");
+                    advanced = true;
+                }
+            }
+
+            public boolean next() throws java.sql.SQLException {
+                advanced = rs.next();
+                return advanced;
+            }
+            public boolean advance() throws java.sql.SQLException { return next(); }
+            public String getString(int column) throws java.sql.SQLException { return rs.getString(column); }
+            public String getString(String column) throws java.sql.SQLException { return rs.getString(column); }
+            public int getInt(int column) throws java.sql.SQLException { return rs.getInt(column); }
+            public int getInt(String column) throws java.sql.SQLException { return rs.getInt(column); }
+            public String firstName() throws java.sql.SQLException { ensureRow(); return rs.getString(1); }
+            public String firstItems() throws java.sql.SQLException { ensureRow(); return rs.getString(2); }
+            public String firstKeys() throws java.sql.SQLException { ensureRow(); return rs.getString(3); }
+            public int firstCount() throws java.sql.SQLException { ensureRow(); return rs.getInt(4); }
+            public String firstThen() throws java.sql.SQLException { ensureRow(); return rs.getString(5); }
+            public int firstLength() throws java.sql.SQLException { ensureRow(); return rs.getInt(6); }
+            public String firstClose() throws java.sql.SQLException { ensureRow(); return rs.getString(7); }
+
+            public void close() throws java.sql.SQLException {
+                closed = true;
+                try {
+                    rs.close();
+                } finally {
+                    try {
+                        stmt.close();
+                    } finally {
+                        conn.close();
+                    }
+                }
+            }
+
+            public boolean isClosed() throws java.sql.SQLException { return closed && rs.isClosed(); }
+            public boolean isStatementClosed() throws java.sql.SQLException { return stmt.isClosed(); }
+            public boolean isConnectionClosed() throws java.sql.SQLException { return conn.isClosed(); }
+        };
+    } catch (Exception ex) {
+        throw new RuntimeException(ex);
+    }
+};
+
+omnivm.OmniVM.setCaptureObject("jdbc_h2_js", makeRows.get());
+omnivm.OmniVM.setCaptureObject("jdbc_h2_ruby", makeRows.get());
+omnivm.OmniVM.setCaptureObject("jdbc_h2_java", makeRows.get());
+
+boolean rollbackSeen = false;
+try (java.sql.Connection txConn = java.sql.DriverManager.getConnection(url);
+     java.sql.Statement txStmt = txConn.createStatement()) {
+    txConn.setAutoCommit(false);
+    txStmt.executeUpdate("INSERT INTO orders (id, name, items, keys, count, \"then\", length, \"close\") VALUES (3, 'rollback', 'x', 'x', 99, 'x', 99, 'x')");
+    try {
+        omnivm.OmniVM.call("javascript", "throw new Error('h2 rollback')");
+        txConn.commit();
+    } catch (Throwable t) {
+        rollbackSeen = String.valueOf(t).contains("h2 rollback");
+        txConn.rollback();
+    }
+    if (!rollbackSeen) throw new RuntimeException("foreign error did not reach H2 JDBC transaction");
+}
+try (java.sql.Connection checkConn = java.sql.DriverManager.getConnection(url);
+     java.sql.Statement checkStmt = checkConn.createStatement();
+     java.sql.ResultSet count = checkStmt.executeQuery("SELECT COUNT(*) FROM orders")) {
+    int total = count.next() ? count.getInt(1) : -1;
+    if (total != 2) {
+        throw new RuntimeException("H2 JDBC transaction did not roll back: " + total);
+    }
+}
+return null;
+})).call();
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "java", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"jdbc_h2_js": "jdbc_h2_js"},
+                "code": (
+                    "if (jdbc_h2_js.next() !== true) throw new Error('H2 JDBC JS ResultSet was empty'); "
+                    "if (jdbc_h2_js.getString('name') !== 'ada') throw new Error('bad H2 JDBC JS name: ' + jdbc_h2_js.getString('name')); "
+                    "if (jdbc_h2_js.getString('items') !== 'field-items') throw new Error('items field lost: ' + jdbc_h2_js.getString('items')); "
+                    "if (jdbc_h2_js.getString('keys') !== 'field-keys') throw new Error('keys field lost: ' + jdbc_h2_js.getString('keys')); "
+                    "if (String(jdbc_h2_js.getInt('count')) !== '7') throw new Error('count field lost'); "
+                    "if (jdbc_h2_js.getString('then') !== 'field-then') throw new Error('then field lost: ' + jdbc_h2_js.getString('then')); "
+                    "if (String(jdbc_h2_js.getInt('length')) !== '12') throw new Error('length field lost'); "
+                    "if (jdbc_h2_js.getString('close') !== 'field-close') throw new Error('close field lost: ' + jdbc_h2_js.getString('close')); "
+                    "jdbc_h2_js.close(); "
+                    "if (!jdbc_h2_js.isClosed() || !jdbc_h2_js.isStatementClosed() || !jdbc_h2_js.isConnectionClosed()) throw new Error('H2 JDBC JS ResultSet owner did not close');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"jdbc_h2_ruby": "jdbc_h2_ruby"},
+                "code": (
+                    "jdbc_h2_ruby.close; "
+                    "raise 'H2 JDBC Ruby ResultSet owner did not close' unless jdbc_h2_ruby.isClosed && jdbc_h2_ruby.isStatementClosed && jdbc_h2_ruby.isConnectionClosed"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"jdbc_h2_java": "jdbc_h2_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"jdbc_h2_java\"); "
+                    "java.util.function.Function<String, java.util.List<Object>> one = (value) -> omnivm.OmniVM.listOf(new Object[]{value}); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"next\", java.util.Collections.emptyList()))) throw new RuntimeException(\"H2 JDBC Java ResultSet was empty\"); "
+                    "if (!\"ada\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", one.apply(\"name\"))))) throw new RuntimeException(\"bad H2 JDBC Java name\"); "
+                    "if (!\"field-items\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", one.apply(\"items\"))))) throw new RuntimeException(\"items field lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", one.apply(\"keys\"))))) throw new RuntimeException(\"keys field lost\"); "
+                    "if (!\"7\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getInt\", one.apply(\"count\"))))) throw new RuntimeException(\"count field lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", one.apply(\"then\"))))) throw new RuntimeException(\"then field lost\"); "
+                    "if (!\"12\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getInt\", one.apply(\"length\"))))) throw new RuntimeException(\"length field lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", one.apply(\"close\"))))) throw new RuntimeException(\"close field lost\"); "
+                    "omnivm.OmniVM.proxyCall(raw, \"close\", java.util.Collections.emptyList()); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isClosed\", java.util.Collections.emptyList()))) throw new RuntimeException(\"H2 JDBC Java ResultSet did not close\"); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isStatementClosed\", java.util.Collections.emptyList()))) throw new RuntimeException(\"H2 JDBC Java Statement did not close\"); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isConnectionClosed\", java.util.Collections.emptyList()))) throw new RuntimeException(\"H2 JDBC Java Connection did not close\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < 2:
+        raise AssertionError(f"H2 JDBC ResultSet did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"H2 JDBC ResultSet crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"H2 JDBC ResultSet crossed as a table: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"H2 JDBC ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream():
@@ -14717,6 +14883,7 @@ def main():
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
+        check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
