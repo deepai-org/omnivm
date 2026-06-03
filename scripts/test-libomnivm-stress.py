@@ -8016,6 +8016,41 @@ def test_manifest_active_record_relation_like_stays_lazy_and_collision_safe():
         raise AssertionError(f"ActiveRecord relation-like stream did not explicitly release: before={before_handles}, after={handles}")
 
 
+def test_manifest_sqlite3_native_gem_executes_inside_ruby():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": r'''
+require 'sqlite3'
+
+$sqlite_db_path = "/tmp/omnivm-sqlite3-native-#{Process.pid}-#{Time.now.to_i}.sqlite3"
+File.unlink($sqlite_db_path) if File.exist?($sqlite_db_path)
+$sqlite_db = SQLite3::Database.new($sqlite_db_path)
+$sqlite_db.execute('CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, count INTEGER)')
+$sqlite_db.execute('INSERT INTO rows (name, count) VALUES (?, ?)', ['ada', 7])
+row = $sqlite_db.execute('SELECT name, count FROM rows ORDER BY id')[0]
+raise "bad sqlite3 row #{row.inspect}" unless row == ['ada', 7]
+answer = OmniVM.call('javascript', 'String(21 * 2)')
+raise "bad nested callback #{answer.inspect}" unless answer == '42'
+$sqlite_db.close
+''',
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"sqlite3 native gem test used JSON fallback: before={before_boundary}, after={boundary}")
+
+
 def test_manifest_python_dict_list_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -12900,6 +12935,7 @@ def main():
         check("Manifest Python set capture uses proxy not stream", test_manifest_python_set_capture_uses_proxy_not_stream)
         check("Manifest Java set capture uses proxy not stream", test_manifest_java_set_capture_uses_proxy_not_stream)
         check("Manifest ActiveRecord relation-like stays lazy and collision safe", test_manifest_active_record_relation_like_stays_lazy_and_collision_safe)
+        check("Manifest sqlite3 native gem executes inside Ruby", test_manifest_sqlite3_native_gem_executes_inside_ruby)
         check("Manifest Python dict/list capture uses proxy not JSON", test_manifest_python_dict_list_capture_uses_proxy_not_json)
         check("Manifest Ruby hash capture uses proxy not JSON", test_manifest_ruby_hash_capture_uses_proxy_not_json)
         check("Manifest Python runtime-ref exposes local object members generically", test_manifest_python_runtime_ref_exposes_local_object_members_generically)

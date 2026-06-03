@@ -44,16 +44,17 @@ RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -r
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 
 # ---- Ruby dev ----
-RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri ruby-rack && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ruby-dev ruby-nokogiri ruby-rack libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri.rb"), File.join(site, "nokogiri.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "nokogiri"), File.join(site, "nokogiri")); FileUtils.ln_sf(File.join(spec.extension_dir, "nokogiri", "nokogiri.so"), File.join(site, "nokogiri", "nokogiri.so"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
-RUN gem install activerecord --no-document
+RUN gem install activerecord sqlite3 --no-document
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activesupport"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support.rb"), File.join(site, "active_support.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support"), File.join(site, "active_support"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activemodel"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model.rb"), File.join(site, "active_model.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model"), File.join(site, "active_model"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activerecord"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record.rb"), File.join(site, "active_record.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record"), File.join(site, "active_record")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel.rb"), File.join(site, "arel.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel"), File.join(site, "arel"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("sqlite3"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "sqlite3.rb"), File.join(site, "sqlite3.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "sqlite3"), File.join(site, "sqlite3")); native = Dir[File.join(spec.extension_dir, "**", "*.so")].first; if native; FileUtils.mkdir_p(File.join(site, "sqlite3")); FileUtils.ln_sf(native, File.join(site, "sqlite3", File.basename(native))); end'
 
 # ---- JDK (full — needed for javax.tools.JavaCompiler) ----
 RUN apt-get update && apt-get install -y default-jdk && rm -rf /var/lib/apt/lists/*
@@ -263,17 +264,19 @@ RUN apt-get update && apt-get install -y \
     npm \
     build-essential \
     binutils-gold \
+    libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/* && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 && \
     ln -sf /usr/bin/python3.14 /usr/local/bin/python3
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
-RUN gem install activerecord --no-document
+RUN gem install activerecord sqlite3 --no-document
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activesupport"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support.rb"), File.join(site, "active_support.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_support"), File.join(site, "active_support"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activemodel"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model.rb"), File.join(site, "active_model.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_model"), File.join(site, "active_model"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("activerecord"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record.rb"), File.join(site, "active_record.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "active_record"), File.join(site, "active_record")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel.rb"), File.join(site, "arel.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "arel"), File.join(site, "arel"))'
+RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("sqlite3"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "sqlite3.rb"), File.join(site, "sqlite3.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "sqlite3"), File.join(site, "sqlite3")); native = Dir[File.join(spec.extension_dir, "**", "*.so")].first; if native; FileUtils.mkdir_p(File.join(site, "sqlite3")); FileUtils.ln_sf(native, File.join(site, "sqlite3", File.basename(native))); end'
 
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go

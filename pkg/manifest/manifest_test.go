@@ -7139,8 +7139,11 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefPropertyExpr ruby: ok=%v err=%v", ok, err)
 	}
-	if !strings.Contains(rubyProp, "__o.respond_to?(:key?) && __o.key?(__k) ? __o[__k]") || strings.Index(rubyProp, "__o[__k]") > strings.Index(rubyProp, "public_send") {
+	if !strings.Contains(rubyProp, "respond_to?(:key?)") || !strings.Contains(rubyProp, "__o.key?(__k)") || strings.Index(rubyProp, "__o[__k]") > strings.Index(rubyProp, "public_send") {
 		t.Fatalf("ruby property lookup should prefer mapping keys before methods, got %q", rubyProp)
+	}
+	if !strings.Contains(rubyProp, "has_attribute?") || strings.Index(rubyProp, "has_attribute?") > strings.Index(rubyProp, "public_send") {
+		t.Fatalf("ruby property lookup should prefer ActiveRecord attributes before methods, got %q", rubyProp)
 	}
 
 	pythonCallable, ok, err := runtimeRefCallableExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
@@ -7178,6 +7181,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(rubyCode, "__k.to_i") || !strings.Contains(rubyCode, "each_with_index") {
 		t.Fatalf("ruby RuntimeRef set should coerce numeric sequence keys with generic shape checks, got %q", rubyCode)
+	}
+	if !strings.Contains(rubyCode, "has_attribute?") || strings.Index(rubyCode, "has_attribute?") > strings.Index(rubyCode, "public_send") {
+		t.Fatalf("ruby RuntimeRef set should prefer ActiveRecord attributes before setters, got %q", rubyCode)
 	}
 
 	pythonContains, ok, err := runtimeRefContainsExpr(RuntimeRef{Runtime: "python", VarName: "items"}, "0")
