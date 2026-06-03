@@ -19247,6 +19247,122 @@ finally:
         )
 
 
+def test_prefork_worker_reload_releases_failed_manifest_call_args():
+    code = r"""
+import builtins
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+
+class RequestLike:
+    def __init__(self, path):
+        self.path = path
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+manifest = {
+    "version": 1,
+    "defaultRuntime": "python",
+    "ops": [
+        {
+            "op": "func_def",
+            "name": "handle_request",
+            "params": [{"name": "request"}],
+            "body": [
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "code": (
+                        "if (request.path !== '/failed-call') throw new Error('bad request path: ' + request.path); "
+                        "if (request.closed !== false) throw new Error('request closed too early'); "
+                        "throw new Error('intentional failed request');"
+                    ),
+                }
+            ],
+        }
+    ],
+}
+
+fd, manifest_path = tempfile.mkstemp(suffix=".manifest.json")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    pids = []
+    for worker_id in range(3):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                omnivm.init_runtimes(["javascript"])
+                module_id = f"failed-call-{worker_id}"
+                omnivm.load_manifest_module(module_id, manifest_path)
+                request = RequestLike("/failed-call")
+
+                failed = False
+                try:
+                    omnivm.manifest_call(module_id, "handle_request", args=(request,))
+                except omnivm.RuntimeError as exc:
+                    failed = "intentional failed request" in str(exc)
+                if not failed:
+                    raise AssertionError("failed manifest request did not report the JavaScript error")
+
+                refs = getattr(builtins, "__omnivm_arg_refs", {})
+                if refs:
+                    raise AssertionError(f"failed manifest call leaked retained Python arg refs: {refs!r}")
+
+                status_after_failure = omnivm.status()
+                live_after_failure = status_after_failure["handles"]["live"]
+                if live_after_failure != 0:
+                    raise AssertionError(f"failed manifest call leaked live handles: {status_after_failure}")
+
+                request.close()
+                omnivm.drain_worker()
+                status_after_drain = omnivm.status()
+                if status_after_drain["handles"]["live"] != 0:
+                    raise AssertionError(f"worker drain left live handles after failed call: {status_after_drain}")
+
+                omnivm.shutdown()
+                os._exit(0)
+            except Exception as exc:
+                print(exc, file=sys.stderr)
+                os._exit(1)
+        pids.append(pid)
+
+    failures = []
+    for pid in pids:
+        _, status = os.waitpid(pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        if rc != 0:
+            failures.append((pid, rc))
+    if failures:
+        print(failures, file=sys.stderr)
+        raise SystemExit(1)
+finally:
+    try:
+        os.unlink(manifest_path)
+    except FileNotFoundError:
+        pass
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"prefork worker failed-call arg cleanup exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def test_ruby_bootstrap_core_surface():
     got = omnivm.call(
         "ruby",
@@ -19707,6 +19823,7 @@ def main():
     check("OmniVM Python interpreter mode exposes typed bridge", test_omnivm_python_interpreter_mode_exposes_typed_bridge)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     check("Prefork worker reload unloads manifest handles", test_prefork_worker_reload_unloads_manifest_handles)
+    check("Prefork worker reload releases failed manifest call args", test_prefork_worker_reload_releases_failed_manifest_call_args)
     if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:
         print("\nResults: 0 selected, no tests matched filters")
         return 2
