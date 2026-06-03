@@ -14046,7 +14046,16 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
         raise AssertionError(f"collision-key mapping setters should record proxy mutations: {handles}")
 
 
-def test_manifest_js_sequence_length_set_rejects_local_shadow():
+def test_manifest_js_sequence_length_set_resizes_mutable_sources():
+    java_values_expr = (
+        "((java.util.function.Supplier<java.util.ArrayList<String>>)(() -> { "
+        "java.util.ArrayList<String> values = new java.util.ArrayList<>(); "
+        "values.add(\"java-a\"); "
+        "values.add(\"java-b\"); "
+        "values.add(\"java-c\"); "
+        "return values; "
+        "})).get()"
+    )
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -14058,18 +14067,59 @@ def test_manifest_js_sequence_length_set_rejects_local_shadow():
                 "bind": "py_values",
             },
             {
+                "op": "eval",
+                "runtime": "python",
+                "code": "('fixed-a', 'fixed-b', 'fixed-c')",
+                "bind": "py_fixed",
+            },
+            {
+                "op": "eval",
+                "runtime": "ruby",
+                "code": "['ruby-a', 'ruby-b', 'ruby-c']",
+                "bind": "rb_values",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "code": java_values_expr,
+                "bind": "java_values",
+            },
+            {
                 "op": "exec",
                 "runtime": "javascript",
-                "captures": {"py_values": "py_values"},
+                "captures": {
+                    "py_values": "py_values",
+                    "py_fixed": "py_fixed",
+                    "rb_values": "rb_values",
+                    "java_values": "java_values",
+                },
                 "code": (
                     "if (py_values.length !== 3) throw new Error('bad initial length: ' + py_values.length); "
+                    "py_values.length = 2; "
+                    "if (py_values.length !== 2 || py_values[0] !== 1 || py_values[1] !== 2) throw new Error('bad Python shrink: ' + py_values.length); "
+                    "py_values.length = 4; "
+                    "if (py_values.length !== 4 || py_values[2] !== null || py_values[3] !== null) throw new Error('bad Python extend: ' + py_values.length + ':' + py_values[2] + ':' + py_values[3]); "
+                    "let fractionalRejected = false; "
+                    "try { (function() { 'use strict'; py_values.length = 1.5; })(); } "
+                    "catch (err) { fractionalRejected = err instanceof TypeError; } "
+                    "if (!fractionalRejected || py_values.length !== 4) throw new Error('fractional length write should reject without shadowing: ' + py_values.length); "
+                    "if (rb_values.length !== 3) throw new Error('bad Ruby initial length: ' + rb_values.length); "
+                    "rb_values.length = 1; "
+                    "if (rb_values.length !== 1 || rb_values[0] !== 'ruby-a') throw new Error('bad Ruby shrink: ' + rb_values.length); "
+                    "rb_values.length = 3; "
+                    "if (rb_values.length !== 3 || rb_values[1] !== null || rb_values[2] !== null) throw new Error('bad Ruby extend: ' + rb_values.length + ':' + rb_values[1] + ':' + rb_values[2]); "
+                    "if (java_values.length !== 3) throw new Error('bad Java initial length: ' + java_values.length); "
+                    "java_values.length = 2; "
+                    "if (java_values.length !== 2 || java_values[0] !== 'java-a' || java_values[1] !== 'java-b') throw new Error('bad Java shrink: ' + java_values.length); "
+                    "java_values.length = 4; "
+                    "if (java_values.length !== 4 || java_values[2] !== null || java_values[3] !== null) throw new Error('bad Java extend: ' + java_values.length + ':' + java_values[2] + ':' + java_values[3]); "
                     "let strictRejected = false; "
-                    "try { (function() { 'use strict'; py_values.length = 1; })(); } "
+                    "try { (function() { 'use strict'; py_fixed.length = 1; })(); } "
                     "catch (err) { strictRejected = err instanceof TypeError; } "
                     "if (!strictRejected) throw new Error('strict length assignment should reject unsupported remote resize'); "
-                    "py_values.length = 1; "
-                    "if (py_values.length !== 3) throw new Error('local length shadow changed sequence length: ' + py_values.length); "
-                    "if (omnivm.proxyLen(py_values) !== 3) throw new Error('proxyLen changed after rejected resize: ' + omnivm.proxyLen(py_values)); "
+                    "py_fixed.length = 1; "
+                    "if (py_fixed.length !== 3) throw new Error('local length shadow changed tuple length: ' + py_fixed.length); "
+                    "if (omnivm.proxyLen(py_fixed) !== 3) throw new Error('proxyLen changed after rejected tuple resize: ' + omnivm.proxyLen(py_fixed)); "
                     "py_values[0] = 10; "
                     "if (py_values[0] !== 10) throw new Error('indexed mutation failed after rejected resize: ' + py_values[0]);"
                 ),
@@ -14077,7 +14127,24 @@ def test_manifest_js_sequence_length_set_rejects_local_shadow():
             {
                 "op": "exec",
                 "runtime": "python",
-                "code": "assert py_values == [10, 2, 3], py_values",
+                "code": (
+                    "assert py_values == [10, 2, None, None], py_values\n"
+                    "assert py_fixed == ('fixed-a', 'fixed-b', 'fixed-c'), py_fixed"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": "raise \"bad Ruby values #{rb_values.inspect}\" unless rb_values == ['ruby-a', nil, nil]",
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "java.util.List values = (java.util.List) omnivm.OmniVM.getCapture(\"java_values\"); "
+                    "if (values.size() != 4 || !\"java-a\".equals(values.get(0)) || !\"java-b\".equals(values.get(1)) || values.get(2) != null || values.get(3) != null) "
+                    "throw new RuntimeException(\"bad Java values after length resize: \" + values);"
+                ),
             },
         ],
     }
@@ -14085,12 +14152,12 @@ def test_manifest_js_sequence_length_set_rejects_local_shadow():
 
     boundary = omnivm.status().get("boundary", {})
     handles = omnivm.status().get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
+    if boundary.get("resource_proxy_captures", 0) < 4:
         raise AssertionError(f"sequence length collision should use a live proxy: {boundary}")
     if boundary.get("json_fallbacks", 0) != 0:
         raise AssertionError(f"sequence length collision used JSON fallback: {boundary}")
     accesses = handles.get("handle_accesses_by_kind", {})
-    if accesses.get("length", 0) < 1 or accesses.get("mutation", 0) < 1:
+    if accesses.get("length", 0) < 4 or accesses.get("mutation", 0) < 5:
         raise AssertionError(f"sequence length collision did not record length and mutation access: {handles}")
 
 
@@ -15654,7 +15721,7 @@ def main():
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
-        check("Manifest JS sequence length set rejects local shadow", test_manifest_js_sequence_length_set_rejects_local_shadow)
+        check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)

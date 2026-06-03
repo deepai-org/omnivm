@@ -387,6 +387,19 @@ public class OmniVM {
             map.put(key, value);
             return true;
         }
+        if (target instanceof List list && "length".equals(key)) {
+            Integer nextSize = numericIndex(value);
+            if (nextSize == null || nextSize < 0) {
+                return false;
+            }
+            while (list.size() > nextSize) {
+                list.remove(list.size() - 1);
+            }
+            while (list.size() < nextSize) {
+                list.add(null);
+            }
+            return true;
+        }
         if (target instanceof List list && isIntegerKey(key)) {
             int idx = Integer.parseInt(key);
             if (idx >= 0 && idx < list.size()) {

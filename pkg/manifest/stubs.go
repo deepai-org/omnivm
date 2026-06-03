@@ -3175,6 +3175,14 @@ try {
 }`, base, escapeJavaString(stateVar), escapeJavaString(stateVar))
 }
 
+func pythonRuntimeRefSetCode(base, keyLit, valueLit string) string {
+	return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\n__abc = __import__('collections.abc', fromlist=['MutableMapping', 'MutableSequence'])\nif isinstance(__o, __abc.MutableMapping):\n    __o[__k] = __v\nelif __k == 'length' and isinstance(__o, __abc.MutableSequence) and not isinstance(__o, (str, bytes, bytearray)):\n    __n = __import__('operator').index(__v)\n    if __n < 0:\n        raise ValueError('negative length')\n    del __o[__n:]\n    if __n > len(__o):\n        __o.extend([None] * (__n - len(__o)))\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
+}
+
+func rubyRuntimeRefSetCode(base, keyLit, valueLit string) string {
+	return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __k == \"length\" && __o.is_a?(Array); __n = Integer(__v); raise RangeError, \"negative length\" if __n < 0; if __n < __o.length; __o.slice!(__n, __o.length - __n); elsif __n > __o.length; __o.concat(Array.new(__n - __o.length)); end; elsif __o.respond_to?(:has_attribute?) && __o.has_attribute?(__k) && __o.respond_to?(:[]=); __o[__k] = __v; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
+}
+
 func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, bool, error) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
@@ -3189,9 +3197,9 @@ func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, b
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit), true, nil
 	case "python":
-		return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__o, __import__('collections.abc', fromlist=['MutableMapping']).MutableMapping):\n    __o[__k] = __v\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit), true, nil
+		return pythonRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	case "ruby":
-		return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __o.respond_to?(:has_attribute?) && __o.has_attribute?(__k) && __o.respond_to?(:[]=); __o[__k] = __v; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit), true, nil
+		return rubyRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxySet(%s, String.valueOf(%s), %s);", base, keyLit, valueLit), true, nil
 	default:
@@ -3215,9 +3223,9 @@ func (e *Executor) runtimeRefSetCode(ref RuntimeRef, key string, value interface
 	case "javascript":
 		code = fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit)
 	case "python":
-		code = fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__o, __import__('collections.abc', fromlist=['MutableMapping']).MutableMapping):\n    __o[__k] = __v\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
+		code = pythonRuntimeRefSetCode(base, keyLit, valueLit)
 	case "ruby":
-		code = fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __o.respond_to?(:has_attribute?) && __o.has_attribute?(__k) && __o.respond_to?(:[]=); __o[__k] = __v; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
+		code = rubyRuntimeRefSetCode(base, keyLit, valueLit)
 	case "java":
 		code = fmt.Sprintf("omnivm.OmniVM.proxySet(%s, String.valueOf(%s), %s);", base, keyLit, valueLit)
 	default:

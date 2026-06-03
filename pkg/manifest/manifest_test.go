@@ -4720,7 +4720,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});`) {
 		t.Fatalf("JS materializer should prefer remote length fields before collection length on non-indexed proxies, got %q", code)
 	}
-	if !contains(code, `if (prop === 'length' && isIndexedDescriptor())`) || !contains(code, `return false;`) {
+	if !contains(code, `if (prop === 'length' && isIndexedDescriptor())`) || !contains(code, `Number.isInteger(lengthValue)`) || !contains(code, `return false;`) {
 		t.Fatalf("JS materializer should avoid local-only length writes on indexed proxies, got %q", code)
 	}
 	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") {
@@ -7251,6 +7251,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(pythonCode, "MutableMapping") || strings.Index(pythonCode, "__o[__k] = __v") > strings.Index(pythonCode, "hasattr(__o, __k)") {
 		t.Fatalf("python RuntimeRef set should prefer mutable mapping keys before attributes, got %q", pythonCode)
 	}
+	if !strings.Contains(pythonCode, "MutableSequence") || !strings.Contains(pythonCode, "__k == 'length'") || !strings.Contains(pythonCode, "del __o[__n:]") {
+		t.Fatalf("python RuntimeRef set should resize mutable sequences for length writes, got %q", pythonCode)
+	}
 
 	rubyCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "ruby", VarName: "items"}, "0", "updated")
 	if err != nil || !ok {
@@ -7261,6 +7264,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(rubyCode, "has_attribute?") || strings.Index(rubyCode, "has_attribute?") > strings.Index(rubyCode, "public_send") {
 		t.Fatalf("ruby RuntimeRef set should prefer ActiveRecord attributes before setters, got %q", rubyCode)
+	}
+	if !strings.Contains(rubyCode, `__k == "length"`) || !strings.Contains(rubyCode, "__o.is_a?(Array)") || !strings.Contains(rubyCode, "__o.concat(Array.new") {
+		t.Fatalf("ruby RuntimeRef set should resize arrays for length writes, got %q", rubyCode)
 	}
 
 	pythonContains, ok, err := runtimeRefContainsExpr(RuntimeRef{Runtime: "python", VarName: "items"}, "0")
