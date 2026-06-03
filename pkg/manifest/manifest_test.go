@@ -1383,6 +1383,31 @@ func TestResourceCloseExecutesCleanupHook(t *testing.T) {
 	}
 }
 
+func TestResourceCloseReleasesRetainedProxyRefs(t *testing.T) {
+	e, _ := makeExecutor("python")
+	value, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "tx",
+		Kind:    "sqlalchemy.transaction",
+	})
+	if err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	ref := value.(*ResourceRef)
+	if err := e.ensureHandleTable().Retain(ref.ID); err != nil {
+		t.Fatalf("retain resource proxy ref: %v", err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "tx"}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 1 {
+		t.Fatalf("resource close should release all retained refs explicitly, stats=%+v", stats)
+	}
+}
+
 func TestResourceCloseRunsFromFinallyBody(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	m := &Manifest{

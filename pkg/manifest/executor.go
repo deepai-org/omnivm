@@ -1718,7 +1718,7 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 				return nil, fmt.Errorf("resource close cleanup: %w", err)
 			}
 		}
-		if err := e.ensureHandleTable().Release(ref.ID); err != nil {
+		if err := e.ensureHandleTable().ReleaseAllRefs(ref.ID); err != nil {
 			return nil, fmt.Errorf("resource close handle: %w", err)
 		}
 		ref.Closed = true
