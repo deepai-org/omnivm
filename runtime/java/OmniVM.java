@@ -33,10 +33,16 @@ public class OmniVM {
      * @param runtime target runtime name ("python", "javascript", "ruby", "java")
      * @param code    expression to evaluate
      * @return result string from the target runtime
-     * @throws RuntimeException if the target runtime returns an error
+     * @throws RuntimeError if the target runtime returns an error
      */
     public static String call(String runtime, String code) {
-        return nativeCall(runtime, code);
+        try {
+            return nativeCall(runtime, code);
+        } catch (RuntimeError e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw RuntimeError.fromBridge(e.getMessage(), runtime, "call[" + runtime + "]", e);
+        }
     }
 
     /**
@@ -47,10 +53,16 @@ public class OmniVM {
      * @param funcName function name to call
      * @param args     typed arguments (Integer, Long, Double, Boolean, String, byte[])
      * @return typed result from the target runtime
-     * @throws RuntimeException if the target runtime returns an error
+     * @throws RuntimeError if the target runtime returns an error
      */
     public static Object callTyped(String runtime, String funcName, Object... args) {
-        return nativeCallTyped(runtime, funcName, args);
+        try {
+            return nativeCallTyped(runtime, funcName, args);
+        } catch (RuntimeError e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw RuntimeError.fromBridge(e.getMessage(), runtime, "call_typed[" + runtime + "]", e);
+        }
     }
 
     /**
@@ -105,6 +117,271 @@ public class OmniVM {
     public static native void nativeSetBuffer(String name, byte[] data, int dtype);
     public static native void nativeReleaseBuffer(String name);
     public static native Object nativeCallTyped(String runtime, String funcName, Object[] args);
+
+    public static class RuntimeError extends RuntimeException {
+        private final String runtime;
+        private final String type;
+        private final String traceback;
+        private final List<Map<String, String>> causeChain;
+        private final String boundaryPath;
+        private final String originalErrorHandle;
+
+        private RuntimeError(ParsedRuntimeError parsed, Throwable cause) {
+            super(parsed.message, cause);
+            this.runtime = parsed.runtime;
+            this.type = parsed.type;
+            this.traceback = parsed.traceback;
+            this.causeChain = Collections.unmodifiableList(parsed.causeChain);
+            this.boundaryPath = parsed.boundaryPath;
+            this.originalErrorHandle = parsed.originalErrorHandle;
+        }
+
+        public String getRuntime() {
+            return runtime;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public String getTraceback() {
+            return traceback;
+        }
+
+        public List<Map<String, String>> getCauseChain() {
+            return causeChain;
+        }
+
+        public String getBoundaryPath() {
+            return boundaryPath;
+        }
+
+        public String getOriginalErrorHandle() {
+            return originalErrorHandle;
+        }
+
+        public Map<String, Object> toMap() {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("runtime", runtime);
+            out.put("type", type);
+            out.put("message", getMessage());
+            out.put("traceback", traceback);
+            out.put("cause_chain", causeChain);
+            out.put("boundary_path", boundaryPath);
+            out.put("original_error_handle", originalErrorHandle);
+            return out;
+        }
+
+        static RuntimeError fromBridge(String bridgeMessage, String fallbackRuntime, String fallbackBoundary, Throwable cause) {
+            return new RuntimeError(parseBridgeRuntimeError(bridgeMessage, fallbackRuntime, fallbackBoundary), cause);
+        }
+    }
+
+    private static class ParsedRuntimeError {
+        String runtime = "";
+        String type = "";
+        String message = "";
+        String traceback;
+        List<Map<String, String>> causeChain = new ArrayList<>();
+        String boundaryPath = "";
+        String originalErrorHandle;
+    }
+
+    private static ParsedRuntimeError parseBridgeRuntimeError(String bridgeMessage, String fallbackRuntime, String fallbackBoundary) {
+        ParsedRuntimeError parsed = new ParsedRuntimeError();
+        parsed.runtime = safeString(fallbackRuntime);
+        parsed.boundaryPath = safeString(fallbackBoundary);
+
+        String text = safeString(bridgeMessage).trim();
+        if (text.startsWith("ERR:")) {
+            text = text.substring(4).trim();
+        }
+        parsed.originalErrorHandle = extractOriginalErrorHandle(text);
+
+        List<String> boundaryParts = new ArrayList<>();
+        text = stripBoundaryPrefix(text, "execute manifest", boundaryParts);
+        text = stripBoundaryPrefix(text, "load manifest module", boundaryParts);
+        text = stripBoundaryPrefix(text, "manifest module call", boundaryParts);
+        text = stripCallBoundary(text, parsed, boundaryParts);
+        text = stripRuntimePrefixes(text, parsed);
+
+        if (!boundaryParts.isEmpty()) {
+            parsed.boundaryPath = String.join(" -> ", boundaryParts);
+        } else if (parsed.boundaryPath.isEmpty() && !parsed.runtime.isEmpty()) {
+            parsed.boundaryPath = "call[" + parsed.runtime + "]";
+        }
+
+        parseMessageAndType(text, parsed);
+        parsed.causeChain = parseCauseChain(text);
+        if (parsed.message.isEmpty()) {
+            parsed.message = text;
+        }
+        return parsed;
+    }
+
+    private static String stripBoundaryPrefix(String text, String prefix, List<String> boundaryParts) {
+        String marker = prefix + ":";
+        if (text.startsWith(marker)) {
+            boundaryParts.add(prefix);
+            return text.substring(marker.length()).trim();
+        }
+        return text;
+    }
+
+    private static String stripCallBoundary(String text, ParsedRuntimeError parsed, List<String> boundaryParts) {
+        int colon = text.indexOf(": ");
+        if (colon <= 0) {
+            return text;
+        }
+        String head = text.substring(0, colon);
+        int open = head.indexOf('[');
+        int close = head.indexOf(']', open + 1);
+        if (open <= 0 || close <= open || close != head.length() - 1) {
+            return text;
+        }
+        String op = head.substring(0, open);
+        String runtime = head.substring(open + 1, close);
+        if (!isIdentifierLike(op) || !isRuntimeLike(runtime)) {
+            return text;
+        }
+        parsed.runtime = normalizeRuntime(runtime);
+        boundaryParts.add(op + "[" + runtime + "]");
+        return text.substring(colon + 2).trim();
+    }
+
+    private static String stripRuntimePrefixes(String text, ParsedRuntimeError parsed) {
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            int colon = text.indexOf(": ");
+            if (colon <= 0) {
+                continue;
+            }
+            String prefix = text.substring(0, colon).trim();
+            if (isRuntimeLike(prefix)) {
+                parsed.runtime = normalizeRuntime(prefix);
+                text = text.substring(colon + 2).trim();
+                changed = true;
+            }
+        }
+        return text;
+    }
+
+    private static void parseMessageAndType(String text, ParsedRuntimeError parsed) {
+        String[] lines = text.split("\\R", -1);
+        String firstLine = lines.length == 0 ? text : lines[0].trim();
+        if (firstLine.startsWith("Traceback ")) {
+            parsed.traceback = text;
+            for (int i = lines.length - 1; i >= 0; i--) {
+                String line = lines[i].trim();
+                if (!line.isEmpty()) {
+                    parseTypeLine(line, parsed);
+                    return;
+                }
+            }
+        }
+
+        parseTypeLine(firstLine, parsed);
+        if (lines.length > 1) {
+            String rest = text.substring(lines[0].length()).trim();
+            if (!rest.isEmpty()) {
+                parsed.traceback = rest;
+            }
+        }
+    }
+
+    private static void parseTypeLine(String line, ParsedRuntimeError parsed) {
+        int colon = line.indexOf(": ");
+        if (colon > 0) {
+            String candidate = line.substring(0, colon).trim();
+            if (!candidate.contains(" ") && !candidate.isEmpty()) {
+                parsed.type = simpleTypeName(candidate);
+                parsed.message = line.substring(colon + 2).trim();
+                return;
+            }
+        }
+        parsed.message = line.trim();
+    }
+
+    private static List<Map<String, String>> parseCauseChain(String text) {
+        List<Map<String, String>> causes = new ArrayList<>();
+        String[] lines = text.split("\\R");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (!line.startsWith("Caused by: ")) {
+                continue;
+            }
+            String detail = line.substring("Caused by: ".length()).trim();
+            String type = "";
+            String message = detail;
+            int colon = detail.indexOf(": ");
+            if (colon > 0) {
+                type = simpleTypeName(detail.substring(0, colon).trim());
+                message = detail.substring(colon + 2).trim();
+            }
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("type", type);
+            entry.put("message", message);
+            causes.add(Collections.unmodifiableMap(entry));
+        }
+        return causes;
+    }
+
+    private static String extractOriginalErrorHandle(String text) {
+        String[] lines = text.split("\\R");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            String lower = line.toLowerCase();
+            if (lower.startsWith("original_error_handle:") || lower.startsWith("original error handle:") || lower.startsWith("original-error-handle:")) {
+                int colon = line.indexOf(':');
+                String handle = line.substring(colon + 1).trim();
+                return handle.isEmpty() ? null : handle;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isRuntimeLike(String value) {
+        String normalized = normalizeRuntime(value);
+        return "python".equals(normalized) || "javascript".equals(normalized) || "ruby".equals(normalized)
+            || "java".equals(normalized) || "go".equals(normalized) || "__manifest".equals(normalized);
+    }
+
+    private static String normalizeRuntime(String value) {
+        String runtime = safeString(value).trim().toLowerCase();
+        if ("js".equals(runtime) || "node".equals(runtime)) {
+            return "javascript";
+        }
+        if ("jvm".equals(runtime)) {
+            return "java";
+        }
+        return runtime;
+    }
+
+    private static boolean isIdentifierLike(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        char first = value.charAt(0);
+        if (!Character.isLetter(first) && first != '_') {
+            return false;
+        }
+        for (int i = 1; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String simpleTypeName(String typeName) {
+        return safeString(typeName);
+    }
+
+    private static String safeString(String value) {
+        return value == null ? "" : value;
+    }
 
     // Capture storage for manifest executor.
     private static final Map<String, Object> captures = new HashMap<>();

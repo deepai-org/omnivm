@@ -14,7 +14,7 @@ open test targets.
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
 | Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle and retained-handle worker-reload drain fixture, Django async `StreamingHttpResponse` body cancel, FastAPI and Starlette ASGI app disconnect, Starlette direct-request disconnect, real Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client aborts, Rack/Rails socket-abort response-body owner close, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream/undici fetch body early cancel, Go c-shared context-owned reader cancel, resource-close cancellation, and manifest job cancellation, Java `CompletableFuture`/`FutureTask` cancellation status, Reactor/RxJava Disposable status, and scheduled Reactor/RxJava stream scheduler teardown | More app-server abort propagation across Rack/Rails/Puma and additional ASGI/Node servers, worker reload while non-manifest handles are live in real server hooks, more library-specific cancellation status attached to handles |
 | Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, callable `then` requires explicit `omnivm.proxyGet`, indexed proxy `length` writes resize Python/Ruby/Java mutable sequences or fail with runtime/kind diagnostics and no local shadows, Java fixed arrays, ByteBuffer table proxies, and tensor-shaped NumPy table proxies reject JS `length` writes without changing owner state, and `omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | More framework model fields colliding with proxy metadata |
-| Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors; direct `call[...]` failures include an API boundary label; native JavaScript `catch` receives normal `Error` objects with OmniVM runtime/type/traceback/cause-chain/boundary-path fields for cross-runtime `omnivm.call` failures; native Ruby `rescue` receives `OmniVM::RuntimeError` with matching fields, `to_h`/`to_dict` envelopes, and Java cause-chain coverage | Rich Python exception text from non-Python foreign callers, original runtime error handles and language-native catch/rethrow semantics across every guest, plus equivalent structured fields in Java native catches |
+| Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors; direct `call[...]` failures include an API boundary label; native JavaScript `catch` receives normal `Error` objects with OmniVM runtime/type/traceback/cause-chain/boundary-path fields for cross-runtime `omnivm.call` failures; native Ruby `rescue` receives `OmniVM::RuntimeError` with matching fields, `to_h`/`to_dict` envelopes, and Java cause-chain coverage; native Java callers catch `OmniVM.RuntimeError` with matching getters and `toMap()` envelopes for JavaScript cause chains and Python failures | Rich Python exception text from non-Python foreign callers, original runtime error handles and language-native catch/rethrow semantics across every guest |
 
 ## Assessment By Gap Class
 
@@ -189,7 +189,10 @@ normal `RuntimeError` and read equivalent `runtime`, `type`, `traceback`,
 `cause_chain`, `boundary_path`, `original_error_handle`, and `to_h`/`to_dict`
 envelope fields when the source runtime reports those details; Java cause chains
 are covered, while Python errors crossing into Ruby can still collapse to the
-generic Python eval diagnostic.
+generic Python eval diagnostic. Native Java callers can catch
+`OmniVM.RuntimeError` as a normal `RuntimeException` and read equivalent
+`getRuntime()`, `getType()`, `getTraceback()`, `getCauseChain()`,
+`getBoundaryPath()`, `getOriginalErrorHandle()`, and `toMap()` envelope fields.
 
 The target error envelope should preserve:
 
@@ -202,10 +205,10 @@ The target error envelope should preserve:
 - whether an original runtime error handle is still available.
 
 The remaining production gap is native recovery logic beyond Python, JavaScript,
-and Ruby: preserving an original runtime error handle when the guest can safely
+Ruby, and Java: preserving an original runtime error handle when the guest can safely
 expose it, then letting foreign runtimes catch/rethrow with language-native
 semantics instead of only receiving a host-side diagnostic envelope. Python,
-JavaScript, and Ruby now parse an optional original-error-handle marker when a
+JavaScript, Ruby, and Java now parse an optional original-error-handle marker when a
 runtime reports one, but there is not yet a general guest-native error handle
 protocol.
 

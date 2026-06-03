@@ -12717,6 +12717,85 @@ out.join("\n")
         raise AssertionError(f"Ruby Java error fields lost structure: {java_fields!r}")
 
 
+def test_java_native_runtime_error_fields_cross_runtime_calls():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+    java.util.List<String> out = new java.util.ArrayList<>();
+    try {
+        omnivm.OmniVM.call("javascript", "(function() { throw new Error('outer', { cause: new TypeError('inner') }); })()");
+    } catch (omnivm.OmniVM.RuntimeError e) {
+        java.util.Map<String, Object> envelope = e.toMap();
+        java.util.List<java.util.Map<String, String>> causes = e.getCauseChain();
+        java.util.Map<String, String> cause = causes.isEmpty() ? new java.util.LinkedHashMap<>() : causes.get(0);
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getClass().getName(),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(e.getMessage().contains("outer")),
+            e.getBoundaryPath(),
+            cause.getOrDefault("type", ""),
+            cause.getOrDefault("message", ""),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("runtime")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }
+    try {
+        omnivm.OmniVM.call("python", "1/0");
+    } catch (omnivm.OmniVM.RuntimeError e) {
+        java.util.Map<String, Object> envelope = e.toMap();
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getClass().getName(),
+            e.getRuntime(),
+            Boolean.toString(e.getMessage().contains("division by zero")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("runtime")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }
+    return String.join("\n", out);
+})).call()
+'''
+    )
+    parts = result.splitlines()
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java native runtime error field result: {result}")
+    js_fields = parts[0].split("|")
+    want_js = [
+        "true",
+        "omnivm.OmniVM$RuntimeError",
+        "javascript",
+        "Error",
+        "true",
+        "call[javascript]",
+        "TypeError",
+        "inner",
+        "true",
+        "javascript",
+        "call[javascript]",
+    ]
+    if js_fields != want_js:
+        raise AssertionError(f"Java JavaScript error fields lost structure: {js_fields!r}")
+    py_fields = parts[1].split("|")
+    want_py = [
+        "true",
+        "omnivm.OmniVM$RuntimeError",
+        "python",
+        "true",
+        "call[python]",
+        "true",
+        "python",
+        "call[python]",
+    ]
+    if py_fields != want_py:
+        raise AssertionError(f"Java Python error fields lost structure: {py_fields!r}")
+
+
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
     manifest = {
         "version": 1,
@@ -18567,6 +18646,7 @@ def main():
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
+        check("Java native RuntimeError fields cross runtime calls", test_java_native_runtime_error_fields_cross_runtime_calls)
         check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest Go c-shared wrapped error preserves cause chain", test_manifest_go_cshared_wrapped_error_preserves_cause_chain)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)
