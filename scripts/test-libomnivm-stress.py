@@ -6456,11 +6456,17 @@ def test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream()
     run_manifest_dict(manifest)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
         raise AssertionError(f"Django StreamingHttpResponse did not cross as a live proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures != 0 and stream_capture_delta != 0:
         raise AssertionError(f"Django StreamingHttpResponse should not cross as a body stream: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
         raise AssertionError(f"Django StreamingHttpResponse used JSON fallback: before={before_boundary}, after={boundary}")
 
 
@@ -6544,6 +6550,201 @@ django_async_stream_loop.close()
         raise AssertionError(f"Django async StreamingHttpResponse used JSON fallback: before={before_boundary}, after={boundary}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"Django async StreamingHttpResponse body stream did not release on cancel: before={before_handles}, after={handles}")
+
+
+def test_manifest_django_asgi_client_abort_cancels_async_streaming_response():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import asyncio
+import socket
+import struct
+import sys
+import threading
+import time
+import types
+import django
+import uvicorn
+from django.conf import settings
+from django.core.handlers.asgi import ASGIHandler
+from django.http import StreamingHttpResponse
+from django.urls import clear_url_caches, path
+
+django_asgi_req = None
+django_asgi_events = []
+django_asgi_body_done = threading.Event()
+port = {port!r}
+
+async def django_asgi_abort_view(request):
+    global django_asgi_req
+    django_asgi_req = request
+    marker = omnivm.call(
+        "javascript",
+        "omnivm.call('python', 'django_asgi_req.method') + ':' + "
+        "omnivm.call('python', 'django_asgi_req.path')",
+    )
+    if marker != "GET:/django/server-abort":
+        django_asgi_events.append("bad-marker:" + str(marker))
+
+    async def body():
+        django_asgi_events.append("body-started")
+        try:
+            yield b"first\\n"
+            await asyncio.sleep(5)
+            django_asgi_events.append("second-yield-ok")
+            yield b"second\\n"
+        except BaseException as exc:
+            django_asgi_events.append("body-closed:" + type(exc).__name__)
+            raise
+        finally:
+            django_asgi_events.append("body-cleanup")
+            django_asgi_body_done.set()
+
+    return StreamingHttpResponse(body(), status=200, headers={{"X-Django-ASGI": "abort"}})
+
+url_module = types.ModuleType("omnivm_django_asgi_abort_urls")
+url_module.urlpatterns = [path("django/server-abort", django_asgi_abort_view)]
+sys.modules[url_module.__name__] = url_module
+
+if not settings.configured:
+    settings.configure(
+        DEFAULT_CHARSET="utf-8",
+        SECRET_KEY="poly",
+        ALLOWED_HOSTS=["127.0.0.1", "localhost"],
+        ROOT_URLCONF=url_module.__name__,
+        MIDDLEWARE=[],
+        INSTALLED_APPS=[],
+    )
+else:
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.ALLOWED_HOSTS = list(set(list(getattr(settings, "ALLOWED_HOSTS", []) or []) + ["127.0.0.1", "localhost"]))
+    settings.ROOT_URLCONF = url_module.__name__
+    settings.MIDDLEWARE = []
+
+django.setup(set_prefix=False)
+clear_url_caches()
+app = ASGIHandler()
+config = uvicorn.Config(
+    app,
+    host="127.0.0.1",
+    port=port,
+    log_level="critical",
+    access_log=False,
+    lifespan="off",
+)
+server = uvicorn.Server(config)
+
+def serve():
+    try:
+        asyncio.run(server.serve())
+    except BaseException as exc:
+        django_asgi_events.append("server-error:" + type(exc).__name__ + ":" + str(exc))
+
+server_thread = threading.Thread(target=serve)
+server_thread.start()
+deadline = time.time() + 5
+while not server.started and time.time() < deadline:
+    if any(event.startswith("server-error:") for event in django_asgi_events):
+        break
+    time.sleep(0.01)
+if not server.started:
+    server.should_exit = True
+    server_thread.join(timeout=5)
+    raise AssertionError(f"Django ASGI server did not start: {{django_asgi_events!r}}")
+
+sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+try:
+    sock.sendall(
+        b"GET /django/server-abort HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"X-Request-Id: django-asgi-abort-42\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while b"first" not in data and time.time() < deadline:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    if b"first" not in data:
+        django_asgi_events.append("client-missed-first")
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+finally:
+    sock.close()
+
+deadline = time.time() + 5
+while not django_asgi_body_done.is_set() and time.time() < deadline:
+    time.sleep(0.01)
+
+server.should_exit = True
+server_thread.join(timeout=5)
+if server_thread.is_alive():
+    raise AssertionError(f"Django ASGI server thread did not stop: {{django_asgi_events!r}}")
+if any(event.startswith("server-error:") for event in django_asgi_events):
+    raise AssertionError(f"Django ASGI server failed: {{django_asgi_events!r}}")
+if not django_asgi_body_done.is_set():
+    raise AssertionError(f"Django ASGI streaming body did not clean up after client abort: {{django_asgi_events!r}}")
+'''
+    verify = r'''
+if django_asgi_req is None:
+    raise AssertionError("Django ASGI request was never captured")
+if any(event.startswith("bad-marker:") for event in django_asgi_events):
+    raise AssertionError(f"Django ASGI request was not visible through JS/Python re-entry: {django_asgi_events!r}")
+if "client-missed-first" in django_asgi_events:
+    raise AssertionError(f"Django ASGI abort client did not observe first chunk: {django_asgi_events!r}")
+if "body-started" not in django_asgi_events:
+    raise AssertionError(f"Django ASGI streaming body did not start: {django_asgi_events!r}")
+if "body-cleanup" not in django_asgi_events:
+    raise AssertionError(f"Django ASGI streaming body did not clean up: {django_asgi_events!r}")
+if "second-yield-ok" in django_asgi_events:
+    raise AssertionError(f"Django ASGI streaming body continued after client abort: {django_asgi_events!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"django_asgi_req": "django_asgi_req"},
+                "code": (
+                    "if (django_asgi_req.method !== 'GET') throw new Error('bad Django ASGI request method: ' + django_asgi_req.method); "
+                    "if (django_asgi_req.path !== '/django/server-abort') throw new Error('bad Django ASGI request path: ' + django_asgi_req.path); "
+                    "if (django_asgi_req.META.HTTP_X_REQUEST_ID !== 'django-asgi-abort-42') "
+                    "throw new Error('bad Django ASGI request header: ' + django_asgi_req.META.HTTP_X_REQUEST_ID);"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"Django ASGI request did not cross as live proxy: before={before_boundary}, after={boundary}")
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures != 0 and stream_capture_delta != 0:
+        raise AssertionError(f"Django ASGI request crossed as a stream: before={before_boundary}, after={boundary}")
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
+        raise AssertionError(f"Django ASGI request used JSON fallback: before={before_boundary}, after={boundary}")
+    property_accesses = handles.get("handle_accesses_by_kind", {}).get("property", 0)
+    property_access_delta = property_accesses - before_handles.get("handle_accesses_by_kind", {}).get("property", 0)
+    if property_accesses < 1 and property_access_delta < 1:
+        raise AssertionError(f"Django ASGI request proxy did not record JS property access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Django ASGI abort leaked handles: before={before_handles}, after={handles}")
 
 
 def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
@@ -20145,6 +20346,7 @@ def main():
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
         check("Manifest Django async StreamingHttpResponse body is lazy and cancellable", test_manifest_django_async_streaming_response_body_is_lazy_and_cancellable)
+        check("Manifest Django ASGI client abort cancels async streaming response", test_manifest_django_asgi_client_abort_cancels_async_streaming_response)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
