@@ -8828,7 +8828,9 @@ async def asyncpg_rollback_check():
 reset_postgres_orders()
 conn_psycopg_js, psycopg_cursor_js = make_psycopg_cursor()
 conn_psycopg_ruby, psycopg_cursor_ruby = make_psycopg_cursor()
-asyncpg_cursor = pg_loop.run_until_complete(make_asyncpg_cursor())
+asyncpg_cursor_js = pg_loop.run_until_complete(make_asyncpg_cursor())
+asyncpg_cursor_ruby = pg_loop.run_until_complete(make_asyncpg_cursor())
+asyncpg_cursor_java = pg_loop.run_until_complete(make_asyncpg_cursor())
 '''
         verify = '''
 for name, cursor in (
@@ -8862,10 +8864,15 @@ with psycopg.connect(pg_conninfo) as conn_tx:
     if total != 2:
         raise AssertionError(f"psycopg transaction did not roll back: {total}")
 
-if asyncpg_cursor.iterations != 1:
-    raise AssertionError(f"asyncpg cursor read count was {asyncpg_cursor.iterations}")
-if not asyncpg_cursor.closed:
-    raise AssertionError("asyncpg cursor owner was not closed by stream cancellation")
+for name, cursor in (
+    ("javascript", asyncpg_cursor_js),
+    ("ruby", asyncpg_cursor_ruby),
+    ("java", asyncpg_cursor_java),
+):
+    if cursor.iterations != 1:
+        raise AssertionError(f"{name} asyncpg cursor read count was {cursor.iterations}")
+    if not cursor.closed:
+        raise AssertionError(f"{name} asyncpg cursor owner was not closed by stream cancellation")
 pg_loop.run_until_complete(asyncpg_rollback_check())
 
 conn_psycopg_js.close()
@@ -8913,9 +8920,9 @@ pg_loop.close()
                 {
                     "op": "exec",
                     "runtime": "javascript",
-                    "captures": {"asyncpg_cursor": "asyncpg_cursor"},
+                    "captures": {"asyncpg_cursor_js": "asyncpg_cursor_js"},
                     "code": (
-                        "const it = asyncpg_cursor[Symbol.iterator](); "
+                        "const it = asyncpg_cursor_js[Symbol.iterator](); "
                         "const first = it.next(); "
                         "if (first.done) throw new Error('asyncpg cursor was empty'); "
                         "if (first.value[0] !== 'ada') throw new Error('bad asyncpg JS name: ' + first.value[0]); "
@@ -8924,7 +8931,47 @@ pg_loop.close()
                         "if (first.value[4] !== 'field-then') throw new Error('asyncpg then field lost: ' + first.value[4]); "
                         "if (String(first.value[5]) !== '12') throw new Error('asyncpg length field lost: ' + first.value[5]); "
                         "if (first.value[6] !== 'field-close') throw new Error('asyncpg close field lost: ' + first.value[6]); "
-                        "if (asyncpg_cursor.cancel('client-stop') !== true) throw new Error('asyncpg cancel failed');"
+                        "if (asyncpg_cursor_js.cancel('client-stop') !== true) throw new Error('asyncpg cancel failed');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"asyncpg_cursor_ruby": "asyncpg_cursor_ruby"},
+                    "code": (
+                        "first = asyncpg_cursor_ruby.first; "
+                        "raise 'asyncpg Ruby cursor was empty' if first.nil?; "
+                        "raise \"bad asyncpg Ruby name #{first[0]}\" unless first[0] == 'ada'; "
+                        "raise \"asyncpg Ruby items field lost #{first[1]}\" unless first[1] == 'field-items'; "
+                        "raise \"asyncpg Ruby count field lost #{first[3]}\" unless first[3].to_s == '7'; "
+                        "raise \"asyncpg Ruby then field lost #{first[4]}\" unless first[4] == 'field-then'; "
+                        "raise \"asyncpg Ruby length field lost #{first[5]}\" unless first[5].to_s == '12'; "
+                        "raise \"asyncpg Ruby close field lost #{first[6]}\" unless first[6] == 'field-close'; "
+                        "asyncpg_cursor_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"asyncpg_cursor_java": "asyncpg_cursor_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"asyncpg_cursor_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"asyncpg cursor should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"asyncpg Java cursor was empty\"); "
+                        "final Object first = it.next(); "
+                        "java.util.function.Function<Integer, Object> cell = (idx) -> { "
+                        "    if (first instanceof java.util.List<?>) return ((java.util.List<?>) first).get(idx); "
+                        "    if (first instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> row = (java.util.Map<?, ?>) first; return row.containsKey(idx) ? row.get(idx) : row.get(String.valueOf(idx)); } "
+                        "    throw new RuntimeException(\"unexpected asyncpg Java row shape: \" + first); "
+                        "}; "
+                        "if (!\"ada\".equals(String.valueOf(cell.apply(0)))) throw new RuntimeException(\"bad asyncpg Java name: \" + cell.apply(0)); "
+                        "if (!\"field-items\".equals(String.valueOf(cell.apply(1)))) throw new RuntimeException(\"asyncpg Java items field lost: \" + cell.apply(1)); "
+                        "if (!\"7\".equals(String.valueOf(cell.apply(3)))) throw new RuntimeException(\"asyncpg Java count field lost: \" + cell.apply(3)); "
+                        "if (!\"field-then\".equals(String.valueOf(cell.apply(4)))) throw new RuntimeException(\"asyncpg Java then field lost: \" + cell.apply(4)); "
+                        "if (!\"12\".equals(String.valueOf(cell.apply(5)))) throw new RuntimeException(\"asyncpg Java length field lost: \" + cell.apply(5)); "
+                        "if (!\"field-close\".equals(String.valueOf(cell.apply(6)))) throw new RuntimeException(\"asyncpg Java close field lost: \" + cell.apply(6)); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"asyncpg Java cancel failed\");"
                     ),
                 },
                 {"op": "exec", "runtime": "python", "code": verify},
@@ -8935,11 +8982,11 @@ pg_loop.close()
         after_status = omnivm.status()
         boundary = after_status.get("boundary", {})
         handles = after_status.get("handles", {})
-        if boundary.get("stream_proxy_captures", 0) < 3:
+        if boundary.get("stream_proxy_captures", 0) < 5:
             raise AssertionError(f"PostgreSQL cursors did not cross as lazy streams: before={before_boundary}, after={boundary}")
         if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
             raise AssertionError(f"PostgreSQL cursors used JSON fallback: before={before_boundary}, after={boundary}")
-        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 5:
             raise AssertionError(f"PostgreSQL cursor streams did not release: before={before_handles}, after={handles}")
     finally:
         stop_postgres()
