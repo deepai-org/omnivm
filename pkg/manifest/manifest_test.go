@@ -4474,6 +4474,7 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	}{
 		{RuntimeRef{Runtime: "javascript", VarName: "rows"}, ".return"},
 		{RuntimeRef{Runtime: "python", VarName: "rows"}, "getattr(__omnivm_stream_obj, 'close', None)"},
+		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_close_frame_iterators"},
 		{RuntimeRef{Runtime: "ruby", VarName: "rows"}, "to_io"},
 		{RuntimeRef{Runtime: "java", VarName: "rows"}, "AutoCloseable"},
 	}

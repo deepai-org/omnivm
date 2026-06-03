@@ -6423,6 +6423,88 @@ def test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream()
         raise AssertionError(f"Django StreamingHttpResponse used JSON fallback: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_django_async_streaming_response_body_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import asyncio
+from django.conf import settings
+
+if not settings.configured:
+    settings.configure(DEFAULT_CHARSET="utf-8", SECRET_KEY="poly")
+
+from django.http import StreamingHttpResponse
+
+django_async_stream_state = {"started": 0, "closed": False}
+
+async def django_async_body():
+    django_async_stream_state["started"] += 1
+    try:
+        yield b"first"
+        await asyncio.sleep(0)
+        yield b"second"
+    finally:
+        django_async_stream_state["closed"] = True
+
+django_async_stream_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(django_async_stream_loop)
+globals()["__omnivm_stream_loop"] = django_async_stream_loop
+django_async_resp = StreamingHttpResponse(
+    django_async_body(),
+    status=206,
+    headers={"X-Django-Stream": "async"},
+)
+django_async_body_stream = django_async_resp.streaming_content
+'''
+    verify = r'''
+if django_async_stream_state["started"] != 1:
+    raise AssertionError(f"Django async body iteration count was wrong: {django_async_stream_state!r}")
+if not django_async_stream_state["closed"]:
+    raise AssertionError("Django async response body did not close after JS cancel")
+django_async_stream_loop.close()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {
+                    "django_async_resp": "django_async_resp",
+                    "django_async_body_stream": "django_async_body_stream",
+                },
+                "code": (
+                    "if (String(django_async_resp.status_code) !== '206') throw new Error('bad Django async stream status: ' + django_async_resp.status_code); "
+                    "if (django_async_resp.headers['X-Django-Stream'] !== 'async') throw new Error('bad Django async stream header: ' + django_async_resp.headers['X-Django-Stream']); "
+                    "if (!django_async_body_stream || typeof django_async_body_stream[Symbol.iterator] !== 'function') throw new Error('Django async streaming_content did not materialize as stream'); "
+                    "const it = django_async_body_stream[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const asText = (value) => typeof value === 'string' ? value : String.fromCharCode(...Array.from(value)); "
+                    "if (first.done || asText(first.value) !== 'first') throw new Error('bad Django async first body chunk: ' + JSON.stringify(first)); "
+                    "django_async_body_stream.cancel('client-abort');"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Django async StreamingHttpResponse did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Django async StreamingHttpResponse body did not cross as stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Django async StreamingHttpResponse used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Django async StreamingHttpResponse body stream did not release on cancel: before={before_handles}, after={handles}")
+
+
 def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -17825,6 +17907,7 @@ def main():
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
+        check("Manifest Django async StreamingHttpResponse body is lazy and cancellable", test_manifest_django_async_streaming_response_body_is_lazy_and_cancellable)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)

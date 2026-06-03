@@ -3111,6 +3111,7 @@ func runtimeRefStreamCloseCode(ref RuntimeRef, stateVar string) (string, bool) {
 	case "python":
 		return fmt.Sprintf(`__omnivm_stream_obj = %s
 __omnivm_stream_iter = globals().get(%q)
+__omnivm_close_seen = set()
 def __omnivm_maybe_await_close(__omnivm_result):
     import inspect as __inspect
     if not __inspect.isawaitable(__omnivm_result):
@@ -3131,6 +3132,32 @@ def __omnivm_maybe_await_close(__omnivm_result):
             __omnivm_close_loop.close()
     else:
         __omnivm_loop.run_until_complete(__omnivm_result)
+def __omnivm_close_one(__omnivm_target):
+    if __omnivm_target is None:
+        return
+    __omnivm_target_id = id(__omnivm_target)
+    if __omnivm_target_id in __omnivm_close_seen:
+        return
+    __omnivm_close_seen.add(__omnivm_target_id)
+    __omnivm_target_aclose = getattr(__omnivm_target, 'aclose', None)
+    __omnivm_target_close = getattr(__omnivm_target, 'close', None)
+    if callable(__omnivm_target_aclose):
+        __omnivm_maybe_await_close(__omnivm_target_aclose())
+    elif callable(__omnivm_target_close):
+        __omnivm_target_close()
+def __omnivm_close_frame_iterators(__omnivm_target):
+    for __omnivm_frame_attr in ('ag_frame', 'gi_frame'):
+        __omnivm_frame = getattr(__omnivm_target, __omnivm_frame_attr, None)
+        if __omnivm_frame is None:
+            continue
+        for __omnivm_local in list(getattr(__omnivm_frame, 'f_locals', {}).values()):
+            if __omnivm_local is not __omnivm_target and (
+                callable(getattr(__omnivm_local, 'aclose', None)) or
+                callable(getattr(__omnivm_local, 'close', None))
+            ):
+                __omnivm_close_one(__omnivm_local)
+__omnivm_close_frame_iterators(__omnivm_stream_iter)
+__omnivm_close_frame_iterators(__omnivm_stream_obj)
 __omnivm_stream_iter_aclose = getattr(__omnivm_stream_iter, 'aclose', None)
 __omnivm_stream_iter_close = getattr(__omnivm_stream_iter, 'close', None)
 if callable(__omnivm_stream_iter_aclose):
