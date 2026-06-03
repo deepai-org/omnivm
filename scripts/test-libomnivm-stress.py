@@ -4576,6 +4576,60 @@ def test_manifest_python_dlpack_capture_uses_arrow():
         raise AssertionError(f"DLPack capture used JSON fallback: before={before}, after={after}")
 
 
+def test_manifest_python_non_cpu_dlpack_capture_uses_proxy():
+    before = omnivm.status().get("boundary", {})
+    setup = r'''
+class GPUOnlyDLPack:
+    def __init__(self):
+        self.kind = "gpu-dlpack"
+        self.dlpack_called = False
+
+    def __dlpack_device__(self):
+        return (2, 0)
+
+    def __dlpack__(self, stream=None):
+        self.dlpack_called = True
+        raise RuntimeError("non-CPU __dlpack__ should not be called")
+
+payload = GPUOnlyDLPack()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": "if (payload.kind !== 'gpu-dlpack') throw new Error('non-CPU DLPack should remain a live proxy');",
+                "captures": {"payload": "payload"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "assert payload.dlpack_called is False, 'non-CPU DLPack exporter was called'",
+            },
+        ],
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after = omnivm.status().get("boundary", {})
+    if after.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"non-CPU DLPack did not remain a resource proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != 0:
+        raise AssertionError(f"non-CPU DLPack should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != 0:
+        raise AssertionError(f"non-CPU DLPack should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"non-CPU DLPack capture used JSON fallback: before={before}, after={after}")
+
+
 def test_manifest_python_dataframe_interchange_capture_uses_arrow():
     before = omnivm.status().get("boundary", {})
     setup = r'''
@@ -20582,6 +20636,7 @@ def main():
         check("Manifest Python strided array-interface capture uses Arrow", test_manifest_python_strided_array_interface_capture_uses_arrow)
         check("Manifest Python negative-strided array-interface capture uses Arrow", test_manifest_python_negative_strided_array_interface_capture_uses_arrow)
         check("Manifest Python DLPack capture uses Arrow", test_manifest_python_dlpack_capture_uses_arrow)
+        check("Manifest Python non-CPU DLPack capture uses proxy", test_manifest_python_non_cpu_dlpack_capture_uses_proxy)
         check("Manifest Python dataframe interchange capture uses Arrow", test_manifest_python_dataframe_interchange_capture_uses_arrow)
         check("Manifest Python nullable dataframe interchange capture uses Arrow", test_manifest_python_nullable_dataframe_interchange_capture_uses_arrow)
         check("Manifest Python non-CPU dataframe interchange capture uses proxy", test_manifest_python_non_cpu_dataframe_interchange_capture_uses_proxy)
