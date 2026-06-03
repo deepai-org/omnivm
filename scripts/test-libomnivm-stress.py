@@ -15309,6 +15309,73 @@ def test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer():
         raise AssertionError(f"fixed-size length diagnostics did not record rejected mutation access: before={before_handles}, after={handles}")
 
 
+def test_manifest_js_tensor_length_set_rejects_with_shape_context():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "payload",
+                "code": "__import__('numpy').arange(6, dtype=__import__('numpy').int16).reshape(3, 2)",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"payload": "payload"},
+                "code": (
+                    "if (payload.length !== 3 || omnivm.proxyLen(payload) !== 3) throw new Error('bad tensor initial length: ' + payload.length); "
+                    "const meta = payload.metadata || {}; "
+                    "if (!Array.isArray(meta.shape) || meta.shape[0] !== 3 || meta.shape[1] !== 2) throw new Error('bad tensor shape: ' + JSON.stringify(meta)); "
+                    "let rejected = null; "
+                    "try { (function() { 'use strict'; payload.length = 1; })(); } catch (err) { rejected = err; } "
+                    "const message = String(rejected && rejected.message || ''); "
+                    "const causeMessage = String(rejected && rejected.cause && rejected.cause.message || ''); "
+                    "if (!(rejected instanceof TypeError) || !message.includes('OmniVM cannot resize remote indexed proxy') || "
+                    "    !message.includes('source runtime rejected length write') || !message.includes('runtime=python') || !message.includes('kind=table')) { "
+                    "  throw new Error('tensor length write should reject with OmniVM context: ' + message); "
+                    "} "
+                    "for (const part of ['cannot resize fixed-size table proxy', 'dtype=6', 'format=\"s\"', 'shape=[3 2]', 'strides=[4 2]', 'length=3', 'requested=1']) { "
+                    "  if (!message.includes(part) && !causeMessage.includes(part)) throw new Error('tensor length diagnostic missing ' + part + ': ' + message + ' cause=' + causeMessage); "
+                    "} "
+                    "if (payload.length !== 3 || omnivm.proxyLen(payload) !== 3) throw new Error('tensor length changed after rejected write: ' + payload.length); "
+                    "const row2 = payload[2]; "
+                    "if (!Array.isArray(row2) || row2[0] !== 4 || row2[1] !== 5) throw new Error('tensor rows changed after rejected length write: ' + JSON.stringify(row2));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert payload.shape == (3, 2), payload.shape\n"
+                    "assert int(payload[2, 1]) == 5, payload"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("table_proxy_captures", 0) < 1:
+        raise AssertionError(f"tensor length diagnostic should use a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < 1:
+        raise AssertionError(f"tensor length diagnostic should use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"tensor length diagnostic used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("length", 0) <= before_accesses.get("length", 0):
+        raise AssertionError(f"tensor length diagnostic did not record length access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"tensor length diagnostic did not record rejected mutation access: before={before_handles}, after={handles}")
+
+
 def test_manifest_channel_captures_are_lazy_streams():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -16950,6 +17017,7 @@ def main():
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
         check("Manifest JS fixed-size length set rejects Java array and ByteBuffer", test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer)
+        check("Manifest JS tensor length set rejects with shape context", test_manifest_js_tensor_length_set_rejects_with_shape_context)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)

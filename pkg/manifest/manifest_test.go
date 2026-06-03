@@ -2528,6 +2528,76 @@ func TestLocalComplexCaptureBecomesResourceHandle(t *testing.T) {
 	}
 }
 
+func TestHandleSetTableLengthRejectsWithTensorContext(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	name := fmt.Sprintf("test-tensor-length-%d", time.Now().UnixNano())
+	payload := []byte{0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0}
+	if _, err := arrow.GlobalStore().SetWithMetadata(name, payload, arrow.BufferMetadata{
+		Dtype:   arrow.DtypeI16,
+		Format:  "s",
+		Shape:   []int64{3, 2},
+		Strides: []int64{4, 2},
+	}); err != nil {
+		t.Fatalf("SetWithMetadata: %v", err)
+	}
+	defer func() {
+		arrow.BufRelease(name)
+		arrow.GlobalStore().DrainDeferred()
+	}()
+
+	dtype := int32(arrow.DtypeI16)
+	table := &TableRef{
+		Runtime:   "python",
+		Format:    "arrow_c_data",
+		Ownership: "borrowed",
+		Metadata: &TableMetadata{
+			Dtype:       &dtype,
+			ArrowFormat: "s",
+			Buffer:      name,
+			Shape:       []int64{3, 2},
+			Strides:     []int64{4, 2},
+		},
+		Value: name,
+	}
+	id, err := e.ensureHandleTable().Register(table, handles.RegisterOptions{
+		Runtime: "python",
+		Kind:    "table",
+		ScopeID: e.currentHandleScope(),
+	})
+	if err != nil {
+		t.Fatalf("register table: %v", err)
+	}
+	table.ID = id
+	defer e.ensureHandleTable().ReleaseAllRefs(id)
+
+	_, err = e.handleSet(id, "length", float64(1))
+	if err == nil {
+		t.Fatal("table length write should fail")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"cannot resize fixed-size table proxy",
+		"runtime=python",
+		"kind=table",
+		fmt.Sprintf("id=%d", id),
+		"buffer=\"" + name + "\"",
+		"dtype=6",
+		"format=\"s\"",
+		"shape=[3 2]",
+		"strides=[4 2]",
+		"length=3",
+		"requested=1",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("table length write error %q missing %q", message, want)
+		}
+	}
+	length, ok, err := tableBufferLen(table)
+	if err != nil || !ok || length != 3 {
+		t.Fatalf("table length after rejected write = (%d,%v,%v), want 3,true,nil", length, ok, err)
+	}
+}
+
 func TestHandleResultTypedSliceBecomesArrowTable(t *testing.T) {
 	e, _ := makeExecutor("go", "javascript")
 	data := map[string]interface{}{

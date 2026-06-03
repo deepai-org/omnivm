@@ -4065,6 +4065,9 @@ func genericSet(value interface{}, key string, next interface{}) (bool, error) {
 	case ResourceRef:
 		return genericSet(&v, key, next)
 	case *TableRef:
+		if key == "length" {
+			return false, tableBufferResizeError(v, next)
+		}
 		return genericSet(v.Value, key, next)
 	case TableRef:
 		return genericSet(&v, key, next)
@@ -4128,6 +4131,25 @@ func genericSet(value interface{}, key string, next interface{}) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+func tableBufferResizeError(ref *TableRef, requested interface{}) error {
+	if ref == nil {
+		return fmt.Errorf("manifest HandleCall: cannot resize fixed-size table proxy requested=%v", requested)
+	}
+	name := tableBufferName(ref)
+	if name == "" {
+		return fmt.Errorf("manifest HandleCall: cannot resize fixed-size table proxy runtime=%s id=%d requested=%v", ref.Runtime, ref.ID, requested)
+	}
+	buf, err := arrow.GlobalStore().Get(name)
+	if err != nil {
+		return fmt.Errorf("manifest HandleCall: cannot resize fixed-size table proxy runtime=%s id=%d buffer=%q requested=%v: %w", ref.Runtime, ref.ID, name, requested, err)
+	}
+	length, _, lenErr := tableBufferLen(ref)
+	if lenErr != nil {
+		return fmt.Errorf("manifest HandleCall: cannot resize fixed-size table proxy runtime=%s id=%d buffer=%q dtype=%d format=%q shape=%v strides=%v offset=%d requested=%v: %w", ref.Runtime, ref.ID, name, buf.Dtype, buf.Format, tableBufferShape(ref, buf.Shape), tableBufferStrides(ref, buf.Strides), tableBufferOffset(ref), requested, lenErr)
+	}
+	return fmt.Errorf("manifest HandleCall: cannot resize fixed-size table proxy runtime=%s kind=table id=%d buffer=%q dtype=%d format=%q shape=%v strides=%v offset=%d length=%d requested=%v", ref.Runtime, ref.ID, name, buf.Dtype, buf.Format, tableBufferShape(ref, buf.Shape), tableBufferStrides(ref, buf.Strides), tableBufferOffset(ref), length, requested)
 }
 
 func genericLen(value interface{}) (int, bool, error) {
