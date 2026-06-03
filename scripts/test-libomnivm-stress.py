@@ -21091,6 +21091,78 @@ def test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_
         raise AssertionError(f"reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "omnivm.OmniVM.setCaptureObject(\"py_reactor_disposable_status\", reactor.core.publisher.Flux.never().subscribe()); "
+                    "omnivm.OmniVM.setCaptureObject(\"py_rxjava_disposable_status\", io.reactivex.rxjava3.core.Flowable.never().subscribe()); "
+                    "omnivm.OmniVM.setCaptureObject(\"py_future_task_status\", new java.util.concurrent.FutureTask<String>(() -> \"done\"));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {
+                    "py_reactor_disposable_status": "py_reactor_disposable_status",
+                    "py_rxjava_disposable_status": "py_rxjava_disposable_status",
+                    "py_future_task_status": "py_future_task_status",
+                },
+                "code": (
+                    "assert py_reactor_disposable_status.isDisposed() is False\n"
+                    "py_reactor_disposable_status.dispose()\n"
+                    "assert py_reactor_disposable_status.isDisposed() is True\n"
+                    "assert py_rxjava_disposable_status.isDisposed() is False\n"
+                    "py_rxjava_disposable_status.dispose()\n"
+                    "assert py_rxjava_disposable_status.isDisposed() is True\n"
+                    "assert py_future_task_status.isDone() is False\n"
+                    "assert py_future_task_status.cancel(True) is True\n"
+                    "assert py_future_task_status.isCancelled() is True\n"
+                    "assert py_future_task_status.isDone() is True"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object reactorRaw = omnivm.OmniVM.getCapture(\"py_reactor_disposable_status\"); "
+                    "if (!(reactorRaw instanceof reactor.core.Disposable)) throw new RuntimeException(\"Python Reactor Disposable capture lost native type: \" + reactorRaw); "
+                    "if (!((reactor.core.Disposable) reactorRaw).isDisposed()) throw new RuntimeException(\"Python Reactor Disposable did not stay disposed in Java\"); "
+                    "Object rxRaw = omnivm.OmniVM.getCapture(\"py_rxjava_disposable_status\"); "
+                    "if (!(rxRaw instanceof io.reactivex.rxjava3.disposables.Disposable)) throw new RuntimeException(\"Python RxJava Disposable capture lost native type: \" + rxRaw); "
+                    "if (!((io.reactivex.rxjava3.disposables.Disposable) rxRaw).isDisposed()) throw new RuntimeException(\"Python RxJava Disposable did not stay disposed in Java\"); "
+                    "Object futureRaw = omnivm.OmniVM.getCapture(\"py_future_task_status\"); "
+                    "if (!(futureRaw instanceof java.util.concurrent.FutureTask)) throw new RuntimeException(\"Python FutureTask capture lost native type: \" + futureRaw); "
+                    "java.util.concurrent.FutureTask<?> future = (java.util.concurrent.FutureTask<?>) futureRaw; "
+                    "if (!future.isCancelled()) throw new RuntimeException(\"Python FutureTask did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(\"Python FutureTask did not stay done in Java\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 3:
+        raise AssertionError(f"Python reactive/future cancellation handles did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Python reactive/future cancellation handles used JSON fallback: before={before_boundary}, after={boundary}")
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 9:
+        raise AssertionError(f"Python reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -22572,6 +22644,7 @@ def main():
         check("Manifest Java ScheduledFuture cancellation status crosses runtimes", test_manifest_java_scheduled_future_cancel_status_crosses_runtimes)
         check("Manifest Java ExecutorService Future cancellation interrupts owner", test_manifest_java_executor_service_future_cancel_interrupts_owner)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
+        check("Manifest Python Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
