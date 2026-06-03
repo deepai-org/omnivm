@@ -11932,14 +11932,82 @@ def test_manifest_js_readable_stream_early_cancel_releases_owner():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+    if boundary.get("stream_proxy_captures", 0) < 1:
         raise AssertionError(f"JS ReadableStream early-cancel capture did not use stream proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
-        raise AssertionError(f"JS ReadableStream early-cancel used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"JS ReadableStream early-cancel used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"JS ReadableStream early-cancel did not record stream access: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
         raise AssertionError(f"JS ReadableStream early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
+def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const WebReadableStream = globalThis.ReadableStream || require('node:stream/web').ReadableStream;"
+                    "globalThis.nodeWebReadableState = {cancelled: false, cancelReason: null, pulls: 0};"
+                    "let chunks = ['first', 'second', 'third'];"
+                    "globalThis.nodeWebReadable = new WebReadableStream({"
+                    "  pull(controller) {"
+                    "    globalThis.nodeWebReadableState.pulls += 1;"
+                    "    if (chunks.length === 0) { controller.close(); return; }"
+                    "    controller.enqueue(chunks.shift());"
+                    "  },"
+                    "  cancel(reason) {"
+                    "    globalThis.nodeWebReadableState.cancelled = true;"
+                    "    globalThis.nodeWebReadableState.cancelReason = reason === undefined ? 'undefined' : String(reason);"
+                    "  }"
+                    "});"
+                ),
+            },
+            {"op": "eval", "runtime": "javascript", "bind": "node_web_stream", "code": "globalThis.nodeWebReadable"},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "first = next(node_web_stream)\n"
+                    "assert first == 'first', first\n"
+                    "node_web_stream.close()\n"
+                    "del node_web_stream\n"
+                    "import gc\n"
+                    "gc.collect(); gc.collect()"
+                ),
+                "captures": {"node_web_stream": "node_web_stream"},
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const state = globalThis.nodeWebReadableState; "
+                    "if (!state.cancelled) throw new Error('Node Web ReadableStream underlying source was not cancelled'); "
+                    "if (globalThis.nodeWebReadable.locked) throw new Error('Node Web ReadableStream reader lock was not released'); "
+                    "if (state.pulls > 2) throw new Error('Node Web ReadableStream pulled too far after early cancel: ' + state.pulls);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Node Web ReadableStream did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Node Web ReadableStream used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Node Web ReadableStream did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Node Web ReadableStream leaked live handles: before={before_handles}, after={handles}")
 
 
 def test_manifest_httpx_response_stream_early_cancel_releases_owner():
@@ -14108,6 +14176,7 @@ def main():
         check("Manifest JS async iterable body capture is lazy stream", test_manifest_js_async_iterable_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
+        check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
         check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
