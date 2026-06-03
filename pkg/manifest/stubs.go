@@ -1364,6 +1364,21 @@ func (e *Executor) bridgeResultRuntimeRef(parent handles.ID, ref RuntimeRef) (in
 		}
 		return descriptor, nil
 	}
+	if jsonVal, ok, err := e.runtimeRefStreamCaptureJSON("", "", ref); ok || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		var descriptor map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+			return nil, err
+		}
+		if id, ok := bridgeMarkerHandleID(descriptor); ok {
+			if err := e.recordExistingHandleReference(parent, id, "property"); err != nil {
+				return nil, err
+			}
+		}
+		return descriptor, nil
+	}
 	if runtimeRefNeedsProxy(ref) {
 		jsonVal, err := e.runtimeRefProxyCaptureJSON(ref)
 		if err != nil {

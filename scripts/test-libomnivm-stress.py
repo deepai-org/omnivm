@@ -5270,8 +5270,8 @@ if receive_count != 2:
         os.unlink(path)
 
     after_boundary = omnivm.status().get("boundary", {})
-    if after_boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
-        raise AssertionError(f"Starlette request did not cross as a live proxy: {after_boundary}")
+    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Starlette request lost live proxy state: before={before_boundary}, after={after_boundary}")
     if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Starlette request crossed as a stream: {after_boundary}")
     if after_boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
@@ -5280,6 +5280,76 @@ if receive_count != 2:
         raise AssertionError(f"Starlette request should not claim Arrow transfer: {after_boundary}")
     if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Starlette request used JSON fallback: {after_boundary}")
+
+
+def test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import asyncio
+from starlette.responses import StreamingResponse
+
+stream_state = {"started": 0, "closed": False}
+
+async def streaming_body():
+    stream_state["started"] += 1
+    try:
+        yield b"first"
+        yield b"second"
+    finally:
+        stream_state["closed"] = True
+
+starlette_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(starlette_loop)
+globals()["__omnivm_stream_loop"] = starlette_loop
+resp = StreamingResponse(streaming_body(), status_code=202, headers={"X-Stream": "yes"})
+'''
+    verify = r'''
+if stream_state["started"] != 1:
+    raise AssertionError(f"streaming body iteration count was wrong: {stream_state!r}")
+if not stream_state["closed"]:
+    raise AssertionError("streaming response body did not close after JS cancel")
+starlette_loop.close()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"resp": "resp"},
+                "code": (
+                    "if (String(resp.status_code) !== '202') throw new Error('bad Starlette response status: ' + resp.status_code); "
+                    "const header = resp.headers.get ? resp.headers.get('x-stream') : (resp.headers['x-stream'] || resp.headers['X-Stream']); "
+                    "if (header !== 'yes') throw new Error('bad Starlette response header: ' + header); "
+                    "const body = resp.body_iterator; "
+                    "if (!body || typeof body[Symbol.iterator] !== 'function') throw new Error('body_iterator did not materialize as stream'); "
+                    "const it = body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const asText = (value) => typeof value === 'string' ? value : String.fromCharCode(...Array.from(value)); "
+                    "if (first.done || asText(first.value) !== 'first') throw new Error('bad Starlette first body chunk: ' + JSON.stringify(first)); "
+                    "body.cancel('client-abort');"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Starlette StreamingResponse lost live response proxy state: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"Starlette StreamingResponse body_iterator did not cross as stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Starlette StreamingResponse used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Starlette StreamingResponse body stream did not release on cancel: before={before_handles}, after={handles}")
 
 
 def test_manifest_flask_localproxy_request_and_session_stay_live():
@@ -12317,12 +12387,14 @@ httpx_body = httpx_body_iter()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
-        raise AssertionError(f"httpx response body did not cross as stream proxy: {boundary}")
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+        raise AssertionError(f"httpx response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"httpx response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
     released = handles.get("released", 0) - before_handles.get("released", 0)
     scoped = handles.get("scope_releases", 0) - before_handles.get("scope_releases", 0)
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"httpx response body did not record stream access: before={before_handles}, after={handles}")
     if released < 1 and scoped < 1:
         raise AssertionError(f"httpx response body did not release on early cancel: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
@@ -12407,10 +12479,12 @@ aiohttp_body = AiohttpOwnedBody()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
-        raise AssertionError(f"aiohttp response body did not cross as stream proxy: {boundary}")
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+        raise AssertionError(f"aiohttp response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"aiohttp response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"aiohttp response body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"aiohttp response body did not release on early cancel: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
@@ -14358,6 +14432,7 @@ def main():
         check("Manifest Django async view request/response stay live", test_manifest_django_async_view_request_response_stay_live)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
+        check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
