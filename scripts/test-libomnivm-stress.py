@@ -2012,6 +2012,56 @@ _lib_t69_t.join()
     expect(py("_lib_t69_result"), "21")
 
 
+def test_python_threadpool_future_callback_reenters_runtimes():
+    child_check(
+        """
+import concurrent.futures
+import threading
+
+gate = threading.Event()
+callback_done = threading.Event()
+results = []
+errors = []
+
+def worker():
+    gate.wait(timeout=3)
+    return "worker"
+
+def callback(future):
+    try:
+        label = future.result(timeout=0)
+        js_value = omnivm.call("javascript", "'js:' + '" + label + "'")
+        py_value = omnivm.call("python", "'py:' + '" + label + "'")
+        results.append(js_value + "|" + py_value)
+    except BaseException as exc:
+        errors.append(type(exc).__name__ + ":" + str(exc))
+    finally:
+        callback_done.set()
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    future = executor.submit(worker)
+    future.add_done_callback(callback)
+    gate.set()
+    if future.result(timeout=3) != "worker":
+        raise AssertionError("ThreadPoolExecutor future returned wrong value")
+    if not callback_done.wait(timeout=3):
+        raise AssertionError("ThreadPoolExecutor callback did not run")
+
+if errors:
+    joined = ";".join(errors)
+    if "non-Golden Thread" not in joined:
+        raise AssertionError("ThreadPoolExecutor callback was neither safe nor diagnostic: " + joined)
+else:
+    if results != ["js:worker|py:worker"]:
+        raise AssertionError(f"bad ThreadPoolExecutor callback bridge result: {results!r}")
+
+if omnivm.call("javascript", "'after-threadpool'") != "after-threadpool":
+    raise AssertionError("JavaScript runtime unhealthy after ThreadPoolExecutor callback")
+""",
+        timeout=10,
+    )
+
+
 def test_gil_contention_jvm_thread_to_python():
     expect(py("100 + 23"), "123")
     expect(
@@ -20263,6 +20313,7 @@ def main():
         check("JVM thread -> Ruby (5+3=8)", test_jvm_thread_to_ruby)
         check("4 JVM threads x 50 bridge calls", test_jvm_threads_bridge_calls)
         check("Python thread -> JS (3*7=21)", test_python_thread_to_js)
+        check("Python ThreadPoolExecutor future callback re-enters runtimes", test_python_threadpool_future_callback_reenters_runtimes)
         check("GIL contention (Golden + JVM thread -> Python)", test_gil_contention_jvm_thread_to_python)
         check("Nested foreign-thread bridge (JVM -> Py -> JS)", test_nested_foreign_thread_bridge)
         check("Re-entrant exception during generator during async pump", test_reentrant_exception_generator_async_pump)
