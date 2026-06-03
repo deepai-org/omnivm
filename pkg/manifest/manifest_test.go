@@ -4076,6 +4076,18 @@ func TestRuntimeRefRubyStreamProbeTreatsHTTPMessagesAsResources(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonStreamProbeTreatsPydanticModelsAsResources(t *testing.T) {
+	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "python", VarName: "model"})
+	if !ok {
+		t.Fatal("python stream probe should be available")
+	}
+	for _, want := range []string{"getattr(type(__v), 'model_fields', None)", "__omnivm_model_fields is None"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("python stream probe missing Pydantic model guard %q in %q", want, expr)
+		}
+	}
+}
+
 func TestRuntimeRefRubyStreamProbeTreatsResponseWritersAsResources(t *testing.T) {
 	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "ruby", VarName: "stream"})
 	if !ok {
@@ -7368,6 +7380,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonProp, "collections.abc") || !strings.Contains(pythonProp, "Mapping) and __k in __o") || strings.Index(pythonProp, "__o[__k]") > strings.Index(pythonProp, "getattr") {
 		t.Fatalf("python property lookup should prefer mapping keys before attributes, got %q", pythonProp)
 	}
+	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
+		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
+	}
 
 	pythonHeadersProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "request"}, "headers")
 	if err != nil || !ok {
@@ -7395,6 +7410,17 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonCallable, "callable(__o[__k]) if isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
 		t.Fatalf("python callable lookup should inspect mapping keys before attributes, got %q", pythonCallable)
 	}
+	if !strings.Contains(pythonCallable, "model_fields") || strings.Index(pythonCallable, "Mapping) and __k in __o") > strings.Index(pythonCallable, "model_fields") || strings.Index(pythonCallable, "model_fields") > strings.LastIndex(pythonCallable, "hasattr(__o, __k)") {
+		t.Fatalf("python callable lookup should inspect Pydantic fields before same-named methods, got %q", pythonCallable)
+	}
+
+	pythonCall, ok, err := runtimeRefCallExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items", []interface{}{})
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExpr python: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(pythonCall, "model_fields") || strings.Index(pythonCall, "Mapping) and __k in __o") > strings.Index(pythonCall, "model_fields") || strings.Index(pythonCall, "model_fields") > strings.LastIndex(pythonCall, "hasattr(__o, __k)") {
+		t.Fatalf("python call lookup should inspect Pydantic fields before same-named methods, got %q", pythonCall)
+	}
 
 	rubyCall, ok, err := runtimeRefCallExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "count", []interface{}{})
 	if err != nil || !ok {
@@ -7418,6 +7444,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(pythonCode, "MutableSequence") || !strings.Contains(pythonCode, "__k == 'length'") || !strings.Contains(pythonCode, "del __o[__n:]") {
 		t.Fatalf("python RuntimeRef set should resize mutable sequences for length writes, got %q", pythonCode)
+	}
+	if !strings.Contains(pythonCode, "model_fields") || strings.Index(pythonCode, "MutableMapping") > strings.Index(pythonCode, "model_fields") || strings.Index(pythonCode, "model_fields") > strings.Index(pythonCode, "hasattr(__o, __k)") {
+		t.Fatalf("python RuntimeRef set should prefer Pydantic fields before same-named methods, got %q", pythonCode)
 	}
 
 	rubyCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "ruby", VarName: "items"}, "0", "updated")

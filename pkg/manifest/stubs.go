@@ -2724,9 +2724,9 @@ func runtimeRefPropertyExpr(ref RuntimeRef, key string) (string, bool, error) {
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
 		if pythonHTTPMessageAttributeKey(key) {
-			return fmt.Sprintf("(lambda __o, __k: (getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))))(%s, %s)", pythonHTTPMessageProbeExpr("__o"), base, keyLit), true, nil
+			return fmt.Sprintf("(lambda __o, __k: (getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))))(%s, %s)", pythonHTTPMessageProbeExpr("__o"), base, keyLit), true, nil
 		}
-		return fmt.Sprintf("(lambda __o, __k: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))(%s, %s)", base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))))(%s, %s)", base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)) ? __o[__k] : (__o.respond_to?(__k) ? __o.public_send(__k) : __o[__k]); end)", base, keyLit), true, nil
 	case "java":
@@ -2826,7 +2826,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	case "javascript":
 		return fmt.Sprintf("(function(__v){ return !!(__v && !__v.__omnivm_proxy__ && !Array.isArray(__v) && !(typeof Map !== 'undefined' && __v instanceof Map) && !(typeof Set !== 'undefined' && __v instanceof Set) && !(typeof ArrayBuffer !== 'undefined' && (__v instanceof ArrayBuffer || ArrayBuffer.isView(__v))) && !(typeof __v === 'string' || __v instanceof String) && !(typeof __v.method !== 'undefined' && (__v.path || __v.url || __v.headers)) && ((typeof __v.next === 'function' && (typeof __v[Symbol.iterator] !== 'function' || __v[Symbol.iterator]() === __v)) || (typeof __v.getReader === 'function') || (typeof __v.next !== 'function' && typeof __v[Symbol.iterator] === 'function') || (typeof Symbol !== 'undefined' && typeof Symbol.asyncIterator !== 'undefined' && typeof __v[Symbol.asyncIterator] === 'function'))); })(%s)", base), true
 	case "python":
-		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: (not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
+		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message, __omnivm_model_fields: (__omnivm_model_fields is None and (((not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))))(%s, getattr(type(__v), 'model_fields', None)))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
 	case "ruby":
 		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; __omnivm_response_writer = __v.respond_to?(:write) && __v.respond_to?(:close) && __v.respond_to?(:closed?); !__omnivm_http_message && !__omnivm_response_writer && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
 	case "java":
@@ -3215,7 +3215,7 @@ try {
 }
 
 func pythonRuntimeRefSetCode(base, keyLit, valueLit string) string {
-	return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\n__abc = __import__('collections.abc', fromlist=['MutableMapping', 'MutableSequence'])\nif isinstance(__o, __abc.MutableMapping):\n    __o[__k] = __v\nelif __k == 'length' and isinstance(__o, __abc.MutableSequence) and not isinstance(__o, (str, bytes, bytearray)):\n    __n = __import__('operator').index(__v)\n    if __n < 0:\n        raise ValueError('negative length')\n    del __o[__n:]\n    if __n > len(__o):\n        __o.extend([None] * (__n - len(__o)))\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
+	return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\n__abc = __import__('collections.abc', fromlist=['MutableMapping', 'MutableSequence'])\nif isinstance(__o, __abc.MutableMapping):\n    __o[__k] = __v\nelif __k == 'length' and isinstance(__o, __abc.MutableSequence) and not isinstance(__o, (str, bytes, bytearray)):\n    __n = __import__('operator').index(__v)\n    if __n < 0:\n        raise ValueError('negative length')\n    del __o[__n:]\n    if __n > len(__o):\n        __o.extend([None] * (__n - len(__o)))\nelif isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}):\n    setattr(__o, __k, __v)\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
 }
 
 func rubyRuntimeRefSetCode(base, keyLit, valueLit string) string {
@@ -3340,7 +3340,7 @@ func runtimeRefContainsExpr(ref RuntimeRef, key interface{}) (string, bool, erro
 	case "javascript":
 		return fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and hasattr(__o, __k)) or (hasattr(__o, '__contains__') and __k in __o)))(%s, %s)", base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {})) or (isinstance(__k, str) and hasattr(__o, __k)) or (hasattr(__o, '__contains__') and __k in __o)))(%s, %s)", base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit), true, nil
 	case "java":
@@ -3366,7 +3366,7 @@ func runtimeRefContainsExprWithBuilder(ref RuntimeRef, key interface{}, builder 
 	case "javascript":
 		expr = fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and hasattr(__o, __k)) or (hasattr(__o, '__contains__') and __k in __o)))(%s, %s)", base, keyLit)
+		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {})) or (isinstance(__k, str) and hasattr(__o, __k)) or (hasattr(__o, '__contains__') and __k in __o)))(%s, %s)", base, keyLit)
 	case "ruby":
 		expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit)
 	case "java":
@@ -3391,7 +3391,7 @@ func runtimeRefCallableExpr(ref RuntimeRef, key string) (string, bool, error) {
 	case "javascript":
 		return fmt.Sprintf("(typeof (%s)[%s] === 'function')", base, keyLit), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k: (callable(__o[__k]) if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (callable(getattr(__o, __k)) if isinstance(__k, str) and hasattr(__o, __k) else False)))(%s, %s)", base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (callable(__o[__k]) if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (callable(getattr(__o, __k)) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (callable(getattr(__o, __k)) if isinstance(__k, str) and hasattr(__o, __k) else False))))(%s, %s)", base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)) ? __o[__k].respond_to?(:call) : __o.respond_to?(__k); end)", base, keyLit), true, nil
 	case "java":
@@ -3445,7 +3445,7 @@ func runtimeRefCallExpr(ref RuntimeRef, key string, args []interface{}) (string,
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k, __args: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))(*__args))(%s, %s, %s)", base, keyLit, argsLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k, __args: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))(*__args))(%s, %s, %s)", base, keyLit, argsLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args) : __o[__k].call(*__args)); end)", base, keyLit, argsLit), true, nil
 	case "java":
@@ -3526,7 +3526,7 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		}
 		expr = fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))(*__args, **__kwargs))(%s, %s, %s, %s)", base, keyLit, argsLit, kwargsLit)
+		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))(*__args, **__kwargs))(%s, %s, %s, %s)", base, keyLit, argsLit, kwargsLit)
 	case "ruby":
 		if len(kwargs) > 0 {
 			expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; __kwargs = (%s).transform_keys { |k| k.respond_to?(:to_sym) ? k.to_sym : k }; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args, **__kwargs) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args, **__kwargs) : __o[__k].call(*__args, **__kwargs)); end)", base, keyLit, argsLit, kwargsLit)
