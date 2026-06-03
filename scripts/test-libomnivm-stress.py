@@ -1656,6 +1656,47 @@ results.sort.join('|')
         raise AssertionError(f"Ruby Async callback affinity was not safe or diagnostic: {result}")
 
 
+def test_ruby_thread_and_fiber_local_state_survives_nested_reentry():
+    result = rb(
+        r"""
+Thread.current[:omnivm_fiber_request_id] = 'fiber-root'
+Thread.current.thread_variable_set(:omnivm_thread_request_id, 'thread-root')
+root_fiber_id = Fiber.current.object_id.to_s
+snapshot = "[Thread.current[:omnivm_fiber_request_id], Thread.current.thread_variable_get(:omnivm_thread_request_id), Fiber.current.object_id.to_s].join('|')"
+
+from_js = OmniVM.call(
+  'javascript',
+  "const before = omnivm.call('ruby', #{snapshot.inspect}); " \
+  "omnivm.call('ruby', \"Thread.current[:omnivm_fiber_request_id] = 'fiber-js'; Thread.current.thread_variable_set(:omnivm_thread_request_id, 'thread-js'); 'ok'\"); " \
+  "const after = omnivm.call('ruby', #{snapshot.inspect}); " \
+  "before + '=>' + after"
+)
+
+from_python = OmniVM.call(
+  'python',
+  "__import__('omnivm').call('ruby', #{snapshot.inspect})"
+)
+
+final = [
+  Thread.current[:omnivm_fiber_request_id],
+  Thread.current.thread_variable_get(:omnivm_thread_request_id),
+  Fiber.current.object_id.to_s,
+].join('|')
+
+[root_fiber_id, from_js, from_python, final].join('||')
+"""
+    )
+    root_fiber_id, from_js, from_python, final = result.split("||")
+    expected_before = f"fiber-root|thread-root|{root_fiber_id}"
+    expected_after = f"fiber-js|thread-js|{root_fiber_id}"
+    if from_js != f"{expected_before}=>{expected_after}":
+        raise AssertionError(f"Ruby nested JS re-entry lost Thread/Fiber state: {result}")
+    if from_python != expected_after:
+        raise AssertionError(f"Ruby nested Python re-entry lost Thread/Fiber state: {result}")
+    if final != expected_after:
+        raise AssertionError(f"Ruby Thread/Fiber state mutation did not survive re-entry: {result}")
+
+
 def test_ruby_ensure_bridge_unwind():
     expect(
         rb(
@@ -19644,6 +19685,7 @@ def main():
         check("GC standoff (1MB x 4 runtimes x 25 rounds + cross-bridge)", test_gc_standoff_large_allocations)
         check("Ruby Fiber cooperative bridge (C stack switching)", test_ruby_fiber_cooperative_bridge)
         check("Ruby Async gem callback affinity is diagnostic or safe", test_ruby_async_gem_callback_affinity_is_diagnostic_or_safe)
+        check("Ruby Thread/Fiber local state survives nested re-entry", test_ruby_thread_and_fiber_local_state_survives_nested_reentry)
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
