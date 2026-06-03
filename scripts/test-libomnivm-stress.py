@@ -12634,6 +12634,89 @@ User(age=0)
         raise AssertionError(f"JS Java error should not invent original handle: {envelope}")
 
 
+def test_ruby_native_runtime_error_fields_cross_runtime_calls():
+    java_source = json.dumps(
+        '((java.util.concurrent.Callable<String>)(() -> { '
+        'throw new RuntimeException("outer", new IllegalArgumentException("inner")); '
+        '})).call()'
+    )
+    result = omnivm.call(
+        "ruby",
+        f'''
+out = []
+begin
+  OmniVM.call("python", "1/0")
+rescue => e
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.is_a?(RuntimeError),
+    e.class.name,
+    e.runtime,
+    e.type,
+    e.message,
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:runtime],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+begin
+  OmniVM.call("java", {java_source})
+rescue => e
+  cause = e.cause_chain.first || {{}}
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.is_a?(RuntimeError),
+    e.class.name,
+    e.runtime,
+    e.type,
+    e.message.include?("outer"),
+    e.boundary_path,
+    cause[:type],
+    cause[:message],
+    e.original_error_handle.nil?,
+    e.to_h[:cause_chain].first[:type]
+  ].join("|")
+end
+out.join("\n")
+'''
+    )
+    parts = result.splitlines()
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Ruby native runtime error field result: {result}")
+    py_fields = parts[0].split("|")
+    want_py = [
+        "true",
+        "true",
+        "OmniVM::RuntimeError",
+        "python",
+        "",
+        "eval failed",
+        "call[python]",
+        "true",
+        "python",
+        "call[python]",
+    ]
+    if py_fields != want_py:
+        raise AssertionError(f"Ruby Python error fields lost structure: {py_fields!r}")
+    java_fields = parts[1].split("|")
+    want_java = [
+        "true",
+        "true",
+        "OmniVM::RuntimeError",
+        "java",
+        "java.lang.RuntimeException",
+        "true",
+        "call[java]",
+        "java.lang.IllegalArgumentException",
+        "inner",
+        "true",
+        "java.lang.IllegalArgumentException",
+    ]
+    if java_fields != want_java:
+        raise AssertionError(f"Ruby Java error fields lost structure: {java_fields!r}")
+
+
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
     manifest = {
         "version": 1,
@@ -18483,6 +18566,7 @@ def main():
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
+        check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
         check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest Go c-shared wrapped error preserves cause chain", test_manifest_go_cshared_wrapped_error_preserves_cause_chain)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)
