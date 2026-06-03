@@ -1549,6 +1549,46 @@ req
     )
 
 
+def test_ruby_async_gem_callback_affinity_is_diagnostic_or_safe():
+    result = rb(
+        """
+require 'async'
+results = []
+Async do |task|
+  [
+    ['python', "'from-ruby-async-py'", 'py'],
+    ['javascript', "'from-ruby-async-js'", 'js'],
+    ['java', '"from-ruby-async-java"', 'java']
+  ].each do |runtime, code, label|
+    task.async do
+      begin
+        results << "OK:#{label}:#{OmniVM.call(runtime, code)}"
+      rescue => e
+        results << "ERR:#{label}:#{e.class}:#{e.message}"
+      end
+    end
+  end
+end
+results.sort.join('|')
+"""
+    )
+    parts = result.split("|")
+    if len(parts) != 3:
+        raise AssertionError(f"unexpected Ruby Async callback result: {result}")
+    expected = {
+        "java": "OK:java:from-ruby-async-java",
+        "js": "OK:js:from-ruby-async-js",
+        "py": "OK:py:from-ruby-async-py",
+    }
+    for part in parts:
+        label = part.split(":", 3)[1] if ":" in part else ""
+        if part == expected.get(label):
+            continue
+        if part.startswith("ERR:") and ("non-Golden Thread" in part or "non-blocking Fiber" in part):
+            continue
+        raise AssertionError(f"Ruby Async callback affinity was not safe or diagnostic: {result}")
+
+
 def test_ruby_ensure_bridge_unwind():
     expect(
         rb(
@@ -14166,6 +14206,7 @@ def main():
         check("Exception ping-pong (Py -> JS -> Java -> Ruby raises)", test_exception_ping_pong)
         check("GC standoff (1MB x 4 runtimes x 25 rounds + cross-bridge)", test_gc_standoff_large_allocations)
         check("Ruby Fiber cooperative bridge (C stack switching)", test_ruby_fiber_cooperative_bridge)
+        check("Ruby Async gem callback affinity is diagnostic or safe", test_ruby_async_gem_callback_affinity_is_diagnostic_or_safe)
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)

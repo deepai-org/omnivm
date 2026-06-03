@@ -24,6 +24,7 @@ typedef char* (*omni_call_fn)(const char* runtime, const char* code);
 typedef void (*omni_free_fn)(char* ptr);
 static omni_call_fn g_bridge_call = NULL;
 static omni_free_fn g_bridge_free = NULL;
+static pthread_mutex_t g_ruby_bridge_call_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // Buffer bridge function pointers
 typedef struct {
@@ -1235,9 +1236,25 @@ typedef struct {
 static void* ruby_bridge_no_gvl(void* raw) {
     tls_holds_gvl = 0;  // We explicitly dropped the GVL
     ruby_bridge_args* a = (ruby_bridge_args*)raw;
+    pthread_mutex_lock(&g_ruby_bridge_call_mu);
     a->result = g_bridge_call(a->runtime, a->code);
+    pthread_mutex_unlock(&g_ruby_bridge_call_mu);
     tls_holds_gvl = 1;  // GVL reacquired upon return from rb_thread_call_without_gvl
     return NULL;
+}
+
+static int omnivm_ruby_in_nonblocking_fiber(void) {
+    ID blocking_id = rb_intern("blocking?");
+    VALUE fiber = rb_fiber_current();
+    if (NIL_P(fiber) || !rb_respond_to(fiber, blocking_id)) {
+        return 0;
+    }
+    return rb_funcall(fiber, blocking_id, 0) == Qfalse;
+}
+
+static int omnivm_ruby_runtime_requires_blocking_fiber(const char* runtime) {
+    return strcmp(runtime, "javascript") == 0 || strcmp(runtime, "js") == 0 ||
+           strcmp(runtime, "java") == 0 || strcmp(runtime, "jvm") == 0;
 }
 
 // C implementation of OmniVM.call(runtime, code) for Ruby.
@@ -1249,6 +1266,11 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
 
     if (!g_bridge_call) {
         rb_raise(rb_eRuntimeError, "omnivm bridge not initialized");
+        return Qnil;
+    }
+
+    if (omnivm_ruby_runtime_requires_blocking_fiber(runtime) && omnivm_ruby_in_nonblocking_fiber()) {
+        rb_raise(rb_eRuntimeError, "Ruby non-blocking Fiber cannot enter %s runtime directly; run OmniVM.call from a blocking/root Ruby fiber or move the bridge call outside the Async task", runtime);
         return Qnil;
     }
 
@@ -1286,7 +1308,9 @@ typedef struct {
 static void* ruby_typed_bridge_no_gvl(void* raw) {
     tls_holds_gvl = 0;
     ruby_typed_bridge_args* a = (ruby_typed_bridge_args*)raw;
+    pthread_mutex_lock(&g_ruby_bridge_call_mu);
     a->result = g_call_typed(a->runtime, a->func_name, a->args, a->nargs);
+    pthread_mutex_unlock(&g_ruby_bridge_call_mu);
     tls_holds_gvl = 1;
     return NULL;
 }
@@ -1304,6 +1328,11 @@ static VALUE rb_omnivm_call_typed(int argc, VALUE* argv, VALUE self) {
 
     const char* runtime = StringValueCStr(argv[0]);
     const char* func_name = StringValueCStr(argv[1]);
+
+    if (omnivm_ruby_runtime_requires_blocking_fiber(runtime) && omnivm_ruby_in_nonblocking_fiber()) {
+        rb_raise(rb_eRuntimeError, "Ruby non-blocking Fiber cannot enter %s runtime directly; run OmniVM.call_typed from a blocking/root Ruby fiber or move the bridge call outside the Async task", runtime);
+        return Qnil;
+    }
 
     int32_t nargs = argc - 2;
     rb_omni_value_t* c_args = NULL;
