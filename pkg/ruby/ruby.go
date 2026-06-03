@@ -688,6 +688,28 @@ static VALUE call_exception_backtrace_first(VALUE exception) {
     return rb_obj_as_string(rb_ary_entry(backtrace, 0));
 }
 
+// rb_protect callback: formats the complete Ruby backtrace for cross-runtime parsers.
+static VALUE call_exception_backtrace_text(VALUE exception) {
+    VALUE backtrace = rb_funcall(exception, rb_intern("backtrace"), 0);
+    if (backtrace == Qnil || !RB_TYPE_P(backtrace, T_ARRAY) || RARRAY_LEN(backtrace) == 0) {
+        return Qnil;
+    }
+
+    VALUE text = rb_str_new_cstr("Traceback (most recent call last):\n");
+    long count = RARRAY_LEN(backtrace);
+    for (long i = 0; i < count; i++) {
+        VALUE frame = rb_obj_as_string(rb_ary_entry(backtrace, i));
+        rb_str_cat_cstr(text, "  from ");
+        rb_str_append(text, frame);
+        rb_str_cat_cstr(text, "\n");
+    }
+
+    rb_str_append(text, call_exception_class_name(exception));
+    rb_str_cat_cstr(text, ": ");
+    rb_str_append(text, rb_obj_as_string(call_exception_message(exception)));
+    return text;
+}
+
 static VALUE call_exception_omnivm_bridge_error_text(VALUE exception) {
     ID method = rb_intern("__omnivm_bridge_error_text");
     if (!rb_respond_to(exception, method)) {
@@ -705,6 +727,7 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     const char* klass_cstr = "UnknownError";
     const char* msg_cstr = "unknown error";
     const char* frame_cstr = NULL;
+    const char* traceback_cstr = NULL;
 
     VALUE bridge_text = rb_protect(call_exception_omnivm_bridge_error_text, exception, &inner_state);
     if (!inner_state && bridge_text != Qnil) {
@@ -743,11 +766,24 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         rb_set_errinfo(Qnil); // Clear secondary error
     }
 
-    size_t len = strlen(klass_cstr) + strlen(msg_cstr) + 20;
-    if (frame_cstr) len += strlen(frame_cstr) + 6;
+    inner_state = 0;
+    VALUE traceback = rb_protect(call_exception_backtrace_text, exception, &inner_state);
+    if (!inner_state && traceback != Qnil) {
+        traceback_cstr = StringValueCStr(traceback);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
+    size_t len = strlen("RubyError: ") + strlen(klass_cstr) + strlen(": ") + strlen(msg_cstr) + 1;
+    if (frame_cstr) len += strlen(" (at )") + strlen(frame_cstr);
+    if (traceback_cstr) len += strlen("\n") + strlen(traceback_cstr);
     char* err = (char*)malloc(len);
-    if (frame_cstr) {
+    if (frame_cstr && traceback_cstr) {
+        snprintf(err, len, "RubyError: %s: %s (at %s)\n%s", klass_cstr, msg_cstr, frame_cstr, traceback_cstr);
+    } else if (frame_cstr) {
         snprintf(err, len, "RubyError: %s: %s (at %s)", klass_cstr, msg_cstr, frame_cstr);
+    } else if (traceback_cstr) {
+        snprintf(err, len, "RubyError: %s: %s\n%s", klass_cstr, msg_cstr, traceback_cstr);
     } else {
         snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
     }

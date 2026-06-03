@@ -13372,6 +13372,49 @@ def test_javascript_native_sqlalchemy_error_fields_cross_runtime_call():
         raise AssertionError(f"JS SQLAlchemy error should not invent original handle: {envelope}")
 
 
+def test_javascript_native_activerecord_error_fields_cross_runtime_call():
+    ruby_source = "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)"
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("ruby", {json.dumps(ruby_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missing"):
+        raise AssertionError("JS ActiveRecord error path did not raise")
+    if not envelope.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for ActiveRecord failure: {envelope}")
+    if envelope.get("runtime") != "ruby":
+        raise AssertionError(f"JS ActiveRecord error runtime lost: {envelope}")
+    if envelope.get("type") != "ActiveRecord::RecordInvalid":
+        raise AssertionError(f"JS ActiveRecord error type lost: {envelope}")
+    if "Record invalid" not in envelope.get("message", ""):
+        raise AssertionError(f"JS ActiveRecord error message lost: {envelope}")
+    if "ActiveRecord::RecordInvalid" not in envelope.get("traceback", ""):
+        raise AssertionError(f"JS ActiveRecord error traceback lost: {envelope}")
+    if envelope.get("boundaryPath") != "call[ruby]":
+        raise AssertionError(f"JS ActiveRecord boundary path lost: {envelope}")
+    if envelope.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS ActiveRecord error should not invent original handle: {envelope}")
+
+
 def test_javascript_native_runtime_error_fields_cross_runtime_calls():
     result = omnivm.call(
         "javascript",
@@ -20538,6 +20581,7 @@ def main():
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
+        check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
