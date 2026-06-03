@@ -312,6 +312,47 @@ _lib_t9_loop.run_until_complete(_lib_t9_reentrant_task())
     py_exec("_lib_t9_loop.close()")
 
 
+def test_asyncio_taskgroup_cross_runtime_cancellation():
+    py_exec(
+        """
+import asyncio
+_lib_t9b_cancelled = False
+_lib_t9b_errors = []
+_lib_t9b_after = None
+
+async def _lib_t9b_sleeper():
+    global _lib_t9b_cancelled
+    try:
+        await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        _lib_t9b_cancelled = True
+        raise
+
+async def _lib_t9b_bridge_fail():
+    await asyncio.sleep(0)
+    omnivm.call("javascript", "throw new Error('taskgroup bridge failure')")
+
+async def _lib_t9b_main():
+    global _lib_t9b_errors, _lib_t9b_after
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(_lib_t9b_sleeper())
+            tg.create_task(_lib_t9b_bridge_fail())
+    except* Exception as eg:
+        _lib_t9b_errors = [type(e).__name__ + ":" + str(e) for e in eg.exceptions]
+    _lib_t9b_after = omnivm.call("javascript", "'after-taskgroup'")
+
+_lib_t9b_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_lib_t9b_loop)
+_lib_t9b_loop.run_until_complete(_lib_t9b_main())
+"""
+    )
+    expect(py("_lib_t9b_cancelled"), "True")
+    expect_contains(py("';'.join(_lib_t9b_errors)"), "taskgroup bridge failure")
+    expect(py("_lib_t9b_after"), "after-taskgroup")
+    py_exec("_lib_t9b_loop.close()")
+
+
 def test_exception_through_suspended_generator():
     py_exec(
         """
@@ -12909,6 +12950,7 @@ def main():
         check("Error propagation (Py -> JS throws)", test_error_propagation)
         check("Python generator consumed cross-runtime (100 iterations)", test_python_generator_consumed_cross_runtime)
         check("Re-entrant async: Py loop -> JS -> back into Py", test_reentrant_async_python_js_python)
+        check("Asyncio TaskGroup cross-runtime cancellation", test_asyncio_taskgroup_cross_runtime_cancellation)
         check("Exception through suspended Python generator", test_exception_through_suspended_generator)
         check("Object pinning and GC interaction", test_object_pinning_and_gc)
         check("Interleaved multiple live generators", test_interleaved_live_generators)
