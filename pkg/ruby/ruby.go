@@ -688,6 +688,14 @@ static VALUE call_exception_backtrace_first(VALUE exception) {
     return rb_obj_as_string(rb_ary_entry(backtrace, 0));
 }
 
+static VALUE call_exception_omnivm_bridge_error_text(VALUE exception) {
+    ID method = rb_intern("__omnivm_bridge_error_text");
+    if (!rb_respond_to(exception, method)) {
+        return Qnil;
+    }
+    return rb_obj_as_string(rb_funcall(exception, method, 0));
+}
+
 // Safe helper to extract exception message using rb_protect.
 // Catches any secondary exceptions during message extraction (e.g., rb_exc_raise
 // in rb_funcall which crashes on ARM64 when JVM is active).
@@ -698,7 +706,19 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     const char* msg_cstr = "unknown error";
     const char* frame_cstr = NULL;
 
+    VALUE bridge_text = rb_protect(call_exception_omnivm_bridge_error_text, exception, &inner_state);
+    if (!inner_state && bridge_text != Qnil) {
+        const char* bridge_cstr = StringValueCStr(bridge_text);
+        size_t len = strlen(bridge_cstr) + 12;
+        char* err = (char*)malloc(len);
+        snprintf(err, len, "RubyError: %s", bridge_cstr);
+        return err;
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil);
+    }
+
     // Try to get class name safely
+    inner_state = 0;
     VALUE klass = rb_protect(call_exception_class_name, exception, &inner_state);
     if (!inner_state && klass != Qnil) {
         klass_cstr = StringValueCStr(klass);
@@ -1166,6 +1186,22 @@ static int omnivm_ruby_init(void) {
         "      {runtime: @runtime, type: @type, message: message, traceback: @traceback, cause_chain: @cause_chain, boundary_path: @boundary_path, original_error_handle: @original_error_handle}\n"
         "    end\n"
         "    alias to_dict to_h\n"
+        "    def __omnivm_bridge_error_text\n"
+        "      text = ''\n"
+        "      text << \"#{@runtime}: \" if @runtime && !@runtime.empty?\n"
+        "      text << \"#{@type}: \" if @type && !@type.empty?\n"
+        "      text << message.to_s\n"
+        "      text << \"\\n#{@traceback}\" if @traceback && !@traceback.empty?\n"
+        "      Array(@cause_chain).each do |cause|\n"
+        "        text << \"\\nCaused by: \"\n"
+        "        ctype = cause[:type] || cause['type']\n"
+        "        cmsg = cause[:message] || cause['message']\n"
+        "        text << \"#{ctype}: \" if ctype && !ctype.to_s.empty?\n"
+        "        text << cmsg.to_s\n"
+        "      end\n"
+        "      text << \"\\nOriginal error handle: #{@original_error_handle}\" if @original_error_handle && !@original_error_handle.empty?\n"
+        "      text\n"
+        "    end\n"
         "  end\n"
         "  def self.__runtime_error_from_bridge(message, runtime)\n"
         "    RuntimeError.new(message, runtime: runtime, boundary_path: runtime && \"call[#{runtime}]\")\n"
@@ -1247,7 +1283,8 @@ static int omnivm_ruby_init(void) {
         "      end\n"
         "      causes << {type: cause_type, message: cause_message}\n"
         "    end\n"
-        "    {runtime: source_runtime, type: err_type, message: detail, traceback: traceback, cause_chain: causes, boundary_path: (boundary_parts.empty? ? boundary_path : boundary_parts.join(' > ')), original_error_handle: original_error_handle}\n"
+        "    fallback_boundary = source_runtime && source_runtime != runtime ? \"call[#{source_runtime}]\" : boundary_path\n"
+        "    {runtime: source_runtime, type: err_type, message: detail, traceback: traceback, cause_chain: causes, boundary_path: (boundary_parts.empty? ? fallback_boundary : boundary_parts.join(' > ')), original_error_handle: original_error_handle}\n"
         "  end\n"
         "end\n") != 0) {
         return -1;

@@ -153,6 +153,17 @@ class TestRuntimeError(unittest.TestCase):
         assert err.message == "bad input"
         assert err.boundary_path == "call[javascript]"
 
+    def test_nested_runtime_prefix_preserves_rethrown_source_runtime(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: python: ZeroDivisionError: division by zero",
+            runtime="javascript",
+            boundary_path="call[javascript]",
+        )
+        assert err.runtime == "python"
+        assert err.type == "ZeroDivisionError"
+        assert err.message == "division by zero"
+        assert err.boundary_path == "call[python]"
+
     def test_parsed_boundary_path_overrides_fallback(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: python: ValidationError: bad input",

@@ -631,6 +631,31 @@ public class OmniVMRunner {
     }
 
     private static String formatThrowable(Throwable throwable) {
+        if (throwable instanceof OmniVM.RuntimeError e) {
+            StringBuilder out = new StringBuilder();
+            if (e.getRuntime() != null && !e.getRuntime().isEmpty()) {
+                out.append(e.getRuntime()).append(": ");
+            }
+            if (e.getType() != null && !e.getType().isEmpty()) {
+                out.append(e.getType()).append(": ");
+            }
+            out.append(e.getMessage() == null ? "" : e.getMessage());
+            if (e.getTraceback() != null && !e.getTraceback().isEmpty()) {
+                out.append('\n').append(e.getTraceback());
+            }
+            for (Map<String, String> cause : e.getCauseChain()) {
+                out.append("\nCaused by: ");
+                String type = cause.get("type");
+                if (type != null && !type.isEmpty()) {
+                    out.append(type).append(": ");
+                }
+                out.append(cause.getOrDefault("message", ""));
+            }
+            if (e.getOriginalErrorHandle() != null && !e.getOriginalErrorHandle().isEmpty()) {
+                out.append("\nOriginal error handle: ").append(e.getOriginalErrorHandle());
+            }
+            return out.toString().trim();
+        }
         StringWriter sw = new StringWriter();
         throwable.printStackTrace(new PrintWriter(sw));
         return sw.toString().trim();

@@ -13115,6 +13115,64 @@ def test_java_native_runtime_error_fields_cross_runtime_calls():
         raise AssertionError(f"Java Python error fields lost structure: {py_fields!r}")
 
 
+def test_native_runtime_error_rethrow_preserves_source_runtime():
+    cases = [
+        (
+            "javascript rethrows python",
+            "javascript",
+            '(() => { try { omnivm.call("python", "1/0"); } catch (e) { throw e; } })()',
+            {"runtime": "python", "type": "ZeroDivisionError", "message": "division by zero", "boundary": "call[python]"},
+        ),
+        (
+            "python rethrows javascript",
+            "python",
+            (
+                "import omnivm\n"
+                "try:\n"
+                "    omnivm.call('javascript', \"throw new Error('js-rethrow')\")\n"
+                "except omnivm.RuntimeError as exc:\n"
+                "    raise exc\n"
+            ),
+            {"runtime": "javascript", "type": "Error", "message": "js-rethrow", "boundary": "call[javascript]"},
+        ),
+        (
+            "ruby rethrows python",
+            "ruby",
+            'begin; OmniVM.call("python", "1/0"); rescue OmniVM::RuntimeError => e; raise e; end',
+            {"runtime": "python", "type": "ZeroDivisionError", "message": "division by zero", "boundary": "call[python]"},
+        ),
+        (
+            "java rethrows python",
+            "java",
+            (
+                '((java.util.concurrent.Callable<String>)(() -> { '
+                'try { omnivm.OmniVM.call("python", "1/0"); } '
+                'catch (omnivm.OmniVM.RuntimeError e) { throw e; } '
+                'return "missing"; '
+                '})).call()'
+            ),
+            {"runtime": "python", "type": "ZeroDivisionError", "message": "division by zero", "boundary": "call[python]"},
+        ),
+    ]
+    for name, runtime, code, expected in cases:
+        try:
+            omnivm.call(runtime, code)
+        except omnivm.RuntimeError as exc:
+            if exc.runtime != expected["runtime"]:
+                raise AssertionError(f"{name} runtime = {exc.runtime!r}, want {expected['runtime']!r}: {exc}") from exc
+            if exc.type != expected["type"]:
+                raise AssertionError(f"{name} type = {exc.type!r}, want {expected['type']!r}: {exc}") from exc
+            if expected["message"] not in exc.message:
+                raise AssertionError(f"{name} message = {exc.message!r}, want containing {expected['message']!r}: {exc}") from exc
+            if exc.boundary_path != expected["boundary"]:
+                raise AssertionError(f"{name} boundary = {exc.boundary_path!r}, want {expected['boundary']!r}: {exc}") from exc
+            envelope = exc.to_dict()
+            if envelope.get("runtime") != expected["runtime"] or envelope.get("type") != expected["type"]:
+                raise AssertionError(f"{name} to_dict lost source runtime/type: {envelope!r}") from exc
+        else:
+            raise AssertionError(f"{name} did not rethrow an error")
+
+
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
     manifest = {
         "version": 1,
@@ -19271,6 +19329,7 @@ def main():
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
         check("Java native RuntimeError fields cross runtime calls", test_java_native_runtime_error_fields_cross_runtime_calls)
+        check("Native RuntimeError rethrow preserves source runtime", test_native_runtime_error_rethrow_preserves_source_runtime)
         check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest Go c-shared wrapped error preserves cause chain", test_manifest_go_cshared_wrapped_error_preserves_cause_chain)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)

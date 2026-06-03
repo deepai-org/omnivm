@@ -124,6 +124,10 @@ static void omnivm_v8_append_error_causes(v8::Isolate* isolate,
     omnivm_v8_append_error_causes(isolate, context, cause, out, depth + 1);
 }
 
+static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
+                                                        v8::Local<v8::Context> context,
+                                                        v8::Local<v8::Value> value);
+
 static char* omnivm_v8_format_exception(v8::Isolate* isolate,
                                         v8::Local<v8::Context> context,
                                         v8::TryCatch& try_catch,
@@ -134,6 +138,11 @@ static char* omnivm_v8_format_exception(v8::Isolate* isolate,
     }
 
     v8::Local<v8::Value> exception = try_catch.Exception();
+    std::string runtime_error_text = omnivm_v8_format_runtime_error_object(isolate, context, exception);
+    if (!runtime_error_text.empty()) {
+        return strdup(runtime_error_text.c_str());
+    }
+
     std::string text = omnivm_v8_error_stack(isolate, context, exception);
     if (!text.empty()) {
         omnivm_v8_append_error_causes(isolate, context, exception, text, 0);
@@ -188,6 +197,74 @@ static std::string omnivm_trim(const std::string& value) {
     }
     size_t end = value.find_last_not_of(" \t\r\n");
     return value.substr(start, end - start + 1);
+}
+
+static std::string omnivm_v8_get_string_prop(v8::Isolate* isolate,
+                                             v8::Local<v8::Context> context,
+                                             v8::Local<v8::Object> object,
+                                             const char* key) {
+    v8::Local<v8::Value> value;
+    if (!object->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
+        ).ToLocal(&value) || value.IsEmpty() || value->IsNullOrUndefined()) {
+        return "";
+    }
+    v8::String::Utf8Value text(isolate, value);
+    return (*text && **text) ? std::string(*text) : "";
+}
+
+static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
+                                                        v8::Local<v8::Context> context,
+                                                        v8::Local<v8::Value> value) {
+    if (value.IsEmpty() || !value->IsObject()) {
+        return "";
+    }
+    v8::Local<v8::Object> object = value.As<v8::Object>();
+    std::string runtime = omnivm_v8_get_string_prop(isolate, context, object, "runtime");
+    if (runtime.empty()) {
+        return "";
+    }
+    std::string type = omnivm_v8_get_string_prop(isolate, context, object, "type");
+    std::string message = omnivm_v8_get_string_prop(isolate, context, object, "message");
+    std::string traceback = omnivm_v8_get_string_prop(isolate, context, object, "traceback");
+    std::string handle = omnivm_v8_get_string_prop(isolate, context, object, "originalErrorHandle");
+
+    std::string out = runtime + ": ";
+    if (!type.empty()) {
+        out += type + ": ";
+    }
+    out += message;
+    if (!traceback.empty()) {
+        out += "\n" + traceback;
+    }
+
+    v8::Local<v8::Value> causes_value;
+    if (object->Get(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "causeChain")
+        ).ToLocal(&causes_value) && causes_value->IsArray()) {
+        v8::Local<v8::Array> causes = causes_value.As<v8::Array>();
+        uint32_t length = causes->Length();
+        for (uint32_t i = 0; i < length; ++i) {
+            v8::Local<v8::Value> cause_value;
+            if (!causes->Get(context, i).ToLocal(&cause_value) || !cause_value->IsObject()) {
+                continue;
+            }
+            v8::Local<v8::Object> cause = cause_value.As<v8::Object>();
+            std::string cause_type = omnivm_v8_get_string_prop(isolate, context, cause, "type");
+            std::string cause_message = omnivm_v8_get_string_prop(isolate, context, cause, "message");
+            out += "\nCaused by: ";
+            if (!cause_type.empty()) {
+                out += cause_type + ": ";
+            }
+            out += cause_message;
+        }
+    }
+    if (!handle.empty()) {
+        out += "\nOriginal error handle: " + handle;
+    }
+    return out;
 }
 
 static bool omnivm_starts_with(const std::string& value, const char* prefix) {
@@ -349,6 +426,8 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
             }
             env.boundary_path += boundary_parts[i];
         }
+    } else if (!env.runtime.empty() && env.runtime != runtime_hint) {
+        env.boundary_path = "call[" + env.runtime + "]";
     }
 
     return env;

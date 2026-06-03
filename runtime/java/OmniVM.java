@@ -207,6 +207,8 @@ public class OmniVM {
 
         if (!boundaryParts.isEmpty()) {
             parsed.boundaryPath = String.join(" -> ", boundaryParts);
+        } else if (!parsed.runtime.isEmpty() && !parsed.runtime.equals(safeString(fallbackRuntime))) {
+            parsed.boundaryPath = "call[" + parsed.runtime + "]";
         } else if (parsed.boundaryPath.isEmpty() && !parsed.runtime.isEmpty()) {
             parsed.boundaryPath = "call[" + parsed.runtime + "]";
         }

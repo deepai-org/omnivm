@@ -116,18 +116,22 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         source_runtime = op_runtime
         body = op_match.group("body")
 
-    for prefix, canonical in (
-        ("javascript: ", "javascript"),
-        ("python: ", "python"),
-        ("ruby: ", "ruby"),
-        ("jvm: ", "java"),
-        ("java: ", "java"),
-        ("go: ", "go"),
-    ):
-        if body.startswith(prefix):
-            source_runtime = canonical
-            body = body[len(prefix) :]
-            break
+    changed = True
+    while changed:
+        changed = False
+        for prefix, canonical in (
+            ("javascript: ", "javascript"),
+            ("python: ", "python"),
+            ("ruby: ", "ruby"),
+            ("jvm: ", "java"),
+            ("java: ", "java"),
+            ("go: ", "go"),
+        ):
+            if body.startswith(prefix):
+                source_runtime = canonical
+                body = body[len(prefix) :]
+                changed = True
+                break
 
     first_line, _, rest = body.partition("\n")
     err_type = ""
@@ -184,7 +188,8 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "message": detail,
         "traceback": traceback,
         "cause_chain": cause_chain,
-        "boundary_path": " > ".join(boundary_parts) or boundary_path,
+        "boundary_path": " > ".join(boundary_parts)
+        or (f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path),
         "original_error_handle": original_error_handle,
     }
 

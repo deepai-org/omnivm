@@ -84,11 +84,15 @@ static const char* omnivm_py_runtime_error_code =
 "        boundary_parts.append(f\"{op_match.group('op')}[{op_match.group('runtime')}]\")\n"
 "        source_runtime = op_match.group('runtime')\n"
 "        body = op_match.group('body')\n"
-"    for prefix, canonical in (('javascript: ', 'javascript'), ('python: ', 'python'), ('ruby: ', 'ruby'), ('jvm: ', 'java'), ('java: ', 'java'), ('go: ', 'go')):\n"
-"        if body.startswith(prefix):\n"
-"            source_runtime = canonical\n"
-"            body = body[len(prefix):]\n"
-"            break\n"
+"    changed = True\n"
+"    while changed:\n"
+"        changed = False\n"
+"        for prefix, canonical in (('javascript: ', 'javascript'), ('python: ', 'python'), ('ruby: ', 'ruby'), ('jvm: ', 'java'), ('java: ', 'java'), ('go: ', 'go')):\n"
+"            if body.startswith(prefix):\n"
+"                source_runtime = canonical\n"
+"                body = body[len(prefix):]\n"
+"                changed = True\n"
+"                break\n"
 "    first_line, _, rest = body.partition('\\n')\n"
 "    err_type = ''\n"
 "    detail = first_line\n"
@@ -126,7 +130,7 @@ static const char* omnivm_py_runtime_error_code =
 "                cause_type = candidate\n"
 "                cause_message = tail\n"
 "        cause_chain.append({'type': cause_type, 'message': cause_message})\n"
-"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or boundary_path, 'original_error_handle': original_error_handle}\n"
+"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle}\n"
 ;
 
 static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
@@ -2357,6 +2361,135 @@ static char* omnivm_py_fetch_error() {
     return result;
 }
 
+static char* omnivm_py_unicode_attr_dup(PyObject* obj, const char* name) {
+    PyObject* value = PyObject_GetAttrString(obj, name);
+    if (!value) {
+        PyErr_Clear();
+        return NULL;
+    }
+    if (value == Py_None) {
+        Py_DECREF(value);
+        return NULL;
+    }
+    PyObject* text = PyObject_Str(value);
+    Py_DECREF(value);
+    if (!text) {
+        PyErr_Clear();
+        return NULL;
+    }
+    const char* utf8 = PyUnicode_AsUTF8(text);
+    char* out = (utf8 && utf8[0]) ? strdup(utf8) : NULL;
+    Py_DECREF(text);
+    if (!out) {
+        PyErr_Clear();
+    }
+    return out;
+}
+
+static void omnivm_py_append_text(char** out, size_t* len, const char* text) {
+    if (!text || !text[0]) return;
+    size_t add = strlen(text);
+    char* next = (char*)realloc(*out, *len + add + 1);
+    if (!next) return;
+    memcpy(next + *len, text, add + 1);
+    *out = next;
+    *len += add;
+}
+
+static char* omnivm_py_format_runtime_error_value(PyObject* value) {
+    if (!value) return NULL;
+    char* runtime = omnivm_py_unicode_attr_dup(value, "runtime");
+    if (!runtime) return NULL;
+    char* err_type = omnivm_py_unicode_attr_dup(value, "type");
+    char* message = omnivm_py_unicode_attr_dup(value, "message");
+    char* traceback = omnivm_py_unicode_attr_dup(value, "traceback");
+    char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
+
+    char* out = NULL;
+    size_t len = 0;
+    omnivm_py_append_text(&out, &len, runtime);
+    omnivm_py_append_text(&out, &len, ": ");
+    if (err_type) {
+        omnivm_py_append_text(&out, &len, err_type);
+        omnivm_py_append_text(&out, &len, ": ");
+    }
+    if (message) {
+        omnivm_py_append_text(&out, &len, message);
+    }
+    if (traceback) {
+        omnivm_py_append_text(&out, &len, "\n");
+        omnivm_py_append_text(&out, &len, traceback);
+    }
+
+    PyObject* causes = PyObject_GetAttrString(value, "cause_chain");
+    if (causes && PySequence_Check(causes)) {
+        Py_ssize_t n = PySequence_Size(causes);
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            PyObject* cause = PySequence_GetItem(causes, i);
+            if (!cause) {
+                PyErr_Clear();
+                continue;
+            }
+            PyObject* cause_type_obj = PyMapping_Check(cause) ? PyMapping_GetItemString(cause, "type") : NULL;
+            if (!cause_type_obj) PyErr_Clear();
+            PyObject* cause_msg_obj = PyMapping_Check(cause) ? PyMapping_GetItemString(cause, "message") : NULL;
+            if (!cause_msg_obj) PyErr_Clear();
+            char* cause_type = cause_type_obj ? omnivm_py_unicode_attr_dup(cause_type_obj, "__str__") : NULL;
+            if (cause_type_obj) {
+                PyObject* s = PyObject_Str(cause_type_obj);
+                free(cause_type);
+                cause_type = NULL;
+                if (s) {
+                    const char* utf8 = PyUnicode_AsUTF8(s);
+                    if (utf8 && utf8[0]) cause_type = strdup(utf8);
+                    Py_DECREF(s);
+                } else {
+                    PyErr_Clear();
+                }
+                Py_DECREF(cause_type_obj);
+            }
+            char* cause_message = NULL;
+            if (cause_msg_obj) {
+                PyObject* s = PyObject_Str(cause_msg_obj);
+                if (s) {
+                    const char* utf8 = PyUnicode_AsUTF8(s);
+                    if (utf8 && utf8[0]) cause_message = strdup(utf8);
+                    Py_DECREF(s);
+                } else {
+                    PyErr_Clear();
+                }
+                Py_DECREF(cause_msg_obj);
+            }
+            omnivm_py_append_text(&out, &len, "\nCaused by: ");
+            if (cause_type) {
+                omnivm_py_append_text(&out, &len, cause_type);
+                omnivm_py_append_text(&out, &len, ": ");
+            }
+            if (cause_message) {
+                omnivm_py_append_text(&out, &len, cause_message);
+            }
+            free(cause_type);
+            free(cause_message);
+            Py_DECREF(cause);
+        }
+    } else if (!causes) {
+        PyErr_Clear();
+    }
+    Py_XDECREF(causes);
+
+    if (handle) {
+        omnivm_py_append_text(&out, &len, "\nOriginal error handle: ");
+        omnivm_py_append_text(&out, &len, handle);
+    }
+    free(runtime);
+    free(err_type);
+    free(message);
+    free(traceback);
+    free(handle);
+    if (!out) return strdup("");
+    return out;
+}
+
 // Inner fetch traceback error: retrieves current Python error including stack.
 // Must be called with GIL held. Caller must free.
 static char* omnivm_py_fetch_traceback_error_inner() {
@@ -2369,6 +2502,15 @@ static char* omnivm_py_fetch_traceback_error_inner() {
     PyErr_NormalizeException(&type, &value, &traceback);
 
     char* result = NULL;
+    result = omnivm_py_format_runtime_error_value(value);
+    if (result) {
+        Py_XDECREF(type);
+        Py_XDECREF(value);
+        Py_XDECREF(traceback);
+        PyErr_Clear();
+        return result;
+    }
+
     PyObject* traceback_module = PyImport_ImportModule("traceback");
     if (traceback_module && type && value) {
         PyObject* format_exception = PyObject_GetAttrString(traceback_module, "format_exception");
