@@ -13629,6 +13629,54 @@ try {
             raise AssertionError(f"Java RxJava callback affinity was not safe or diagnostic: {result}")
 
 
+def test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+java.util.function.Function<String, String> callPython = label -> {
+    try {
+        return "OK:" + omnivm.OmniVM.call("python", "'from-kotlin-' + '" + label + "'");
+    } catch (Throwable t) {
+        return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+    }
+};
+java.util.function.Function<String, String> callJavaScript = label -> {
+    try {
+        return "OK:" + omnivm.OmniVM.call("javascript", "'from-kotlin-' + '" + label + "'");
+    } catch (Throwable t) {
+        return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+    }
+};
+Object py = kotlinx.coroutines.BuildersKt.runBlocking(
+    kotlinx.coroutines.Dispatchers.getDefault(),
+    (kotlin.jvm.functions.Function2<kotlinx.coroutines.CoroutineScope, kotlin.coroutines.Continuation<? super String>, Object>) (scope, cont) -> callPython.apply("py")
+);
+Object js = kotlinx.coroutines.BuildersKt.runBlocking(
+    kotlinx.coroutines.Dispatchers.getDefault(),
+    (kotlin.jvm.functions.Function2<kotlinx.coroutines.CoroutineScope, kotlin.coroutines.Continuation<? super String>, Object>) (scope, cont) -> callJavaScript.apply("js")
+);
+String pyResult = String.valueOf(py);
+String jsResult = String.valueOf(js);
+String combined = pyResult + "|" + jsResult;
+boolean pySafe = pyResult.equals("OK:from-kotlin-py");
+boolean jsSafe = jsResult.equals("OK:from-kotlin-js");
+boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
+boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
+if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python Kotlin coroutine callback affinity was neither safe nor diagnostic: " + pyResult);
+if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS Kotlin coroutine callback affinity was neither safe nor diagnostic: " + jsResult);
+return combined;
+})).call()
+'''
+    )
+    parts = result.split("|")
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java Kotlin coroutine callback result: {result}")
+    for part in parts:
+        if not (part.startswith("OK:from-kotlin-") or ("ERR:" in part and "non-Golden Thread" in part)):
+            raise AssertionError(f"Java Kotlin coroutine callback affinity was not safe or diagnostic: {result}")
+
+
 def test_nested_js_to_java_interrupt_timeout():
     child_check(
         """
@@ -14342,6 +14390,7 @@ def main():
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
+        check("Java Kotlin coroutine callback affinity is diagnostic or safe", test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe)
         check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:
