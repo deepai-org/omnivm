@@ -16259,6 +16259,89 @@ def test_manifest_node_fetch_response_body_early_cancel_releases_owner():
         raise AssertionError(f"Node fetch response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_undici_request_body_cancel_releases_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+class PythonUploadBody:
+    def __init__(self):
+        self.iterations = 0
+        self.pulls = 0
+        self.closed = False
+
+    def __iter__(self):
+        self.iterations += 1
+        return self
+
+    def __next__(self):
+        self.pulls += 1
+        if self.pulls == 1:
+            return b"first"
+        if self.pulls == 2:
+            return b"second"
+        raise StopIteration
+
+    def close(self):
+        self.closed = True
+
+py_upload_body = PythonUploadBody()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_upload_body": "py_upload_body"},
+                "code": "globalThis.pyUploadBody = py_upload_body;",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "const { Request } = require('undici');\n"
+                    "globalThis.undiciUploadRequest = new Request('http://example.test/upload', {\n"
+                    "  method: 'POST',\n"
+                    "  body: globalThis.pyUploadBody,\n"
+                    "  duplex: 'half'\n"
+                    "});\n"
+                    "const reader = globalThis.undiciUploadRequest.body.getReader();\n"
+                    "const first = await reader.read();\n"
+                    "const bytes = Array.from(first.value || []);\n"
+                    "if (first.done || String.fromCharCode(...bytes) !== 'first') throw new Error('bad undici upload first chunk: ' + JSON.stringify(first));\n"
+                    "await reader.cancel('client-abort');\n"
+                    "reader.releaseLock();"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert py_upload_body.iterations == 1, py_upload_body.iterations\n"
+                    "assert py_upload_body.pulls <= 2, py_upload_body.pulls\n"
+                    "assert py_upload_body.closed, 'undici request body cancel did not close Python owner'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"undici request body did not cross as stream proxy: before={before_status.get('boundary', {})}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"undici request body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"undici request body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"undici request body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -18890,6 +18973,7 @@ def main():
         check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
         check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
         check("Manifest Node fetch response body early cancel releases owner", test_manifest_node_fetch_response_body_early_cancel_releases_owner)
+        check("Manifest undici request body cancel releases Python owner", test_manifest_undici_request_body_cancel_releases_python_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)

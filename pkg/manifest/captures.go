@@ -1490,7 +1490,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true && env.value) {
         if (env.value.done === true) return {done: true};
-        return {done: false, value: globalThis.__omnivm_materialize_capture(env.value.value)};
+        return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
       }
     } catch (_e) {}
     return {done: true};
@@ -1513,7 +1513,26 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       return out;
     },
     [Symbol.iterator]: function() {
-      return { next: nextValue };
+      var owner = this;
+      return {
+        next: nextValue,
+        return: function(reason) {
+          owner.cancel(reason);
+          return {done: true};
+        }
+      };
+    },
+    [Symbol.asyncIterator]: function() {
+      var owner = this;
+      return {
+        next: function() {
+          return Promise.resolve(nextValue());
+        },
+        return: function(reason) {
+          owner.cancel(reason);
+          return Promise.resolve({done: true});
+        }
+      };
     }
   };
   if (globalThis.__omnivm_handle_finalizers && value && value.id != null) {
@@ -1525,6 +1544,39 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     globalThis.__omnivm_handle_finalizers.register(stream, value.id);
   }
   return stream;
+};
+globalThis.__omnivm_stream_chunk_value = globalThis.__omnivm_stream_chunk_value || function(value) {
+  if (value && value.__omnivm_table__ === true) {
+    var metadata = value.metadata || {};
+    var dtype = metadata.dtype;
+    var bufferName = value.buffer || metadata.buffer || null;
+    var byteDtype = dtype === 0 || dtype === 5 || dtype === 10 || dtype === 11;
+    if (byteDtype && bufferName && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.getBuffer === 'function') {
+      var shape = Array.isArray(metadata.shape) ? metadata.shape : [];
+      var length = shape.length > 0 ? Number(shape[0]) : 0;
+      var offset = Number(metadata.offset || 0);
+      var strides = Array.isArray(metadata.strides) ? metadata.strides : [];
+      var stride = strides.length > 0 ? Number(strides[0]) : 1;
+      if (!Number.isFinite(length) || length < 0) length = 0;
+      if (!Number.isFinite(offset) || offset < 0) offset = 0;
+      if (!Number.isFinite(stride) || stride === 0) stride = 1;
+      if (length === 0) return new Uint8Array(0);
+      var raw = omnivm.getBuffer(bufferName);
+      if (raw instanceof ArrayBuffer) {
+        var bytes = new Uint8Array(raw);
+        if (stride === 1 && offset + length <= bytes.byteLength) {
+          return new Uint8Array(raw, offset, length);
+        }
+        var out = new Uint8Array(length);
+        for (var i = 0; i < length; i++) {
+          var src = offset + i * stride;
+          if (src >= 0 && src < bytes.byteLength) out[i] = bytes[src];
+        }
+        return out;
+      }
+    }
+  }
+  return globalThis.__omnivm_materialize_capture(value);
 };
 globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_capture || function(value) {
   if (value && (value.__omnivm_stream__ === true || value.__omnivm_channel__ === true)) {
