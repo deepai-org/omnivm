@@ -13,7 +13,7 @@ open test targets.
 | Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Real ASGI server cancellation, Node event-loop ownership from Express/undici internals, Ruby thread-local/fiber-local framework state under nested callbacks |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
 | Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
-| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, and Ruby materialized Java zero-arg methods stay natural | Promise-like `then` objects that must not be assimilated by JS, array-like `length` mutation edge cases, more framework model fields colliding with proxy metadata |
+| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, and non-callable `then` fields do not become JS thenables | Callable promise-like `then` fields, array-like `length` mutation edge cases, more framework model fields colliding with proxy metadata |
 | Error fidelity: stack/type/cause across boundaries | Medium | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles, language-native catch/rethrow semantics across every guest, Go wrapped error chains as structured causes |
 
 ## Assessment By Gap Class
@@ -106,9 +106,13 @@ values, and method arguments staying behind proxies. Ruby materialization also
 reads Java zero-arg methods naturally when users access them as fields.
 
 Remaining targets are library objects where collision names carry special host
-semantics: JavaScript `then` on promise-like objects, mutable array-like
-`length`, and additional framework model fields colliding with proxy metadata.
-These should be tested with mutable objects so wrong dispatch is visible.
+semantics: callable JavaScript `then` on promise-like objects, mutable
+array-like `length`, and additional framework model fields colliding with proxy
+metadata. Non-callable `then` data fields are covered so `Promise.resolve(proxy)`
+resolves to the proxy instead of treating the field as a thenable. Callable
+`then` remains inherently ambiguous under the JavaScript promise-resolution
+algorithm and needs an explicit proxy-safe access policy before claiming full
+natural syntax.
 
 ### Error Fidelity
 
@@ -145,8 +149,9 @@ receiving a host-side diagnostic envelope.
    c-shared plugin calls.
 4. Add broader Java Reactor/Future cancellation status assertions beyond
    `CompletableFuture` object cancellation and callback-affinity diagnostics.
-5. Add promise-like `then` and mutable `length` collision tests for JavaScript
-   library objects that can be accidentally assimilated or treated as arrays.
+5. Add callable promise-like `then` and mutable `length` collision tests for
+   JavaScript library objects that can be accidentally assimilated or treated as
+   arrays.
 6. Add PyTorch/CuPy/JAX tests as optional dependency groups: CPU tensors must
    prove dtype/shape/stride/lifetime before Arrow/buffer crossing; GPU tensors
    must stay opaque unless an explicit transfer is requested.

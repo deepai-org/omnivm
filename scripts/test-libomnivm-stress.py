@@ -10196,6 +10196,53 @@ def test_manifest_js_collision_fields_stay_data_fields():
         raise AssertionError(f"JS collision object did not record property and mutation access: {handles}")
 
 
+def test_manifest_js_non_callable_then_field_is_not_thenable():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "py_then_payload",
+                "code": "{'then': 'field-then', 'length': 5, 'value': 'resolved-proxy'}",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_then_payload": "py_then_payload"},
+                "code": (
+                    "globalThis.__omnivm_then_resolution = 'pending'; "
+                    "if (py_then_payload.then !== 'field-then') throw new Error('then field lost before Promise.resolve: ' + py_then_payload.then); "
+                    "Promise.resolve(py_then_payload).then(function(value) { "
+                    "  globalThis.__omnivm_then_resolution = value.value; "
+                    "});"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (globalThis.__omnivm_then_resolution !== 'resolved-proxy') "
+                    "throw new Error('non-callable then field was treated as a thenable or did not resolve to the proxy: ' + globalThis.__omnivm_then_resolution); "
+                    "if (py_then_payload.then !== 'field-then') throw new Error('then field lost after Promise.resolve: ' + py_then_payload.then); "
+                    "if (py_then_payload.length !== 5) throw new Error('length field lost after Promise.resolve: ' + py_then_payload.length);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    handles = omnivm.status().get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"non-callable then payload did not cross as a live proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"non-callable then payload used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("property", 0) < 1:
+        raise AssertionError(f"non-callable then payload did not record proxy property access: {handles}")
+
+
 def test_manifest_js_map_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -15183,6 +15230,7 @@ def main():
         check("Manifest Ruby runtime-ref exposes local object members generically", test_manifest_ruby_runtime_ref_exposes_local_object_members_generically)
         check("Manifest JS runtime-ref exposes local object members generically", test_manifest_js_runtime_ref_exposes_local_object_members_generically)
         check("Manifest JS plain object/array capture uses proxy not JSON", test_manifest_js_plain_object_array_capture_uses_proxy_not_json)
+        check("Manifest JS non-callable then field is not thenable", test_manifest_js_non_callable_then_field_is_not_thenable)
         check("Manifest JS Map capture uses proxy not JSON", test_manifest_js_map_capture_uses_proxy_not_json)
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
