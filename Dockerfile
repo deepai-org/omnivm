@@ -90,6 +90,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       Jinja2 \
       Markdown \
       httpx \
+      aiohttp \
       requests
 ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
 RUN cd /usr/local/lib && npm install \
@@ -101,6 +102,7 @@ RUN cd /usr/local/lib && npm install \
       marked@4 \
       react \
       react-dom \
+      undici \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
@@ -297,6 +299,7 @@ RUN cd /usr/local/lib && npm install \
       marked@4 \
       react \
       react-dom \
+      undici \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 

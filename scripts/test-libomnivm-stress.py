@@ -10915,6 +10915,153 @@ httpx_body = httpx_body_iter()
         raise AssertionError(f"httpx response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_aiohttp_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import aiohttp
+import asyncio
+
+aiohttp_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(aiohttp_loop)
+globals()["__omnivm_stream_loop"] = aiohttp_loop
+
+class DummyProtocol:
+    _reading_paused = False
+
+    def pause_reading(self, *args, **kwargs):
+        self._reading_paused = True
+
+    def resume_reading(self, *args, **kwargs):
+        self._reading_paused = False
+
+class AiohttpOwnedBody:
+    def __init__(self):
+        self.reader = aiohttp.StreamReader(DummyProtocol(), limit=2**16, loop=aiohttp_loop)
+        self.reader.feed_data(b"first")
+        self.reader.feed_data(b"second")
+        self.reader.feed_eof()
+        self.iterations = 0
+        self.closed = False
+        self.cancelled = False
+
+    def __aiter__(self):
+        self.iterations += 1
+        return self
+
+    async def __anext__(self):
+        chunk = await self.reader.read(5)
+        if chunk == b"":
+            raise StopAsyncIteration
+        return chunk.decode("ascii")
+
+    async def aclose(self):
+        self.closed = True
+        self.cancelled = True
+
+aiohttp_body = AiohttpOwnedBody()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"aiohttp_body": "aiohttp_body"},
+                "code": (
+                    "const it = aiohttp_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done || first.value !== 'first') throw new Error('bad aiohttp first chunk: ' + JSON.stringify(first)); "
+                    "aiohttp_body.cancel('client-abort');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert aiohttp_body.iterations == 1, aiohttp_body.iterations\n"
+                    "assert aiohttp_body.closed, 'aiohttp stream was not closed after early cancel'\n"
+                    "assert aiohttp_body.cancelled, 'aiohttp stream did not observe cancellation'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"aiohttp response body did not cross as stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"aiohttp response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"aiohttp response body did not release on early cancel: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"aiohttp response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
+def test_manifest_undici_response_body_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const { Response } = require('undici'); "
+                    "const encoder = new TextEncoder(); "
+                    "globalThis.undiciOwner = {cancelled: false, released: false, pulls: 0}; "
+                    "globalThis.undiciResponse = new Response(new ReadableStream({"
+                    "  pull(controller) {"
+                    "    globalThis.undiciOwner.pulls += 1;"
+                    "    if (globalThis.undiciOwner.pulls === 1) controller.enqueue(encoder.encode('first'));"
+                    "    else controller.enqueue(encoder.encode('second'));"
+                    "  },"
+                    "  cancel(reason) {"
+                    "    globalThis.undiciOwner.cancelled = true;"
+                    "    globalThis.undiciOwner.reason = String(reason || '');"
+                    "  }"
+                    "}), {status: 200});"
+                ),
+            },
+            {"op": "eval", "runtime": "javascript", "bind": "undici_body", "code": "globalThis.undiciResponse.body"},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"undici_body": "undici_body"},
+                "code": "first = next(undici_body)\nassert list(first) == [102, 105, 114, 115, 116], list(first)\nundici_body.close()",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (globalThis.undiciOwner.pulls > 2) throw new Error('undici response body was drained instead of cancelled: ' + globalThis.undiciOwner.pulls); "
+                    "if (!globalThis.undiciOwner.cancelled) throw new Error('undici response body was not cancelled early');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"undici response body did not cross as stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"undici response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"undici response body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"undici response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -12800,6 +12947,8 @@ def main():
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
+        check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
+        check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
