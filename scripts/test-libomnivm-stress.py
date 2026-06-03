@@ -5495,6 +5495,150 @@ def test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream():
             raise AssertionError(f"aiohttp web response proxy did not record {kind} access: {handles}")
 
 
+def test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import asyncio
+import socket
+import struct
+import threading
+import time
+from aiohttp import web
+
+aiohttp_server_req = None
+aiohttp_abort_events = []
+server_done = threading.Event()
+port = {port!r}
+
+async def handler(request):
+    global aiohttp_server_req
+    aiohttp_server_req = request
+    try:
+        marker = omnivm.call(
+            "javascript",
+            "omnivm.call('python', 'aiohttp_server_req.method') + ':' + "
+            "omnivm.call('python', 'aiohttp_server_req.path')",
+        )
+        if marker != "GET:/aiohttp/server-abort":
+            aiohttp_abort_events.append("bad-marker:" + str(marker))
+        resp = web.StreamResponse(status=200, headers={{"Content-Type": "text/plain"}})
+        await resp.prepare(request)
+        await resp.write(b"first\\n")
+        await asyncio.sleep(0.2)
+        transport = request.transport
+        if transport is not None and transport.is_closing():
+            aiohttp_abort_events.append("transport-closing")
+        await resp.write(b"second\\n")
+        aiohttp_abort_events.append("second-write-ok")
+    except (ConnectionResetError, ConnectionError, RuntimeError, BrokenPipeError) as exc:
+        aiohttp_abort_events.append("write-aborted:" + type(exc).__name__)
+    finally:
+        aiohttp_abort_events.append("cleanup")
+        server_done.set()
+    return resp
+
+async def run_server_probe():
+    app = web.Application()
+    app.router.add_get("/aiohttp/server-abort", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+    await site.start()
+
+    def client_abort():
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            sock.sendall(
+                b"GET /aiohttp/server-abort HTTP/1.1\\r\\n"
+                b"Host: 127.0.0.1\\r\\n"
+                b"X-Request-Id: aiohttp-abort-42\\r\\n"
+                b"Connection: close\\r\\n\\r\\n"
+            )
+            data = b""
+            deadline = time.time() + 5
+            while b"first" not in data and time.time() < deadline:
+                chunk = sock.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            if b"first" not in data:
+                aiohttp_abort_events.append("client-missed-first")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        finally:
+            sock.close()
+
+    client = threading.Thread(target=client_abort)
+    client.start()
+    deadline = time.time() + 5
+    while not server_done.is_set() and time.time() < deadline:
+        await asyncio.sleep(0.01)
+    client.join(timeout=5)
+    await runner.cleanup()
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_server_probe())
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if not server_done.is_set():
+    raise AssertionError(f"aiohttp server handler did not finish after client abort: {{aiohttp_abort_events!r}}")
+'''
+    verify = r'''
+if aiohttp_server_req is None:
+    raise AssertionError("aiohttp request was never captured by the handler")
+if "cleanup" not in aiohttp_abort_events:
+    raise AssertionError(f"aiohttp abort cleanup did not run: {aiohttp_abort_events!r}")
+if any(event.startswith("bad-marker:") for event in aiohttp_abort_events):
+    raise AssertionError(f"aiohttp request was not visible through JS/Python re-entry: {aiohttp_abort_events!r}")
+if "client-missed-first" in aiohttp_abort_events:
+    raise AssertionError(f"aiohttp abort client did not observe first chunk: {aiohttp_abort_events!r}")
+if "second-write-ok" in aiohttp_abort_events:
+    raise AssertionError(f"aiohttp second write succeeded after forced client abort: {aiohttp_abort_events!r}")
+if not any(event == "transport-closing" or event.startswith("write-aborted:") for event in aiohttp_abort_events):
+    raise AssertionError(f"aiohttp server did not observe client abort: {aiohttp_abort_events!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"aiohttp_server_req": "aiohttp_server_req"},
+                "code": (
+                    "if (aiohttp_server_req.method !== 'GET') throw new Error('bad aiohttp request method: ' + aiohttp_server_req.method); "
+                    "if (aiohttp_server_req.path !== '/aiohttp/server-abort') throw new Error('bad aiohttp request path: ' + aiohttp_server_req.path); "
+                    "if (aiohttp_server_req.headers.get('X-Request-Id') !== 'aiohttp-abort-42') "
+                    "throw new Error('bad aiohttp request header: ' + aiohttp_server_req.headers.get('X-Request-Id'));"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    after_boundary = after_status.get("boundary", {})
+    after_handles = after_status.get("handles", {})
+    if after_boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"aiohttp server request did not cross as live proxy: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"aiohttp server request crossed as a stream: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"aiohttp server request used JSON fallback: before={before_boundary}, after={after_boundary}")
+    if after_handles.get("handle_accesses_by_kind", {}).get("property", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("property", 0):
+        raise AssertionError(f"aiohttp server request proxy did not record JS property access: before={before_handles}, after={after_handles}")
+    if after_handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"aiohttp server abort leaked handles: before={before_handles}, after={after_handles}")
+
+
 def test_manifest_flask_localproxy_request_and_session_stay_live():
     before_boundary = omnivm.status().get("boundary", {})
     setup = r'''
@@ -15589,6 +15733,7 @@ def main():
         check("Manifest Starlette ASGI app disconnect lifecycle survives capture", test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
+        check("Manifest aiohttp server client abort cleans up streaming response", test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
