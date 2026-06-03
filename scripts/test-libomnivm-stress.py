@@ -10417,6 +10417,52 @@ def test_typed_bridge_rejects_complex_stringification():
         raise AssertionError(f"Java typed bridge did not reject complex object: {java_result}")
 
 
+def test_python_native_typed_runtime_error_fields_cross_runtime_call():
+    result = omnivm.call(
+        "python",
+        r'''(lambda ns: (__import__('builtins').exec(r"""
+import json
+import omnivm
+
+try:
+    omnivm.call_typed("javascript", "(() => { throw new TypeError('typed outer', { cause: new Error('typed inner') }); })", ())
+except Exception as e:
+    result = json.dumps({
+        "isRuntimeError": isinstance(e, omnivm.RuntimeError),
+        "isBuiltinRuntimeError": isinstance(e, RuntimeError),
+        "className": e.__class__.__module__ + "." + e.__class__.__name__,
+        "runtime": getattr(e, "runtime", None),
+        "type": getattr(e, "type", None),
+        "message": getattr(e, "message", None),
+        "traceback": getattr(e, "traceback", None),
+        "boundaryPath": getattr(e, "boundary_path", None),
+        "causeChain": getattr(e, "cause_chain", None),
+        "dict": e.to_dict() if hasattr(e, "to_dict") else None,
+    })
+else:
+    result = json.dumps({"missingError": True})
+""", ns), ns["result"])[1])({})'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missingError"):
+        raise AssertionError("Python typed bridge failure did not raise")
+    if not envelope.get("isRuntimeError") or not envelope.get("isBuiltinRuntimeError"):
+        raise AssertionError(f"Python typed bridge did not receive omnivm.RuntimeError: {envelope}")
+    if envelope.get("className") != "omnivm.RuntimeError":
+        raise AssertionError(f"Python typed bridge error class lost: {envelope}")
+    if envelope.get("runtime") != "javascript" or envelope.get("type") != "TypeError":
+        raise AssertionError(f"Python typed bridge runtime/type lost: {envelope}")
+    if "typed outer" not in envelope.get("message", ""):
+        raise AssertionError(f"Python typed bridge message lost: {envelope}")
+    if envelope.get("boundaryPath") != "call_typed[javascript]":
+        raise AssertionError(f"Python typed bridge boundary path lost: {envelope}")
+    causes = envelope.get("causeChain") or []
+    if not causes or causes[0].get("type") != "Error" or "typed inner" not in causes[0].get("message", ""):
+        raise AssertionError(f"Python typed bridge cause chain lost: {envelope}")
+    if (envelope.get("dict") or {}).get("boundary_path") != "call_typed[javascript]":
+        raise AssertionError(f"Python typed bridge to_dict boundary path lost: {envelope}")
+
+
 def test_python_first_process_survives_plain_python():
     expect(sys.implementation.name, "cpython")
     expect(omnivm.call("python", "__import__('sys').version_info.major"), "3")
@@ -19079,6 +19125,7 @@ def main():
         check("Manifest Java wrong-endian heap-view IntBuffer capture uses proxy", test_manifest_java_wrong_endian_heap_view_intbuffer_capture_uses_proxy)
         check("Repeated crossings", test_repeated_crossings)
         check("Typed bridge rejects complex stringification", test_typed_bridge_rejects_complex_stringification)
+        check("Python native typed RuntimeError fields cross runtime call", test_python_native_typed_runtime_error_fields_cross_runtime_call)
         check("Python-first host stays CPython", test_python_first_process_survives_plain_python)
         check("libomnivm status observability", test_status_observability)
         check("libomnivm retains last manifest boundary stats", test_status_keeps_last_manifest_boundary_stats)

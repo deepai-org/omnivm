@@ -1978,7 +1978,7 @@ static py_omni_value_t py_to_omni_value(PyObject* obj) {
 }
 
 // Convert omni_value_t to a Python object (new reference)
-static PyObject* omni_value_to_py(py_omni_value_t val) {
+static PyObject* omni_value_to_py_with_runtime(py_omni_value_t val, const char* runtime, const char* boundary_path) {
     switch (val.tag) {
     case PY_OMNI_TAG_NULL:
         Py_RETURN_NONE;
@@ -1999,14 +1999,18 @@ static PyObject* omni_value_to_py(py_omni_value_t val) {
         return PyBytes_FromStringAndSize("", 0);
     case PY_OMNI_TAG_ERROR:
         if (val.v.s.ptr) {
-            PyErr_SetString(PyExc_RuntimeError, val.v.s.ptr);
+            omnivm_py_raise_runtime_error(runtime, val.v.s.ptr, boundary_path);
         } else {
-            PyErr_SetString(PyExc_RuntimeError, "unknown error");
+            omnivm_py_raise_runtime_error(runtime, "unknown error", boundary_path);
         }
         return NULL;
     default:
         Py_RETURN_NONE;
     }
+}
+
+static PyObject* omni_value_to_py(py_omni_value_t val) {
+    return omni_value_to_py_with_runtime(val, NULL, NULL);
 }
 
 // Free C-allocated data in an omni_value_t
@@ -2615,7 +2619,9 @@ static PyObject* py_omnivm_call_typed(PyObject* self, PyObject* args) {
     }
 
     // Convert result to Python
-    PyObject* py_result = omni_value_to_py(result);
+    char boundary[256];
+    snprintf(boundary, sizeof(boundary), "call_typed[%s]", runtime ? runtime : "");
+    PyObject* py_result = omni_value_to_py_with_runtime(result, runtime, boundary);
     free_omni_value(&result);
     return py_result;
 }
@@ -2834,7 +2840,7 @@ static PyObject* pymode_init_runtimes(PyObject* self, PyObject* args) {
     PyEval_RestoreThread(_save);
 
     if (result && strncmp(result, "ERR:", 4) == 0) {
-        PyErr_SetString(PyExc_RuntimeError, result + 4);
+        omnivm_py_raise_runtime_error(NULL, result + 4, "init_runtimes");
         if (g_bridge_free) g_bridge_free(result);
         return NULL;
     }
@@ -2864,7 +2870,9 @@ static PyObject* pymode_load_plugin(PyObject* self, PyObject* args) {
     PyEval_RestoreThread(_save);
 
     if (result && strncmp(result, "ERR:", 4) == 0) {
-        PyErr_SetString(PyExc_RuntimeError, result + 4);
+        char boundary[256];
+        snprintf(boundary, sizeof(boundary), "load_plugin[%s]", runtime ? runtime : "");
+        omnivm_py_raise_runtime_error(runtime, result + 4, boundary);
         if (g_bridge_free) g_bridge_free(result);
         return NULL;
     }
