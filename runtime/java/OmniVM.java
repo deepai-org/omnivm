@@ -11,6 +11,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -276,11 +277,17 @@ public class OmniVM {
             parsed.traceback = text;
             for (int i = lines.length - 1; i >= 0; i--) {
                 String line = lines[i].trim();
-                if (!line.isEmpty()) {
+                if (line.isEmpty() || isOriginalErrorHandleLine(line) || line.startsWith("Caused by: ")) {
+                    continue;
+                }
+                int colon = line.indexOf(": ");
+                if (colon > 0 && isErrorTypeCandidate(line.substring(0, colon).trim())) {
                     parseTypeLine(line, parsed);
                     return;
                 }
             }
+            parsed.message = firstLine;
+            return;
         }
 
         parseTypeLine(firstLine, parsed);
@@ -303,6 +310,13 @@ public class OmniVM {
             }
         }
         parsed.message = line.trim();
+    }
+
+    private static boolean isOriginalErrorHandleLine(String line) {
+        String lower = safeString(line).toLowerCase(Locale.ROOT);
+        return lower.startsWith("original error handle:")
+            || lower.startsWith("original-error-handle:")
+            || lower.startsWith("original_error_handle:");
     }
 
     private static List<Map<String, String>> parseCauseChain(String text) {

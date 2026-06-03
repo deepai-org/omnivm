@@ -13264,6 +13264,116 @@ def test_native_runtime_error_rethrow_preserves_source_runtime():
             raise AssertionError(f"{name} did not rethrow an error")
 
 
+def test_native_runtime_error_original_handle_marker_crosses_runtimes():
+    python_source = "raise RuntimeError('source marker\\nOriginal error handle: py-error-42')"
+    js_result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("python", {json.dumps(python_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      boundaryPath: err.boundaryPath,
+      originalErrorHandle: err.originalErrorHandle
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    js_envelope = json.loads(js_result)
+    if js_envelope.get("runtime") != "python" or js_envelope.get("type") != "RuntimeError":
+        raise AssertionError(f"JS catch lost source runtime/type for original handle marker: {js_envelope}")
+    if "source marker" not in js_envelope.get("message", ""):
+        raise AssertionError(f"JS catch lost source message for original handle marker: {js_envelope}")
+    if js_envelope.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS catch lost boundary for original handle marker: {js_envelope}")
+    if js_envelope.get("originalErrorHandle") != "py-error-42":
+        raise AssertionError(f"JS catch lost original error handle marker: {js_envelope}")
+
+    py_result = omnivm.call(
+        "python",
+        r'''(lambda ns: (__import__('builtins').exec(r"""
+import json
+import omnivm
+out = {}
+try:
+    omnivm.call("javascript", "throw new Error('source marker\\nOriginal error handle: js-error-42')")
+except omnivm.RuntimeError as exc:
+    out = {
+        "runtime": exc.runtime,
+        "type": exc.type,
+        "message": exc.message,
+        "boundaryPath": exc.boundary_path,
+        "originalErrorHandle": exc.original_error_handle,
+        "dictHandle": exc.to_dict().get("original_error_handle"),
+    }
+result = json.dumps(out)
+""", ns), ns["result"])[1])({})'''
+    )
+    py_envelope = json.loads(py_result)
+    if py_envelope.get("runtime") != "javascript" or py_envelope.get("type") != "Error":
+        raise AssertionError(f"Python catch lost JS source runtime/type for original handle marker: {py_envelope}")
+    if "source marker" not in py_envelope.get("message", ""):
+        raise AssertionError(f"Python catch lost JS source message for original handle marker: {py_envelope}")
+    if py_envelope.get("boundaryPath") != "call[javascript]":
+        raise AssertionError(f"Python catch lost JS boundary for original handle marker: {py_envelope}")
+    if py_envelope.get("originalErrorHandle") != "js-error-42" or py_envelope.get("dictHandle") != "js-error-42":
+        raise AssertionError(f"Python catch lost JS original error handle marker: {py_envelope}")
+
+    ruby_result = omnivm.call(
+        "ruby",
+        f'''
+begin
+  OmniVM.call("python", {json.dumps(python_source)})
+rescue OmniVM::RuntimeError => e
+  [
+    e.runtime,
+    e.type,
+    e.message.include?("source marker"),
+    e.boundary_path,
+    e.original_error_handle,
+    e.to_h[:original_error_handle],
+  ].join("|")
+else
+  "missing"
+end
+'''
+    )
+    ruby_fields = ruby_result.split("|")
+    if ruby_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
+        raise AssertionError(f"Ruby catch lost original error handle marker: {ruby_fields!r}")
+
+    java_result = omnivm.call(
+        "java",
+        f'''
+((java.util.concurrent.Callable<String>)(() -> {{
+    try {{
+        omnivm.OmniVM.call("python", {json.dumps(python_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        return String.join("|",
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(e.getMessage().contains("source marker")),
+            e.getBoundaryPath(),
+            e.getOriginalErrorHandle(),
+            String.valueOf(envelope.get("original_error_handle"))
+        );
+    }}
+    return "missing";
+}})).call()
+'''
+    )
+    java_fields = java_result.split("|")
+    if java_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
+        raise AssertionError(f"Java catch lost original error handle marker: {java_fields!r}")
+
+
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
     manifest = {
         "version": 1,
@@ -19720,6 +19830,7 @@ def main():
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
         check("Java native RuntimeError fields cross runtime calls", test_java_native_runtime_error_fields_cross_runtime_calls)
         check("Native RuntimeError rethrow preserves source runtime", test_native_runtime_error_rethrow_preserves_source_runtime)
+        check("Native RuntimeError original handle marker crosses runtimes", test_native_runtime_error_original_handle_marker_crosses_runtimes)
         check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest Go c-shared wrapped error preserves cause chain", test_manifest_go_cshared_wrapped_error_preserves_cause_chain)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)
