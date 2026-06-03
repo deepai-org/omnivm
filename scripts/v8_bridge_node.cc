@@ -20,6 +20,7 @@
 #include <uv.h>
 #include <v8.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -164,7 +165,20 @@ struct OmniRuntimeErrorEnvelope {
 };
 
 static bool omnivm_is_error_type_candidate(const std::string& value) {
-    return !value.empty() && value.find(' ') == std::string::npos;
+    if (value.empty()) {
+        return false;
+    }
+    unsigned char first = static_cast<unsigned char>(value[0]);
+    if (!(std::isalpha(first) || value[0] == '_')) {
+        return false;
+    }
+    for (char c : value) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_' || c == '.' || c == '$' || c == ':')) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static std::string omnivm_trim(const std::string& value) {
@@ -526,8 +540,9 @@ static void OmnivmCallCallback(const v8::FunctionCallbackInfo<v8::Value>& info) 
         OmniRuntimeErrorEnvelope envelope =
             omnivm_parse_runtime_error_text(err_msg, runtime_hint);
         if (g_bridge_free) g_bridge_free(result);
+        std::string display_message = envelope.message.empty() ? err_msg : envelope.message;
         v8::Local<v8::Value> error_value = v8::Exception::Error(
-            v8::String::NewFromUtf8(isolate, err_msg.c_str()).ToLocalChecked());
+            v8::String::NewFromUtf8(isolate, display_message.c_str()).ToLocalChecked());
         omnivm_v8_set_runtime_error_props(isolate, context, error_value, envelope);
         isolate->ThrowException(error_value);
         return;

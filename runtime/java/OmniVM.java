@@ -294,7 +294,7 @@ public class OmniVM {
         int colon = line.indexOf(": ");
         if (colon > 0) {
             String candidate = line.substring(0, colon).trim();
-            if (!candidate.contains(" ") && !candidate.isEmpty()) {
+            if (isErrorTypeCandidate(candidate)) {
                 parsed.type = simpleTypeName(candidate);
                 parsed.message = line.substring(colon + 2).trim();
                 return;
@@ -316,8 +316,11 @@ public class OmniVM {
             String message = detail;
             int colon = detail.indexOf(": ");
             if (colon > 0) {
-                type = simpleTypeName(detail.substring(0, colon).trim());
-                message = detail.substring(colon + 2).trim();
+                String candidate = detail.substring(0, colon).trim();
+                if (isErrorTypeCandidate(candidate)) {
+                    type = simpleTypeName(candidate);
+                    message = detail.substring(colon + 2).trim();
+                }
             }
             Map<String, String> entry = new LinkedHashMap<>();
             entry.put("type", type);
@@ -377,6 +380,23 @@ public class OmniVM {
 
     private static String simpleTypeName(String typeName) {
         return safeString(typeName);
+    }
+
+    private static boolean isErrorTypeCandidate(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        char first = value.charAt(0);
+        if (!Character.isLetter(first) && first != '_') {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_' && c != '.' && c != '$' && c != ':') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String safeString(String value) {

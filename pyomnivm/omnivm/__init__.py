@@ -150,13 +150,13 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
             if ": " not in line:
                 continue
             candidate, _ = line.split(": ", 1)
-            if candidate and " " not in candidate:
+            if _is_error_type_candidate(candidate):
                 parse_line = line
                 break
 
     if ": " in parse_line:
         candidate, tail = parse_line.split(": ", 1)
-        if candidate and " " not in candidate:
+        if _is_error_type_candidate(candidate):
             if source_runtime == "python" and "." in candidate:
                 candidate = candidate.rsplit(".", 1)[-1]
             err_type = candidate
@@ -173,7 +173,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
             cause_message = cause_text
             if ": " in cause_text:
                 candidate, tail = cause_text.split(": ", 1)
-                if candidate and " " not in candidate:
+                if _is_error_type_candidate(candidate):
                     cause_type = candidate
                     cause_message = tail
             cause_chain.append({"type": cause_type, "message": cause_message})
@@ -187,6 +187,10 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "boundary_path": " > ".join(boundary_parts) or boundary_path,
         "original_error_handle": original_error_handle,
     }
+
+
+def _is_error_type_candidate(candidate):
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_.$:]*$", candidate or ""))
 
 
 # Lazy-loaded shared library handle. Not loaded until init_runtimes() is called.

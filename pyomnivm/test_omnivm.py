@@ -75,6 +75,21 @@ class TestRuntimeError(unittest.TestCase):
             {"type": "TypeError", "message": "inner"}
         ]
 
+    def test_traceback_parser_ignores_metadata_lines(self):
+        err = omnivm_mod.RuntimeError(
+            "python: Traceback (most recent call last):\n"
+            "  File \"<string>\", line 1, in <module>\n"
+            "sqlalchemy.exc.IntegrityError: UNIQUE constraint failed: users.name\n"
+            "[SQL: INSERT INTO users (name) VALUES (?)]\n"
+            "[parameters: ('ada',)]\n"
+            "(Background on this error at: https://sqlalche.me/e/20/gkpj)\n",
+            runtime="python",
+        )
+        assert err.runtime == "python"
+        assert err.type == "IntegrityError"
+        assert err.message == "UNIQUE constraint failed: users.name"
+        assert "[parameters:" in err.traceback
+
     def test_parses_original_error_handle_marker(self):
         err = omnivm_mod.RuntimeError(
             "javascript: Error: outer\n"

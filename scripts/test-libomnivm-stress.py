@@ -12580,6 +12580,18 @@ User(age=0)
     };
   }
   try {
+    omnivm.call("python", "1/0");
+  } catch (err) {
+    out.pythonSimple = {
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      boundaryPath: err.boundaryPath
+    };
+  }
+  try {
     omnivm.call("java", '((java.util.concurrent.Callable<String>)(() -> { throw new RuntimeException("outer", new IllegalArgumentException("inner")); })).call()');
   } catch (err) {
     out.java = {
@@ -12615,6 +12627,20 @@ User(age=0)
         raise AssertionError(f"JS Python boundary path lost: {envelope}")
     if py_error.get("originalErrorHandle") is not None:
         raise AssertionError(f"JS Python error should not invent original handle: {envelope}")
+
+    py_simple_error = envelope.get("pythonSimple") or {}
+    if not py_simple_error.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for simple Python failure: {envelope}")
+    if py_simple_error.get("runtime") != "python":
+        raise AssertionError(f"JS simple Python error runtime lost: {envelope}")
+    if py_simple_error.get("type") != "ZeroDivisionError":
+        raise AssertionError(f"JS simple Python error type lost: {envelope}")
+    if py_simple_error.get("message") != "division by zero":
+        raise AssertionError(f"JS simple Python error message should be parsed detail only: {envelope}")
+    if "Traceback" not in py_simple_error.get("traceback", ""):
+        raise AssertionError(f"JS simple Python error traceback lost: {envelope}")
+    if py_simple_error.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS simple Python boundary path lost: {envelope}")
 
     java_error = envelope.get("java") or {}
     if not java_error.get("isError"):
@@ -12653,7 +12679,8 @@ rescue => e
     e.class.name,
     e.runtime,
     e.type,
-    e.message,
+    e.message.include?("division by zero"),
+    e.traceback.include?("Traceback"),
     e.boundary_path,
     e.original_error_handle.nil?,
     e.to_h[:runtime],
@@ -12690,8 +12717,9 @@ out.join("\n")
         "true",
         "OmniVM::RuntimeError",
         "python",
-        "",
-        "eval failed",
+        "ZeroDivisionError",
+        "true",
+        "true",
         "call[python]",
         "true",
         "python",
@@ -12751,7 +12779,9 @@ def test_java_native_runtime_error_fields_cross_runtime_calls():
             Boolean.toString(e instanceof RuntimeException),
             e.getClass().getName(),
             e.getRuntime(),
+            e.getType(),
             Boolean.toString(e.getMessage().contains("division by zero")),
+            Boolean.toString(e.getTraceback().contains("Traceback")),
             e.getBoundaryPath(),
             Boolean.toString(e.getOriginalErrorHandle() == null),
             String.valueOf(envelope.get("runtime")),
@@ -12786,6 +12816,8 @@ def test_java_native_runtime_error_fields_cross_runtime_calls():
         "true",
         "omnivm.OmniVM$RuntimeError",
         "python",
+        "ZeroDivisionError",
+        "true",
         "true",
         "call[python]",
         "true",

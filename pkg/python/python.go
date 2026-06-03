@@ -2005,7 +2005,11 @@ static char* omnivm_py_eval_inner(const char* code) {
     if (result) {
         return py_obj_to_str(result);
     }
-    PyErr_Clear();
+    if (PyErr_ExceptionMatches(PyExc_SyntaxError)) {
+        PyErr_Clear();
+    } else {
+        return NULL;
+    }
 
     // Multi-line: run all-but-last line as statements, eval last line as expression.
     // Find the last non-blank line.
@@ -2067,7 +2071,12 @@ static char* omnivm_py_eval_inner(const char* code) {
         free(tail);
         return py_obj_to_str(result);
     }
-    PyErr_Clear();
+    if (PyErr_ExceptionMatches(PyExc_SyntaxError)) {
+        PyErr_Clear();
+    } else {
+        free(tail);
+        return NULL;
+    }
 
     // Last line isn't an expression, run as statement
     result = PyRun_String(tail, Py_file_input, globals, globals);
@@ -2214,6 +2223,95 @@ static char* omnivm_py_fetch_error_inner() {
 static char* omnivm_py_fetch_error() {
     PyGILState_STATE gstate = PyGILState_Ensure();
     char* result = omnivm_py_fetch_error_inner();
+    PyGILState_Release(gstate);
+    return result;
+}
+
+// Inner fetch traceback error: retrieves current Python error including stack.
+// Must be called with GIL held. Caller must free.
+static char* omnivm_py_fetch_traceback_error_inner() {
+    PyObject *type, *value, *traceback;
+    PyErr_Fetch(&type, &value, &traceback);
+    if (!type && !value) {
+        Py_XDECREF(traceback);
+        return NULL;
+    }
+    PyErr_NormalizeException(&type, &value, &traceback);
+
+    char* result = NULL;
+    PyObject* traceback_module = PyImport_ImportModule("traceback");
+    if (traceback_module && type && value) {
+        PyObject* format_exception = PyObject_GetAttrString(traceback_module, "format_exception");
+        if (format_exception) {
+            PyObject* tb_arg = traceback ? traceback : Py_None;
+            PyObject* formatted = PyObject_CallFunctionObjArgs(format_exception, type, value, tb_arg, NULL);
+            if (formatted) {
+                PyObject* empty = PyUnicode_FromString("");
+                if (empty) {
+                    PyObject* joined = PyUnicode_Join(empty, formatted);
+                    if (joined) {
+                        const char* utf8 = PyUnicode_AsUTF8(joined);
+                        if (utf8) result = strdup(utf8);
+                        Py_DECREF(joined);
+                    }
+                    Py_DECREF(empty);
+                }
+                Py_DECREF(formatted);
+            }
+            Py_DECREF(format_exception);
+        }
+    }
+    Py_XDECREF(traceback_module);
+
+    if (!result) {
+        PyErr_Clear();
+    }
+
+    if (!result && value) {
+        PyObject* str = PyObject_Str(value);
+        PyObject* type_name = type ? PyObject_GetAttrString(type, "__name__") : NULL;
+        if (str) {
+            const char* utf8 = PyUnicode_AsUTF8(str);
+            const char* type_utf8 = NULL;
+            if (type_name) type_utf8 = PyUnicode_AsUTF8(type_name);
+            if (utf8 && type_utf8) {
+                size_t len = strlen(type_utf8) + strlen(utf8) + 3;
+                result = (char*)malloc(len);
+                if (result) snprintf(result, len, "%s: %s", type_utf8, utf8);
+            } else if (utf8) {
+                result = strdup(utf8);
+            }
+            Py_DECREF(str);
+        }
+        Py_XDECREF(type_name);
+    }
+
+    Py_XDECREF(type);
+    Py_XDECREF(value);
+    Py_XDECREF(traceback);
+    PyErr_Clear();
+    return result;
+}
+
+// Thread-safe fetch traceback error: acquires GIL, delegates to inner, releases GIL.
+static char* omnivm_py_fetch_traceback_error() {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    char* result = omnivm_py_fetch_traceback_error_inner();
+    PyGILState_Release(gstate);
+    return result;
+}
+
+// Thread-safe eval with error capture: evaluates and, on failure, fetches the
+// active traceback before releasing the GIL or returning to Go. Python stores
+// exceptions in thread-local state, so callers must not fetch the error in a
+// separate cgo call after the Go goroutine may have moved OS threads.
+static char* omnivm_py_eval_with_traceback_error(const char* code, char** error_out) {
+    if (error_out) *error_out = NULL;
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    char* result = omnivm_py_eval_inner(code);
+    if (!result && error_out) {
+        *error_out = omnivm_py_fetch_traceback_error_inner();
+    }
     PyGILState_Release(gstate);
     return result;
 }
@@ -2881,10 +2979,10 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	cCode := C.CString(code)
 	defer C.free(unsafe.Pointer(cCode))
 
-	cOutput := C.omnivm_py_eval(cCode)
+	var cErr *C.char
+	cOutput := C.omnivm_py_eval_with_traceback_error(cCode, &cErr)
 
 	if cOutput == nil {
-		cErr := C.omnivm_py_fetch_error()
 		if cErr != nil {
 			errStr := C.GoString(cErr)
 			C.free(unsafe.Pointer(cErr))

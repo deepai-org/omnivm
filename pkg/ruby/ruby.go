@@ -1117,7 +1117,7 @@ static int omnivm_ruby_init(void) {
         "        stripped = line.strip\n"
         "        next unless stripped.include?(\": \")\n"
         "        candidate = stripped.split(\": \", 2).first\n"
-        "        if !candidate.empty? && !candidate.include?(\" \")\n"
+        "        if candidate.match?(/\\A[A-Za-z_][A-Za-z0-9_.$:]*\\z/)\n"
         "          parse_line = stripped\n"
         "          break\n"
         "        end\n"
@@ -1127,7 +1127,7 @@ static int omnivm_ruby_init(void) {
         "    detail = first_line\n"
         "    if parse_line.include?(\": \")\n"
         "      candidate, tail = parse_line.split(\": \", 2)\n"
-        "      if !candidate.empty? && !candidate.include?(\" \")\n"
+        "      if candidate.match?(/\\A[A-Za-z_][A-Za-z0-9_.$:]*\\z/)\n"
         "        candidate = candidate.split('.').last if source_runtime == \"python\"\n"
         "        err_type = candidate\n"
         "        detail = tail\n"
@@ -1142,7 +1142,7 @@ static int omnivm_ruby_init(void) {
         "      cause_message = cause_text\n"
         "      if cause_text.include?(\": \")\n"
         "        candidate, tail = cause_text.split(\": \", 2)\n"
-        "        if !candidate.empty? && !candidate.include?(\" \")\n"
+        "        if candidate.match?(/\\A[A-Za-z_][A-Za-z0-9_.$:]*\\z/)\n"
         "          cause_type = candidate\n"
         "          cause_message = tail\n"
         "        end\n"
@@ -1425,9 +1425,16 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
         return Qnil;
     }
 
-    ruby_bridge_args bargs = { .runtime = runtime, .code = code, .result = NULL };
-    rb_thread_call_without_gvl(ruby_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
-    char* result = bargs.result;
+    char* result = NULL;
+    if (strcmp(runtime, "python") == 0) {
+        pthread_mutex_lock(&g_ruby_bridge_call_mu);
+        result = g_bridge_call(runtime, code);
+        pthread_mutex_unlock(&g_ruby_bridge_call_mu);
+    } else {
+        ruby_bridge_args bargs = { .runtime = runtime, .code = code, .result = NULL };
+        rb_thread_call_without_gvl(ruby_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
+        result = bargs.result;
+    }
 
     if (!result) {
         rb_raise(rb_eRuntimeError, "OmniVM.call returned NULL");
@@ -1512,7 +1519,13 @@ static VALUE rb_omnivm_call_typed(int argc, VALUE* argv, VALUE self) {
     bargs.nargs = nargs;
     memset(&bargs.result, 0, sizeof(bargs.result));
 
-    rb_thread_call_without_gvl(ruby_typed_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
+    if (strcmp(runtime, "python") == 0) {
+        pthread_mutex_lock(&g_ruby_bridge_call_mu);
+        bargs.result = g_call_typed(bargs.runtime, bargs.func_name, bargs.args, bargs.nargs);
+        pthread_mutex_unlock(&g_ruby_bridge_call_mu);
+    } else {
+        rb_thread_call_without_gvl(ruby_typed_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
+    }
 
     // Free args
     if (c_args) {
