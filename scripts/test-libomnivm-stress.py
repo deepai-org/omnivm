@@ -5184,6 +5184,55 @@ body_stream.close()
         raise AssertionError(f"Django closed request object should not cross as stream: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream():
+    before = omnivm.status()
+    before_boundary = before.get("boundary", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "resp",
+                "code": (
+                    "(lambda: ("
+                    "__import__('django.conf').conf.settings.configure(DEFAULT_CHARSET='utf-8', SECRET_KEY='poly') "
+                    "if not __import__('django.conf').conf.settings.configured else None, "
+                    "(lambda r: (r.__setitem__('X-Request-Id', 'django-stream-42'), r)[-1])"
+                    "(__import__('django.http', fromlist=['StreamingHttpResponse']).StreamingHttpResponse("
+                    "iter([b'first', b'second']), status=202"
+                    "))"
+                    ")[-1])()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (String(resp.status_code) !== '202') throw new Error('bad Django response status: ' + resp.status_code); "
+                    "if (resp.headers['X-Request-Id'] !== 'django-stream-42') throw new Error('bad Django response header: ' + resp.headers['X-Request-Id']);"
+                ),
+                "captures": {"resp": "resp"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "assert list(resp.streaming_content) == [b'first', b'second']",
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Django StreamingHttpResponse did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Django StreamingHttpResponse should not cross as a body stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django StreamingHttpResponse used JSON fallback: before={before_boundary}, after={boundary}")
+
+
 def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -13069,6 +13118,7 @@ def main():
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
+        check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)

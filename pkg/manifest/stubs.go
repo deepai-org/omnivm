@@ -2157,7 +2157,7 @@ func (e *Executor) runtimeRefIsPythonAsyncStream(ref RuntimeRef) (bool, error) {
 		return false, nil
 	}
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
-	expr := fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: hasattr(__v, '__aiter__') and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)))(hasattr(__v, 'method') and (hasattr(__v, 'path') or hasattr(__v, 'url') or hasattr(__v, 'headers') or hasattr(__v, 'META'))))(%s)", base)
+	expr := fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: hasattr(__v, '__aiter__') and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base)
 	value, err := e.runtimeRefEvalPrimitive(ref, expr)
 	if err != nil {
 		return false, err
@@ -2735,7 +2735,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	case "javascript":
 		return fmt.Sprintf("(function(__v){ return !!(__v && !__v.__omnivm_proxy__ && !Array.isArray(__v) && !(typeof Map !== 'undefined' && __v instanceof Map) && !(typeof Set !== 'undefined' && __v instanceof Set) && !(typeof ArrayBuffer !== 'undefined' && (__v instanceof ArrayBuffer || ArrayBuffer.isView(__v))) && !(typeof __v === 'string' || __v instanceof String) && !(typeof __v.method !== 'undefined' && (__v.path || __v.url || __v.headers)) && ((typeof __v.next === 'function' && (typeof __v[Symbol.iterator] !== 'function' || __v[Symbol.iterator]() === __v)) || (typeof __v.getReader === 'function') || (typeof __v.next !== 'function' && typeof __v[Symbol.iterator] === 'function') || (typeof Symbol !== 'undefined' && typeof Symbol.asyncIterator !== 'undefined' && typeof __v[Symbol.asyncIterator] === 'function'))); })(%s)", base), true
 	case "python":
-		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: (not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))(hasattr(__v, 'method') and (hasattr(__v, 'path') or hasattr(__v, 'url') or hasattr(__v, 'headers') or hasattr(__v, 'META'))))(%s)", base), true
+		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: (not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
 	case "ruby":
 		return fmt.Sprintf("(begin; __v = %s; __omnivm_method_like = __v.respond_to?(:request_method) || (begin; __v.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__v.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__v.respond_to?(:path) || __v.respond_to?(:url) || __v.respond_to?(:headers) || __v.respond_to?(:env) || __v.respond_to?(:path_info)); !__omnivm_http_message && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base), true
 	case "java":
@@ -2744,6 +2744,10 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func pythonHTTPMessageProbeExpr(base string) string {
+	return fmt.Sprintf("((hasattr(%s, 'method') and (hasattr(%s, 'path') or hasattr(%s, 'url') or hasattr(%s, 'headers') or hasattr(%s, 'META'))) or (hasattr(%s, 'status_code') and (hasattr(%s, 'headers') or hasattr(%s, 'content') or hasattr(%s, 'streaming_content'))))", base, base, base, base, base, base, base, base, base)
 }
 
 func javaHTTPMessageProbeExpr(base string) string {
@@ -2817,24 +2821,25 @@ func runtimeRefPythonStreamNextStepCode(ref RuntimeRef, valueVar, doneVar, ready
 	return fmt.Sprintf(`%s = False
 %s = None
 __omnivm_stream_obj = %s
+__omnivm_http_message = %s
 try:
-    if hasattr(__omnivm_stream_obj, '__next__') and iter(__omnivm_stream_obj) is __omnivm_stream_obj:
+    if not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__next__') and iter(__omnivm_stream_obj) is __omnivm_stream_obj:
         %s = next(__omnivm_stream_obj)
         %s = False
         %s = True
-    elif callable(getattr(__omnivm_stream_obj, 'read', None)):
+    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):
         try:
             %s = __omnivm_stream_obj.read(8192)
         except TypeError:
             %s = __omnivm_stream_obj.read()
         %s = (%s is None or %s == b'' or %s == '')
         %s = True
-    elif hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not (hasattr(__omnivm_stream_obj, 'method') and (hasattr(__omnivm_stream_obj, 'path') or hasattr(__omnivm_stream_obj, 'url') or hasattr(__omnivm_stream_obj, 'headers') or hasattr(__omnivm_stream_obj, 'META'))) and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
+    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
         %s = globals().get(%q) or iter(__omnivm_stream_obj)
         %s = next(%s)
         %s = False
         %s = True
-    elif hasattr(__omnivm_stream_obj, '__aiter__') and not hasattr(__omnivm_stream_obj, '__len__') and not (hasattr(__omnivm_stream_obj, 'method') and (hasattr(__omnivm_stream_obj, 'path') or hasattr(__omnivm_stream_obj, 'url') or hasattr(__omnivm_stream_obj, 'headers') or hasattr(__omnivm_stream_obj, 'META'))) and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
+    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__aiter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
         import asyncio as __aio
         __omnivm_async_iter = globals().get(%q)
         if __omnivm_async_iter is None:
@@ -2869,7 +2874,7 @@ except StopIteration:
     %s = True
 except BaseException as e:
     %s = type(e).__name__ + ": " + str(e)
-    %s = True`, readyVar, errVar, base, valueVar, doneVar, readyVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, readyVar, stateRef, stateVar, valueVar, stateRef, doneVar, readyVar, stateVar, stateVar, valueVar, doneVar, valueVar, doneVar, stateVar, errVar, readyVar, valueVar, doneVar, readyVar, valueVar, stateRef, doneVar, readyVar, errVar, readyVar), true
+    %s = True`, readyVar, errVar, base, pythonHTTPMessageProbeExpr("__omnivm_stream_obj"), valueVar, doneVar, readyVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, readyVar, stateRef, stateVar, valueVar, stateRef, doneVar, readyVar, stateVar, stateVar, valueVar, doneVar, valueVar, doneVar, stateVar, errVar, readyVar, valueVar, doneVar, readyVar, valueVar, stateRef, doneVar, readyVar, errVar, readyVar), true
 }
 
 func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string) (string, bool) {
@@ -2879,7 +2884,7 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
 	case "javascript":
 		return fmt.Sprintf("{ const __omnivm_stream_obj = %s; const __omnivm_iter = (typeof __omnivm_stream_obj.next === 'function') ? __omnivm_stream_obj : (%s || (%s = __omnivm_stream_obj[Symbol.iterator]())); const __omnivm_next = __omnivm_iter.next(); globalThis.%s = __omnivm_next.value; globalThis.%s = !!__omnivm_next.done; }", base, stateRef, stateRef, valueVar, doneVar), true
 	case "python":
-		return fmt.Sprintf("__omnivm_stream_obj = %s\n__omnivm_http_message = hasattr(__omnivm_stream_obj, 'method') and (hasattr(__omnivm_stream_obj, 'path') or hasattr(__omnivm_stream_obj, 'url') or hasattr(__omnivm_stream_obj, 'headers') or hasattr(__omnivm_stream_obj, 'META'))\ntry:\n    if not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__next__') and iter(__omnivm_stream_obj) is __omnivm_stream_obj:\n        %s = next(__omnivm_stream_obj)\n        %s = False\n    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):\n        try:\n            %s = __omnivm_stream_obj.read(8192)\n        except TypeError:\n            %s = __omnivm_stream_obj.read()\n        %s = (%s is None or %s == b'' or %s == '')\n    elif hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not __omnivm_http_message and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):\n        %s = globals().get(%q) or iter(__omnivm_stream_obj)\n        %s = next(%s)\n        %s = False\n    else:\n        %s = None\n        %s = True\nexcept StopIteration:\n    %s = None\n    %s = None\n    %s = True", base, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, stateRef, stateVar, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
+		return fmt.Sprintf("__omnivm_stream_obj = %s\n__omnivm_http_message = %s\ntry:\n    if not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__next__') and iter(__omnivm_stream_obj) is __omnivm_stream_obj:\n        %s = next(__omnivm_stream_obj)\n        %s = False\n    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):\n        try:\n            %s = __omnivm_stream_obj.read(8192)\n        except TypeError:\n            %s = __omnivm_stream_obj.read()\n        %s = (%s is None or %s == b'' or %s == '')\n    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):\n        %s = globals().get(%q) or iter(__omnivm_stream_obj)\n        %s = next(%s)\n        %s = False\n    else:\n        %s = None\n        %s = True\nexcept StopIteration:\n    %s = None\n    %s = None\n    %s = True", base, pythonHTTPMessageProbeExpr("__omnivm_stream_obj"), valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, stateRef, stateVar, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "ruby":
 		return fmt.Sprintf("begin; __omnivm_stream_obj = %s; __omnivm_method_like = __omnivm_stream_obj.respond_to?(:request_method) || (begin; __omnivm_stream_obj.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__omnivm_stream_obj.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__omnivm_stream_obj.respond_to?(:path) || __omnivm_stream_obj.respond_to?(:url) || __omnivm_stream_obj.respond_to?(:headers) || __omnivm_stream_obj.respond_to?(:env) || __omnivm_stream_obj.respond_to?(:path_info)); __omnivm_io = (!__omnivm_http_message && __omnivm_stream_obj.respond_to?(:to_io)) ? __omnivm_stream_obj.to_io : nil; if !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:next); $%s = __omnivm_stream_obj.next; $%s = false; elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:read); $%s = __omnivm_stream_obj.read(8192); $%s = ($%s.nil? || $%s == \"\"); elsif __omnivm_io.respond_to?(:read); $%s = __omnivm_io.read(8192); $%s = ($%s.nil? || $%s == \"\"); elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String); %s ||= __omnivm_stream_obj.each; $%s = %s.next; $%s = false; else; $%s = nil; $%s = true; end; rescue StopIteration, EOFError; %s = nil; $%s = nil; $%s = true; end", base, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, valueVar, doneVar, valueVar, valueVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "java":
