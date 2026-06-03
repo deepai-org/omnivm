@@ -95,6 +95,81 @@ func TestParseError_WithTraceback(t *testing.T) {
 	if re.Traceback == "" {
 		t.Error("expected non-empty traceback")
 	}
+	if re.BoundaryPath != "call[python]" {
+		t.Errorf("BoundaryPath = %q, want call[python]", re.BoundaryPath)
+	}
+}
+
+func TestParseError_RuntimePrefixedWithoutERR(t *testing.T) {
+	re := ParseError("python", "python: ZeroDivisionError: division by zero")
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "python" {
+		t.Errorf("Runtime = %q, want python", re.Runtime)
+	}
+	if re.Type != "ZeroDivisionError" {
+		t.Errorf("Type = %q, want ZeroDivisionError", re.Type)
+	}
+	if re.Message != "division by zero" {
+		t.Errorf("Message = %q, want division by zero", re.Message)
+	}
+	if re.BoundaryPath != "call[python]" {
+		t.Errorf("BoundaryPath = %q, want call[python]", re.BoundaryPath)
+	}
+}
+
+func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
+	raw := "ERR:execute manifest: exec [java]: java: java.lang.RuntimeException: outer\n" +
+		"\tat OmniVMEval.run(OmniVMEval.java:3)\n" +
+		"Caused by: java.lang.IllegalArgumentException: inner\n" +
+		"Original error handle: java-error-42"
+	re := ParseError("", raw)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "java" {
+		t.Errorf("Runtime = %q, want java", re.Runtime)
+	}
+	if re.Type != "java.lang.RuntimeException" {
+		t.Errorf("Type = %q, want java.lang.RuntimeException", re.Type)
+	}
+	if re.Message != "outer" {
+		t.Errorf("Message = %q, want outer", re.Message)
+	}
+	if re.BoundaryPath != "execute manifest > exec[java]" {
+		t.Errorf("BoundaryPath = %q, want execute manifest > exec[java]", re.BoundaryPath)
+	}
+	if re.OriginalErrorHandle != "java-error-42" {
+		t.Errorf("OriginalErrorHandle = %q, want java-error-42", re.OriginalErrorHandle)
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain len = %d, want 1: %#v", len(re.CauseChain), re.CauseChain)
+	}
+	if re.CauseChain[0].Type != "java.lang.IllegalArgumentException" || re.CauseChain[0].Message != "inner" {
+		t.Errorf("CauseChain[0] = %#v, want java.lang.IllegalArgumentException: inner", re.CauseChain[0])
+	}
+}
+
+func TestParseError_PythonTracebackIgnoresMetadataLines(t *testing.T) {
+	raw := "ERR:python: Traceback (most recent call last):\n" +
+		"  File \"<string>\", line 1, in <module>\n" +
+		"sqlalchemy.exc.IntegrityError: UNIQUE constraint failed: users.name\n" +
+		"[SQL: INSERT INTO users (name) VALUES (?)]\n" +
+		"[parameters: ('ada',)]\n"
+	re := ParseError("python", raw)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Type != "IntegrityError" {
+		t.Errorf("Type = %q, want IntegrityError", re.Type)
+	}
+	if re.Message != "UNIQUE constraint failed: users.name" {
+		t.Errorf("Message = %q, want UNIQUE constraint failed: users.name", re.Message)
+	}
+	if !contains(re.Traceback, "[parameters:") {
+		t.Errorf("Traceback should retain metadata lines, got: %q", re.Traceback)
+	}
 }
 
 func contains(s, substr string) bool {
