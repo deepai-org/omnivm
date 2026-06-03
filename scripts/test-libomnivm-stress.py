@@ -18687,6 +18687,84 @@ def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
         raise AssertionError(f"CompletableFuture cancellation did not record proxy method calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_scheduled_future_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "java.util.concurrent.ScheduledThreadPoolExecutor exec = new java.util.concurrent.ScheduledThreadPoolExecutor(1); "
+                    "exec.setRemoveOnCancelPolicy(true); "
+                    "java.util.concurrent.atomic.AtomicBoolean ran = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "java.util.concurrent.ScheduledFuture<?> future = exec.schedule(() -> ran.set(true), 60L, java.util.concurrent.TimeUnit.SECONDS); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_scheduled_future_cancel\", future); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_scheduled_future_executor\", exec); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_scheduled_future_ran\", ran);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_scheduled_future_cancel": "java_scheduled_future_cancel"},
+                "code": (
+                    "if (java_scheduled_future_cancel.isDone()) throw new Error('ScheduledFuture should start pending'); "
+                    "if (java_scheduled_future_cancel.isCancelled()) throw new Error('ScheduledFuture should not start cancelled'); "
+                    "if (java_scheduled_future_cancel.cancel(true) !== true) throw new Error('ScheduledFuture cancel returned false'); "
+                    "if (!java_scheduled_future_cancel.isCancelled()) throw new Error('ScheduledFuture did not report cancelled in JS'); "
+                    "if (!java_scheduled_future_cancel.isDone()) throw new Error('ScheduledFuture did not report done in JS after cancel');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object rawFuture = omnivm.OmniVM.getCapture(\"java_scheduled_future_cancel\"); "
+                    "if (!(rawFuture instanceof java.util.concurrent.ScheduledFuture)) throw new RuntimeException(\"ScheduledFuture capture lost native type: \" + rawFuture); "
+                    "java.util.concurrent.ScheduledFuture<?> future = (java.util.concurrent.ScheduledFuture<?>) rawFuture; "
+                    "if (!future.isCancelled()) throw new RuntimeException(\"ScheduledFuture did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(\"ScheduledFuture did not stay done in Java\"); "
+                    "Object rawRan = omnivm.OmniVM.getCapture(\"java_scheduled_future_ran\"); "
+                    "if (!(rawRan instanceof java.util.concurrent.atomic.AtomicBoolean)) throw new RuntimeException(\"ScheduledFuture ran marker lost native type: \" + rawRan); "
+                    "if (((java.util.concurrent.atomic.AtomicBoolean) rawRan).get()) throw new RuntimeException(\"ScheduledFuture task ran after cancellation\"); "
+                    "Object rawExec = omnivm.OmniVM.getCapture(\"java_scheduled_future_executor\"); "
+                    "if (!(rawExec instanceof java.util.concurrent.ScheduledThreadPoolExecutor)) throw new RuntimeException(\"ScheduledFuture executor lost native type: \" + rawExec); "
+                    "java.util.concurrent.ScheduledThreadPoolExecutor exec = (java.util.concurrent.ScheduledThreadPoolExecutor) rawExec; "
+                    "exec.purge(); "
+                    "if (!exec.getQueue().isEmpty()) throw new RuntimeException(\"ScheduledFuture cancel did not clear executor queue: \" + exec.getQueue().size()); "
+                    "exec.shutdownNow(); "
+                    "if (!exec.awaitTermination(5L, java.util.concurrent.TimeUnit.SECONDS)) throw new RuntimeException(\"ScheduledFuture executor did not terminate\"); "
+                    "if (!exec.isShutdown()) throw new RuntimeException(\"ScheduledFuture executor did not shut down\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    crossed_as_proxy = boundary.get("resource_proxy_captures", 0) >= before_boundary.get("resource_proxy_captures", 0) + 1
+    called_as_proxy = call_count >= before_call_count + 5
+    if not (crossed_as_proxy or called_as_proxy):
+        raise AssertionError(
+            f"ScheduledFuture did not cross as a live callable proxy: "
+            f"before_boundary={before_boundary}, after_boundary={boundary}, "
+            f"before_handles={before_handles}, after_handles={handles}"
+        )
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"ScheduledFuture used JSON fallback: before={before_boundary}, after={boundary}")
+    if not called_as_proxy:
+        raise AssertionError(f"ScheduledFuture cancellation did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -20065,6 +20143,7 @@ def main():
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
         check("Java CompletableFuture custom executor callback affinity is diagnostic or safe", test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
+        check("Manifest Java ScheduledFuture cancellation status crosses runtimes", test_manifest_java_scheduled_future_cancel_status_crosses_runtimes)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
