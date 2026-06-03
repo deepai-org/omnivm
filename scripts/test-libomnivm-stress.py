@@ -12468,12 +12468,24 @@ def test_validation_error_fidelity_popular_libraries():
                 raise AssertionError(f"{name} error message = {exc.message!r}, want containing {structured['message']!r}: {text}") from exc
             if "traceback" in structured and structured["traceback"] not in exc.traceback:
                 raise AssertionError(f"{name} error traceback = {exc.traceback!r}, want containing {structured['traceback']!r}: {text}") from exc
+            envelope = exc.to_dict()
+            json.dumps(envelope)
+            if envelope.get("runtime") != exc.runtime or envelope.get("type") != exc.type:
+                raise AssertionError(f"{name} structured envelope lost runtime/type: {envelope!r}") from exc
+            if envelope.get("message") != exc.message or envelope.get("traceback") != exc.traceback:
+                raise AssertionError(f"{name} structured envelope lost message/traceback: {envelope!r}") from exc
+            if envelope.get("boundary_path") != exc.boundary_path:
+                raise AssertionError(f"{name} structured envelope lost boundary path: {envelope!r}") from exc
+            if envelope.get("original_error_handle") is not None:
+                raise AssertionError(f"{name} structured envelope should not invent an error handle: {envelope!r}") from exc
             if "cause_type" in structured:
                 if not exc.cause_chain:
                     raise AssertionError(f"{name} error lost cause chain: {text}") from exc
                 cause = exc.cause_chain[0]
                 if cause.get("type") != structured["cause_type"] or structured["cause_message"] not in cause.get("message", ""):
                     raise AssertionError(f"{name} error cause = {cause!r}, want {structured}: {text}") from exc
+                if not envelope.get("cause_chain") or envelope["cause_chain"][0] != cause:
+                    raise AssertionError(f"{name} structured envelope lost cause chain: {envelope!r}") from exc
         else:
             raise AssertionError(f"{name} did not raise an error")
 

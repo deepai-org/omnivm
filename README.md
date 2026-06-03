@@ -269,6 +269,28 @@ class OmniVMMetricsMiddleware:
         return response
 ```
 
+Structured cross-runtime errors for application logs:
+
+```python
+import logging
+import omnivm
+
+logger = logging.getLogger(__name__)
+
+try:
+    omnivm.call("javascript", "throw new Error('boom')")
+except omnivm.RuntimeError as exc:
+    logger.exception(
+        "omnivm runtime error",
+        extra={"omnivm_error": exc.to_dict()},
+    )
+```
+
+`RuntimeError.to_dict()` returns a JSON-serializable envelope with `runtime`,
+`type`, `message`, `traceback`, `cause_chain`, `boundary_path`, and
+`original_error_handle`. The handle is only populated when the source runtime
+reports one; callers should treat it as optional diagnostic metadata.
+
 ### Two Modes: Interpreter vs Library
 
 | | OmniVM as Python interpreter | `libomnivm.so` (c-shared) |
@@ -299,6 +321,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
 | `omnivm.shutdown()` | Tear down runtimes (optional — process exit works too) |
+| `omnivm.RuntimeError.to_dict()` | Return a structured runtime error envelope for logging, middleware, and JSON diagnostics |
 
 ### Lazy Initialization
 

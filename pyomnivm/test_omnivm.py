@@ -75,6 +75,33 @@ class TestRuntimeError(unittest.TestCase):
             {"type": "TypeError", "message": "inner"}
         ]
 
+    def test_parses_original_error_handle_marker(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: Error: outer\n"
+            "    at <anonymous>:1:7\n"
+            "Original error handle: js-error-42",
+            runtime="javascript",
+        )
+        assert err.original_error_handle == "js-error-42"
+
+    def test_to_dict_returns_structured_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: Error: outer\n"
+            "    at <anonymous>:1:7\n"
+            "Caused by: TypeError: inner",
+            runtime="javascript",
+            boundary_path="call[javascript]",
+        )
+        assert err.to_dict() == {
+            "runtime": "javascript",
+            "type": "Error",
+            "message": "outer",
+            "traceback": "    at <anonymous>:1:7\nCaused by: TypeError: inner",
+            "cause_chain": [{"type": "TypeError", "message": "inner"}],
+            "boundary_path": "call[javascript]",
+            "original_error_handle": None,
+        }
+
     def test_parses_go_wrapped_error_cause_chain(self):
         err = omnivm_mod.RuntimeError(
             "go: outer layer: inner layer\n"

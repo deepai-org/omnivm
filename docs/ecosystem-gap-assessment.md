@@ -170,8 +170,9 @@ be ambiguous.
 
 OmniVM has strong crash/stability stress around exception propagation and stack
 unwinding, and the Python-facing error wrapper now preserves runtime, type,
-message, traceback/stack, cause chain, direct `call[...]` API boundary, and
-manifest boundary path for common library errors: Django `ValidationError`,
+message, traceback/stack, cause chain, direct `call[...]` API boundary, manifest
+boundary path, and a JSON-serializable `RuntimeError.to_dict()` envelope for
+common library errors: Django `ValidationError`,
 Pydantic/Zod validation errors, SQLAlchemy exceptions, Java causes, JavaScript
 `Error.cause`, Ruby ActiveRecord exceptions, and Go c-shared errors that wrap
 causes with `errors.Unwrap`.
@@ -187,9 +188,11 @@ The target error envelope should preserve:
 - whether an original runtime error handle is still available.
 
 The remaining production gap is native recovery logic: preserving an original
-runtime error handle and letting foreign runtimes catch/rethrow with
-language-native semantics instead of only receiving a host-side diagnostic
-envelope.
+runtime error handle when the guest can safely expose it, then letting foreign
+runtimes catch/rethrow with language-native semantics instead of only receiving a
+host-side diagnostic envelope. Python now parses an optional original-error-handle
+marker when a runtime reports one, but there is not yet a general guest-native
+error handle protocol.
 
 ## Priority Test Plan
 

@@ -79,7 +79,19 @@ class RuntimeError(_builtins.RuntimeError):
         self.traceback = parsed["traceback"]
         self.cause_chain = parsed["cause_chain"]
         self.boundary_path = parsed["boundary_path"]
-        self.original_error_handle = None
+        self.original_error_handle = parsed["original_error_handle"]
+
+    def to_dict(self):
+        """Return a structured, JSON-serializable runtime error envelope."""
+        return {
+            "runtime": self.runtime,
+            "type": self.type,
+            "message": self.message,
+            "traceback": self.traceback,
+            "cause_chain": list(self.cause_chain),
+            "boundary_path": self.boundary_path,
+            "original_error_handle": self.original_error_handle,
+        }
 
 
 def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
@@ -120,6 +132,14 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
     first_line, _, rest = body.partition("\n")
     err_type = ""
     detail = first_line
+    original_error_handle = None
+
+    handle_match = re.search(
+        r"(?im)^\s*(?:Original[- ]error[- ]handle|original_error_handle):\s*(?P<handle>\S+)\s*$",
+        body,
+    )
+    if handle_match:
+        original_error_handle = handle_match.group("handle")
 
     parse_line = first_line
     traceback = rest
@@ -165,6 +185,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "traceback": traceback,
         "cause_chain": cause_chain,
         "boundary_path": " > ".join(boundary_parts) or boundary_path,
+        "original_error_handle": original_error_handle,
     }
 
 
