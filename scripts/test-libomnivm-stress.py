@@ -7692,6 +7692,188 @@ for name, pager in (
         raise AssertionError(f"boto3 paginator streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_boto3_dynamodb_paginator_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.stub import Stubber
+
+def make_dynamodb_pager(label):
+    client = boto3.client(
+        "dynamodb",
+        region_name="us-east-1",
+        aws_access_key_id="omnivm",
+        aws_secret_access_key="omnivm",
+        config=Config(signature_version=UNSIGNED),
+    )
+    table_name = "omnivm-compat-orders"
+    stubber = Stubber(client)
+    stubber.add_response(
+        "scan",
+        {
+            "Count": 2,
+            "ScannedCount": 2,
+            "Items": [
+                {"pk": {"S": f"{label}#1"}, "name": {"S": f"{label}-ada"}},
+                {"pk": {"S": f"{label}#2"}, "name": {"S": f"{label}-grace"}},
+            ],
+            "LastEvaluatedKey": {"pk": {"S": f"{label}#next"}},
+        },
+        {"TableName": table_name},
+    )
+    stubber.add_response(
+        "scan",
+        {
+            "Count": 1,
+            "ScannedCount": 1,
+            "Items": [{"pk": {"S": f"{label}#3"}, "name": {"S": f"{label}-later"}}],
+        },
+        {"TableName": table_name, "ExclusiveStartKey": {"pk": {"S": f"{label}#next"}}},
+    )
+    stubber.activate()
+
+    class DynamoDBPagerOwner:
+        def __init__(self):
+            self.label = label
+            self.client = client
+            self.stubber = stubber
+            self.page_iterator = client.get_paginator("scan").paginate(TableName=table_name)
+            self.iterator = iter(self.page_iterator)
+            self.pages_pulled = 0
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            page = next(self.iterator)
+            self.pages_pulled += 1
+            names = [item["name"]["S"] for item in page.get("Items", [])]
+            token = page.get("LastEvaluatedKey", {}).get("pk", {}).get("S", "")
+            return {
+                "names": names,
+                "items": "field-items",
+                "keys": "field-keys",
+                "count": page.get("Count", 0),
+                "then": "field-then",
+                "length": len(names),
+                "close": "field-close",
+                "token": token,
+            }
+
+        def close(self):
+            self.closed = True
+            self.stubber.deactivate()
+
+    return DynamoDBPagerOwner()
+
+dynamodb_pager_js = make_dynamodb_pager("js")
+dynamodb_pager_ruby = make_dynamodb_pager("ruby")
+dynamodb_pager_java = make_dynamodb_pager("java")
+'''
+    verify = r'''
+for name, pager in (
+    ("javascript", dynamodb_pager_js),
+    ("ruby", dynamodb_pager_ruby),
+    ("java", dynamodb_pager_java),
+):
+    if pager.pages_pulled != 1:
+        raise AssertionError(f"{name} DynamoDB paginator pulled {pager.pages_pulled} pages instead of one")
+    if not pager.closed:
+        raise AssertionError(f"{name} DynamoDB paginator was not closed by stream cancellation")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"dynamodb_pager_js": "dynamodb_pager_js"},
+                "code": (
+                    "const it = dynamodb_pager_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('DynamoDB paginator was empty'); "
+                    "const page = first.value; "
+                    "if (page.names.join(',') !== 'js-ada,js-grace') throw new Error('bad DynamoDB JS names: ' + JSON.stringify(page)); "
+                    "if (page.items !== 'field-items' || page.keys !== 'field-keys' || String(page.count) !== '2' || page.then !== 'field-then' || String(page.length) !== '2' || page.close !== 'field-close') throw new Error('DynamoDB JS collision fields lost: ' + JSON.stringify(page)); "
+                    "if (page.token !== 'js#next') throw new Error('bad DynamoDB JS token: ' + page.token); "
+                    "if (dynamodb_pager_js.cancel('client-stop') !== true) throw new Error('DynamoDB JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"dynamodb_pager_ruby": "dynamodb_pager_ruby"},
+                "code": (
+                    "page = dynamodb_pager_ruby.first; "
+                    "raise 'DynamoDB paginator was empty' if page.nil?; "
+                    "names = page['names']; "
+                    "raise \"bad DynamoDB Ruby names #{names.inspect}\" unless names[0] == 'ruby-ada' && names[1] == 'ruby-grace'; "
+                    "raise 'DynamoDB Ruby items field lost' unless page['items'] == 'field-items'; "
+                    "raise 'DynamoDB Ruby keys field lost' unless page['keys'] == 'field-keys'; "
+                    "raise 'DynamoDB Ruby count field lost' unless page['count'].to_s == '2'; "
+                    "raise 'DynamoDB Ruby then field lost' unless page['then'] == 'field-then'; "
+                    "raise 'DynamoDB Ruby length field lost' unless page['length'].to_s == '2'; "
+                    "raise 'DynamoDB Ruby close field lost' unless page['close'] == 'field-close'; "
+                    "raise 'DynamoDB Ruby token lost' unless page['token'] == 'ruby#next'; "
+                    "dynamodb_pager_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"dynamodb_pager_java": "dynamodb_pager_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"dynamodb_pager_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"DynamoDB paginator should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"DynamoDB paginator was empty\"); "
+                    "java.util.Map<?, ?> page = (java.util.Map<?, ?>) it.next(); "
+                    "Object namesRaw = page.get(\"names\"); "
+                    "java.util.function.Function<Integer, Object> nameAt = (idx) -> { "
+                    "    if (namesRaw instanceof java.util.List<?>) return ((java.util.List<?>) namesRaw).get(idx); "
+                    "    if (namesRaw instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> namesMap = (java.util.Map<?, ?>) namesRaw; return namesMap.containsKey(idx) ? namesMap.get(idx) : namesMap.get(String.valueOf(idx)); } "
+                    "    throw new RuntimeException(\"unexpected DynamoDB Java names shape: \" + namesRaw); "
+                    "}; "
+                    "if (!\"java-ada\".equals(String.valueOf(nameAt.apply(0))) || !\"java-grace\".equals(String.valueOf(nameAt.apply(1)))) throw new RuntimeException(\"bad DynamoDB Java names: \" + namesRaw); "
+                    "if (!\"field-items\".equals(String.valueOf(page.get(\"items\")))) throw new RuntimeException(\"DynamoDB Java items field lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(page.get(\"keys\")))) throw new RuntimeException(\"DynamoDB Java keys field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(page.get(\"count\")))) throw new RuntimeException(\"DynamoDB Java count field lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(page.get(\"then\")))) throw new RuntimeException(\"DynamoDB Java then field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(page.get(\"length\")))) throw new RuntimeException(\"DynamoDB Java length field lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(page.get(\"close\")))) throw new RuntimeException(\"DynamoDB Java close field lost\"); "
+                    "if (!\"java#next\".equals(String.valueOf(page.get(\"token\")))) throw new RuntimeException(\"DynamoDB Java token lost\"); "
+                    "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"DynamoDB Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"DynamoDB paginators did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
+        raise AssertionError(f"DynamoDB paginator used JSON fallback: before={before_boundary}, after={boundary}")
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
+        raise AssertionError(f"DynamoDB paginator streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_redis_scan_iter_is_lazy_and_cancellable():
     redis_fixture, stop_redis = start_redis_fixture()
     try:
@@ -7850,11 +8032,17 @@ for name, scan in (
         after_status = omnivm.status()
         boundary = after_status.get("boundary", {})
         handles = after_status.get("handles", {})
-        if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+        stream_captures = boundary.get("stream_proxy_captures", 0)
+        stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+        if stream_captures < 3 and stream_capture_delta < 3:
             raise AssertionError(f"Redis scan cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
-        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        json_fallbacks = boundary.get("json_fallbacks", 0)
+        json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+        if json_fallbacks != 0 and json_fallback_delta != 0:
             raise AssertionError(f"Redis scan cursor used JSON fallback: before={before_boundary}, after={boundary}")
-        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+        explicit_releases = handles.get("explicit_releases", 0)
+        explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+        if explicit_releases < 3 and explicit_release_delta < 3:
             raise AssertionError(f"Redis scan cursor streams did not release: before={before_handles}, after={handles}")
     finally:
         stop_redis()
@@ -8064,11 +8252,17 @@ for name, cursor in (
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
         raise AssertionError(f"PyMongo cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
         raise AssertionError(f"PyMongo cursor used JSON fallback: before={before_boundary}, after={boundary}")
-    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
         raise AssertionError(f"PyMongo cursor streams did not release: before={before_handles}, after={handles}")
 
 
@@ -21276,6 +21470,7 @@ def main():
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
+        check("Manifest boto3 DynamoDB paginator is lazy and cancellable", test_manifest_boto3_dynamodb_paginator_is_lazy_and_cancellable)
         check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)

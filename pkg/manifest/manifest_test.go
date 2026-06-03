@@ -4081,10 +4081,13 @@ func TestRuntimeRefPythonStreamProbeTreatsPydanticModelsAsResources(t *testing.T
 	if !ok {
 		t.Fatal("python stream probe should be available")
 	}
-	for _, want := range []string{"getattr(type(__v), 'model_fields', None)", "__omnivm_model_fields is None"} {
+	for _, want := range []string{"getattr(type(__v), 'model_fields', None)", "model_fields', None) is None"} {
 		if !strings.Contains(expr, want) {
 			t.Fatalf("python stream probe missing Pydantic model guard %q in %q", want, expr)
 		}
+	}
+	if strings.Count(expr, "(") != strings.Count(expr, ")") {
+		t.Fatalf("python stream probe has unbalanced parentheses: %q", expr)
 	}
 }
 
