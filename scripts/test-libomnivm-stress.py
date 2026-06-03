@@ -18791,6 +18791,120 @@ pydantic_collision = CollisionModel(
         raise AssertionError(f"Pydantic collision model did not record mutation access: before={before_handles}, after={handles}")
 
 
+def test_manifest_attrs_model_collision_fields_stay_natural():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import attrs
+
+@attrs.define
+class CollisionAttrs:
+    items: str
+    keys: str
+    count: int
+    then: str
+    length: int
+    get: str
+    close: str
+
+attrs_collision = CollisionAttrs(
+    items="field-items",
+    keys="field-keys",
+    count=7,
+    then="field-then",
+    length=12,
+    get="field-get",
+    close="field-close",
+)
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"attrs_collision": "attrs_collision"},
+                "code": (
+                    "if (attrs_collision.items !== 'field-items') throw new Error('attrs items field lost: ' + attrs_collision.items); "
+                    "if (attrs_collision.keys !== 'field-keys') throw new Error('attrs keys field lost: ' + attrs_collision.keys); "
+                    "if (String(attrs_collision.count) !== '7') throw new Error('attrs count field lost: ' + attrs_collision.count); "
+                    "if (attrs_collision.then !== 'field-then') throw new Error('attrs then field lost: ' + attrs_collision.then); "
+                    "if (String(attrs_collision.length) !== '12') throw new Error('attrs length field lost: ' + attrs_collision.length); "
+                    "if (attrs_collision.get !== 'field-get') throw new Error('attrs get field lost: ' + attrs_collision.get); "
+                    "if (attrs_collision.close !== 'field-close') throw new Error('attrs close field lost: ' + attrs_collision.close); "
+                    "attrs_collision.items = 'js-items'; "
+                    "attrs_collision.then = 'js-then'; "
+                    "attrs_collision.length = 13; "
+                    "if (omnivm.proxyGet(attrs_collision, 'length') !== 13) throw new Error('proxyGet lost attrs length field');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"attrs_collision": "attrs_collision"},
+                "code": (
+                    "raise \"bad attrs items #{attrs_collision.items}\" unless attrs_collision.items == 'js-items'; "
+                    "raise \"bad attrs then #{attrs_collision.then}\" unless attrs_collision.then == 'js-then'; "
+                    "raise \"bad attrs length #{attrs_collision.length}\" unless attrs_collision.length == 13; "
+                    "attrs_collision.keys = 'ruby-keys'; "
+                    "attrs_collision.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"attrs_collision": "attrs_collision"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"attrs_collision\"); "
+                    "if (!\"js-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"attrs Java items field lost: \" + payload.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(payload.get(\"keys\")))) throw new RuntimeException(\"attrs Java keys field lost: \" + payload.get(\"keys\")); "
+                    "if (!\"field-get\".equals(String.valueOf(payload.get(\"get\")))) throw new RuntimeException(\"attrs Java get field lost: \" + payload.get(\"get\")); "
+                    "if (!\"ruby-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"attrs Java close field lost: \" + payload.get(\"close\")); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"attrs count set failed\"); "
+                    "if (!payload.set(\"get\", \"java-get\")) throw new RuntimeException(\"attrs get set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert attrs_collision.items == 'js-items', attrs_collision\n"
+                    "assert attrs_collision.keys == 'ruby-keys', attrs_collision\n"
+                    "assert attrs_collision.count == 42, attrs_collision\n"
+                    "assert attrs_collision.then == 'js-then', attrs_collision\n"
+                    "assert attrs_collision.length == 13, attrs_collision\n"
+                    "assert attrs_collision.get == 'java-get', attrs_collision\n"
+                    "assert attrs_collision.close == 'ruby-close', attrs_collision\n"
+                    "dump = attrs.asdict(attrs_collision)\n"
+                    "assert dump == {'items': 'js-items', 'keys': 'ruby-keys', 'count': 42, 'then': 'js-then', 'length': 13, 'get': 'java-get', 'close': 'ruby-close'}, dump"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"attrs collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"attrs collision model used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != 0:
+        raise AssertionError(f"attrs collision model crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != 0:
+        raise AssertionError(f"attrs collision model crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"attrs collision model did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"attrs collision model did not record mutation access: before={before_handles}, after={handles}")
+
+
 def test_manifest_js_sequence_length_set_resizes_mutable_sources():
     java_values_expr = (
         "((java.util.function.Supplier<java.util.ArrayList<String>>)(() -> { "
@@ -21317,6 +21431,7 @@ def main():
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest Pydantic model collision fields stay natural", test_manifest_pydantic_model_collision_fields_stay_natural)
+        check("Manifest attrs model collision fields stay natural", test_manifest_attrs_model_collision_fields_stay_natural)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
         check("Manifest JS fixed-size length set rejects Java array and ByteBuffer", test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer)
