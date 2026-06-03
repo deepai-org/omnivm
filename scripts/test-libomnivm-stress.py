@@ -7390,6 +7390,166 @@ def test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_s
         raise AssertionError(f"Rails ActionDispatch objects used JSON fallback: before={before}, after={after}")
 
 
+def test_manifest_rack_rails_socket_abort_closes_response_body_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    run_server = f'''
+require 'socket'
+require 'stringio'
+require 'rack/request'
+require 'action_dispatch'
+
+$rack_abort_state = {{
+  started: false,
+  handler: false,
+  done: false,
+  close_requested: false,
+  events: []
+}}
+$rack_server_req = nil
+$rails_server_req = nil
+$rack_abort_state[:started] = true
+server_io = nil
+client_io = nil
+body = nil
+begin
+  server_io, client_io = Socket.pair(:UNIX, :STREAM, 0)
+  env = {{
+    'REQUEST_METHOD' => 'GET',
+    'SCRIPT_NAME' => '',
+    'PATH_INFO' => '/rack/server-abort',
+    'QUERY_STRING' => 'mode=poly',
+    'CONTENT_LENGTH' => '0',
+    'CONTENT_TYPE' => 'text/plain',
+    'SERVER_NAME' => '127.0.0.1',
+    'SERVER_PORT' => '{port}',
+    'rack.version' => [3, 0],
+    'rack.url_scheme' => 'http',
+    'rack.input' => StringIO.new(''),
+    'rack.errors' => StringIO.new,
+    'rack.multithread' => true,
+    'rack.multiprocess' => false,
+    'rack.run_once' => false,
+    'HTTP_HOST' => '127.0.0.1',
+    'HTTP_X_REQUEST_ID' => 'rack-server-abort-42'
+  }}
+  $rack_server_req = Rack::Request.new(env)
+  $rails_server_req = ActionDispatch::Request.new(env.dup)
+  $rack_abort_state[:handler] = true
+
+  body = Object.new
+  body.define_singleton_method(:each) do |&emit|
+    $rack_abort_state[:events] << 'body-started'
+    emit.call("first\\n")
+    emit.call("second\\n")
+  end
+  body.define_singleton_method(:close) do
+    $rack_abort_state[:events] << 'body-close'
+  end
+
+  server_io.write("HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\n")
+  body.each do |chunk|
+    begin
+      server_io.write(chunk)
+      server_io.flush
+      if chunk.start_with?('first')
+        first_bytes = client_io.readpartial(1024)
+        if first_bytes.include?('first')
+          $rack_abort_state[:events] << 'first-write-ok'
+        else
+          $rack_abort_state[:events] << 'client-missed-first'
+        end
+        client_io.close
+        $rack_abort_state[:events] << 'client-aborted'
+      else
+        $rack_abort_state[:events] << 'second-write-ok'
+      end
+    rescue => e
+      $rack_abort_state[:events] << "write-aborted:#{{e.class}}"
+      break
+    end
+  end
+rescue => e
+  $rack_abort_state[:events] << "server-error:#{{e.class}}:#{{e.message}}"
+ensure
+  begin
+    body.close if body && body.respond_to?(:close)
+  rescue => e
+    $rack_abort_state[:events] << "body-close-error:#{{e.class}}"
+  end
+  begin
+    server_io.close if server_io && !server_io.closed?
+  rescue
+  end
+  begin
+    client_io.close if client_io && !client_io.closed?
+  rescue
+  end
+  $rack_abort_state[:done] = true
+end
+'''
+    verify_ruby = r'''
+events = $rack_abort_state[:events]
+raise "Rack/Rails socket abort fixture never started" unless $rack_abort_state[:started]
+raise "Rack/Rails abort handler never ran" unless $rack_abort_state[:handler]
+raise "Rack/Rails abort client did not receive first chunk: #{events.join('|')}" if events.include?('client-missed-first')
+raise "Rack/Rails response body did not start: #{events.join('|')}" unless events.include?('body-started')
+raise "Rack/Rails response body did not close: #{events.join('|')}" unless events.include?('body-close')
+raise "Rack/Rails second write succeeded after abort: #{events.join('|')}" if events.include?('second-write-ok')
+unless events.any? { |event| event.start_with?('write-aborted:') }
+  raise "Rack/Rails socket fixture did not observe aborted response write: #{events.join('|')}"
+end
+if events.any? { |event| event.start_with?('server-error:') || event.start_with?('body-close-error:') }
+  raise "Rack/Rails socket fixture failed: #{events.join('|')}"
+end
+raise "Rack request was not captured" unless $rack_server_req
+raise "Rails request was not captured" unless $rails_server_req
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "ruby", "code": run_server},
+            {"op": "exec", "runtime": "ruby", "code": verify_ruby},
+            {"op": "eval", "runtime": "ruby", "bind": "rack_server_req", "code": "$rack_server_req"},
+            {"op": "eval", "runtime": "ruby", "bind": "rails_server_req", "code": "$rails_server_req"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {
+                    "rack_server_req": "rack_server_req",
+                    "rails_server_req": "rails_server_req",
+                },
+                "code": (
+                    "if (rack_server_req.request_method !== 'GET') throw new Error('bad Rack socket method: ' + rack_server_req.request_method); "
+                    "if (rack_server_req.path_info !== '/rack/server-abort') throw new Error('bad Rack socket path: ' + rack_server_req.path_info); "
+                    "if (rack_server_req.get_header('HTTP_X_REQUEST_ID') !== 'rack-server-abort-42') throw new Error('bad Rack socket header'); "
+                    "if (rails_server_req.request_method !== 'GET') throw new Error('bad Rails socket method: ' + rails_server_req.request_method); "
+                    "if (rails_server_req.path !== '/rack/server-abort') throw new Error('bad Rails socket path: ' + rails_server_req.path); "
+                    "if (rails_server_req.get_header('HTTP_X_REQUEST_ID') !== 'rack-server-abort-42') throw new Error('bad Rails socket header');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 2:
+        raise AssertionError(f"Rack/Rails socket requests did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != 0:
+        raise AssertionError(f"Rack/Rails socket requests crossed as streams: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Rack/Rails socket requests used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("call", 0):
+        raise AssertionError(f"Rack/Rails socket request proxy did not record method calls: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Rack/Rails socket abort leaked handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_http_message_shape_capture_uses_proxy_not_stream():
     java_msg_expr = (
         "((java.util.function.Supplier<Object>)(() -> { "
@@ -16422,6 +16582,7 @@ def main():
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
         check("Manifest Rails ActionDispatch request/response capture uses proxy not stream", test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream)
+        check("Manifest Rack Rails socket abort closes response body owner", test_manifest_rack_rails_socket_abort_closes_response_body_owner)
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)
