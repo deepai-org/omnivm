@@ -8892,6 +8892,97 @@ def test_manifest_okhttp_request_capture_uses_proxy_not_json():
         raise AssertionError(f"OkHttp request method calls were not recorded as proxy calls: {handles}")
 
 
+def test_manifest_okhttp_response_body_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "okhttp_body_closed",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "okhttp_body_reads",
+                "code": "new java.util.concurrent.atomic.AtomicInteger(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "okhttp_body_stream",
+                "code": (
+                    "((java.util.function.Supplier<java.io.InputStream>)(() -> { "
+                    "okio.Source source = new okio.Source() { "
+                    "private int index = 0; "
+                    "private boolean closed = false; "
+                    "public long read(okio.Buffer sink, long byteCount) throws java.io.IOException { "
+                    "if (closed) throw new java.io.IOException(\"closed\"); "
+                    "if (index >= 2) return -1L; "
+                    "((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"okhttp_body_reads\")).incrementAndGet(); "
+                    "String chunk = index++ == 0 ? \"first\" : \"second\"; "
+                    "sink.writeUtf8(chunk); "
+                    "return chunk.length(); "
+                    "} "
+                    "public okio.Timeout timeout() { return okio.Timeout.NONE; } "
+                    "public void close() throws java.io.IOException { "
+                    "closed = true; "
+                    "((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"okhttp_body_closed\")).set(true); "
+                    "} "
+                    "}; "
+                    "okhttp3.ResponseBody body = okhttp3.ResponseBody.create("
+                    "okhttp3.MediaType.parse(\"text/plain\"), -1L, okio.Okio.buffer(source)); "
+                    "omnivm.OmniVM.setCaptureObject(\"okhttp_response_body\", body); "
+                    "return body.byteStream(); "
+                    "})).get()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"okhttp_body_stream": "okhttp_body_stream"},
+                "code": (
+                    "const it = okhttp_body_stream[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const bytesToString = (chunk) => String.fromCharCode(...Array.from(chunk)); "
+                    "if (first.done || bytesToString(first.value) !== 'first') throw new Error('bad OkHttp first chunk: ' + JSON.stringify(first)); "
+                    "if (okhttp_body_stream.cancel('client-stop') !== true) throw new Error('OkHttp body stream cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"okhttp_body_closed\")).get()) "
+                    "throw new RuntimeException(\"OkHttp response body source did not close after early cancel\"); "
+                    "int reads = ((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"okhttp_body_reads\")).get(); "
+                    "if (reads != 1) throw new RuntimeException(\"OkHttp response body read count after early cancel = \" + reads);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"OkHttp response body lost stream proxy state: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"OkHttp response body used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"OkHttp response body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"OkHttp response body cancel did not release handle: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"OkHttp response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_express_request_capture_uses_proxy_not_stream():
     manifest = {
         "version": 1,
@@ -19438,6 +19529,7 @@ def main():
         check("Manifest Rack Rails socket abort closes response body owner", test_manifest_rack_rails_socket_abort_closes_response_body_owner)
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
+        check("Manifest OkHttp response body stream early cancel releases owner", test_manifest_okhttp_response_body_stream_early_cancel_releases_owner)
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)
         check("Manifest Express request abort lifecycle stays live", test_manifest_express_request_abort_lifecycle_stays_live)
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
