@@ -5197,6 +5197,241 @@ def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
         raise AssertionError(f"SQLAlchemy model should not claim bulk Arrow transfer: {after}")
 
 
+def test_manifest_sqlalchemy_result_session_lifecycle_and_rollback():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import os
+import tempfile
+import uuid
+import sqlalchemy as sa
+from sqlalchemy.orm import Session
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-sqlalchemy-" + uuid.uuid4().hex + ".sqlite3")
+engine = sa.create_engine("sqlite:///" + db_path, future=True)
+metadata = sa.MetaData()
+orders = sa.Table(
+    "orders",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String),
+    sa.Column("items", sa.String),
+    sa.Column("keys", sa.String),
+    sa.Column("count", sa.Integer),
+    sa.Column("then", sa.String),
+    sa.Column("length", sa.Integer),
+    sa.Column("close", sa.String),
+)
+metadata.create_all(engine)
+with engine.begin() as conn:
+    conn.execute(
+        orders.insert(),
+        [
+            {"name": "ada", "items": "field-items", "keys": "field-keys", "count": 7, "then": "field-then", "length": 12, "close": "field-close"},
+            {"name": "grace", "items": "field-items-2", "keys": "field-keys-2", "count": 8, "then": "field-then-2", "length": 13, "close": "field-close-2"},
+        ],
+    )
+
+def open_result():
+    conn = engine.connect()
+    result = conn.execute(sa.select(orders).order_by(orders.c.id)).mappings()
+    return conn, result
+
+conn_js, sa_result_js = open_result()
+conn_ruby, sa_result_ruby = open_result()
+conn_java, sa_result_java = open_result()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const rows = Array.from(sa_result_js); "
+                    "if (rows.length !== 2) throw new Error('bad SQLAlchemy result row count: ' + rows.length); "
+                    "if (rows.map(row => row.get('name')).join(',') !== 'ada,grace') throw new Error('bad SQLAlchemy JS names'); "
+                    "if (rows[0].get('items') !== 'field-items') throw new Error('items field lost: ' + rows[0].get('items')); "
+                    "if (rows[0].get('keys') !== 'field-keys') throw new Error('keys field lost: ' + rows[0].get('keys')); "
+                    "if (String(rows[0].get('count')) !== '7') throw new Error('count field lost: ' + rows[0].get('count')); "
+                    "if (rows[0].get('then') !== 'field-then') throw new Error('then field lost: ' + rows[0].get('then')); "
+                    "if (String(rows[0].get('length')) !== '12') throw new Error('length field lost: ' + rows[0].get('length')); "
+                    "if (rows[0].get('close') !== 'field-close') throw new Error('close field lost: ' + rows[0].get('close'));"
+                ),
+                "captures": {"sa_result_js": "sa_result_js"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "rows = sa_result_ruby.to_a; "
+                    "names = rows.map { |row| row['name'] }.join(','); "
+                    "raise \"bad SQLAlchemy Ruby names #{names}\" unless names == 'ada,grace'; "
+                    "raise 'bad SQLAlchemy Ruby collision fields' unless rows[0]['items'] == 'field-items' && rows[0]['keys'] == 'field-keys' && rows[0]['then'] == 'field-then' && rows[0]['close'] == 'field-close'"
+                ),
+                "captures": {"sa_result_ruby": "sa_result_ruby"},
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"sa_result_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"SQLAlchemy result should cross as stream proxy: \" + raw); "
+                    "java.util.List<Object> rows = ((omnivm.OmniVM.StreamProxy) raw).toList(); "
+                    "if (rows.size() != 2) throw new RuntimeException(\"bad SQLAlchemy Java row count: \" + rows.size()); "
+                    "java.util.Map<?, ?> row = (java.util.Map<?, ?>) rows.get(0); "
+                    "if (!\"ada\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad SQLAlchemy Java name: \" + row.get(\"name\")); "
+                    "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"items field lost: \" + row.get(\"items\")); "
+                    "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"keys field lost: \" + row.get(\"keys\")); "
+                    "if (!\"7\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"count field lost: \" + row.get(\"count\")); "
+                    "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"then field lost: \" + row.get(\"then\")); "
+                    "if (!\"12\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"length field lost: \" + row.get(\"length\")); "
+                    "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"close field lost: \" + row.get(\"close\"));"
+                ),
+                "captures": {"sa_result_java": "sa_result_java"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "for result in (sa_result_js, sa_result_ruby, sa_result_java):\n"
+                    "    assert result.closed, f'SQLAlchemy result stream was not closed: {result}'\n"
+                    "rollback_seen = False\n"
+                    "with Session(engine) as session:\n"
+                    "    try:\n"
+                    "        with session.begin():\n"
+                    "            session.execute(orders.insert().values(name='rollback', items='x', keys='x', count=99, then='x', length=99, close='x'))\n"
+                    "            omnivm.call('javascript', \"throw new Error('sqlalchemy rollback')\")\n"
+                    "    except Exception as exc:\n"
+                    "        rollback_seen = 'sqlalchemy rollback' in str(exc)\n"
+                    "    assert rollback_seen, 'foreign error did not reach SQLAlchemy Session transaction'\n"
+                    "    total = session.scalar(sa.select(sa.func.count()).select_from(orders))\n"
+                    "    assert total == 2, total"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+        raise AssertionError(f"SQLAlchemy Result did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"SQLAlchemy Result used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+        raise AssertionError(f"SQLAlchemy Result streams did not release: before={before_handles}, after={handles}")
+
+
+def test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    setup = r'''
+((java.util.concurrent.Callable<Void>)(() -> {
+java.util.function.Supplier<Object> makeRows = () -> {
+    try {
+        final javax.sql.rowset.CachedRowSet rs = javax.sql.rowset.RowSetProvider.newFactory().createCachedRowSet();
+        javax.sql.rowset.RowSetMetaDataImpl md = new javax.sql.rowset.RowSetMetaDataImpl();
+        md.setColumnCount(3);
+        md.setColumnName(1, "name");
+        md.setColumnType(1, java.sql.Types.VARCHAR);
+        md.setColumnName(2, "count");
+        md.setColumnType(2, java.sql.Types.INTEGER);
+        md.setColumnName(3, "length");
+        md.setColumnType(3, java.sql.Types.INTEGER);
+        rs.setMetaData(md);
+        rs.moveToInsertRow();
+        rs.updateString("name", "ada");
+        rs.updateInt("count", 7);
+        rs.updateInt("length", 12);
+        rs.insertRow();
+        rs.moveToInsertRow();
+        rs.updateString("name", "grace");
+        rs.updateInt("count", 8);
+        rs.updateInt("length", 13);
+        rs.insertRow();
+        rs.moveToCurrentRow();
+        rs.beforeFirst();
+        rs.next();
+        return new Object() {
+            private boolean closed = false;
+            public String getString(int column) throws java.sql.SQLException { return rs.getString(column); }
+            public String getString(String column) throws java.sql.SQLException { return rs.getString(column); }
+            public int getInt(int column) throws java.sql.SQLException { return rs.getInt(column); }
+            public int getInt(String column) throws java.sql.SQLException { return rs.getInt(column); }
+            public void close() throws java.sql.SQLException { closed = true; rs.close(); }
+            public boolean isClosed() { return closed; }
+        };
+    } catch (Exception ex) {
+        throw new RuntimeException(ex);
+    }
+};
+omnivm.OmniVM.setCaptureObject("jdbc_js", makeRows.get());
+omnivm.OmniVM.setCaptureObject("jdbc_ruby", makeRows.get());
+omnivm.OmniVM.setCaptureObject("jdbc_java", makeRows.get());
+return null;
+})).call();
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "java", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (jdbc_js.getString(1) !== 'ada') throw new Error('bad JDBC JS name: ' + jdbc_js.getString(1)); "
+                    "if (String(jdbc_js.getInt(2)) !== '7') throw new Error('bad JDBC JS count'); "
+                    "if (String(jdbc_js.getInt(3)) !== '12') throw new Error('bad JDBC JS length'); "
+                    "jdbc_js.close(); "
+                    "if (!jdbc_js.isClosed()) throw new Error('JDBC JS ResultSet did not close');"
+                ),
+                "captures": {"jdbc_js": "jdbc_js"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "raise \"bad JDBC Ruby name #{jdbc_ruby.getString(1)}\" unless jdbc_ruby.getString(1) == 'ada'; "
+                    "raise 'bad JDBC Ruby count' unless jdbc_ruby.getInt(2).to_s == '7'; "
+                    "raise 'bad JDBC Ruby length' unless jdbc_ruby.getInt(3).to_s == '12'; "
+                    "jdbc_ruby.close; "
+                    "raise 'JDBC Ruby ResultSet did not close' unless jdbc_ruby.isClosed"
+                ),
+                "captures": {"jdbc_ruby": "jdbc_ruby"},
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"jdbc_java\"); "
+                    "java.util.List<Object> idx1 = omnivm.OmniVM.listOf(new Object[]{1}); "
+                    "java.util.List<Object> idx2 = omnivm.OmniVM.listOf(new Object[]{2}); "
+                    "java.util.List<Object> idx3 = omnivm.OmniVM.listOf(new Object[]{3}); "
+                    "if (!\"ada\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getString\", idx1)))) throw new RuntimeException(\"bad JDBC Java name\"); "
+                    "if (!\"7\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getInt\", idx2)))) throw new RuntimeException(\"bad JDBC Java count\"); "
+                    "if (!\"12\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"getInt\", idx3)))) throw new RuntimeException(\"bad JDBC Java length\"); "
+                    "omnivm.OmniVM.proxyCall(raw, \"close\", java.util.Collections.emptyList()); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isClosed\", java.util.Collections.emptyList()))) throw new RuntimeException(\"JDBC Java ResultSet did not close\");"
+                ),
+                "captures": {"jdbc_java": "jdbc_java"},
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
+        raise AssertionError(f"JDBC ResultSet did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"JDBC ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
+
+
 def test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream():
     manifest = {
         "version": 1,
@@ -10535,6 +10770,83 @@ def test_manifest_js_readable_stream_early_cancel_releases_owner():
         raise AssertionError(f"JS ReadableStream early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_httpx_response_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import httpx
+
+class OwnerStream(httpx.SyncByteStream):
+    def __init__(self):
+        self.closed = False
+        self.cancelled = False
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        yield b"first"
+        yield b"second"
+
+    def close(self):
+        self.closed = True
+        self.cancelled = True
+
+owner_stream = OwnerStream()
+httpx_response = httpx.Response(200, stream=owner_stream)
+
+def httpx_body_iter():
+    try:
+        yield from httpx_response.iter_bytes()
+    finally:
+        httpx_response.close()
+
+httpx_body = httpx_body_iter()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const it = httpx_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const asText = (value) => String.fromCharCode(...Array.from(value)); "
+                    "if (first.done || asText(first.value) !== 'first') throw new Error('bad httpx first chunk: ' + JSON.stringify(first)); "
+                    "omnivm.call('python', 'httpx_body.close()');"
+                ),
+                "captures": {"httpx_body": "httpx_body"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert owner_stream.iterations == 1, owner_stream.iterations\n"
+                    "assert owner_stream.closed, 'httpx stream was not closed after early cancel'\n"
+                    "assert owner_stream.cancelled, 'httpx stream did not observe cancellation'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"httpx response body did not cross as stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"httpx response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    released = handles.get("released", 0) - before_handles.get("released", 0)
+    scoped = handles.get("scope_releases", 0) - before_handles.get("scope_releases", 0)
+    if released < 1 and scoped < 1:
+        raise AssertionError(f"httpx response body did not release on early cancel: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"httpx response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -11637,6 +11949,48 @@ return combined;
             raise AssertionError(f"Java CompletableFuture callback affinity was not safe or diagnostic: {result}")
 
 
+def test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+reactor.core.publisher.Mono<String> pyMono =
+    reactor.core.publisher.Mono.fromCallable(() -> {
+        try {
+            return "OK:" + omnivm.OmniVM.call("python", "'from-reactor-py'");
+        } catch (Throwable t) {
+            return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+        }
+    }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+reactor.core.publisher.Mono<String> jsMono =
+    reactor.core.publisher.Mono.fromCallable(() -> {
+        try {
+            return "OK:" + omnivm.OmniVM.call("javascript", "'from-reactor-js'");
+        } catch (Throwable t) {
+            return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+        }
+    }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+String pyResult = pyMono.block(java.time.Duration.ofSeconds(3));
+String jsResult = jsMono.block(java.time.Duration.ofSeconds(3));
+String combined = pyResult + "|" + jsResult;
+boolean pySafe = pyResult.equals("OK:from-reactor-py");
+boolean jsSafe = jsResult.equals("OK:from-reactor-js");
+boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
+boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
+if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python Reactor callback affinity was neither safe nor diagnostic: " + pyResult);
+if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS Reactor callback affinity was neither safe nor diagnostic: " + jsResult);
+return combined;
+})).call()
+'''
+    )
+    parts = result.split("|")
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java Reactor callback result: {result}")
+    for part in parts:
+        if not (part.startswith("OK:from-reactor-") or ("ERR:" in part and "non-Golden Thread" in part)):
+            raise AssertionError(f"Java Reactor callback affinity was not safe or diagnostic: {result}")
+
+
 def test_nested_js_to_java_interrupt_timeout():
     child_check(
         """
@@ -12209,6 +12563,8 @@ def main():
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
+        check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
+        check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
@@ -12305,6 +12661,7 @@ def main():
         check("Manifest JS async iterable body capture is lazy stream", test_manifest_js_async_iterable_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
+        check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
@@ -12328,6 +12685,7 @@ def main():
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
+        check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:

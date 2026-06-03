@@ -537,17 +537,20 @@ public class OmniVM {
         if (key == null || key.isEmpty()) {
             return invokeCallableTarget(target, args);
         }
+        List<InvocationCandidate> candidates = new ArrayList<>();
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
             if (!method.getName().equals(key) || method.getParameterCount() != args.size()) {
                 continue;
             }
+            InvocationCandidate candidate = invocationCandidate(method, args);
+            if (candidate != null) {
+                candidates.add(candidate);
+            }
+        }
+        candidates.sort((left, right) -> Integer.compare(left.score, right.score));
+        for (InvocationCandidate candidate : candidates) {
             try {
-                Object[] converted = new Object[args.size()];
-                Class<?>[] types = method.getParameterTypes();
-                for (int i = 0; i < args.size(); i++) {
-                    converted[i] = coerceArg(args.get(i), types[i]);
-                }
-                return invokeProxyMethod(method, target, converted);
+                return invokeProxyMethod(candidate.method, target, candidate.args);
             } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
             }
         }
@@ -568,17 +571,16 @@ public class OmniVM {
         if (method == null || method.getParameterCount() != args.size()) {
             return null;
         }
+        InvocationCandidate candidate = invocationCandidate(method, args);
+        if (candidate == null) {
+            return null;
+        }
         try {
-            Object[] converted = new Object[args.size()];
-            Class<?>[] types = method.getParameterTypes();
-            for (int i = 0; i < args.size(); i++) {
-                converted[i] = coerceArg(args.get(i), types[i]);
-            }
             try {
                 method.setAccessible(true);
             } catch (Throwable ignored) {
             }
-            return method.invoke(target, converted);
+            return method.invoke(target, candidate.args);
         } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
             return null;
         }
@@ -773,7 +775,15 @@ public class OmniVM {
     private static Object invokeProxyMethod(java.lang.reflect.Method method, Object target, Object... args)
         throws ReflectiveOperationException {
         makeAccessible(method);
-        return method.invoke(target, args);
+        try {
+            return method.invoke(target, args);
+        } catch (IllegalAccessException denied) {
+            java.lang.reflect.Method fallback = accessibleMethod(target.getClass(), method);
+            if (fallback != null && fallback != method) {
+                return fallback.invoke(target, args);
+            }
+            throw denied;
+        }
     }
 
     private static void makeAccessible(java.lang.reflect.AccessibleObject object) {
@@ -781,6 +791,44 @@ public class OmniVM {
             object.setAccessible(true);
         } catch (RuntimeException ignored) {
         }
+    }
+
+    private static java.lang.reflect.Method accessibleMethod(Class<?> type, java.lang.reflect.Method method) {
+        java.lang.reflect.Method found = accessibleInterfaceMethod(type, method.getName(), method.getParameterTypes());
+        if (found != null) {
+            return found;
+        }
+        for (Class<?> current = type.getSuperclass(); current != null; current = current.getSuperclass()) {
+            try {
+                java.lang.reflect.Method candidate = current.getMethod(method.getName(), method.getParameterTypes());
+                if (java.lang.reflect.Modifier.isPublic(candidate.getDeclaringClass().getModifiers())) {
+                    return candidate;
+                }
+            } catch (ReflectiveOperationException ignored) {
+            }
+            found = accessibleInterfaceMethod(current, method.getName(), method.getParameterTypes());
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static java.lang.reflect.Method accessibleInterfaceMethod(Class<?> type, String name, Class<?>[] parameterTypes) {
+        if (type == null) {
+            return null;
+        }
+        for (Class<?> iface : type.getInterfaces()) {
+            try {
+                return iface.getMethod(name, parameterTypes);
+            } catch (ReflectiveOperationException ignored) {
+            }
+            java.lang.reflect.Method nested = accessibleInterfaceMethod(iface, name, parameterTypes);
+            if (nested != null) {
+                return nested;
+            }
+        }
+        return null;
     }
 
     private static java.lang.reflect.Method functionalMethod(Object target) {
@@ -1473,6 +1521,18 @@ public class OmniVM {
         if ((target == float.class || target == Float.class) && value instanceof Number number) {
             return number.floatValue();
         }
+        if ((target == byte.class || target == Byte.class) && value instanceof Number number) {
+            return number.byteValue();
+        }
+        if ((target == short.class || target == Short.class) && value instanceof Number number) {
+            return number.shortValue();
+        }
+        if ((target == char.class || target == Character.class) && value instanceof Character ch) {
+            return ch;
+        }
+        if ((target == char.class || target == Character.class) && value instanceof CharSequence text && text.length() == 1) {
+            return text.charAt(0);
+        }
         if ((target == boolean.class || target == Boolean.class) && value instanceof Boolean bool) {
             return bool;
         }
@@ -1480,6 +1540,93 @@ public class OmniVM {
             return String.valueOf(value);
         }
         return value;
+    }
+
+    private static InvocationCandidate invocationCandidate(java.lang.reflect.Method method, List<?> args) {
+        Class<?>[] types = method.getParameterTypes();
+        if (types.length != args.size()) {
+            return null;
+        }
+        Object[] converted = new Object[args.size()];
+        int score = 0;
+        for (int i = 0; i < args.size(); i++) {
+            int argScore = coercionScore(args.get(i), types[i]);
+            if (argScore < 0) {
+                return null;
+            }
+            converted[i] = coerceArg(args.get(i), types[i]);
+            score += argScore;
+        }
+        return new InvocationCandidate(method, converted, score);
+    }
+
+    private static int coercionScore(Object value, Class<?> target) {
+        if (value == null) {
+            return target.isPrimitive() ? -1 : 4;
+        }
+        Class<?> boxedTarget = boxedType(target);
+        if (boxedTarget == value.getClass()) {
+            return 0;
+        }
+        if (target.isInstance(value)) {
+            return target == Object.class ? 6 : 2;
+        }
+        if (Number.class.isAssignableFrom(boxedTarget) && value instanceof Number) {
+            return 1;
+        }
+        if (boxedTarget == Character.class && value instanceof CharSequence text && text.length() == 1) {
+            return 1;
+        }
+        if (boxedTarget == Boolean.class && value instanceof Boolean) {
+            return 0;
+        }
+        if (target == String.class) {
+            return value instanceof CharSequence ? 1 : 8;
+        }
+        return -1;
+    }
+
+    private static Class<?> boxedType(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == int.class) {
+            return Integer.class;
+        }
+        if (type == long.class) {
+            return Long.class;
+        }
+        if (type == double.class) {
+            return Double.class;
+        }
+        if (type == float.class) {
+            return Float.class;
+        }
+        if (type == boolean.class) {
+            return Boolean.class;
+        }
+        if (type == byte.class) {
+            return Byte.class;
+        }
+        if (type == short.class) {
+            return Short.class;
+        }
+        if (type == char.class) {
+            return Character.class;
+        }
+        return type;
+    }
+
+    private static final class InvocationCandidate {
+        private final java.lang.reflect.Method method;
+        private final Object[] args;
+        private final int score;
+
+        private InvocationCandidate(java.lang.reflect.Method method, Object[] args, int score) {
+            this.method = method;
+            this.args = args;
+            this.score = score;
+        }
     }
 
     private static String jsonEscape(String value) {
