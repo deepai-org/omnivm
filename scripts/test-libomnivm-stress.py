@@ -6807,6 +6807,88 @@ def test_manifest_express_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"Express request used JSON fallback: {boundary}")
 
 
+def test_manifest_express_response_capture_keeps_writer_lifecycle_live():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "javascript",
+                "bind": "express_res",
+                "code": (
+                    "(() => { "
+                    "const express = require('express'); "
+                    "const http = require('http'); "
+                    "const app = express(); "
+                    "const req = new http.IncomingMessage(); "
+                    "req.method = 'GET'; "
+                    "req.url = '/express-response/42'; "
+                    "req.headers = {'host': 'example.test'}; "
+                    "Object.setPrototypeOf(req, express.request); "
+                    "req.app = app; "
+                    "const res = new http.ServerResponse(req); "
+                    "Object.setPrototypeOf(res, express.response); "
+                    "res.req = req; "
+                    "res.app = app; "
+                    "res.locals = {}; "
+                    "res._omnivmWrites = []; "
+                    "res._omnivmEnded = false; "
+                    "const write = res.write.bind(res); "
+                    "res.write = function(chunk, ...rest) { this._omnivmWrites.push(String(chunk)); return write(chunk, ...rest); }; "
+                    "const end = res.end.bind(res); "
+                    "res.end = function(chunk, ...rest) { if (typeof chunk !== 'undefined') this._omnivmWrites.push(String(chunk)); this._omnivmEnded = true; return end(chunk, ...rest); }; "
+                    "globalThis.__omnivm_express_res = res; "
+                    "return res; "
+                    "})()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"express_res": "express_res"},
+                "code": (
+                    "express_res.status(207)\n"
+                    "express_res.set('X-Poly', 'yes')\n"
+                    "assert express_res.get('X-Poly') == 'yes', express_res.get('X-Poly')\n"
+                    "assert express_res.statusCode == 207, express_res.statusCode\n"
+                    "assert express_res.write('hello-') is True\n"
+                    "express_res.end('done')"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const res = globalThis.__omnivm_express_res; "
+                    "if (res.statusCode !== 207) throw new Error('bad Express response status: ' + res.statusCode); "
+                    "if (res.get('X-Poly') !== 'yes') throw new Error('bad Express response header: ' + res.get('X-Poly')); "
+                    "if (!res._omnivmEnded || !res.writableEnded) throw new Error('Express response writer was not ended'); "
+                    "if (res._omnivmWrites.join('') !== 'hello-done') throw new Error('bad Express response writes: ' + res._omnivmWrites.join(''));"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Express response did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Express response crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Express response should not claim bulk transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Express response used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 4:
+        raise AssertionError(f"Express response writer methods were not recorded as proxy calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_model_id_property_beats_js_proxy_metadata():
     manifest = {
         "version": 1,
@@ -12577,8 +12659,8 @@ def test_manifest_undici_response_body_early_cancel_releases_owner():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
-        raise AssertionError(f"undici response body did not cross as stream proxy: {boundary}")
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+        raise AssertionError(f"undici response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
@@ -14486,6 +14568,7 @@ def main():
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)
+        check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
         check("Manifest JS typed-array capture uses Arrow", test_manifest_js_typed_array_capture_uses_arrow)
