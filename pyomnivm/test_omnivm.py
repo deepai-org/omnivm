@@ -492,6 +492,43 @@ class TestCallWithMockLib(unittest.TestCase):
         assert arg["var"].startswith("__omnivm_arg_refs['py_")
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
 
+    def test_manifest_call_keeps_returned_complex_arg_refs_until_proxy_close(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        request = object()
+        requests = []
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "echo":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 7,
+                    "runtime": "python",
+                    "kind": "request",
+                    "transfer": True,
+                })
+            if request_payload.get("op") in {"handle_adopt", "handle_release_finalizer"}:
+                return envelope(True, "bool")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        proxy = omnivm_mod.manifest_call("demo", "echo", args=(request,))
+
+        refs = getattr(builtins, "__omnivm_arg_refs", {})
+        assert request in refs.values()
+        proxy.close()
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
+        assert requests[0]["args"][0]["var"].startswith("__omnivm_arg_refs['py_")
+        assert {"op": "handle_adopt", "id": 7} in requests
+        assert {"op": "handle_release_finalizer", "id": 7} in requests
+
     def test_manifest_call_wraps_complex_return_proxy(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

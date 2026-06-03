@@ -790,7 +790,12 @@ def manifest_call(module_id, func, args=()):
             "func": str(func),
             "args": [_manifest_arg(arg, retained_keys) for arg in args],
         }
-        return _manifest_bridge_call(module_id, payload)
+        result = _manifest_bridge_call(module_id, payload)
+        if retained_keys:
+            lease = _RetainedManifestArgLease(retained_keys)
+            if _attach_retained_arg_lease(result, lease) > 0:
+                retained_keys = []
+        return result
     finally:
         _release_manifest_args(retained_keys)
 
@@ -837,6 +842,52 @@ def _release_manifest_args(keys):
             return
         for key in keys:
             refs.pop(key, None)
+
+
+class _RetainedManifestArgLease:
+    def __init__(self, keys):
+        self._keys = list(keys)
+        self._refs = 0
+        self._released = False
+        self._lock = threading.Lock()
+
+    def retain(self):
+        with self._lock:
+            if self._released:
+                return
+            self._refs += 1
+
+    def release(self):
+        keys = None
+        with self._lock:
+            if self._released:
+                return
+            if self._refs > 0:
+                self._refs -= 1
+            if self._refs == 0:
+                self._released = True
+                keys = self._keys
+                self._keys = []
+        if keys:
+            _release_manifest_args(keys)
+
+
+def _release_retained_arg_lease(lease):
+    lease.release()
+
+
+def _attach_retained_arg_lease(value, lease):
+    attached = 0
+    if isinstance(value, ManifestProxy):
+        value._retain_arg_lease(lease)
+        return 1
+    if isinstance(value, dict):
+        for item in value.values():
+            attached += _attach_retained_arg_lease(item, lease)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            attached += _attach_retained_arg_lease(item, lease)
+    return attached
 
 
 def _decode_manifest_result(result, module_id=None):
@@ -889,6 +940,7 @@ class ManifestProxy:
         object.__setattr__(self, "_module_id", str(module_id))
         object.__setattr__(self, "_descriptor", dict(descriptor))
         object.__setattr__(self, "_handle_id", int(descriptor["id"]))
+        object.__setattr__(self, "_arg_finalizers", [])
         if descriptor.get("transfer") is True:
             _manifest_bridge_call(module_id, {"op": "handle_adopt", "id": self._handle_id})
         else:
@@ -911,6 +963,15 @@ class ManifestProxy:
         finalizer = object.__getattribute__(self, "_finalizer")
         if finalizer.alive:
             finalizer()
+        for arg_finalizer in object.__getattribute__(self, "_arg_finalizers"):
+            if arg_finalizer.alive:
+                arg_finalizer()
+
+    def _retain_arg_lease(self, lease):
+        lease.retain()
+        object.__getattribute__(self, "_arg_finalizers").append(
+            weakref.finalize(self, _release_retained_arg_lease, lease)
+        )
 
     def __enter__(self):
         return self

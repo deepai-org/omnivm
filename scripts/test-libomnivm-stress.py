@@ -21444,6 +21444,132 @@ finally:
         )
 
 
+def test_prefork_worker_reload_drains_retained_resource_and_stream_handles():
+    code = r"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+
+manifest = {
+    "version": 1,
+    "defaultRuntime": "python",
+    "ops": [
+        {
+            "op": "func_def",
+            "name": "echo_value",
+            "params": [{"name": "value"}],
+            "body": [
+                {"op": "return", "value": {"kind": "ref", "name": "value"}},
+            ],
+        },
+    ],
+}
+
+fd, manifest_path = tempfile.mkstemp(suffix=".manifest.json")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    pids = []
+    for worker_id in range(3):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                omnivm.init_runtimes(["javascript"])
+                module_id = f"reload-live-{worker_id}"
+                omnivm.load_manifest_module(module_id, manifest_path)
+
+                class RequestLike:
+                    def __init__(self):
+                        self.path = "/reload/live"
+                        self.status = "open"
+                        self.items = ["alpha", "beta"]
+
+                request = RequestLike()
+                rows_backing = [{"name": "row-1"}, {"name": "row-2"}]
+
+                def make_rows():
+                    for item in rows_backing:
+                        yield item
+
+                leaked_request = omnivm.manifest_call(module_id, "echo_value", args=(request,))
+                leaked_rows = omnivm.manifest_call(module_id, "echo_value", args=(make_rows(),))
+                if leaked_request.path != "/reload/live" or leaked_request.status != "open":
+                    raise AssertionError(f"bad retained request proxy fields: {leaked_request!r}")
+                iterator = iter(leaked_rows)
+                first = next(iterator)
+                if first.name != "row-1":
+                    raise AssertionError(f"bad retained stream first row: {first!r}")
+
+                status_before = omnivm.status()
+                handles_before = status_before["handles"]
+                boundary_before = status_before["boundary"]
+                if handles_before["live"] < 2:
+                    raise AssertionError(f"retained resource/stream did not leave live handles: {status_before}")
+                if boundary_before.get("resource_proxy_captures", 0) < 1:
+                    raise AssertionError(f"retained request did not cross as resource proxy: {status_before}")
+                if boundary_before.get("stream_proxy_captures", 0) < 1:
+                    raise AssertionError(f"retained rows did not cross as stream proxy: {status_before}")
+                if boundary_before.get("json_fallbacks", 0) != 0:
+                    raise AssertionError(f"retained reload handles used JSON fallback: {status_before}")
+
+                omnivm.drain_worker()
+                status_after = omnivm.status()
+                if status_after["handles"]["live"] != 0:
+                    raise AssertionError(f"worker drain leaked retained resource/stream handles before={status_before} after={status_after}")
+
+                failed = False
+                try:
+                    omnivm.manifest_call(module_id, "echo_value", args=(make_rows(),))
+                except omnivm.RuntimeError as exc:
+                    failed = "manifest module not loaded" in str(exc)
+                if not failed:
+                    raise AssertionError("manifest module remained callable after resource/stream worker drain")
+
+                leaked_request.close()
+                leaked_rows.close()
+                if hasattr(first, "close"):
+                    first.close()
+                omnivm.shutdown()
+                os._exit(0)
+            except Exception as exc:
+                print(exc, file=sys.stderr)
+                os._exit(1)
+        pids.append(pid)
+
+    failures = []
+    for pid in pids:
+        _, status = os.waitpid(pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        if rc != 0:
+            failures.append((pid, rc))
+    if failures:
+        print(failures, file=sys.stderr)
+        raise SystemExit(1)
+finally:
+    try:
+        os.unlink(manifest_path)
+    except FileNotFoundError:
+        pass
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"prefork worker reload resource/stream drain exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def test_prefork_worker_reload_releases_failed_manifest_call_args():
     code = r"""
 import builtins
@@ -22068,6 +22194,7 @@ def main():
     check("OmniVM Python interpreter mode exposes typed bridge", test_omnivm_python_interpreter_mode_exposes_typed_bridge)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     check("Prefork worker reload unloads manifest handles", test_prefork_worker_reload_unloads_manifest_handles)
+    check("Prefork worker reload drains retained resource and stream handles", test_prefork_worker_reload_drains_retained_resource_and_stream_handles)
     check("Prefork worker reload releases failed manifest call args", test_prefork_worker_reload_releases_failed_manifest_call_args)
     if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:
         print("\nResults: 0 selected, no tests matched filters")
