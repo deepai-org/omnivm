@@ -9556,6 +9556,110 @@ return null;
         raise AssertionError(f"H2 JDBC ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_jdbc_h2_resultset_early_close_does_not_drain_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+((java.util.concurrent.Callable<Void>)(() -> {
+Class.forName("org.h2.Driver");
+final String url = "jdbc:h2:mem:omnivm_h2_cancel_" + java.lang.System.nanoTime() + ";DB_CLOSE_DELAY=-1";
+try (java.sql.Connection seed = java.sql.DriverManager.getConnection(url);
+     java.sql.Statement st = seed.createStatement()) {
+    st.execute("CREATE TABLE orders (id INT PRIMARY KEY, name VARCHAR)");
+    st.execute("INSERT INTO orders (id, name) VALUES (1, 'ada'), (2, 'grace'), (3, 'katherine')");
+}
+
+final java.sql.Connection conn = java.sql.DriverManager.getConnection(url);
+final java.sql.Statement stmt = conn.createStatement();
+final java.sql.ResultSet rs = stmt.executeQuery("SELECT name FROM orders ORDER BY id");
+Object rows = new Object() {
+    private int rowsRead = 0;
+    private boolean closed = false;
+
+    public boolean next() throws java.sql.SQLException {
+        boolean ok = rs.next();
+        if (ok) rowsRead++;
+        return ok;
+    }
+
+    public String getString(String column) throws java.sql.SQLException { return rs.getString(column); }
+    public String getString(int column) throws java.sql.SQLException { return rs.getString(column); }
+    public int rowsRead() { return rowsRead; }
+
+    public void close() throws java.sql.SQLException {
+        closed = true;
+        try {
+            rs.close();
+        } finally {
+            try {
+                stmt.close();
+            } finally {
+                conn.close();
+            }
+        }
+    }
+
+    public boolean isClosed() throws java.sql.SQLException { return closed && rs.isClosed(); }
+    public boolean isStatementClosed() throws java.sql.SQLException { return stmt.isClosed(); }
+    public boolean isConnectionClosed() throws java.sql.SQLException { return conn.isClosed(); }
+};
+omnivm.OmniVM.setCaptureObject("jdbc_h2_cancel_rows", rows);
+return null;
+})).call();
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "java", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"jdbc_h2_cancel_rows": "jdbc_h2_cancel_rows"},
+                "code": (
+                    "if (jdbc_h2_cancel_rows.next() !== true) throw new Error('H2 JDBC cancel ResultSet was empty'); "
+                    "if (jdbc_h2_cancel_rows.getString('name') !== 'ada') throw new Error('bad first H2 JDBC cancel row: ' + jdbc_h2_cancel_rows.getString('name')); "
+                    "jdbc_h2_cancel_rows.close(); "
+                    "if (!jdbc_h2_cancel_rows.isClosed()) throw new Error('H2 JDBC cancel ResultSet did not close'); "
+                    "if (!jdbc_h2_cancel_rows.isStatementClosed()) throw new Error('H2 JDBC cancel Statement did not close'); "
+                    "if (!jdbc_h2_cancel_rows.isConnectionClosed()) throw new Error('H2 JDBC cancel Connection did not close');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"jdbc_h2_cancel_rows\"); "
+                    "if (!\"1\".equals(String.valueOf(omnivm.OmniVM.proxyCall(raw, \"rowsRead\", java.util.Collections.emptyList())))) "
+                    "throw new RuntimeException(\"H2 JDBC early close drained extra rows\"); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isClosed\", java.util.Collections.emptyList()))) "
+                    "throw new RuntimeException(\"H2 JDBC ResultSet not closed after early close\"); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isStatementClosed\", java.util.Collections.emptyList()))) "
+                    "throw new RuntimeException(\"H2 JDBC Statement not closed after early close\"); "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.proxyCall(raw, \"isConnectionClosed\", java.util.Collections.emptyList()))) "
+                    "throw new RuntimeException(\"H2 JDBC Connection not closed after early close\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"H2 JDBC early-close ResultSet did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"H2 JDBC early-close ResultSet crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"H2 JDBC early-close ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 6:
+        raise AssertionError(f"H2 JDBC early-close ResultSet did not use live proxy calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream():
     manifest = {
         "version": 1,
@@ -22237,6 +22341,7 @@ def main():
         check("Manifest SQLAlchemy async Result and AsyncSession lifecycle", test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
+        check("Manifest H2 JDBC ResultSet early close does not drain owner", test_manifest_jdbc_h2_resultset_early_close_does_not_drain_owner)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
