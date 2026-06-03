@@ -16212,6 +16212,125 @@ httpx_body = httpx_body_iter()
         raise AssertionError(f"httpx response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_requests_response_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import requests
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+requests_state = {
+    "requests": 0,
+    "chunks_started": 0,
+    "handler_done": False,
+    "handler_error": "",
+}
+
+class RequestsStreamHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def do_GET(self):
+        requests_state["requests"] += 1
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        try:
+            self.wfile.write(b"first\n")
+            self.wfile.flush()
+            requests_state["chunks_started"] += 1
+            time.sleep(0.2)
+            self.wfile.write(b"second\n")
+            self.wfile.flush()
+            requests_state["chunks_started"] += 1
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            requests_state["handler_error"] = type(exc).__name__
+        finally:
+            requests_state["handler_done"] = True
+
+requests_server = ThreadingHTTPServer(("127.0.0.1", 0), RequestsStreamHandler)
+requests_thread = threading.Thread(target=requests_server.serve_forever, daemon=True)
+requests_thread.start()
+requests_response = requests.get(
+    f"http://127.0.0.1:{requests_server.server_address[1]}/stream",
+    stream=True,
+    timeout=5,
+)
+
+class RequestsLineOwner:
+    def __init__(self, response):
+        self.response = response
+        self.iterator = response.iter_lines()
+        self.iterations = 0
+        self.lines_pulled = 0
+        self.closed = False
+        self.cancelled = False
+
+    def __iter__(self):
+        self.iterations += 1
+        return self
+
+    def __next__(self):
+        line = next(self.iterator)
+        self.lines_pulled += 1
+        return line.decode("utf-8")
+
+    def close(self):
+        self.closed = True
+        self.cancelled = True
+        self.response.close()
+
+requests_body = RequestsLineOwner(requests_response)
+'''
+    cleanup = r'''
+assert requests_body.iterations == 1, requests_body.iterations
+assert requests_body.lines_pulled == 1, requests_body.lines_pulled
+assert requests_body.closed, 'requests stream was not closed after early cancel'
+assert requests_body.cancelled, 'requests stream did not observe cancellation'
+assert requests_response.raw.closed, 'requests response raw stream stayed open'
+assert requests_state["requests"] == 1, requests_state
+requests_server.shutdown()
+requests_server.server_close()
+requests_thread.join(timeout=2)
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"requests_body": "requests_body"},
+                "code": (
+                    "const it = requests_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done || first.value !== 'first') throw new Error('bad requests first line: ' + JSON.stringify(first)); "
+                    "if (requests_body.cancel('client-stop') !== true) throw new Error('requests cancel failed');"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": cleanup},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+        raise AssertionError(f"requests response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"requests response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"requests response body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"requests response body did not release on early cancel: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"requests response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_aiohttp_stream_early_cancel_releases_owner():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -19378,6 +19497,7 @@ def main():
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
+        check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
         check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
         check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
         check("Manifest Node fetch response body early cancel releases owner", test_manifest_node_fetch_response_body_early_cancel_releases_owner)
