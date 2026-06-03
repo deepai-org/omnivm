@@ -13318,6 +13318,60 @@ def test_validation_error_fidelity_popular_libraries():
             raise AssertionError(f"{name} did not raise an error")
 
 
+def test_javascript_native_sqlalchemy_error_fields_cross_runtime_call():
+    python_source = (
+        "from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine\n"
+        "engine = create_engine('sqlite:///:memory:')\n"
+        "metadata = MetaData()\n"
+        "users = Table('users', metadata, Column('id', Integer, primary_key=True), Column('name', String, unique=True))\n"
+        "metadata.create_all(engine)\n"
+        "with engine.begin() as conn:\n"
+        "    conn.execute(users.insert().values(name='ada'))\n"
+        "    conn.execute(users.insert().values(name='ada'))\n"
+    )
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("python", {json.dumps(python_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missing"):
+        raise AssertionError("JS SQLAlchemy IntegrityError path did not raise")
+    if not envelope.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for SQLAlchemy failure: {envelope}")
+    if envelope.get("runtime") != "python":
+        raise AssertionError(f"JS SQLAlchemy error runtime lost: {envelope}")
+    if envelope.get("type") != "IntegrityError":
+        raise AssertionError(f"JS SQLAlchemy error type lost: {envelope}")
+    detail = (envelope.get("message") or "") + "\n" + (envelope.get("traceback") or "")
+    for part in ("UNIQUE constraint failed", "users.name", "INSERT INTO users"):
+        if part not in detail:
+            raise AssertionError(f"JS SQLAlchemy error detail {part!r} lost: {envelope}")
+    if "Traceback" not in envelope.get("traceback", ""):
+        raise AssertionError(f"JS SQLAlchemy error traceback lost: {envelope}")
+    if envelope.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS SQLAlchemy boundary path lost: {envelope}")
+    if envelope.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS SQLAlchemy error should not invent original handle: {envelope}")
+
+
 def test_javascript_native_runtime_error_fields_cross_runtime_calls():
     result = omnivm.call(
         "javascript",
@@ -20483,6 +20537,7 @@ def main():
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
+        check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
