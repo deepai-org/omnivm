@@ -7033,6 +7033,84 @@ def test_manifest_express_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"Express request used JSON fallback: {boundary}")
 
 
+def test_manifest_express_request_abort_lifecycle_stays_live():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "javascript",
+                "bind": "express_abort_req",
+                "code": (
+                    "(() => { "
+                    "const express = require('express'); "
+                    "const http = require('http'); "
+                    "const req = new http.IncomingMessage(); "
+                    "Object.setPrototypeOf(req, express.request); "
+                    "req.app = express(); "
+                    "req.method = 'POST'; "
+                    "req.url = '/express/abort?mode=poly'; "
+                    "req.headers = {'x-request-id': 'express-abort-42', 'host': 'example.test'}; "
+                    "req.aborted = false; "
+                    "globalThis.expressAbortState = {abortedEvents: 0, closeEvents: 0, reason: ''}; "
+                    "req.on('aborted', () => { globalThis.expressAbortState.abortedEvents += 1; }); "
+                    "req.on('close', () => { globalThis.expressAbortState.closeEvents += 1; }); "
+                    "req.abortFromClient = function(reason) { "
+                    "  this.aborted = true; "
+                    "  globalThis.expressAbortState.reason = String(reason || ''); "
+                    "  this.emit('aborted'); "
+                    "  this.emit('close'); "
+                    "  return this.aborted; "
+                    "}; "
+                    "globalThis.__omnivm_express_abort_req = req; "
+                    "return req; "
+                    "})()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"express_abort_req": "express_abort_req"},
+                "code": (
+                    "assert express_abort_req.method == 'POST', express_abort_req.method\n"
+                    "assert express_abort_req.path == '/express/abort', express_abort_req.path\n"
+                    "assert express_abort_req.get('x-request-id') == 'express-abort-42', express_abort_req.get('x-request-id')\n"
+                    "assert express_abort_req.abortFromClient('client-abort') is True\n"
+                    "assert express_abort_req.aborted is True, express_abort_req.aborted"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const req = globalThis.__omnivm_express_abort_req; "
+                    "const state = globalThis.expressAbortState; "
+                    "if (!req.aborted) throw new Error('Express request abort flag did not stay live'); "
+                    "if (state.reason !== 'client-abort') throw new Error('bad abort reason: ' + state.reason); "
+                    "if (state.abortedEvents !== 1) throw new Error('bad aborted event count: ' + state.abortedEvents); "
+                    "if (state.closeEvents !== 1) throw new Error('bad close event count: ' + state.closeEvents);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Express abort request did not cross as a live proxy: {boundary}")
+    if boundary.get("stream_proxy_captures", 0) != 0:
+        raise AssertionError(f"Express abort request crossed as a stream: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Express abort request used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 1:
+        raise AssertionError(f"Express abort request method call was not recorded: before={before_handles}, after={handles}")
+
+
 def test_manifest_express_response_capture_keeps_writer_lifecycle_live():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -14996,6 +15074,7 @@ def main():
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)
+        check("Manifest Express request abort lifecycle stays live", test_manifest_express_request_abort_lifecycle_stays_live)
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
