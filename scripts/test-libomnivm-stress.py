@@ -20428,6 +20428,90 @@ def test_manifest_java_scheduled_future_cancel_status_crosses_runtimes():
         raise AssertionError(f"ScheduledFuture cancellation did not record proxy method calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_executor_service_future_cancel_interrupts_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newSingleThreadExecutor(r -> { "
+                    "Thread t = new Thread(r); t.setName(\"omnivm-executor-cancel\"); return t; }); "
+                    "java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1); "
+                    "java.util.concurrent.atomic.AtomicBoolean interrupted = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "java.util.concurrent.Future<?> future = exec.submit(() -> { "
+                    "started.countDown(); "
+                    "try { Thread.sleep(60000L); } "
+                    "catch (InterruptedException e) { interrupted.set(true); Thread.currentThread().interrupt(); } "
+                    "}); "
+                    "if (!started.await(5L, java.util.concurrent.TimeUnit.SECONDS)) throw new RuntimeException(\"ExecutorService task did not start\"); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_executor_future_cancel\", future); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_executor_future_exec\", exec); "
+                    "omnivm.OmniVM.setCaptureObject(\"java_executor_future_interrupted\", interrupted);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_executor_future_cancel": "java_executor_future_cancel"},
+                "code": (
+                    "if (java_executor_future_cancel.isDone()) throw new Error('ExecutorService Future should start pending'); "
+                    "if (java_executor_future_cancel.isCancelled()) throw new Error('ExecutorService Future should not start cancelled'); "
+                    "if (java_executor_future_cancel.cancel(true) !== true) throw new Error('ExecutorService Future cancel returned false'); "
+                    "if (!java_executor_future_cancel.isCancelled()) throw new Error('ExecutorService Future did not report cancelled in JS'); "
+                    "if (!java_executor_future_cancel.isDone()) throw new Error('ExecutorService Future did not report done in JS after cancel');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object rawFuture = omnivm.OmniVM.getCapture(\"java_executor_future_cancel\"); "
+                    "if (!(rawFuture instanceof java.util.concurrent.Future)) throw new RuntimeException(\"ExecutorService Future capture lost native type: \" + rawFuture); "
+                    "java.util.concurrent.Future<?> future = (java.util.concurrent.Future<?>) rawFuture; "
+                    "if (!future.isCancelled()) throw new RuntimeException(\"ExecutorService Future did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(\"ExecutorService Future did not stay done in Java\"); "
+                    "Object rawInterrupted = omnivm.OmniVM.getCapture(\"java_executor_future_interrupted\"); "
+                    "if (!(rawInterrupted instanceof java.util.concurrent.atomic.AtomicBoolean)) throw new RuntimeException(\"ExecutorService interrupted marker lost native type: \" + rawInterrupted); "
+                    "java.util.concurrent.atomic.AtomicBoolean interrupted = (java.util.concurrent.atomic.AtomicBoolean) rawInterrupted; "
+                    "for (int i = 0; i < 50 && !interrupted.get(); i++) Thread.sleep(20L); "
+                    "if (!interrupted.get()) throw new RuntimeException(\"ExecutorService task did not observe cancellation interrupt\"); "
+                    "Object rawExec = omnivm.OmniVM.getCapture(\"java_executor_future_exec\"); "
+                    "if (!(rawExec instanceof java.util.concurrent.ExecutorService)) throw new RuntimeException(\"ExecutorService capture lost native type: \" + rawExec); "
+                    "java.util.concurrent.ExecutorService exec = (java.util.concurrent.ExecutorService) rawExec; "
+                    "exec.shutdownNow(); "
+                    "if (!exec.awaitTermination(5L, java.util.concurrent.TimeUnit.SECONDS)) throw new RuntimeException(\"ExecutorService did not terminate after future cancellation\"); "
+                    "if (!exec.isShutdown()) throw new RuntimeException(\"ExecutorService did not report shutdown\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    crossed_as_proxy = boundary.get("resource_proxy_captures", 0) >= before_boundary.get("resource_proxy_captures", 0) + 1
+    called_as_proxy = call_count >= before_call_count + 5
+    if not (crossed_as_proxy or called_as_proxy):
+        raise AssertionError(
+            f"ExecutorService Future did not cross as a live callable proxy: "
+            f"before_boundary={before_boundary}, after_boundary={boundary}, "
+            f"before_handles={before_handles}, after_handles={handles}"
+        )
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"ExecutorService Future used JSON fallback: before={before_boundary}, after={boundary}")
+    if not called_as_proxy:
+        raise AssertionError(f"ExecutorService Future cancellation did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -21849,6 +21933,7 @@ def main():
         check("Java CompletableFuture custom executor callback affinity is diagnostic or safe", test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Manifest Java ScheduledFuture cancellation status crosses runtimes", test_manifest_java_scheduled_future_cancel_status_crosses_runtimes)
+        check("Manifest Java ExecutorService Future cancellation interrupts owner", test_manifest_java_executor_service_future_cancel_interrupts_owner)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
