@@ -14344,6 +14344,60 @@ return combined;
             raise AssertionError(f"Java CompletableFuture callback affinity was not safe or diagnostic: {result}")
 
 
+def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_future_cancel",
+                "code": "new java.util.concurrent.CompletableFuture<String>()",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_future_cancel": "java_future_cancel"},
+                "code": (
+                    "if (java_future_cancel.isDone()) throw new Error('future should start pending'); "
+                    "if (java_future_cancel.cancel(true) !== true) throw new Error('future cancel returned false'); "
+                    "if (!java_future_cancel.isCancelled()) throw new Error('future did not report cancelled in JS'); "
+                    "if (!java_future_cancel.isDone()) throw new Error('cancelled future did not report done in JS');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"java_future_cancel": "java_future_cancel"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"java_future_cancel\"); "
+                    "if (!(raw instanceof java.util.concurrent.CompletableFuture)) throw new RuntimeException(\"future capture lost native type: \" + raw); "
+                    "java.util.concurrent.CompletableFuture<?> future = (java.util.concurrent.CompletableFuture<?>) raw; "
+                    "if (!future.isCancelled()) throw new RuntimeException(\"future did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(\"future did not stay done in Java\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"CompletableFuture did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"CompletableFuture used JSON fallback: before={before_boundary}, after={boundary}")
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 3:
+        raise AssertionError(f"CompletableFuture cancellation did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe():
     result = omnivm.call(
         "java",
@@ -15203,6 +15257,7 @@ def main():
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
+        check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Java Kotlin coroutine callback affinity is diagnostic or safe", test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe)
