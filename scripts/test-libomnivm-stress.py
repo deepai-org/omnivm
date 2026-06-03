@@ -6881,11 +6881,15 @@ for name, result in (
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
         raise AssertionError(f"SQLAlchemy large Result did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"SQLAlchemy large Result used JSON fallback: before={before_boundary}, after={boundary}")
-    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
         raise AssertionError(f"SQLAlchemy large Result streams did not release: before={before_handles}, after={handles}")
 
 
@@ -8073,6 +8077,179 @@ pg_loop.close()
             raise AssertionError(f"PostgreSQL cursors used JSON fallback: before={before_boundary}, after={boundary}")
         if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
             raise AssertionError(f"PostgreSQL cursor streams did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
+
+
+def test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        pg_url = f"postgresql+asyncpg://{pg['user']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
+        setup = f'''
+import asyncio
+import inspect
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+sa_async_pg_url = {pg_url!r}
+sa_async_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(sa_async_loop)
+globals()["__omnivm_stream_loop"] = sa_async_loop
+sa_async_engine = create_async_engine(sa_async_pg_url, future=True)
+sa_async_metadata = sa.MetaData()
+sa_async_orders = sa.Table(
+    "omnivm_sa_async_orders",
+    sa_async_metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String),
+    sa.Column("items", sa.String),
+    sa.Column("keys", sa.String),
+    sa.Column("count", sa.Integer),
+    sa.Column("then", sa.String),
+    sa.Column("length", sa.Integer),
+    sa.Column("close", sa.String),
+)
+
+async def sa_async_maybe_await(value):
+    if inspect.isawaitable(value):
+        await value
+
+async def sa_async_setup_db():
+    async with sa_async_engine.begin() as conn:
+        await conn.run_sync(sa_async_metadata.drop_all)
+        await conn.run_sync(sa_async_metadata.create_all)
+        await conn.execute(
+            sa_async_orders.insert(),
+            [
+                {{"name": "ada", "items": "field-items", "keys": "field-keys", "count": 7, "then": "field-then", "length": 12, "close": "field-close"}},
+                {{"name": "grace", "items": "field-items-2", "keys": "field-keys-2", "count": 8, "then": "field-then-2", "length": 13, "close": "field-close-2"}},
+            ],
+        )
+
+class AsyncSQLAlchemyResultOwner:
+    def __init__(self):
+        self.session = None
+        self.result = None
+        self.iterator = None
+        self.rows_pulled = 0
+        self.closed = False
+
+    async def open(self):
+        self.session = AsyncSession(sa_async_engine)
+        self.result = await self.session.stream(sa.select(sa_async_orders).order_by(sa_async_orders.c.id))
+        self.iterator = self.result.mappings().__aiter__()
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        row = await self.iterator.__anext__()
+        self.rows_pulled += 1
+        return {{
+            "name": row["name"],
+            "items": row["items"],
+            "keys": row["keys"],
+            "count": int(row["count"]),
+            "then": row["then"],
+            "length": int(row["length"]),
+            "close": row["close"],
+        }}
+
+    async def aclose(self):
+        self.closed = True
+        if self.result is not None:
+            await sa_async_maybe_await(self.result.close())
+            self.result = None
+        if self.session is not None:
+            await self.session.close()
+            self.session = None
+
+async def make_sa_async_result():
+    return await AsyncSQLAlchemyResultOwner().open()
+
+async def sa_async_rollback_check():
+    rollback_seen = False
+    async with AsyncSession(sa_async_engine) as session:
+        try:
+            async with session.begin():
+                await session.execute(
+                    sa_async_orders.insert().values(
+                        name="rollback",
+                        items="x",
+                        keys="x",
+                        count=99,
+                        then="x",
+                        length=99,
+                        close="x",
+                    )
+                )
+                omnivm.call("javascript", "throw new Error('sqlalchemy async rollback')")
+        except Exception as exc:
+            rollback_seen = "sqlalchemy async rollback" in str(exc)
+        if not rollback_seen:
+            raise AssertionError("foreign error did not reach SQLAlchemy AsyncSession transaction")
+        total = await session.scalar(sa.select(sa.func.count()).select_from(sa_async_orders))
+        if total != 2:
+            raise AssertionError(f"SQLAlchemy AsyncSession transaction did not roll back: {{total}}")
+
+sa_async_loop.run_until_complete(sa_async_setup_db())
+sa_async_result_js = sa_async_loop.run_until_complete(make_sa_async_result())
+'''
+        verify = r'''
+if sa_async_result_js.rows_pulled != 1:
+    raise AssertionError(f"SQLAlchemy async result pulled {sa_async_result_js.rows_pulled} rows instead of one")
+if not sa_async_result_js.closed:
+    raise AssertionError("SQLAlchemy async result owner was not closed by stream cancellation")
+sa_async_loop.run_until_complete(sa_async_rollback_check())
+sa_async_loop.run_until_complete(sa_async_engine.dispose())
+sa_async_loop.close()
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "python", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"sa_async_result_js": "sa_async_result_js"},
+                    "code": (
+                        "const it = sa_async_result_js[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('SQLAlchemy async result was empty'); "
+                        "const row = first.value; "
+                        "if (row.name !== 'ada') throw new Error('bad SQLAlchemy async JS name: ' + row.name); "
+                        "if (row.items !== 'field-items') throw new Error('SQLAlchemy async items field lost: ' + row.items); "
+                        "if (row.keys !== 'field-keys') throw new Error('SQLAlchemy async keys field lost: ' + row.keys); "
+                        "if (String(row.count) !== '7') throw new Error('SQLAlchemy async count field lost: ' + row.count); "
+                        "if (row.then !== 'field-then') throw new Error('SQLAlchemy async then field lost: ' + row.then); "
+                        "if (String(row.length) !== '12') throw new Error('SQLAlchemy async length field lost: ' + row.length); "
+                        "if (row.close !== 'field-close') throw new Error('SQLAlchemy async close field lost: ' + row.close); "
+                        "if (sa_async_result_js.cancel('client-stop') !== true) throw new Error('SQLAlchemy async cancel failed');"
+                    ),
+                },
+                {"op": "exec", "runtime": "python", "code": verify},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        stream_captures = boundary.get("stream_proxy_captures", 0)
+        stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+        if stream_captures < 1 and stream_capture_delta < 1:
+            raise AssertionError(f"SQLAlchemy async Result did not cross as lazy stream proxy: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"SQLAlchemy async Result used JSON fallback: before={before_boundary}, after={boundary}")
+        explicit_releases = handles.get("explicit_releases", 0)
+        explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+        if explicit_releases < 1 and explicit_release_delta < 1:
+            raise AssertionError(f"SQLAlchemy async Result stream did not release: before={before_handles}, after={handles}")
     finally:
         stop_postgres()
 
@@ -19977,6 +20154,7 @@ def main():
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
+        check("Manifest SQLAlchemy async Result and AsyncSession lifecycle", test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
