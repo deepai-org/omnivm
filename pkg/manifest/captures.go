@@ -1309,9 +1309,6 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       }
     }
     try {
-      if (!bridge({op: "handle_contains", value: key})) return defaultValue;
-    } catch (_containsError) {}
-    try {
       return bridge({op: "handle_get", key: textKey});
     } catch (_getError) {
       try {
@@ -1332,6 +1329,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     get: function(obj, prop, receiver) {
       if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
+      if (prop === 'get') return bridgeGet;
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!isIndexedDescriptor()) {
           try {

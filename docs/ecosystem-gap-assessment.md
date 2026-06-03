@@ -9,11 +9,11 @@ open test targets.
 | Area | Current confidence | Covered evidence | Remaining high-value gap |
 | --- | --- | --- | --- |
 | Lazy data: querysets, streams, iterators, result sets | Medium-high | Django `QuerySet`, SQLAlchemy `Result`/session rollback, psycopg/asyncpg cursors, JDBC/H2 `ResultSet`, ActiveRecord relation/SQLite adapter, generic Python/JS/Ruby/Java iterators, readers, async iterables, JS ReadableStream, Java `InputStream`/`Reader`/`ReadableByteChannel`/`BaseStream`, channels | Prisma/Mongo/Redis-style cursors, driver-specific pagination windows, large live DB result backpressure under cancellation |
-| Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Rack/Rails/Express request and response objects cross as live proxies; Starlette disconnect and Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | End-to-end app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
-| Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Real ASGI server cancellation, Node event-loop ownership from Express/undici internals, Ruby thread-local/fiber-local framework state under nested callbacks |
+| Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Rack/Rails/Express request and response objects cross as live proxies; Starlette direct-request and ASGI app disconnect checks plus Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | End-to-end app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
+| Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Starlette ASGI app disconnect loop, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Full ASGI server cancellation, Node event-loop ownership from Express/undici internals, Ruby thread-local/fiber-local framework state under nested callbacks |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
-| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
-| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, and JS `omnivm.proxyGet`/`proxyLen` provide explicit access when `.length` is ambiguous | Callable promise-like `then` fields, mutable array-like `length` edge cases beyond explicit helper access, more framework model fields colliding with proxy metadata |
+| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
+| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, and JS `.get`/`omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | Callable promise-like `then` fields, mutable array-like `length` edge cases beyond explicit helper access, more framework model fields colliding with proxy metadata |
 | Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles and language-native catch/rethrow semantics across every guest |
 
 ## Assessment By Gap Class
@@ -47,9 +47,10 @@ foreign-runtime errors.
 
 That is still not the same as full production lifecycle safety. Real app
 servers have owner phases: client disconnect, response writer close, transaction
-commit/rollback, worker drain, and worker reload. The remaining tests should
-run inside real ASGI/WSGI/Rack/Node server loops and assert handle counts and
-observable cancellation after abort/reload events.
+commit/rollback, worker drain, and worker reload. The suite now invokes a real
+Starlette ASGI app callable with an `http.disconnect` receive event, but the
+remaining tests should run inside full ASGI/WSGI/Rack/Node server processes and
+assert handle counts and observable cancellation after abort/reload events.
 
 ### Thread And Event-Loop Affinity
 
@@ -58,14 +59,15 @@ switching, nested JS/Ruby/Python bridge calls, JVM thread callbacks into
 Python/JS/Ruby, Python asyncio starvation, JS timer starvation, watchdog
 preemption, and timeout recovery.
 
-The remaining risk is framework-owned scheduling. ASGI task cancellation, Node
-stream promises inside Express/undici internals, and Ruby thread-local or
-fiber-local framework state can invoke work from threads or loops OmniVM does
-not own. Java `CompletableFuture` callback affinity and cancellation status are
-covered, but broader future/reactive cancellation status should still be checked
-where libraries attach scheduler-specific semantics. Tests should distinguish
-direct same-stack calls from callback or scheduler re-entry and should assert
-either safe dispatch to the Golden Thread or a clear diagnostic rejection.
+The remaining risk is framework-owned scheduling. Starlette ASGI app-call
+disconnect is covered, but full ASGI server task cancellation, Node stream
+promises inside Express/undici internals, and Ruby thread-local or fiber-local
+framework state can invoke work from threads or loops OmniVM does not own. Java
+`CompletableFuture` callback affinity and cancellation status are covered, but
+broader future/reactive cancellation status should still be checked where
+libraries attach scheduler-specific semantics. Tests should distinguish direct
+same-stack calls from callback or scheduler re-entry and should assert either
+safe dispatch to the Golden Thread or a clear diagnostic rejection.
 
 ### Native Memory
 
@@ -89,32 +91,36 @@ scope cleanup, watchdog timeouts, prefork worker lifecycle, and post-timeout
 status. This covers many isolated runtime hazards.
 
 Production cancellation is more demanding. The suite now has framework-object
-abort/disconnect coverage for Starlette and Express, plus Java
-`CompletableFuture` cancellation status crossing the JS boundary, but full
-app-server aborts, worker reloads, transaction rollback, stream cancellation,
-broader Java reactive cancellation status, Go `context.Context`, and ASGI
-disconnects should all produce observable cleanup. The next fixture should
+abort/disconnect coverage for Starlette and Express, a Starlette ASGI app-call
+disconnect fixture, plus Java `CompletableFuture` cancellation status crossing
+the JS boundary, but full app-server aborts, worker reloads, transaction
+rollback, stream cancellation, broader Java reactive cancellation status, and Go
+`context.Context` should all produce observable cleanup. The next fixture should
 assert handle counts before/after an aborted request or worker reload and should
 expose cancellation status rather than hiding it in logs.
 
 ### Method And Key Collisions
 
 Current tests cover method-colliding mapping keys such as `items`, `keys`,
-`count`, `then`, and `length`, descriptor-field shadowing, unsafe Java manifest
-function names, SQLAlchemy and ActiveRecord field collisions, live setter
-values, and method arguments staying behind proxies. Ruby materialization also
-reads Java zero-arg methods naturally when users access them as fields.
+`count`, `then`, `get`, and `length`, descriptor-field shadowing, unsafe Java
+manifest function names, SQLAlchemy and ActiveRecord field collisions, live
+setter values, and method arguments staying behind proxies. Ruby materialization
+also reads Java zero-arg methods naturally when users access them as fields.
+Python HTTP request/response objects get an attribute-first path for natural
+fields like `headers`, so Starlette `request.headers.get(...)` does not fall
+through to the raw ASGI scope list.
 
 Remaining targets are library objects where collision names carry special host
 semantics: callable JavaScript `then` on promise-like objects, mutable
 array-like `length`, and additional framework model fields colliding with proxy
 metadata. Non-callable `then` data fields are covered so `Promise.resolve(proxy)`
 resolves to the proxy instead of treating the field as a thenable. JavaScript
-also exposes `omnivm.proxyGet(proxy, key)` and `omnivm.proxyLen(proxy)` so users
-can explicitly choose data-key access or collection length when `.length` would
-be ambiguous. Callable `then` remains inherently ambiguous under the JavaScript
-promise-resolution algorithm and needs a policy before claiming full natural
-syntax.
+also exposes a natural JavaScript `.get(key)` helper on remote mapping-like
+proxies, plus `omnivm.proxyGet(proxy, key)` and `omnivm.proxyLen(proxy)` so users
+can explicitly choose data-key access or collection length when method names or
+`.length` would be ambiguous. Callable `then` remains inherently ambiguous under
+the JavaScript promise-resolution algorithm and needs a policy before claiming
+full natural syntax.
 
 ### Error Fidelity
 

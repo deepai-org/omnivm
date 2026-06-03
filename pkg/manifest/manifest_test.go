@@ -4723,6 +4723,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") {
 		t.Fatalf("JS materializer should expose proxy-safe get/len helpers for collision cases, got %q", code)
 	}
+	if !contains(code, `if (prop === 'get') return bridgeGet;`) {
+		t.Fatalf("JS materializer should expose a natural getter for mapping-like remote proxies, got %q", code)
+	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("JS materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}
@@ -7196,6 +7199,14 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 	if !strings.Contains(pythonProp, "collections.abc") || !strings.Contains(pythonProp, "Mapping) and __k in __o") || strings.Index(pythonProp, "__o[__k]") > strings.Index(pythonProp, "getattr") {
 		t.Fatalf("python property lookup should prefer mapping keys before attributes, got %q", pythonProp)
+	}
+
+	pythonHeadersProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "request"}, "headers")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefPropertyExpr python headers: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(pythonHeadersProp, "hasattr(__o, 'method')") || strings.Index(pythonHeadersProp, "getattr(__o, __k)") > strings.Index(pythonHeadersProp, "Mapping) and __k in __o") {
+		t.Fatalf("python HTTP message lookup should prefer request/response attributes before scope mapping keys, got %q", pythonHeadersProp)
 	}
 
 	rubyProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "count")

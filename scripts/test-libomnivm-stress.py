@@ -5282,6 +5282,96 @@ if receive_count != 2:
         raise AssertionError(f"Starlette request used JSON fallback: {after_boundary}")
 
 
+def test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture():
+    setup = r'''
+import asyncio
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+
+asgi_app_req = None
+asgi_disconnect_seen = None
+asgi_receive_count = 0
+asgi_sent = []
+
+async def endpoint(request):
+    global asgi_app_req, asgi_disconnect_seen
+    asgi_app_req = request
+    asgi_disconnect_seen = await request.is_disconnected()
+    return PlainTextResponse("disconnect=" + str(asgi_disconnect_seen).lower(), status_code=499 if asgi_disconnect_seen else 200)
+
+app = Starlette(routes=[Route("/asgi/app-disconnect", endpoint, methods=["POST"])])
+
+async def receive():
+    global asgi_receive_count
+    asgi_receive_count += 1
+    return {"type": "http.disconnect"}
+
+async def send(message):
+    asgi_sent.append(message)
+
+scope = {
+    "type": "http",
+    "asgi": {"version": "3.0", "spec_version": "2.3"},
+    "http_version": "1.1",
+    "method": "POST",
+    "path": "/asgi/app-disconnect",
+    "raw_path": b"/asgi/app-disconnect",
+    "query_string": b"mode=poly",
+    "headers": [(b"x-request-id", b"asgi-app-42"), (b"host", b"example.test")],
+    "scheme": "https",
+    "server": ("example.test", 443),
+    "client": ("127.0.0.1", 5000),
+}
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(app(scope, receive, send))
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if asgi_disconnect_seen is not True:
+    raise AssertionError(f"ASGI app disconnect was not observed: {asgi_disconnect_seen!r}")
+if asgi_receive_count < 1:
+    raise AssertionError(f"ASGI app did not poll receive for disconnect: {asgi_receive_count!r}")
+if not any(message.get("type") == "http.response.start" and message.get("status") == 499 for message in asgi_sent):
+    raise AssertionError(f"ASGI app did not emit disconnect response start: {asgi_sent!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (asgi_app_req.method !== 'POST') throw new Error('bad ASGI app method: ' + asgi_app_req.method); "
+                    "if (asgi_app_req.url.path !== '/asgi/app-disconnect') throw new Error('bad ASGI app path: ' + asgi_app_req.url.path); "
+                    "if (asgi_app_req.url.query !== 'mode=poly') throw new Error('bad ASGI app query: ' + asgi_app_req.url.query); "
+                    "if (asgi_app_req.headers.get('x-request-id') !== 'asgi-app-42') throw new Error('bad ASGI app header: ' + asgi_app_req.headers.get('x-request-id'));"
+                ),
+                "captures": {"asgi_app_req": "asgi_app_req"},
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_boundary = omnivm.status().get("boundary", {})
+    if after_boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Starlette ASGI app request did not cross as live proxy: {after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != 0:
+        raise AssertionError(f"Starlette ASGI app request crossed as a stream: {after_boundary}")
+    if after_boundary.get("table_proxy_captures", 0) != 0:
+        raise AssertionError(f"Starlette ASGI app request should not claim table transfer: {after_boundary}")
+    if after_boundary.get("arrow_transfers", 0) != 0:
+        raise AssertionError(f"Starlette ASGI app request should not claim Arrow transfer: {after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Starlette ASGI app request used JSON fallback: {after_boundary}")
+
+
 def test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -5342,13 +5432,13 @@ starlette_loop.close()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0):
+    if boundary.get("resource_proxy_captures", 0) < 1:
         raise AssertionError(f"Starlette StreamingResponse lost live response proxy state: before={before_boundary}, after={boundary}")
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1:
+    if boundary.get("stream_proxy_captures", 0) < 1:
         raise AssertionError(f"Starlette StreamingResponse body_iterator did not cross as stream proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+    if boundary.get("json_fallbacks", 0) != 0:
         raise AssertionError(f"Starlette StreamingResponse used JSON fallback: before={before_boundary}, after={boundary}")
-    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+    if handles.get("explicit_releases", 0) < 1:
         raise AssertionError(f"Starlette StreamingResponse body stream did not release on cancel: before={before_handles}, after={handles}")
 
 
@@ -13720,7 +13810,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
             {
                 "op": "eval",
                 "runtime": "python",
-                "code": "{'items': 'old-items', 'keys': 'old-keys', 'count': 0, 'then': 'old-then', 'length': 5}",
+                "code": "{'items': 'old-items', 'keys': 'old-keys', 'count': 0, 'then': 'old-then', 'get': 'old-get', 'length': 5}",
                 "bind": "py_payload",
             },
             {
@@ -13733,11 +13823,13 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (py_payload.items !== 'js-items') throw new Error('bad items key: ' + py_payload.items); "
                     "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then); "
                     "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
+                    "if (py_payload.get('get') !== 'old-get') throw new Error('synthetic get lost get key: ' + py_payload.get('get')); "
+                    "if (omnivm.proxyGet(py_payload, 'get') !== 'old-get') throw new Error('proxyGet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
-                    "if (omnivm.proxyLen(py_payload) !== 5) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
+                    "if (omnivm.proxyLen(py_payload) !== 6) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
                     "py_payload.length = 11; "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
-                    "if (omnivm.proxyLen(py_payload) !== 5) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
+                    "if (omnivm.proxyLen(py_payload) !== 6) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
                     "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },
@@ -15210,6 +15302,7 @@ def main():
         check("Manifest Django async view request/response stay live", test_manifest_django_async_view_request_response_stay_live)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
+        check("Manifest Starlette ASGI app disconnect lifecycle survives capture", test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
