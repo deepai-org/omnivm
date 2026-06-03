@@ -8051,6 +8051,104 @@ $sqlite_db.close
         raise AssertionError(f"sqlite3 native gem test used JSON fallback: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_active_record_sqlite_adapter_is_natural_and_collision_safe():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": r'''
+require 'active_record'
+require 'sqlite3'
+
+$ar_sqlite_db_path = "/tmp/omnivm-active-record-#{Process.pid}-#{Time.now.to_i}.sqlite3"
+File.unlink($ar_sqlite_db_path) if File.exist?($ar_sqlite_db_path)
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: $ar_sqlite_db_path)
+
+ActiveRecord::Base.connection.create_table(:omnivm_ar_orders, force: true) do |table|
+  table.string :name
+  table.string :items
+  table.string :keys
+  table.integer :count
+  table.string :then
+  table.integer :length
+  table.string :close
+  table.string :get
+end
+
+class OmniVMActiveRecordOrder < ActiveRecord::Base
+  self.table_name = 'omnivm_ar_orders'
+end
+
+OmniVMActiveRecordOrder.create!(
+  'name' => 'ada',
+  'items' => 'field-items',
+  'keys' => 'field-keys',
+  'count' => 7,
+  'then' => 'field-then',
+  'length' => 12,
+  'close' => 'field-close',
+  'get' => 'field-get'
+)
+''',
+            },
+            {
+                "op": "eval",
+                "runtime": "ruby",
+                "bind": "ar_order",
+                "code": "OmniVMActiveRecordOrder.first",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"ar_order": "ar_order"},
+                "code": (
+                    "if (ar_order.name !== 'ada') throw new Error('bad name: ' + ar_order.name); "
+                    "if (ar_order.items !== 'field-items') throw new Error('items column lost to method: ' + ar_order.items); "
+                    "if (ar_order.keys !== 'field-keys') throw new Error('keys column lost to method: ' + ar_order.keys); "
+                    "if (String(ar_order.count) !== '7') throw new Error('count column lost: ' + ar_order.count); "
+                    "if (ar_order.then !== 'field-then') throw new Error('then column lost: ' + ar_order.then); "
+                    "if (String(ar_order.length) !== '12') throw new Error('length column lost: ' + ar_order.length); "
+                    "if (ar_order.close !== 'field-close') throw new Error('close column lost: ' + ar_order.close); "
+                    "if (ar_order.get !== 'field-get') throw new Error('get column lost: ' + ar_order.get);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": r'''
+before_count = OmniVMActiveRecordOrder.count
+begin
+  OmniVMActiveRecordOrder.transaction do
+    OmniVMActiveRecordOrder.create!('name' => 'rolled-back')
+    OmniVM.call('javascript', "throw new Error('rollback please')")
+  end
+  raise 'transaction unexpectedly completed'
+rescue => e
+  raise "wrong transaction error #{e.class}: #{e.message}" unless e.message.include?('rollback please')
+end
+after_count = OmniVMActiveRecordOrder.count
+raise "transaction did not rollback: before=#{before_count} after=#{after_count}" unless after_count == before_count
+ActiveRecord::Base.connection_pool.disconnect!
+File.unlink($ar_sqlite_db_path) if File.exist?($ar_sqlite_db_path)
+''',
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"ActiveRecord model did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"ActiveRecord SQLite adapter test used JSON fallback: before={before_boundary}, after={boundary}")
+
+
 def test_manifest_python_dict_list_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -12936,6 +13034,7 @@ def main():
         check("Manifest Java set capture uses proxy not stream", test_manifest_java_set_capture_uses_proxy_not_stream)
         check("Manifest ActiveRecord relation-like stays lazy and collision safe", test_manifest_active_record_relation_like_stays_lazy_and_collision_safe)
         check("Manifest sqlite3 native gem executes inside Ruby", test_manifest_sqlite3_native_gem_executes_inside_ruby)
+        check("Manifest ActiveRecord SQLite adapter is natural and collision safe", test_manifest_active_record_sqlite_adapter_is_natural_and_collision_safe)
         check("Manifest Python dict/list capture uses proxy not JSON", test_manifest_python_dict_list_capture_uses_proxy_not_json)
         check("Manifest Ruby hash capture uses proxy not JSON", test_manifest_ruby_hash_capture_uses_proxy_not_json)
         check("Manifest Python runtime-ref exposes local object members generically", test_manifest_python_runtime_ref_exposes_local_object_members_generically)
