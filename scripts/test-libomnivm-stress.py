@@ -16342,6 +16342,117 @@ py_upload_body = PythonUploadBody()
         raise AssertionError(f"undici request body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_undici_fetch_upload_abort_releases_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+class PythonFetchUploadBody:
+    def __init__(self):
+        self.iterations = 0
+        self.pulls = 0
+        self.closed = False
+
+    def __iter__(self):
+        self.iterations += 1
+        return self
+
+    def __next__(self):
+        self.pulls += 1
+        if self.pulls > 1000:
+            raise StopIteration
+        return (b"fetch-upload-%04d-" % self.pulls) + (b"x" * 65536)
+
+    def close(self):
+        self.closed = True
+
+py_fetch_upload_body = PythonFetchUploadBody()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_fetch_upload_body": "py_fetch_upload_body"},
+                "code": "globalThis.pyFetchUploadBody = py_fetch_upload_body;",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "const http = require('node:http');\n"
+                    "const { fetch: undiciFetch } = require('undici');\n"
+                    "globalThis.undiciFetchUploadState = {requests: 0, bytes: 0, aborted: false, requestClosed: false, errors: []};\n"
+                    "globalThis.undiciFetchUploadAbort = new AbortController();\n"
+                    "globalThis.undiciFetchUploadServer = http.createServer((req, res) => {\n"
+                    "  const state = globalThis.undiciFetchUploadState;\n"
+                    "  state.requests += 1;\n"
+                    "  req.on('data', (chunk) => {\n"
+                    "    state.bytes += chunk.length;\n"
+                    "    if (!state.aborted) {\n"
+                    "      state.aborted = true;\n"
+                    "      globalThis.undiciFetchUploadAbort.abort(new Error('server-stop'));\n"
+                    "      req.destroy();\n"
+                    "      res.destroy();\n"
+                    "    }\n"
+                    "  });\n"
+                    "  req.on('close', () => { state.requestClosed = true; });\n"
+                    "  req.on('error', (err) => { state.errors.push('req:' + err.code); });\n"
+                    "  res.on('error', (err) => { state.errors.push('res:' + err.code); });\n"
+                    "});\n"
+                    "await new Promise((resolve) => globalThis.undiciFetchUploadServer.listen(0, '127.0.0.1', resolve));\n"
+                    "const port = globalThis.undiciFetchUploadServer.address().port;\n"
+                    "let rejected = false;\n"
+                    "try {\n"
+                    "  await undiciFetch('http://127.0.0.1:' + port + '/upload', {\n"
+                    "    method: 'POST',\n"
+                    "    body: globalThis.pyFetchUploadBody,\n"
+                    "    duplex: 'half',\n"
+                    "    signal: globalThis.undiciFetchUploadAbort.signal\n"
+                    "  });\n"
+                    "} catch (err) {\n"
+                    "  rejected = true;\n"
+                    "  globalThis.undiciFetchUploadState.rejectName = err && err.name;\n"
+                    "  globalThis.undiciFetchUploadState.rejectMessage = err && err.message;\n"
+                    "}\n"
+                    "await new Promise((resolve) => setTimeout(resolve, 50));\n"
+                    "await new Promise((resolve) => globalThis.undiciFetchUploadServer.close(resolve));\n"
+                    "const state = globalThis.undiciFetchUploadState;\n"
+                    "if (!rejected) throw new Error('undici fetch upload abort did not reject');\n"
+                    "if (state.requests !== 1) throw new Error('undici fetch upload server saw bad request count: ' + JSON.stringify(state));\n"
+                    "if (state.bytes <= 0) throw new Error('undici fetch upload server saw no body bytes: ' + JSON.stringify(state));\n"
+                    "if (!state.aborted || !state.requestClosed) throw new Error('undici fetch upload did not observe abort/close: ' + JSON.stringify(state));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert py_fetch_upload_body.iterations == 1, py_fetch_upload_body.iterations\n"
+                    "assert py_fetch_upload_body.pulls >= 1, py_fetch_upload_body.pulls\n"
+                    "assert py_fetch_upload_body.closed, 'undici fetch upload abort did not close Python owner'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"undici fetch upload body did not cross as stream proxy: before={before_status.get('boundary', {})}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"undici fetch upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"undici fetch upload body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"undici fetch upload abort leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -18974,6 +19085,7 @@ def main():
         check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
         check("Manifest Node fetch response body early cancel releases owner", test_manifest_node_fetch_response_body_early_cancel_releases_owner)
         check("Manifest undici request body cancel releases Python owner", test_manifest_undici_request_body_cancel_releases_python_owner)
+        check("Manifest undici fetch upload abort releases Python owner", test_manifest_undici_fetch_upload_abort_releases_python_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
