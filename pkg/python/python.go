@@ -2186,12 +2186,22 @@ static char* omnivm_py_fetch_error_inner() {
     }
 
     PyObject* str = PyObject_Str(value);
+    PyObject* type_name = type ? PyObject_GetAttrString(type, "__name__") : NULL;
     char* result = NULL;
     if (str) {
         const char* utf8 = PyUnicode_AsUTF8(str);
-        if (utf8) result = strdup(utf8);
+        const char* type_utf8 = NULL;
+        if (type_name) type_utf8 = PyUnicode_AsUTF8(type_name);
+        if (utf8 && type_utf8) {
+            size_t len = strlen(type_utf8) + strlen(utf8) + 3;
+            result = (char*)malloc(len);
+            if (result) snprintf(result, len, "%s: %s", type_utf8, utf8);
+        } else if (utf8) {
+            result = strdup(utf8);
+        }
         Py_DECREF(str);
     }
+    Py_XDECREF(type_name);
 
     Py_XDECREF(type);
     Py_XDECREF(value);

@@ -8723,6 +8723,74 @@ def test_manifest_zod_schema_capture_uses_proxy_not_json():
         raise AssertionError(f"Zod schema method calls were not recorded as proxy calls: {handles}")
 
 
+def test_validation_error_fidelity_popular_libraries():
+    cases = [
+        (
+            "zod",
+            "javascript",
+            (
+                "const { z } = require('zod'); "
+                "z.object({age:z.number().min(1), name:z.string()}).parse({age:0});"
+            ),
+            ["ZodError", "too_small", "age", "invalid_type", "name"],
+        ),
+        (
+            "pydantic",
+            "python",
+            (
+                "from pydantic import BaseModel, Field\n"
+                "class User(BaseModel):\n"
+                "    age:int=Field(gt=0)\n"
+                "    name:str\n"
+                "User(age=0)"
+            ),
+            ["ValidationError", "age", "greater_than", "name", "missing"],
+        ),
+        (
+            "django forms",
+            "python",
+            (
+                "from django.conf import settings\n"
+                "if not settings.configured: settings.configure(USE_I18N=False, SECRET_KEY='x')\n"
+                "from django import forms\n"
+                "class Signup(forms.Form):\n"
+                "    age=forms.IntegerField(min_value=1)\n"
+                "    name=forms.CharField(required=True)\n"
+                "form=Signup({'age':'0'})\n"
+                "from django.core.exceptions import ValidationError\n"
+                "raise ValidationError(form.errors.as_json())"
+            ),
+            ["ValidationError", "age", "min_value", "name", "required"],
+        ),
+        (
+            "java cause chain",
+            "java",
+            (
+                '((java.util.concurrent.Callable<String>)(() -> { '
+                'throw new RuntimeException("outer", new IllegalArgumentException("inner")); '
+                '})).call()'
+            ),
+            ["java.lang.RuntimeException", "outer", "Caused by", "java.lang.IllegalArgumentException", "inner"],
+        ),
+        (
+            "ruby activerecord",
+            "ruby",
+            "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)",
+            ["ActiveRecord::RecordInvalid", "Record invalid"],
+        ),
+    ]
+    for name, runtime, code, expected in cases:
+        try:
+            omnivm.call(runtime, code)
+        except omnivm.RuntimeError as exc:
+            text = str(exc)
+            missing = [part for part in expected if part not in text]
+            if missing:
+                raise AssertionError(f"{name} error lost details {missing}: {text}") from exc
+        else:
+            raise AssertionError(f"{name} did not raise an error")
+
+
 def test_manifest_func_return_exports_js_typed_array_as_arrow():
     manifest = {
         "version": 1,
@@ -12625,6 +12693,7 @@ def main():
         check("Manifest JS Map capture uses proxy not JSON", test_manifest_js_map_capture_uses_proxy_not_json)
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
+        check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)
         check("Manifest function returns Java primitive array as Arrow", test_manifest_func_return_exports_java_primitive_array_as_arrow)
         check("Manifest Go c-shared function returns typed slice as Arrow", test_manifest_go_cshared_func_return_exports_typed_slice_as_arrow)

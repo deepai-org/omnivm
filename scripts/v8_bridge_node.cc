@@ -60,6 +60,41 @@ struct OmniExportedBufferHandle {
     std::shared_ptr<v8::BackingStore> backing;
 };
 
+static char* omnivm_v8_format_exception(v8::Isolate* isolate,
+                                        v8::Local<v8::Context> context,
+                                        v8::TryCatch& try_catch,
+                                        const char* fallback) {
+    if (try_catch.HasTerminated()) {
+        isolate->CancelTerminateExecution();
+        return strdup("execution terminated (timeout)");
+    }
+
+    v8::Local<v8::Value> exception = try_catch.Exception();
+    if (!exception.IsEmpty() && exception->IsObject()) {
+        v8::Local<v8::Object> obj = exception.As<v8::Object>();
+        v8::Local<v8::String> stack_key =
+            v8::String::NewFromUtf8Literal(isolate, "stack");
+        v8::Local<v8::Value> stack;
+        if (obj->Get(context, stack_key).ToLocal(&stack) && !stack.IsEmpty()) {
+            v8::Local<v8::String> stack_str;
+            if (stack->ToString(context).ToLocal(&stack_str)) {
+                v8::String::Utf8Value utf8(isolate, stack_str);
+                if (*utf8 && **utf8) {
+                    return strdup(*utf8);
+                }
+            }
+        }
+    }
+
+    if (!exception.IsEmpty()) {
+        v8::String::Utf8Value err_str(isolate, exception);
+        if (*err_str && **err_str) {
+            return strdup(*err_str);
+        }
+    }
+    return strdup(fallback);
+}
+
 static void OmniExternalBufferDeleter(void* data, size_t length, void* deleter_data) {
     (void)data;
     (void)length;
@@ -672,14 +707,7 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
         v8::Script::Compile(context, source);
 
     if (maybe_script.IsEmpty()) {
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            result.error = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            result.error = strdup(*err_str ? *err_str : "compilation error");
-        }
+        result.error = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "compilation error");
 
         // Restore console (safe now that termination is cleared)
         if (!orig_console.IsEmpty()) {
@@ -694,14 +722,7 @@ omnivm_v8_result omnivm_v8_execute(omnivm_v8_context* ctx_w, const char* code) {
         maybe_script.ToLocalChecked()->Run(context);
 
     if (try_catch.HasCaught()) {
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            result.error = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            result.error = strdup(*err_str ? *err_str : "runtime error");
-        }
+        result.error = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "runtime error");
 
         // Restore console (safe now that termination is cleared)
         if (!orig_console.IsEmpty()) {
@@ -766,14 +787,7 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
         v8::Script::Compile(context, source);
 
     if (maybe_script.IsEmpty()) {
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            result.error = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            result.error = strdup(*err_str ? *err_str : "compilation error");
-        }
+        result.error = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "compilation error");
         return result;
     }
 
@@ -781,14 +795,7 @@ omnivm_v8_result omnivm_v8_eval(omnivm_v8_context* ctx_w, const char* code) {
         maybe_script.ToLocalChecked()->Run(context);
 
     if (try_catch.HasCaught()) {
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            result.error = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            result.error = strdup(*err_str ? *err_str : "runtime error");
-        }
+        result.error = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "runtime error");
         return result;
     }
 
@@ -929,14 +936,7 @@ omni_value_t omnivm_v8_eval_typed(omnivm_v8_context* ctx_w, const char* code) {
         omni_value_t err;
         memset(&err, 0, sizeof(err));
         err.tag = OMNI_TAG_ERROR;
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            err.v.s.ptr = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            err.v.s.ptr = strdup(*err_str ? *err_str : "compilation error");
-        }
+        err.v.s.ptr = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "compilation error");
         err.v.s.len = strlen(err.v.s.ptr);
         return err;
     }
@@ -948,14 +948,7 @@ omni_value_t omnivm_v8_eval_typed(omnivm_v8_context* ctx_w, const char* code) {
         omni_value_t err;
         memset(&err, 0, sizeof(err));
         err.tag = OMNI_TAG_ERROR;
-        if (try_catch.HasTerminated()) {
-            ctx_w->isolate->CancelTerminateExecution();
-            err.v.s.ptr = strdup("execution terminated (timeout)");
-        } else {
-            v8::Local<v8::Value> exception = try_catch.Exception();
-            v8::String::Utf8Value err_str(ctx_w->isolate, exception);
-            err.v.s.ptr = strdup(*err_str ? *err_str : "runtime error");
-        }
+        err.v.s.ptr = omnivm_v8_format_exception(ctx_w->isolate, context, try_catch, "runtime error");
         err.v.s.len = strlen(err.v.s.ptr);
         return err;
     }

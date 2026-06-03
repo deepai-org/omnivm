@@ -441,7 +441,7 @@ public class OmniVMRunner {
     public static String eval(String code) {
         Object result = evalObject(code);
         if (result instanceof Throwable t) {
-            return "JavaError: " + t.getClass().getName() + ": " + t.getMessage();
+            return "JavaError: " + formatThrowable(t);
         }
         return result == null ? "null" : result.toString();
     }
@@ -622,12 +622,18 @@ public class OmniVMRunner {
         } catch (java.lang.reflect.InvocationTargetException e) {
             Throwable cause = e.getCause();
             if (cause != null) {
-                return "JavaError: " + cause.getClass().getName() + ": " + cause.getMessage();
+                return "JavaError: " + formatThrowable(cause);
             }
             throw e;
         }
 
         return null; // Success
+    }
+
+    private static String formatThrowable(Throwable throwable) {
+        StringWriter sw = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(sw));
+        return sw.toString().trim();
     }
 
     private static void persistCompiledClasses(String entryClassName, List<InMemoryClassFile> classes) {
