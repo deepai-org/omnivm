@@ -28,6 +28,7 @@ import ctypes
 import ctypes.util
 import json
 import os
+import re
 import threading
 import uuid
 import weakref
@@ -71,13 +72,32 @@ class RuntimeError(_builtins.RuntimeError):
         self.message = parsed["message"]
         self.traceback = parsed["traceback"]
         self.cause_chain = parsed["cause_chain"]
-        self.boundary_path = None
+        self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = None
 
 
 def _parse_runtime_error_text(text, runtime=None):
     source_runtime = runtime
     body = text
+    boundary_parts = []
+    for marker, label in (
+        ("execute manifest: ", "execute manifest"),
+        ("load manifest module: ", "load manifest module"),
+        ("manifest module call: ", "manifest module call"),
+    ):
+        if body.startswith(marker):
+            boundary_parts.append(label)
+            body = body[len(marker) :]
+            break
+
+    op_match = re.match(r"(?P<op>[A-Za-z_][A-Za-z0-9_]*) \[(?P<runtime>[A-Za-z0-9_-]+)\]: (?P<body>.*)", body, re.S)
+    if op_match:
+        op_name = op_match.group("op")
+        op_runtime = op_match.group("runtime")
+        boundary_parts.append(f"{op_name}[{op_runtime}]")
+        source_runtime = op_runtime
+        body = op_match.group("body")
+
     for prefix, canonical in (
         ("javascript: ", "javascript"),
         ("python: ", "python"),
@@ -94,9 +114,25 @@ def _parse_runtime_error_text(text, runtime=None):
     first_line, _, rest = body.partition("\n")
     err_type = ""
     detail = first_line
-    if ": " in first_line:
-        candidate, tail = first_line.split(": ", 1)
+
+    parse_line = first_line
+    traceback = rest
+    if first_line.startswith("Traceback "):
+        traceback = body
+        traceback_lines = [line.strip() for line in body.splitlines() if line.strip()]
+        for line in reversed(traceback_lines):
+            if ": " not in line:
+                continue
+            candidate, _ = line.split(": ", 1)
+            if candidate and " " not in candidate:
+                parse_line = line
+                break
+
+    if ": " in parse_line:
+        candidate, tail = parse_line.split(": ", 1)
         if candidate and " " not in candidate:
+            if source_runtime == "python" and "." in candidate:
+                candidate = candidate.rsplit(".", 1)[-1]
             err_type = candidate
             detail = tail
 
@@ -120,8 +156,9 @@ def _parse_runtime_error_text(text, runtime=None):
         "runtime": source_runtime,
         "type": err_type,
         "message": detail,
-        "traceback": rest,
+        "traceback": traceback,
         "cause_chain": cause_chain,
+        "boundary_path": " > ".join(boundary_parts) or None,
     }
 
 

@@ -60,6 +60,33 @@ class TestRuntimeError(unittest.TestCase):
             {"type": "java.lang.IllegalArgumentException", "message": "inner"}
         ]
 
+    def test_parses_manifest_runtime_error_boundary_path(self):
+        err = omnivm_mod.RuntimeError(
+            "execute manifest: exec [python]: python: ValidationError: bad input\n"
+            "Traceback (most recent call last):\n"
+            "  File \"<string>\", line 1, in <module>"
+        )
+        assert err.runtime == "python"
+        assert err.type == "ValidationError"
+        assert err.message == "bad input"
+        assert err.boundary_path == "execute manifest > exec[python]"
+        assert "Traceback" in err.traceback
+
+    def test_parses_manifest_python_traceback_tail(self):
+        err = omnivm_mod.RuntimeError(
+            "execute manifest: exec [python]: Traceback (most recent call last):\n"
+            "  File \"<string>\", line 5, in <module>\n"
+            "pydantic_core._pydantic_core.ValidationError: 2 validation errors for User\n"
+            "age\n"
+            "  Input should be greater than 0"
+        )
+        assert err.runtime == "python"
+        assert err.type == "ValidationError"
+        assert err.message == "2 validation errors for User"
+        assert err.boundary_path == "execute manifest > exec[python]"
+        assert "Traceback" in err.traceback
+        assert "File \"<string>\", line 5" in err.traceback
+
 
 class TestCheckResult(unittest.TestCase):
     def test_none_raises(self):

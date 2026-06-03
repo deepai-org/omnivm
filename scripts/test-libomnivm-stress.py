@@ -9977,6 +9977,43 @@ def test_validation_error_fidelity_popular_libraries():
             raise AssertionError(f"{name} did not raise an error")
 
 
+def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "from pydantic import BaseModel, Field\n"
+                    "class User(BaseModel):\n"
+                    "    age:int=Field(gt=0)\n"
+                    "    name:str\n"
+                    "User(age=0)\n"
+                ),
+            },
+        ],
+    }
+    try:
+        run_manifest_dict(manifest)
+    except omnivm.RuntimeError as exc:
+        text = str(exc)
+        if exc.runtime != "python":
+            raise AssertionError(f"manifest validation error runtime = {exc.runtime!r}: {text}") from exc
+        if exc.type != "ValidationError":
+            raise AssertionError(f"manifest validation error type = {exc.type!r}: {text}") from exc
+        for part in ("2 validation errors for User", "age", "greater_than", "name", "missing"):
+            if part not in text and part not in exc.message and part not in exc.traceback:
+                raise AssertionError(f"manifest validation error lost {part!r}: {text}") from exc
+        if not exc.boundary_path or "execute manifest" not in exc.boundary_path or "exec[python]" not in exc.boundary_path:
+            raise AssertionError(f"manifest validation error boundary path = {exc.boundary_path!r}: {text}") from exc
+        if "Traceback" not in exc.traceback or 'File "<string>", line 5' not in exc.traceback:
+            raise AssertionError(f"manifest validation error traceback lost source frame: {exc.traceback!r}") from exc
+    else:
+        raise AssertionError("manifest validation error did not raise")
+
+
 def test_manifest_func_return_exports_js_typed_array_as_arrow():
     manifest = {
         "version": 1,
@@ -14506,6 +14543,7 @@ def main():
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
+        check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)
         check("Manifest function returns Java primitive array as Arrow", test_manifest_func_return_exports_java_primitive_array_as_arrow)
         check("Manifest Go c-shared function returns typed slice as Arrow", test_manifest_go_cshared_func_return_exports_typed_slice_as_arrow)
