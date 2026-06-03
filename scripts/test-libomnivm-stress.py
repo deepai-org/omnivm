@@ -5253,6 +5253,100 @@ def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"FastAPI request used JSON fallback: {boundary}")
 
 
+def test_manifest_fastapi_asgi_app_disconnect_lifecycle_survives_capture():
+    before_boundary = omnivm.status().get("boundary", {})
+    setup = r'''
+import asyncio
+from fastapi import FastAPI, Request
+from starlette.responses import PlainTextResponse
+
+fastapi_app_req = None
+fastapi_disconnect_seen = None
+fastapi_receive_count = 0
+fastapi_sent = []
+
+app = FastAPI()
+
+@app.post("/fastapi/app-disconnect")
+async def endpoint(request: Request):
+    global fastapi_app_req, fastapi_disconnect_seen
+    fastapi_app_req = request
+    fastapi_disconnect_seen = await request.is_disconnected()
+    return PlainTextResponse(
+        "disconnect=" + str(fastapi_disconnect_seen).lower(),
+        status_code=499 if fastapi_disconnect_seen else 200,
+    )
+
+async def receive():
+    global fastapi_receive_count
+    fastapi_receive_count += 1
+    return {"type": "http.disconnect"}
+
+async def send(message):
+    fastapi_sent.append(message)
+
+scope = {
+    "type": "http",
+    "asgi": {"version": "3.0", "spec_version": "2.3"},
+    "http_version": "1.1",
+    "method": "POST",
+    "path": "/fastapi/app-disconnect",
+    "raw_path": b"/fastapi/app-disconnect",
+    "query_string": b"mode=poly",
+    "headers": [(b"x-request-id", b"fastapi-app-42"), (b"host", b"example.test")],
+    "scheme": "https",
+    "server": ("example.test", 443),
+    "client": ("127.0.0.1", 5000),
+}
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(app(scope, receive, send))
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if fastapi_disconnect_seen is not True:
+    raise AssertionError(f"FastAPI app disconnect was not observed: {fastapi_disconnect_seen!r}")
+if fastapi_receive_count < 1:
+    raise AssertionError(f"FastAPI app did not poll receive for disconnect: {fastapi_receive_count!r}")
+if not any(message.get("type") == "http.response.start" and message.get("status") == 499 for message in fastapi_sent):
+    raise AssertionError(f"FastAPI app did not emit disconnect response start: {fastapi_sent!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (fastapi_app_req.method !== 'POST') throw new Error('bad FastAPI app method: ' + fastapi_app_req.method); "
+                    "if (fastapi_app_req.url.path !== '/fastapi/app-disconnect') throw new Error('bad FastAPI app path: ' + fastapi_app_req.url.path); "
+                    "if (fastapi_app_req.url.query !== 'mode=poly') throw new Error('bad FastAPI app query: ' + fastapi_app_req.url.query); "
+                    "if (fastapi_app_req.headers.get('x-request-id') !== 'fastapi-app-42') throw new Error('bad FastAPI app header: ' + fastapi_app_req.headers.get('x-request-id'));"
+                ),
+                "captures": {"fastapi_app_req": "fastapi_app_req"},
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_boundary = omnivm.status().get("boundary", {})
+    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"FastAPI ASGI app request did not cross as live proxy: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"FastAPI ASGI app request crossed as a stream: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"FastAPI ASGI app request should not claim table transfer: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"FastAPI ASGI app request should not claim Arrow transfer: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"FastAPI ASGI app request used JSON fallback: before={before_boundary}, after={after_boundary}")
+
+
 def test_manifest_starlette_request_disconnect_lifecycle_survives_capture():
     before_boundary = omnivm.status().get("boundary", {})
     setup = r'''
@@ -17716,6 +17810,7 @@ def main():
         check("Manifest Django request capture uses proxy not JSON", test_manifest_django_request_capture_uses_proxy_not_json)
         check("Manifest Django async view request/response stay live", test_manifest_django_async_view_request_response_stay_live)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
+        check("Manifest FastAPI ASGI app disconnect lifecycle survives capture", test_manifest_fastapi_asgi_app_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette ASGI app disconnect lifecycle survives capture", test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture)
         check("Manifest Uvicorn Starlette client abort cancels streaming response", test_manifest_uvicorn_starlette_client_abort_cancels_streaming_response)
