@@ -25,8 +25,10 @@ static char* omnivm_manifest_call_cshared_go(void* fn, const char* args_json) {
 import "C"
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"sync"
@@ -235,6 +237,52 @@ func (p *cSharedObjectProxy) Call(key string, args []interface{}) (interface{}, 
 	return value, err == nil, err
 }
 
+func (p *cSharedObjectProxy) Read(dst []byte) (int, error) {
+	if p == nil || p.Kind() != "reader" {
+		return 0, fmt.Errorf("Go c-shared object is not readable")
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	env, err := p.call("read", map[string]interface{}{"size": len(dst)})
+	if err != nil {
+		return 0, err
+	}
+	if !env.Found {
+		return 0, fmt.Errorf("Go c-shared object is not readable")
+	}
+	payload, ok := env.Value.(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("Go c-shared reader returned %T", env.Value)
+	}
+	done, _ := payload["done"].(bool)
+	if done {
+		return 0, io.EOF
+	}
+	chunk, err := cSharedByteChunk(payload["chunk"])
+	if err != nil {
+		return 0, err
+	}
+	if len(chunk) == 0 {
+		return 0, nil
+	}
+	return copy(dst, chunk), nil
+}
+
+func (p *cSharedObjectProxy) Close() error {
+	if p == nil || p.Kind() != "reader" {
+		return nil
+	}
+	env, err := p.call("close", nil)
+	if err != nil {
+		return err
+	}
+	if !env.Found {
+		return nil
+	}
+	return nil
+}
+
 func (p *cSharedObjectProxy) Release() error {
 	if p == nil || p.objectID == "" {
 		return nil
@@ -294,6 +342,31 @@ func decodeCSharedRuntimeRefValue(value interface{}) (interface{}, bool) {
 		return nil, false
 	}
 	return decodeRuntimeRefArg(descriptor), true
+}
+
+func cSharedByteChunk(value interface{}) ([]byte, error) {
+	switch v := value.(type) {
+	case string:
+		out, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("decode Go c-shared reader chunk: %w", err)
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]byte, len(v))
+		for i, item := range v {
+			n, err := cSharedInt64(item)
+			if err != nil || n < 0 || n > 255 {
+				return nil, fmt.Errorf("decode Go c-shared reader chunk byte %d: %v", i, item)
+			}
+			out[i] = byte(n)
+		}
+		return out, nil
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("Go c-shared reader chunk returned %T", value)
+	}
 }
 
 func encodeCSharedHandlePayloadValue(value interface{}) interface{} {

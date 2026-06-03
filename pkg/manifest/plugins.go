@@ -235,6 +235,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"runtime/debug"
@@ -408,6 +409,9 @@ func __omnivmIsBridgeMarker(value interface{}) bool {
 }
 
 func __omnivmObjectKind(value interface{}) string {
+	if __omnivmIsReaderStream(value) {
+		return "reader"
+	}
 	rv := reflect.ValueOf(value)
 	if !rv.IsValid() {
 		return "object"
@@ -428,6 +432,57 @@ func __omnivmObjectKind(value interface{}) string {
 	default:
 		return "object"
 	}
+}
+
+func __omnivmIsReaderStream(value interface{}) bool {
+	if __omnivmIsHTTPMessageShape(value) {
+		return false
+	}
+	_, ok := value.(io.Reader)
+	return ok
+}
+
+func __omnivmIsHTTPMessageShape(value interface{}) bool {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return false
+	}
+	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	methodLike := false
+	targetLike := false
+	if rt.Kind() == reflect.Struct {
+		for _, name := range []string{"Method", "RequestMethod"} {
+			if _, ok := rt.FieldByName(name); ok {
+				methodLike = true
+				break
+			}
+		}
+		for _, name := range []string{"Path", "URL", "Url", "URI", "Headers", "Header", "Env", "PathInfo", "RequestURI"} {
+			if _, ok := rt.FieldByName(name); ok {
+				targetLike = true
+				break
+			}
+		}
+	}
+	for i := 0; i < rt.NumMethod(); i++ {
+		method := rt.Method(i)
+		if method.Type.NumIn() != 1 || method.Type.NumOut() == 0 {
+			continue
+		}
+		switch method.Name {
+		case "Method", "GetMethod", "RequestMethod", "GetRequestMethod":
+			methodLike = true
+		case "Path", "GetPath", "URL", "Url", "GetURL", "GetUrl", "URI", "GetURI", "Headers", "GetHeaders", "Header", "GetHeader", "Env", "GetEnv", "PathInfo", "GetPathInfo", "RequestURI", "GetRequestURI":
+			targetLike = true
+		}
+	}
+	return methodLike && targetLike
 }
 
 func __omnivmOwnedTypedSequence(value interface{}) (string, string, unsafe.Pointer, string, int64, int64, []int64, []int64, bool, error) {
@@ -790,6 +845,34 @@ func OmniVMHandleOp(argsJSON *C.char) (out *C.char) {
 
 func __omnivmHandleOp(value interface{}, op string, req map[string]interface{}) (__omnivmEnvelope, error) {
 	switch op {
+	case "read":
+		reader, ok := value.(io.Reader)
+		if !ok || __omnivmIsHTTPMessageShape(value) {
+			return __omnivmEnvelope{OK: true, Found: false}, nil
+		}
+		size := 8192
+		if n, ok := __omnivmInt64(req["size"]); ok && n > 0 {
+			size = int(n)
+		}
+		if size > 1048576 {
+			size = 1048576
+		}
+		buf := make([]byte, size)
+		n, err := reader.Read(buf)
+		if n > 0 {
+			return __omnivmEnvelope{OK: true, Found: true, Value: map[string]interface{}{"done": false, "chunk": buf[:n]}}, nil
+		}
+		if err == nil || err == io.EOF {
+			return __omnivmEnvelope{OK: true, Found: true, Value: map[string]interface{}{"done": true}}, nil
+		}
+		return __omnivmEnvelope{OK: false, Found: true, Error: err.Error()}, nil
+	case "close":
+		closer, ok := value.(io.Closer)
+		if !ok || __omnivmIsHTTPMessageShape(value) {
+			return __omnivmEnvelope{OK: true, Found: false}, nil
+		}
+		err := closer.Close()
+		return __omnivmEnvelope{OK: err == nil, Found: true, Value: true, Error: __omnivmErrorString(err)}, nil
 	case "get":
 		key, _ := req["key"].(string)
 		next, found, err := __omnivmGenericProperty(value, key)

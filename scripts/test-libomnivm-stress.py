@@ -9766,6 +9766,102 @@ def test_manifest_go_cshared_func_return_exports_complex_object_as_proxy():
         raise AssertionError(f"Go c-shared complex object used JSON fallback: {boundary}")
 
 
+def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        marker_path = os.path.join(tmpdir, "reader-close.txt")
+        marker_literal = json.dumps(marker_path)
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {
+                    "op": "func_def",
+                    "name": "reader",
+                    "params": [],
+                    "body": [],
+                    "bodyRuntime": "go",
+                    "source": (
+                        "package polyfunc\n\n"
+                        "import (\n"
+                        "\t\"fmt\"\n"
+                        "\t\"io\"\n"
+                        "\t\"os\"\n"
+                        ")\n\n"
+                        "const markerPath = " + marker_literal + "\n\n"
+                        "type trackingReader struct {\n"
+                        "\tchunks [][]byte\n"
+                        "\tidx int\n"
+                        "\tclosed bool\n"
+                        "}\n\n"
+                        "func (r *trackingReader) Read(p []byte) (int, error) {\n"
+                        "\tif r.idx >= len(r.chunks) {\n"
+                        "\t\treturn 0, io.EOF\n"
+                        "\t}\n"
+                        "\tn := copy(p, r.chunks[r.idx])\n"
+                        "\tr.idx++\n"
+                        "\treturn n, nil\n"
+                        "}\n\n"
+                        "func (r *trackingReader) Close() error {\n"
+                        "\tr.closed = true\n"
+                        "\tstate := fmt.Sprintf(\"closed=%t reads=%d remaining=%d\", r.closed, r.idx, len(r.chunks)-r.idx)\n"
+                        "\treturn os.WriteFile(markerPath, []byte(state), 0644)\n"
+                        "}\n\n"
+                        "func Reader() io.Reader {\n"
+                        "\treturn &trackingReader{chunks: [][]byte{[]byte(\"first\"), []byte(\"second\")}}\n"
+                        "}\n"
+                    ),
+                    "exports": ["Reader"],
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "code": (
+                        "const stream = reader();"
+                        "const it = stream[Symbol.iterator]();"
+                        "const first = it.next();"
+                        "if (first.done) throw new Error('Go c-shared reader was empty');"
+                        "const chunk = first.value;"
+                        "const bytes = typeof chunk === 'string' ? Array.from(chunk).map((c) => c.charCodeAt(0)) : Array.from(chunk);"
+                        "const text = String.fromCharCode(...bytes);"
+                        "if (text !== 'first') throw new Error('bad Go c-shared reader chunk: ' + text);"
+                        "if (stream.cancel('client-stop') !== true) throw new Error('Go c-shared reader cancel failed');"
+                    ),
+                },
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(manifest, f)
+            path = f.name
+        try:
+            omnivm.run_manifest(path)
+        finally:
+            os.unlink(path)
+        if not os.path.exists(marker_path):
+            raise AssertionError("Go c-shared reader close marker was not written")
+        with open(marker_path, "r", encoding="utf-8") as marker_file:
+            close_state = marker_file.read()
+        expected_state = "closed=true reads=1 remaining=1"
+        if close_state != expected_state:
+            raise AssertionError(f"Go c-shared reader close state = {close_state!r}, want {expected_state!r}")
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared reader did not create a stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared reader degraded to resource proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared reader used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Go c-shared reader stream did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Go c-shared reader cancel did not release handle: before={before_handles}, after={handles}")
+
+
 def test_manifest_go_cshared_sequence_members_cross_generically():
     manifest = {
         "version": 1,
@@ -13630,6 +13726,7 @@ def main():
         check("Manifest Go c-shared function returns nested slice as shaped Arrow", test_manifest_go_cshared_func_return_exports_nested_slice_as_shaped_arrow)
         check("Manifest Go c-shared function returns byte slice as Arrow", test_manifest_go_cshared_func_return_exports_byte_slice_as_arrow)
         check("Manifest Go c-shared function returns complex object as proxy", test_manifest_go_cshared_func_return_exports_complex_object_as_proxy)
+        check("Manifest Go c-shared reader stream early cancel releases owner", test_manifest_go_cshared_reader_stream_early_cancel_releases_owner)
         check("Manifest Go c-shared sequence members cross generically", test_manifest_go_cshared_sequence_members_cross_generically)
         check("Manifest Go c-shared struct object members cross generically", test_manifest_go_cshared_struct_object_members_cross_generically)
         check("Manifest Go c-shared function preserves complex proxy argument", test_manifest_go_cshared_func_preserves_complex_proxy_argument)

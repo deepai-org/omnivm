@@ -120,6 +120,9 @@ func (e *Executor) genericStreamHandle(runtime string, value interface{}) (handl
 				return err
 			}
 			e.forgetReleasedHandle(id, value)
+			if releaser, ok := value.(interface{ Release() error }); ok {
+				return releaser.Release()
+			}
 			return nil
 		},
 	})
@@ -141,6 +144,9 @@ func isReceivableChannelValue(value interface{}) bool {
 }
 
 func isReaderStreamValue(value interface{}) bool {
+	if proxy, ok := value.(*cSharedObjectProxy); ok && proxy.Kind() != "reader" {
+		return false
+	}
 	if isHTTPMessageShapeValue(value) {
 		return false
 	}
