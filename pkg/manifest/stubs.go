@@ -2955,7 +2955,7 @@ func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, b
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit), true, nil
 	case "python":
-		return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit), true, nil
+		return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__o, __import__('collections.abc', fromlist=['MutableMapping']).MutableMapping):\n    __o[__k] = __v\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit), true, nil
 	case "java":
@@ -2981,7 +2981,7 @@ func (e *Executor) runtimeRefSetCode(ref RuntimeRef, key string, value interface
 	case "javascript":
 		code = fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit)
 	case "python":
-		code = fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
+		code = fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\nif isinstance(__o, __import__('collections.abc', fromlist=['MutableMapping']).MutableMapping):\n    __o[__k] = __v\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit)
 	case "ruby":
 		code = fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
 	case "java":

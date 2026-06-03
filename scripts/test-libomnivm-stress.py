@@ -11360,6 +11360,75 @@ def test_manifest_proxy_setter_values_stay_live():
         raise AssertionError(f"live proxy setter values should use generic proxy captures: {boundary}")
 
 
+def test_manifest_python_mapping_collision_setters_prefer_keys():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "code": "{'items': 'old-items', 'keys': 'old-keys', 'count': 0, 'then': 'old-then', 'length': 5}",
+                "bind": "py_payload",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_payload": "py_payload"},
+                "code": (
+                    "py_payload.items = 'js-items'; "
+                    "py_payload.then = 'js-then'; "
+                    "if (py_payload.items !== 'js-items') throw new Error('bad items key: ' + py_payload.items); "
+                    "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"py_payload": "py_payload"},
+                "code": (
+                    "py_payload.keys = 'ruby-keys'; "
+                    "py_payload.length = 9; "
+                    "raise \"bad keys key #{py_payload.keys}\" unless py_payload.keys == 'ruby-keys'; "
+                    "raise \"bad length key #{py_payload.length}\" unless py_payload.length == 9"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"py_payload": "py_payload"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"py_payload\"); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"count set failed\"); "
+                    "if (!payload.set(\"items\", \"java-items\")) throw new RuntimeException(\"items set failed\"); "
+                    "if (!\"42\".equals(String.valueOf(payload.get(\"count\")))) throw new RuntimeException(\"bad count key: \" + payload.get(\"count\")); "
+                    "if (!\"java-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"bad items key: \" + payload.get(\"items\"));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert py_payload['items'] == 'java-items', py_payload\n"
+                    "assert py_payload['keys'] == 'ruby-keys', py_payload\n"
+                    "assert py_payload['count'] == 42, py_payload\n"
+                    "assert py_payload['then'] == 'js-then', py_payload\n"
+                    "assert py_payload['length'] == 9, py_payload\n"
+                    "assert callable(dict.items) and callable(dict.keys)"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    handles = omnivm.status().get("handles", {})
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"collision-key mapping setters should not use JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("mutation", 0) < 5:
+        raise AssertionError(f"collision-key mapping setters should record proxy mutations: {handles}")
+
+
 def test_manifest_channel_captures_are_lazy_streams():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -12739,6 +12808,7 @@ def main():
         check("Manifest Java function arguments stay live", test_manifest_java_func_argument_stays_live)
         check("Manifest Java function invoke fallback handles unsafe names", test_manifest_java_func_invoke_fallback_handles_unsafe_names)
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
+        check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)

@@ -7168,6 +7168,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(pythonCode, "int(__k)") || !strings.Contains(pythonCode, "__o.__setitem__(__k, __v)") {
 		t.Fatalf("python RuntimeRef set should coerce numeric sequence keys with fallback, got %q", pythonCode)
 	}
+	if !strings.Contains(pythonCode, "MutableMapping") || strings.Index(pythonCode, "__o[__k] = __v") > strings.Index(pythonCode, "hasattr(__o, __k)") {
+		t.Fatalf("python RuntimeRef set should prefer mutable mapping keys before attributes, got %q", pythonCode)
+	}
 
 	rubyCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "ruby", VarName: "items"}, "0", "updated")
 	if err != nil || !ok {
