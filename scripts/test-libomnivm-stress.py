@@ -17288,6 +17288,64 @@ return combined;
             raise AssertionError(f"Java CompletableFuture callback affinity was not safe or diagnostic: {result}")
 
 
+def test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+java.util.concurrent.atomic.AtomicBoolean shutdown = new java.util.concurrent.atomic.AtomicBoolean(false);
+java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+    Thread thread = new Thread(runnable);
+    thread.setName("omnivm-cf-custom-" + thread.getId());
+    return thread;
+});
+try {
+    java.util.concurrent.CompletableFuture<String> pyFuture =
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> "py", exec)
+            .thenApplyAsync(label -> {
+                try {
+                    return "OK:" + Thread.currentThread().getName() + ":" + omnivm.OmniVM.call("python", "'from-cf-custom-' + '" + label + "'");
+                } catch (Throwable t) {
+                    return "ERR:" + Thread.currentThread().getName() + ":" + t.getClass().getName() + ":" + t.getMessage();
+                }
+            }, exec);
+    java.util.concurrent.CompletableFuture<String> jsFuture =
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> "js", exec)
+            .thenApplyAsync(label -> {
+                try {
+                    return "OK:" + Thread.currentThread().getName() + ":" + omnivm.OmniVM.call("javascript", "'from-cf-custom-' + '" + label + "'");
+                } catch (Throwable t) {
+                    return "ERR:" + Thread.currentThread().getName() + ":" + t.getClass().getName() + ":" + t.getMessage();
+                }
+            }, exec);
+    String pyResult = pyFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
+    String jsResult = jsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
+    boolean pySafe = pyResult.startsWith("OK:omnivm-cf-custom-") && pyResult.endsWith(":from-cf-custom-py");
+    boolean jsSafe = jsResult.startsWith("OK:omnivm-cf-custom-") && jsResult.endsWith(":from-cf-custom-js");
+    boolean pyDiagnostic = pyResult.startsWith("ERR:omnivm-cf-custom-") && pyResult.contains("non-Golden Thread");
+    boolean jsDiagnostic = jsResult.startsWith("ERR:omnivm-cf-custom-") && jsResult.contains("non-Golden Thread");
+    if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python custom-executor CompletableFuture callback affinity was neither safe nor diagnostic: " + pyResult);
+    if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS custom-executor CompletableFuture callback affinity was neither safe nor diagnostic: " + jsResult);
+    return pyResult + "|" + jsResult;
+} finally {
+    exec.shutdownNow();
+    shutdown.set(exec.isShutdown());
+    if (!shutdown.get()) throw new RuntimeException("custom CompletableFuture executor did not shut down");
+}
+})).call()
+'''
+    )
+    parts = result.split("|")
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java CompletableFuture custom-executor callback result: {result}")
+    for part in parts:
+        if not (
+            part.startswith("OK:omnivm-cf-custom-")
+            or (part.startswith("ERR:omnivm-cf-custom-") and "non-Golden Thread" in part)
+        ):
+            raise AssertionError(f"Java CompletableFuture custom-executor callback affinity was not safe or diagnostic: {result}")
+
+
 def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -18422,6 +18480,7 @@ def main():
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
+        check("Java CompletableFuture custom executor callback affinity is diagnostic or safe", test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
