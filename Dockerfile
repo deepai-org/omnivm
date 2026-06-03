@@ -97,6 +97,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       SQLAlchemy \
       "psycopg[binary]" \
       asyncpg \
+      boto3 \
       Jinja2 \
       Markdown \
       httpx \

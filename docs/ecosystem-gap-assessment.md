@@ -8,7 +8,7 @@ open test targets.
 
 | Area | Current confidence | Covered evidence | Remaining high-value gap |
 | --- | --- | --- | --- |
-| Lazy data: querysets, streams, iterators, result sets | Medium-high | Django `QuerySet`, SQLAlchemy `Result`/session rollback, psycopg/asyncpg cursors, JDBC/H2 `ResultSet`, ActiveRecord relation/SQLite adapter, generic Python/JS/Ruby/Java iterators, readers, async iterables, JS ReadableStream, Java `InputStream`/`Reader`/`ReadableByteChannel`/`BaseStream`, channels | Prisma/Mongo/Redis-style cursors, driver-specific pagination windows, large live DB result backpressure under cancellation |
+| Lazy data: querysets, streams, iterators, result sets | Medium-high | Django `QuerySet`, SQLAlchemy `Result`/session rollback, psycopg/asyncpg cursors, boto3/botocore S3 paginator windows, JDBC/H2 `ResultSet`, ActiveRecord relation/SQLite adapter, generic Python/JS/Ruby/Java iterators, readers, async iterables, JS ReadableStream, Java `InputStream`/`Reader`/`ReadableByteChannel`/`BaseStream`, channels | Prisma/Mongo/Redis-style cursors, other driver-specific pagination windows, large live DB result backpressure under cancellation |
 | Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Flask/Werkzeug/Rack/Rails/Express request and response objects cross as live proxies; Starlette direct-request and ASGI app disconnect checks, Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client-abort fixtures, Rack/Rails socket-abort response-body owner close, and Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | Real Rack/Rails app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
 | Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Starlette ASGI app disconnect loop, Uvicorn event-loop re-entry during a streaming response, Express event-loop re-entry during a TCP client abort, Java `CompletableFuture`, `FutureTask`, Reactor scheduler/Disposable, RxJava executor/Disposable, Kotlin coroutine callback affinity as safe or diagnostic; Java cancellation status crosses runtimes for covered future/reactive handles | Node event-loop ownership from undici internals, Ruby thread-local/fiber-local framework state under nested callbacks, additional ASGI server variants |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
@@ -28,11 +28,12 @@ assert stream proxy captures, no JSON fallback, recorded stream accesses, and
 release on EOF or cancellation.
 
 The database-backed evidence is now concrete for common relational stacks:
-Django `QuerySet`, SQLAlchemy `Result`, psycopg and asyncpg cursors, JDBC/H2
-`ResultSet`, and ActiveRecord relation/SQLite adapter cases all stay behind
-lazy proxies or streams and preserve rollback/close behavior. The remaining
-weak point is cursor families with their own pagination or network backpressure
-contracts, such as Prisma, MongoDB, Redis scan streams, and cloud SDK pagers.
+Django `QuerySet`, SQLAlchemy `Result`, psycopg and asyncpg cursors,
+boto3/botocore S3 paginator windows, JDBC/H2 `ResultSet`, and ActiveRecord
+relation/SQLite adapter cases all stay behind lazy proxies or streams and
+preserve rollback/close behavior. The remaining weak point is cursor families
+with their own pagination or network backpressure contracts, such as Prisma,
+MongoDB, Redis scan streams, and additional cloud SDK pagers.
 
 ### Lifecycle-Owned Objects
 
@@ -178,8 +179,8 @@ envelope.
    Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client-abort
    coverage is now in the stress suite; Rack/Rails currently has socket-level
    response-owner abort coverage but still needs real app-server propagation.
-2. Add Prisma, MongoDB, Redis scan, and cloud SDK pager/cursor tests for lazy
-   result windows, owner close, and backpressure.
+2. Add Prisma, MongoDB, Redis scan, and additional SDK pager/cursor tests for
+   lazy result windows, owner close, and backpressure.
 3. Add scheduler-specific Java reactive cancellation status assertions beyond
    covered `CompletableFuture`/`FutureTask` and Reactor/RxJava Disposable object
    status plus callback-affinity diagnostics.
