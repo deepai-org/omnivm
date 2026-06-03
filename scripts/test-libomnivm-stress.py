@@ -20795,6 +20795,34 @@ server.shutdown
         raise AssertionError(f"Ruby Queue/WEBrick compatibility mismatch: {got}")
 
 
+def test_ruby_puma_server_threading_reports_diagnostic():
+    child_check(
+        r'''
+result = omnivm.call("ruby", """
+begin
+  require 'puma'
+  app = ->(env) { [200, {}, ['ok']] }
+  server = Puma::Server.new(app)
+  server.add_tcp_listener('127.0.0.1', 0)
+  server.run
+  'missing-diagnostic'
+rescue => e
+  [e.class.name, e.message.include?('Ruby Thread.new is not supported in OmniVM embedded Ruby').to_s, Puma::Const::VERSION.to_s].join('|')
+ensure
+  begin
+    server.stop(true) if defined?(server) && server
+  rescue
+  end
+end
+""")
+parts = result.split("|")
+if len(parts) != 3 or parts[0] != "RuntimeError" or parts[1] != "true" or not parts[2]:
+    raise AssertionError(f"Puma embedded Ruby diagnostic mismatch: {result!r}")
+''',
+        timeout=10,
+    )
+
+
 def test_ruby_thread_new_reports_diagnostic():
     got = rb(
         """
@@ -20915,6 +20943,7 @@ def main():
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
         check("Ruby Queue surface supports WEBrick initialization", test_ruby_queue_surface_supports_webrick_initialization)
+        check("Ruby Puma server threading reports unsupported diagnostic", test_ruby_puma_server_threading_reports_diagnostic)
         check("Ruby Thread.new reports unsupported diagnostic", test_ruby_thread_new_reports_diagnostic)
         check("JS try/finally with bridge throw + bridge in finally", test_js_try_finally_bridge_throw)
         check("4-runtime mutual recursion (18 levels deep)", test_four_runtime_mutual_recursion)
