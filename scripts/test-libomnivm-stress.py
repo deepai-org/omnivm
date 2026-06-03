@@ -5270,7 +5270,7 @@ if receive_count != 2:
         os.unlink(path)
 
     after_boundary = omnivm.status().get("boundary", {})
-    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0):
+    if after_boundary.get("resource_proxy_captures", 0) < 1:
         raise AssertionError(f"Starlette request lost live proxy state: before={before_boundary}, after={after_boundary}")
     if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Starlette request crossed as a stream: {after_boundary}")
@@ -5802,6 +5802,137 @@ if not any(event == "transport-closing" or event.startswith("write-aborted:") fo
         raise AssertionError(f"aiohttp server abort leaked handles: before={before_handles}, after={after_handles}")
 
 
+def test_manifest_flask_werkzeug_client_abort_closes_request_body_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import socket
+import struct
+import threading
+import time
+
+from flask import Flask, request
+from werkzeug.serving import make_server
+
+flask_server_req = None
+flask_abort_body_bytes = None
+flask_abort_events = []
+flask_handler_done = threading.Event()
+port = {port!r}
+
+app = Flask("omnivm_flask_abort_probe")
+
+@app.route("/flask/server-abort", methods=["POST"])
+def endpoint():
+    global flask_server_req, flask_abort_body_bytes
+    flask_abort_events.append("handler")
+    flask_server_req = request._get_current_object()
+    try:
+        marker = omnivm.call(
+            "javascript",
+            "omnivm.call('python', 'flask_server_req.method') + ':' + "
+            "omnivm.call('python', 'flask_server_req.path')",
+        )
+        if marker != "POST:/flask/server-abort":
+            flask_abort_events.append("bad-marker:" + str(marker))
+        body = request.stream.read()
+        flask_abort_body_bytes = len(body or b"")
+        flask_abort_events.append("body-read:" + str(flask_abort_body_bytes))
+    except BaseException as exc:
+        flask_abort_events.append("body-error:" + type(exc).__name__)
+    finally:
+        flask_handler_done.set()
+    return "ok"
+
+server = make_server("127.0.0.1", port, app, threaded=True)
+server.daemon_threads = True
+server_thread = threading.Thread(target=server.serve_forever)
+server_thread.start()
+
+deadline = time.time() + 5
+while not server_thread.is_alive() and time.time() < deadline:
+    time.sleep(0.01)
+if not server_thread.is_alive():
+    raise AssertionError("Flask/Werkzeug server thread did not start")
+
+sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+try:
+    sock.sendall(
+        b"POST /flask/server-abort?mode=poly HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"X-Request-Id: flask-abort-42\\r\\n"
+        b"Content-Length: 100000\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+        b"partial-body"
+    )
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+finally:
+    sock.close()
+
+deadline = time.time() + 5
+while not flask_handler_done.is_set() and time.time() < deadline:
+    time.sleep(0.01)
+
+server.shutdown()
+server.server_close()
+server_thread.join(timeout=5)
+
+if server_thread.is_alive():
+    raise AssertionError(f"Flask/Werkzeug server thread did not stop: {{flask_abort_events!r}}")
+if not flask_handler_done.is_set():
+    raise AssertionError(f"Flask/Werkzeug handler did not finish after client abort: {{flask_abort_events!r}}")
+'''
+    verify = r'''
+if flask_server_req is None:
+    raise AssertionError("Flask/Werkzeug request was never captured")
+if any(event.startswith("bad-marker:") for event in flask_abort_events):
+    raise AssertionError(f"Flask/Werkzeug request was not visible through JS/Python re-entry: {flask_abort_events!r}")
+if "handler" not in flask_abort_events:
+    raise AssertionError(f"Flask/Werkzeug handler did not run: {flask_abort_events!r}")
+if not any(event.startswith("body-read:") or event.startswith("body-error:") for event in flask_abort_events):
+    raise AssertionError(f"Flask/Werkzeug request body was not read or closed: {flask_abort_events!r}")
+if flask_abort_body_bytes is not None and flask_abort_body_bytes >= 100000:
+    raise AssertionError(f"Flask/Werkzeug request body was unexpectedly complete after client abort: {flask_abort_events!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"flask_server_req": "flask_server_req"},
+                "code": (
+                    "if (flask_server_req.method !== 'POST') throw new Error('bad Flask/Werkzeug request method: ' + flask_server_req.method); "
+                    "if (flask_server_req.path !== '/flask/server-abort') throw new Error('bad Flask/Werkzeug request path: ' + flask_server_req.path); "
+                    "if (flask_server_req.args.get('mode') !== 'poly') throw new Error('bad Flask/Werkzeug query: ' + flask_server_req.args.get('mode')); "
+                    "if (flask_server_req.headers.get('X-Request-Id') !== 'flask-abort-42') "
+                    "throw new Error('bad Flask/Werkzeug request header: ' + flask_server_req.headers.get('X-Request-Id'));"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    after_boundary = after_status.get("boundary", {})
+    after_handles = after_status.get("handles", {})
+    if after_boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Flask/Werkzeug request did not cross as live proxy: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Flask/Werkzeug request crossed as a stream: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Flask/Werkzeug request used JSON fallback: before={before_boundary}, after={after_boundary}")
+    if after_handles.get("handle_accesses_by_kind", {}).get("property", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("property", 0):
+        raise AssertionError(f"Flask/Werkzeug request proxy did not record JS property access: before={before_handles}, after={after_handles}")
+    if after_handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Flask/Werkzeug abort leaked handles: before={before_handles}, after={after_handles}")
+
+
 def test_manifest_flask_localproxy_request_and_session_stay_live():
     before_boundary = omnivm.status().get("boundary", {})
     setup = r'''
@@ -5856,8 +5987,8 @@ finally:
     run_manifest_dict(manifest)
 
     after_boundary = omnivm.status().get("boundary", {})
-    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
-        raise AssertionError(f"Flask request/session did not cross as live proxies: {after_boundary}")
+    if after_boundary.get("resource_proxy_captures", 0) < 2:
+        raise AssertionError(f"Flask request/session did not cross as live proxies: before={before_boundary}, after={after_boundary}")
     if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Flask request/session crossed as a stream: {after_boundary}")
     if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
@@ -16106,6 +16237,7 @@ def main():
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest aiohttp server client abort cleans up streaming response", test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response)
+        check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)

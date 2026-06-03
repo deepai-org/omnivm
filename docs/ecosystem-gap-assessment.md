@@ -9,10 +9,10 @@ open test targets.
 | Area | Current confidence | Covered evidence | Remaining high-value gap |
 | --- | --- | --- | --- |
 | Lazy data: querysets, streams, iterators, result sets | Medium-high | Django `QuerySet`, SQLAlchemy `Result`/session rollback, psycopg/asyncpg cursors, JDBC/H2 `ResultSet`, ActiveRecord relation/SQLite adapter, generic Python/JS/Ruby/Java iterators, readers, async iterables, JS ReadableStream, Java `InputStream`/`Reader`/`ReadableByteChannel`/`BaseStream`, channels | Prisma/Mongo/Redis-style cursors, driver-specific pagination windows, large live DB result backpressure under cancellation |
-| Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Rack/Rails/Express request and response objects cross as live proxies; Starlette direct-request and ASGI app disconnect checks, Uvicorn/Starlette, aiohttp, and Express TCP client-abort streaming response fixtures, and Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | Additional WSGI/Rack app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
+| Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Flask/Werkzeug/Rack/Rails/Express request and response objects cross as live proxies; Starlette direct-request and ASGI app disconnect checks, Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client-abort fixtures, and Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | Additional Rack/Rails app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
 | Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Starlette ASGI app disconnect loop, Uvicorn event-loop re-entry during a streaming response, Express event-loop re-entry during a TCP client abort, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Node event-loop ownership from undici internals, Ruby thread-local/fiber-local framework state under nested callbacks, additional ASGI server variants |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
-| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, real Uvicorn/Starlette, aiohttp, and Express TCP client aborts during streaming responses, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Go c-shared context-owned reader cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | More app-server abort propagation across WSGI/Rack and additional ASGI/Node servers, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
+| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, real Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client aborts, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Go c-shared context-owned reader cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | More app-server abort propagation across Rack/Rails and additional ASGI/Node servers, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
 | Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, callable `then` requires explicit `omnivm.proxyGet`, indexed proxy `length` writes resize Python/Ruby/Java mutable sequences or fail with runtime/kind diagnostics and no local shadows, and `omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | Typed/fixed-size `length` diagnostics for native buffers, Java arrays, and tensor-like objects; more framework model fields colliding with proxy metadata |
 | Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles and language-native catch/rethrow semantics across every guest |
 
@@ -40,20 +40,21 @@ Request and response classification is covered across Django, FastAPI,
 Starlette, aiohttp, Rack, Rails ActionDispatch, and Express. Framework objects
 cross as live resource proxies, not JSON, stream, or Arrow, unless the body
 itself is intentionally exposed as a stream. Starlette disconnect checks,
-Express abort lifecycle checks, and Uvicorn/Starlette, aiohttp, and Express
-localhost server fixtures force TCP client aborts during streaming responses and
-preserve live owner state across the boundary. Closed Django request bodies fail
-clearly when read from foreign runtimes, and transaction rollback is covered for
-Django, SQLAlchemy, and ActiveRecord after foreign-runtime errors.
+Express abort lifecycle checks, and Uvicorn/Starlette, aiohttp, Flask/Werkzeug,
+and Express localhost server fixtures force TCP client aborts during streaming
+responses or request-body reads and preserve live owner state across the
+boundary. Closed Django request bodies fail clearly when read from foreign
+runtimes, and transaction rollback is covered for Django, SQLAlchemy, and
+ActiveRecord after foreign-runtime errors.
 
 That is still not the same as full production lifecycle safety. Real app
 servers have owner phases: client disconnect, response writer close, transaction
 commit/rollback, worker drain, and worker reload. The suite now invokes a real
 Starlette ASGI app callable with an `http.disconnect` receive event and runs
-real Uvicorn/Starlette, aiohttp, and Express TCP listener/client-abort fixtures,
-but the remaining tests should cover WSGI/Rack server processes, worker drain,
-and reload paths with handle counts and observable cancellation after
-abort/reload events.
+real Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP
+listener/client-abort fixtures, but the remaining tests should cover Rack/Rails
+server processes, worker drain, and reload paths with handle counts and
+observable cancellation after abort/reload events.
 
 ### Thread And Event-Loop Affinity
 
@@ -97,15 +98,16 @@ status. This covers many isolated runtime hazards.
 Production cancellation is more demanding. The suite now has framework-object
 abort/disconnect coverage for Starlette and Express, a Starlette ASGI app-call
 disconnect fixture, real Uvicorn/Starlette, aiohttp, and Express TCP
-client-abort streaming fixtures with post-abort handle checks, Go c-shared
-stream cancellation reaching a context-owned reader's `ctx.Done()`, plus Java
-`CompletableFuture` cancellation status crossing the JS boundary. Additional
-app-server aborts, worker reloads, transaction rollback, broader stream
-cancellation status, broader Java reactive cancellation status, and Go
-`context.Context` propagation outside c-shared stream owner close should all
-produce observable cleanup. The next fixture should assert handle counts
-before/after an aborted request or worker reload and should expose cancellation
-status rather than hiding it in logs.
+client-abort streaming fixtures, a Flask/Werkzeug client-abort request-body
+fixture with post-abort handle checks, Go c-shared stream cancellation reaching
+a context-owned reader's `ctx.Done()`, plus Java `CompletableFuture`
+cancellation status crossing the JS boundary. Additional Rack/Rails app-server
+aborts, worker reloads, transaction rollback, broader stream cancellation
+status, broader Java reactive cancellation status, and Go `context.Context`
+propagation outside c-shared stream owner close should all produce observable
+cleanup. The next fixture should assert handle counts before/after an aborted
+request or worker reload and should expose cancellation status rather than
+hiding it in logs.
 
 ### Method And Key Collisions
 
@@ -162,9 +164,9 @@ envelope.
 
 ## Priority Test Plan
 
-1. Add more real app-server abort/reload fixtures for WSGI and Rack/Rails, with
-   handle-count assertions after client disconnect or worker drain.
-   Uvicorn/Starlette, aiohttp, and Express TCP client-abort streaming response
+1. Add more real app-server abort/reload fixtures for Rack/Rails and worker
+   drains, with handle-count assertions after client disconnect or worker drain.
+   Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client-abort
    coverage is now in the stress suite.
 2. Add Prisma, MongoDB, Redis scan, and cloud SDK pager/cursor tests for lazy
    result windows, owner close, and backpressure.
