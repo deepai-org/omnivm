@@ -10027,6 +10027,97 @@ def test_manifest_js_plain_object_array_capture_uses_proxy_not_json():
             raise AssertionError(f"JS plain object/array proxy did not record {kind} access: {handles}")
 
 
+def test_manifest_js_collision_fields_stay_data_fields():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "javascript",
+                "bind": "js_collision",
+                "code": (
+                    "({"
+                    "items: ['first', 'second'], "
+                    "keys: 'field-keys', "
+                    "count: 7, "
+                    "then: 'field-then', "
+                    "length: 12, "
+                    "get: 'field-get', "
+                    "close: 'field-close'"
+                    "})"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"js_collision": "js_collision"},
+                "code": (
+                    "assert js_collision.items[0] == 'first', js_collision.items[0]\n"
+                    "assert js_collision.keys == 'field-keys', js_collision.keys\n"
+                    "assert js_collision.count == 7, js_collision.count\n"
+                    "assert js_collision.then == 'field-then', js_collision.then\n"
+                    "assert js_collision.length == 12, js_collision.length\n"
+                    "assert js_collision.get == 'field-get', js_collision.get\n"
+                    "assert js_collision.close == 'field-close', js_collision.close\n"
+                    "js_collision.length = 13\n"
+                    "js_collision.close = 'py-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"js_collision": "js_collision"},
+                "code": (
+                    "raise \"bad then field #{js_collision.then}\" unless js_collision.then == 'field-then'; "
+                    "raise \"bad length field #{js_collision.length}\" unless js_collision.length == 13; "
+                    "raise \"bad get field #{js_collision.get}\" unless js_collision.get == 'field-get'; "
+                    "raise \"bad close field #{js_collision.close}\" unless js_collision.close == 'py-close'; "
+                    "js_collision.keys = 'ruby-keys'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"js_collision": "js_collision"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"js_collision\"); "
+                    "if (!\"field-then\".equals(String.valueOf(payload.get(\"then\")))) throw new RuntimeException(\"then field lost: \" + payload.get(\"then\")); "
+                    "if (!\"13\".equals(String.valueOf(payload.get(\"length\")))) throw new RuntimeException(\"length field lost: \" + payload.get(\"length\")); "
+                    "if (!\"field-get\".equals(String.valueOf(payload.get(\"get\")))) throw new RuntimeException(\"get field lost: \" + payload.get(\"get\")); "
+                    "if (!\"py-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"close field lost: \" + payload.get(\"close\")); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"count field set failed\"); "
+                    "if (!payload.set(\"get\", \"java-get\")) throw new RuntimeException(\"get field set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (js_collision.items[0] !== 'first') throw new Error('items field lost: ' + js_collision.items); "
+                    "if (js_collision.keys !== 'ruby-keys') throw new Error('keys field lost: ' + js_collision.keys); "
+                    "if (js_collision.count !== 42) throw new Error('count field lost: ' + js_collision.count); "
+                    "if (js_collision.then !== 'field-then') throw new Error('then field lost: ' + js_collision.then); "
+                    "if (js_collision.length !== 13) throw new Error('length field lost: ' + js_collision.length); "
+                    "if (js_collision.get !== 'java-get') throw new Error('get field lost: ' + js_collision.get); "
+                    "if (js_collision.close !== 'py-close') throw new Error('close field lost: ' + js_collision.close);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"JS collision object did not cross as a live proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"JS collision object used JSON fallback: {boundary}")
+    handles = omnivm.status().get("handles", {})
+    accesses = handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) < 1 or accesses.get("mutation", 0) < 1:
+        raise AssertionError(f"JS collision object did not record property and mutation access: {handles}")
+
+
 def test_manifest_js_map_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -15017,6 +15108,7 @@ def main():
         check("Manifest Java function invoke fallback handles unsafe names", test_manifest_java_func_invoke_fallback_handles_unsafe_names)
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
+        check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)

@@ -1882,6 +1882,11 @@ class OmniVMHandleProxy
     length
   end
 
+  def then(*args, &block)
+    return __omnivm_data_key_value("then") if args.empty? && !block_given? && __omnivm_data_key?("then")
+    super
+  end
+
   def to_h
     return __omnivm_data_key_value("to_h") if __omnivm_data_key?("to_h")
     @value.dup
