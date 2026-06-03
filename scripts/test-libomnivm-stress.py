@@ -7590,6 +7590,210 @@ def test_manifest_express_response_capture_keeps_writer_lifecycle_live():
         raise AssertionError(f"Express response writer methods were not recorded as proxy calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_express_server_client_abort_closes_response_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+(() => {{
+const express = require('express');
+globalThis.expressServerAbortState = {{
+  started: false,
+  handler: false,
+  done: false,
+  closeRequested: false,
+  serverClosed: false,
+  events: []
+}};
+globalThis.express_server_req = null;
+globalThis.express_server_res = null;
+
+const app = express();
+app.get('/express/server-abort', (req, res) => {{
+  const state = globalThis.expressServerAbortState;
+  state.handler = true;
+  globalThis.express_server_req = req;
+  globalThis.express_server_res = res;
+  const marker = omnivm.call('python', "'express-server-reentry'");
+  if (marker !== 'express-server-reentry') state.events.push('bad-marker:' + String(marker));
+
+  let secondTimer = null;
+  req.on('aborted', () => state.events.push('req-aborted'));
+  req.on('close', () => state.events.push('req-close'));
+  res.on('close', () => {{
+    state.events.push('res-close');
+    state.done = true;
+    if (secondTimer) clearTimeout(secondTimer);
+  }});
+  res.on('finish', () => state.events.push('res-finish'));
+  res.on('error', (err) => state.events.push('res-error:' + (err && err.name ? err.name : String(err))));
+
+  res.status(200);
+  res.set('X-Stream', 'express');
+  res.write('first\\n');
+  secondTimer = setTimeout(() => {{
+    state.events.push('second-timer-fired');
+    try {{
+      const ok = res.write('second\\n');
+      state.events.push('second-write:' + String(ok));
+    }} catch (err) {{
+      state.events.push('second-error:' + (err && err.name ? err.name : String(err)));
+    }}
+    try {{
+      res.end();
+    }} catch (err) {{
+      state.events.push('end-error:' + (err && err.name ? err.name : String(err)));
+    }}
+  }}, 250);
+}});
+
+globalThis.expressAbortServer = app.listen({port!r}, '127.0.0.1', () => {{
+  globalThis.expressServerAbortState.started = true;
+}});
+}})();
+'''
+    drive_client = f'''
+import socket
+import struct
+import time
+
+def pump_started():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.expressServerAbortState && globalThis.expressServerAbortState.started)"
+    ))
+
+def pump_done():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.expressServerAbortState && globalThis.expressServerAbortState.done)"
+    ))
+
+def events_text():
+    return str(omnivm.call(
+        "javascript",
+        "(globalThis.expressServerAbortState && globalThis.expressServerAbortState.events || []).join('|')"
+    ))
+
+try:
+    deadline = time.time() + 5
+    while not pump_started() and time.time() < deadline:
+        time.sleep(0.01)
+    if not pump_started():
+        raise AssertionError(f"Express server did not start: {{events_text()}}")
+
+    sock = socket.create_connection(("127.0.0.1", {port!r}), timeout=5)
+    try:
+        sock.settimeout(0.02)
+        sock.sendall(
+            b"GET /express/server-abort HTTP/1.1\\r\\n"
+            b"Host: 127.0.0.1\\r\\n"
+            b"X-Request-Id: express-server-abort-42\\r\\n"
+            b"Connection: close\\r\\n\\r\\n"
+        )
+        data = b""
+        deadline = time.time() + 5
+        while b"first" not in data and time.time() < deadline:
+            try:
+                chunk = sock.recv(1024)
+            except socket.timeout:
+                omnivm.call("javascript", "true")
+                continue
+            if not chunk:
+                break
+            data += chunk
+        if b"first" not in data:
+            omnivm.call("javascript", "globalThis.expressServerAbortState.events.push('client-missed-first')")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    finally:
+        sock.close()
+
+    deadline = time.time() + 5
+    while not pump_done() and time.time() < deadline:
+        time.sleep(0.01)
+    if not pump_done():
+        raise AssertionError(f"Express server did not observe client abort: {{events_text()}}")
+finally:
+    omnivm.call(
+        "javascript",
+        "(() => {{ "
+        "const state = globalThis.expressServerAbortState || {{events: []}}; "
+        "const server = globalThis.expressAbortServer; "
+        "if (server && !state.closeRequested) {{ "
+        "  state.closeRequested = true; "
+        "  server.close(() => {{ state.serverClosed = true; }}); "
+        "}} "
+        "return true; "
+        "}})()",
+    )
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if bool(omnivm.call("javascript", "Boolean(globalThis.expressServerAbortState && globalThis.expressServerAbortState.serverClosed)")):
+            break
+        time.sleep(0.01)
+'''
+    verify = r'''
+(() => {
+const state = globalThis.expressServerAbortState;
+if (!state.started) throw new Error('Express server never started');
+if (!state.handler) throw new Error('Express handler never ran');
+if (state.events.some((event) => event.startsWith('bad-marker:'))) {
+  throw new Error('Express handler could not re-enter Python: ' + state.events.join('|'));
+}
+if (state.events.includes('client-missed-first')) {
+  throw new Error('Express client did not receive first chunk: ' + state.events.join('|'));
+}
+if (!state.events.includes('res-close')) {
+  throw new Error('Express response owner did not close after client abort: ' + state.events.join('|'));
+}
+if (!state.events.includes('req-close') && !state.events.includes('req-aborted')) {
+  throw new Error('Express request owner did not close/abort: ' + state.events.join('|'));
+}
+if (state.events.includes('second-timer-fired')) {
+  throw new Error('Express response timer was not cancelled after abort: ' + state.events.join('|'));
+}
+if (!state.serverClosed) {
+  throw new Error('Express test server did not close cleanly: ' + state.events.join('|'));
+}
+})();
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "javascript", "code": setup},
+            {"op": "exec", "runtime": "python", "code": drive_client},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"express_server_req": "express_server_req"},
+                "code": (
+                    "assert express_server_req.method == 'GET', express_server_req.method\n"
+                    "assert express_server_req.path == '/express/server-abort', express_server_req.path\n"
+                    "assert express_server_req.get('x-request-id') == 'express-server-abort-42', express_server_req.get('x-request-id')"
+                ),
+            },
+            {"op": "exec", "runtime": "javascript", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Express server request did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Express server request crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Express server request used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("call", 0):
+        raise AssertionError(f"Express server request proxy did not record method calls: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Express server abort leaked handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_model_id_property_beats_js_proxy_metadata():
     manifest = {
         "version": 1,
@@ -13545,6 +13749,7 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
                 "op": "exec",
                 "runtime": "javascript",
                 "code": (
+                    "(() => {"
                     "const WebReadableStream = globalThis.ReadableStream || require('node:stream/web').ReadableStream;"
                     "globalThis.nodeWebReadableState = {cancelled: false, cancelReason: null, pulls: 0};"
                     "let chunks = ['first', 'second', 'third'];"
@@ -13559,6 +13764,7 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
                     "    globalThis.nodeWebReadableState.cancelReason = reason === undefined ? 'undefined' : String(reason);"
                     "  }"
                     "});"
+                    "})();"
                 ),
             },
             {"op": "eval", "runtime": "javascript", "bind": "node_web_stream", "code": "globalThis.nodeWebReadable"},
@@ -13579,10 +13785,12 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
                 "op": "exec",
                 "runtime": "javascript",
                 "code": (
+                    "(() => {"
                     "const state = globalThis.nodeWebReadableState; "
                     "if (!state.cancelled) throw new Error('Node Web ReadableStream underlying source was not cancelled'); "
                     "if (globalThis.nodeWebReadable.locked) throw new Error('Node Web ReadableStream reader lock was not released'); "
                     "if (state.pulls > 2) throw new Error('Node Web ReadableStream pulled too far after early cancel: ' + state.pulls);"
+                    "})();"
                 ),
             },
         ],
@@ -15917,6 +16125,7 @@ def main():
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)
         check("Manifest Express request abort lifecycle stays live", test_manifest_express_request_abort_lifecycle_stays_live)
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
+        check("Manifest Express server client abort closes response owner", test_manifest_express_server_client_abort_closes_response_owner)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
         check("Manifest JS typed-array capture uses Arrow", test_manifest_js_typed_array_capture_uses_arrow)
