@@ -90,6 +90,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       Pillow \
       polars \
       fastapi \
+      uvicorn \
       Flask \
       beautifulsoup4 \
       pydantic \

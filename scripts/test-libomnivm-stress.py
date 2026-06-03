@@ -5372,6 +5372,169 @@ if not any(message.get("type") == "http.response.start" and message.get("status"
         raise AssertionError(f"Starlette ASGI app request used JSON fallback: {after_boundary}")
 
 
+def test_manifest_uvicorn_starlette_client_abort_cancels_streaming_response():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import asyncio
+import socket
+import struct
+import threading
+import time
+import uvicorn
+from starlette.applications import Starlette
+from starlette.responses import StreamingResponse
+from starlette.routing import Route
+
+uvicorn_abort_req = None
+uvicorn_abort_events = []
+body_done = threading.Event()
+port = {port!r}
+
+async def endpoint(request):
+    global uvicorn_abort_req
+    uvicorn_abort_req = request
+    marker = omnivm.call(
+        "javascript",
+        "omnivm.call('python', 'uvicorn_abort_req.method') + ':' + "
+        "omnivm.call('python', 'uvicorn_abort_req.url.path')",
+    )
+    if marker != "GET:/asgi/server-abort":
+        uvicorn_abort_events.append("bad-marker:" + str(marker))
+
+    async def body():
+        uvicorn_abort_events.append("body-started")
+        try:
+            yield b"first\\n"
+            await asyncio.sleep(5)
+            uvicorn_abort_events.append("second-yield-ok")
+            yield b"second\\n"
+        except BaseException as exc:
+            uvicorn_abort_events.append("body-closed:" + type(exc).__name__)
+            raise
+        finally:
+            uvicorn_abort_events.append("body-cleanup")
+            body_done.set()
+
+    return StreamingResponse(body(), status_code=200, headers={{"X-Stream": "uvicorn"}})
+
+app = Starlette(routes=[Route("/asgi/server-abort", endpoint, methods=["GET"])])
+config = uvicorn.Config(
+    app,
+    host="127.0.0.1",
+    port=port,
+    log_level="critical",
+    access_log=False,
+    lifespan="off",
+)
+server = uvicorn.Server(config)
+
+def serve():
+    try:
+        asyncio.run(server.serve())
+    except BaseException as exc:
+        uvicorn_abort_events.append("server-error:" + type(exc).__name__ + ":" + str(exc))
+
+server_thread = threading.Thread(target=serve)
+server_thread.start()
+deadline = time.time() + 5
+while not server.started and time.time() < deadline:
+    if any(event.startswith("server-error:") for event in uvicorn_abort_events):
+        break
+    time.sleep(0.01)
+if not server.started:
+    server.should_exit = True
+    server_thread.join(timeout=5)
+    raise AssertionError(f"uvicorn server did not start: {{uvicorn_abort_events!r}}")
+
+sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+try:
+    sock.sendall(
+        b"GET /asgi/server-abort HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"X-Request-Id: uvicorn-abort-42\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while b"first" not in data and time.time() < deadline:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    if b"first" not in data:
+        uvicorn_abort_events.append("client-missed-first")
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+finally:
+    sock.close()
+
+deadline = time.time() + 5
+while not body_done.is_set() and time.time() < deadline:
+    time.sleep(0.01)
+
+server.should_exit = True
+server_thread.join(timeout=5)
+if server_thread.is_alive():
+    raise AssertionError(f"uvicorn server thread did not stop: {{uvicorn_abort_events!r}}")
+if any(event.startswith("server-error:") for event in uvicorn_abort_events):
+    raise AssertionError(f"uvicorn server failed: {{uvicorn_abort_events!r}}")
+if not body_done.is_set():
+    raise AssertionError(f"uvicorn streaming body did not clean up after client abort: {{uvicorn_abort_events!r}}")
+'''
+    verify = r'''
+if uvicorn_abort_req is None:
+    raise AssertionError("uvicorn Starlette request was never captured")
+if any(event.startswith("bad-marker:") for event in uvicorn_abort_events):
+    raise AssertionError(f"uvicorn request was not visible through JS/Python re-entry: {uvicorn_abort_events!r}")
+if "client-missed-first" in uvicorn_abort_events:
+    raise AssertionError(f"uvicorn abort client did not observe first chunk: {uvicorn_abort_events!r}")
+if "body-started" not in uvicorn_abort_events:
+    raise AssertionError(f"uvicorn streaming body did not start: {uvicorn_abort_events!r}")
+if "body-cleanup" not in uvicorn_abort_events:
+    raise AssertionError(f"uvicorn streaming body did not clean up: {uvicorn_abort_events!r}")
+if "second-yield-ok" in uvicorn_abort_events:
+    raise AssertionError(f"uvicorn streaming body continued after client abort: {uvicorn_abort_events!r}")
+if not any(event.startswith("body-closed:") for event in uvicorn_abort_events):
+    raise AssertionError(f"uvicorn streaming body did not observe close/cancel: {uvicorn_abort_events!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"uvicorn_abort_req": "uvicorn_abort_req"},
+                "code": (
+                    "if (uvicorn_abort_req.method !== 'GET') throw new Error('bad Uvicorn request method: ' + uvicorn_abort_req.method); "
+                    "if (uvicorn_abort_req.url.path !== '/asgi/server-abort') throw new Error('bad Uvicorn request path: ' + uvicorn_abort_req.url.path); "
+                    "if (uvicorn_abort_req.headers.get('x-request-id') !== 'uvicorn-abort-42') "
+                    "throw new Error('bad Uvicorn request header: ' + uvicorn_abort_req.headers.get('x-request-id'));"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    after_boundary = after_status.get("boundary", {})
+    after_handles = after_status.get("handles", {})
+    if after_boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Uvicorn Starlette request did not cross as live proxy: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Uvicorn Starlette request crossed as a stream: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Uvicorn Starlette request used JSON fallback: before={before_boundary}, after={after_boundary}")
+    if after_handles.get("handle_accesses_by_kind", {}).get("property", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("property", 0):
+        raise AssertionError(f"Uvicorn Starlette request proxy did not record JS property access: before={before_handles}, after={after_handles}")
+    if after_handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Uvicorn Starlette abort leaked handles: before={before_handles}, after={after_handles}")
+
+
 def test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -15731,6 +15894,7 @@ def main():
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette ASGI app disconnect lifecycle survives capture", test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture)
+        check("Manifest Uvicorn Starlette client abort cancels streaming response", test_manifest_uvicorn_starlette_client_abort_cancels_streaming_response)
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest aiohttp server client abort cleans up streaming response", test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response)
