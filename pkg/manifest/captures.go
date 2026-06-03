@@ -1381,6 +1381,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         };
       }
       if (typeof prop === 'string' && !(prop in obj) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop)) {
+          try {
+            return bridge({op: "handle_index", value: Number(prop)});
+          } catch (_indexedPropError) {}
+        }
         try {
           return bridge({op: "handle_get", key: prop});
         } catch (_e) {

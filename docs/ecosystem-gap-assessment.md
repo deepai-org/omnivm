@@ -13,7 +13,7 @@ open test targets.
 | Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Starlette ASGI app disconnect loop, Uvicorn event-loop re-entry during a streaming response, Express event-loop re-entry during a TCP client abort, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Node event-loop ownership from undici internals, Ruby thread-local/fiber-local framework state under nested callbacks, additional ASGI server variants |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
 | Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, real Uvicorn/Starlette, aiohttp, Flask/Werkzeug, and Express TCP client aborts, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Go c-shared context-owned reader cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | More app-server abort propagation across Rack/Rails and additional ASGI/Node servers, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
-| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, callable `then` requires explicit `omnivm.proxyGet`, indexed proxy `length` writes resize Python/Ruby/Java mutable sequences or fail with runtime/kind diagnostics and no local shadows, and `omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | Typed/fixed-size `length` diagnostics for native buffers, Java arrays, and tensor-like objects; more framework model fields colliding with proxy metadata |
+| Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, callable `then` requires explicit `omnivm.proxyGet`, indexed proxy `length` writes resize Python/Ruby/Java mutable sequences or fail with runtime/kind diagnostics and no local shadows, Java fixed arrays and ByteBuffer table proxies reject JS `length` writes without changing owner state, and `omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | Typed/fixed-size `length` diagnostics for tensor-like objects; more framework model fields colliding with proxy metadata |
 | Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles and language-native catch/rethrow semantics across every guest |
 
 ## Assessment By Gap Class
@@ -121,8 +121,8 @@ fields like `headers`, so Starlette `request.headers.get(...)` does not fall
 through to the raw ASGI scope list.
 
 Remaining targets are library objects where collision names carry special host
-semantics: typed/fixed-size `length` diagnostics for native buffers, Java arrays,
-and tensor-like objects, plus additional framework model fields colliding with proxy metadata. Non-callable
+semantics: typed/fixed-size `length` diagnostics for tensor-like objects, plus
+additional framework model fields colliding with proxy metadata. Non-callable
 `then` data fields are covered so `Promise.resolve(proxy)` resolves to the proxy
 instead of treating the field as a thenable. Callable `then` fields are
 deliberately hidden from natural `.then` access so promise resolution cannot
@@ -130,6 +130,9 @@ accidentally call a foreign-runtime field; users can still call them explicitly
 with `omnivm.proxyGet(proxy, "then")`. Indexed proxy `length` writes now either
 resize mutable remote Python, Ruby, and Java sequences, or fail with
 runtime/kind/id context instead of creating a local-only array length shadow.
+Java fixed arrays and ByteBuffer table proxies now reject JS `.length` writes
+with the same source-runtime context, and indexed Java array properties route
+through remote index access before generic property lookup.
 JavaScript keeps remote `.get`
 behavior natural when a library object exposes a real method or field named
 `get`, and also exposes
@@ -174,9 +177,8 @@ envelope.
    resource handles beyond the covered c-shared stream owner-close path.
 4. Add broader Java Reactor/Future cancellation status assertions beyond
    `CompletableFuture` object cancellation and callback-affinity diagnostics.
-5. Add typed/fixed-size `length` diagnostics for native buffers, Java arrays,
-   and tensor-like objects so unsupported resize attempts fail with precise
-   source-runtime context.
+5. Add typed/fixed-size `length` diagnostics for tensor-like objects so
+   unsupported resize attempts fail with precise source-runtime context.
 6. Add PyTorch/CuPy/JAX tests as optional dependency groups: CPU tensors must
    prove dtype/shape/stride/lifetime before Arrow/buffer crossing; GPU tensors
    must stay opaque unless an explicit transfer is requested.

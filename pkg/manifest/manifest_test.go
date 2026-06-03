@@ -4723,6 +4723,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (prop === 'length' && isIndexedDescriptor())`) || !contains(code, `Number.isInteger(lengthValue)`) || !contains(code, `source runtime rejected length write`) || !contains(code, `runtime=`) {
 		t.Fatalf("JS materializer should diagnose unsupported length writes on indexed proxies, got %q", code)
 	}
+	if !contains(code, `if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop))`) || !contains(code, `return bridge({op: "handle_index", value: Number(prop)});`) {
+		t.Fatalf("JS materializer should route numeric properties on indexed proxies through handle_index before handle_get, got %q", code)
+	}
 	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") {
 		t.Fatalf("JS materializer should expose proxy-safe get/len helpers for collision cases, got %q", code)
 	}
@@ -7267,6 +7270,14 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(rubyCode, `__k == "length"`) || !strings.Contains(rubyCode, "__o.is_a?(Array)") || !strings.Contains(rubyCode, "__o.concat(Array.new") {
 		t.Fatalf("ruby RuntimeRef set should resize arrays for length writes, got %q", rubyCode)
+	}
+
+	javaCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "java", VarName: "items"}, "length", 1)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefSetCode java: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(javaCode, "if (!omnivm.OmniVM.proxySet") || !strings.Contains(javaCode, "OmniVM Java proxy rejected set for key") {
+		t.Fatalf("java RuntimeRef set should throw when proxySet rejects fixed-size targets, got %q", javaCode)
 	}
 
 	pythonContains, ok, err := runtimeRefContainsExpr(RuntimeRef{Runtime: "python", VarName: "items"}, "0")

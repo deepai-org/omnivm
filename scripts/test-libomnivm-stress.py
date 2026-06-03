@@ -14810,6 +14810,104 @@ def test_manifest_js_sequence_length_set_resizes_mutable_sources():
         raise AssertionError(f"sequence length collision did not record length and mutation access: {handles}")
 
 
+def test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    java_buffer_expr = (
+        "((java.util.function.Supplier<java.nio.ByteBuffer>)(() -> { "
+        "java.nio.ByteBuffer b = java.nio.ByteBuffer.allocateDirect(6); "
+        "b.put(new byte[]{10, 20, 30, 40, 50, 60}); "
+        "b.position(1); "
+        "b.limit(5); "
+        "return b; "
+        "})).get()"
+    )
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": 'omnivm.OmniVM.setCaptureObject("java_fixed", new String[]{"fixed-a", "fixed-b", "fixed-c"});',
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": f'omnivm.OmniVM.setCaptureObject("java_buffer", {java_buffer_expr});',
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {
+                    "java_fixed": "java_fixed",
+                    "java_buffer": "java_buffer",
+                },
+                "code": (
+                    "function expectLengthReject(label, fn, runtime, kind) { "
+                    "  let rejected = null; "
+                    "  try { (function() { 'use strict'; fn(); })(); } catch (err) { rejected = err; } "
+                    "  const message = String(rejected && rejected.message || ''); "
+                    "  if (!(rejected instanceof TypeError) || !message.includes('OmniVM cannot resize remote indexed proxy') || "
+                    "      !message.includes('source runtime rejected length write') || !message.includes('runtime=' + runtime) || "
+                    "      !message.includes('kind=' + kind)) { "
+                    "    throw new Error(label + ' length write should reject with OmniVM context: ' + message); "
+                    "  } "
+                    "  if (!rejected.cause || !String(rejected.cause.message || '').includes('length')) { "
+                    "    throw new Error(label + ' length rejection should preserve a cause mentioning length: ' + message); "
+                    "  } "
+                    "} "
+                    "if (java_fixed.length !== 3 || omnivm.proxyLen(java_fixed) !== 3) throw new Error('bad Java array initial length: ' + java_fixed.length); "
+                    "expectLengthReject('Java array', function() { java_fixed.length = 1; }, 'java', 'sequence'); "
+                    "if (java_fixed.length !== 3 || omnivm.proxyLen(java_fixed) !== 3 || java_fixed[0] !== 'fixed-a' || java_fixed[2] !== 'fixed-c') { "
+                    "  throw new Error('Java fixed array changed after rejected length write: ' + java_fixed.length + ':' + java_fixed[0] + ':' + java_fixed[2]); "
+                    "} "
+                    "if (java_buffer.length !== 4 || omnivm.proxyLen(java_buffer) !== 4) throw new Error('bad Java ByteBuffer initial length: ' + java_buffer.length); "
+                    "if (!java_buffer.metadata || java_buffer.metadata.arrow_format !== 'C' || java_buffer.metadata.shape[0] !== 4) { "
+                    "  throw new Error('bad Java ByteBuffer metadata before length write: ' + JSON.stringify(java_buffer.metadata)); "
+                    "} "
+                    "expectLengthReject('Java ByteBuffer', function() { java_buffer.length = 1; }, 'java', 'table'); "
+                    "if (java_buffer.length !== 4 || omnivm.proxyLen(java_buffer) !== 4 || java_buffer.metadata.shape[0] !== 4) { "
+                    "  throw new Error('Java ByteBuffer table length changed after rejected length write: ' + java_buffer.length + ':' + JSON.stringify(java_buffer.metadata)); "
+                    "}"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "String[] fixed = (String[]) omnivm.OmniVM.getCapture(\"java_fixed\"); "
+                    "if (fixed.length != 3 || !\"fixed-a\".equals(fixed[0]) || !\"fixed-c\".equals(fixed[2])) "
+                    "throw new RuntimeException(\"Java array changed after rejected length write: \" + java.util.Arrays.toString(fixed)); "
+                    "java.nio.ByteBuffer buffer = (java.nio.ByteBuffer) omnivm.OmniVM.getCapture(\"java_buffer\"); "
+                    "if (buffer.position() != 1 || buffer.limit() != 5 || buffer.remaining() != 4) "
+                    "throw new RuntimeException(\"Java ByteBuffer window changed after rejected length write: position=\" + buffer.position() + \" limit=\" + buffer.limit());"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Java fixed array should cross as a live indexed proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) < 1:
+        raise AssertionError(f"Java ByteBuffer should cross as a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < 1:
+        raise AssertionError(f"Java ByteBuffer should use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"fixed-size length diagnostics used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("length", 0) <= before_accesses.get("length", 0):
+        raise AssertionError(f"fixed-size length diagnostics did not record length access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"fixed-size length diagnostics did not record rejected mutation access: before={before_handles}, after={handles}")
+
+
 def test_manifest_channel_captures_are_lazy_streams():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -16375,6 +16473,7 @@ def main():
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
+        check("Manifest JS fixed-size length set rejects Java array and ByteBuffer", test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)

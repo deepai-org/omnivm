@@ -3183,6 +3183,10 @@ func rubyRuntimeRefSetCode(base, keyLit, valueLit string) string {
 	return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __k == \"length\" && __o.is_a?(Array); __n = Integer(__v); raise RangeError, \"negative length\" if __n < 0; if __n < __o.length; __o.slice!(__n, __o.length - __n); elsif __n > __o.length; __o.concat(Array.new(__n - __o.length)); end; elsif __o.respond_to?(:has_attribute?) && __o.has_attribute?(__k) && __o.respond_to?(:[]=); __o[__k] = __v; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
 }
 
+func javaRuntimeRefSetCode(base, keyLit, valueLit string) string {
+	return fmt.Sprintf("{ String __omnivm_set_key = String.valueOf(%s); if (!omnivm.OmniVM.proxySet(%s, __omnivm_set_key, %s)) throw new IllegalArgumentException(\"OmniVM Java proxy rejected set for key \" + __omnivm_set_key); }", keyLit, base, valueLit)
+}
+
 func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, bool, error) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
@@ -3201,7 +3205,7 @@ func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, b
 	case "ruby":
 		return rubyRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	case "java":
-		return fmt.Sprintf("omnivm.OmniVM.proxySet(%s, String.valueOf(%s), %s);", base, keyLit, valueLit), true, nil
+		return javaRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	default:
 		return "", false, nil
 	}
@@ -3227,7 +3231,7 @@ func (e *Executor) runtimeRefSetCode(ref RuntimeRef, key string, value interface
 	case "ruby":
 		code = rubyRuntimeRefSetCode(base, keyLit, valueLit)
 	case "java":
-		code = fmt.Sprintf("omnivm.OmniVM.proxySet(%s, String.valueOf(%s), %s);", base, keyLit, valueLit)
+		code = javaRuntimeRefSetCode(base, keyLit, valueLit)
 	default:
 		return "", false, nil
 	}
