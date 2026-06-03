@@ -18673,6 +18673,73 @@ assert body == b'django-poly:42', body
         )
 
 
+def test_omnivm_python_interpreter_mode_exposes_typed_bridge():
+    code = r"""
+import json
+import omnivm
+
+omnivm.init_runtimes(["javascript"])
+try:
+    if not hasattr(omnivm, "call_typed"):
+        raise AssertionError("interpreter-mode omnivm module is missing call_typed")
+    ok = omnivm.call_typed("javascript", "String", (42,))
+    if ok != "42":
+        raise AssertionError(f"bad typed bridge result: {ok!r}")
+    try:
+        omnivm.call_typed("javascript", "(() => { throw new TypeError('interp typed outer', { cause: new Error('interp typed inner') }); })", ())
+    except Exception as e:
+        envelope = {
+            "isRuntimeError": isinstance(e, omnivm.RuntimeError),
+            "isBuiltinRuntimeError": isinstance(e, RuntimeError),
+            "className": e.__class__.__module__ + "." + e.__class__.__name__,
+            "runtime": getattr(e, "runtime", None),
+            "type": getattr(e, "type", None),
+            "message": getattr(e, "message", None),
+            "boundaryPath": getattr(e, "boundary_path", None),
+            "causeChain": getattr(e, "cause_chain", None),
+            "dict": e.to_dict() if hasattr(e, "to_dict") else None,
+        }
+    else:
+        raise AssertionError("typed bridge failure did not raise")
+    if not envelope["isRuntimeError"] or not envelope["isBuiltinRuntimeError"]:
+        raise AssertionError(f"bad interpreter typed error class: {envelope}")
+    if envelope["className"] != "omnivm.RuntimeError":
+        raise AssertionError(f"bad interpreter typed error class name: {envelope}")
+    if envelope["runtime"] != "javascript" or envelope["type"] != "TypeError":
+        raise AssertionError(f"bad interpreter typed error runtime/type: {envelope}")
+    if "interp typed outer" not in envelope["message"]:
+        raise AssertionError(f"bad interpreter typed error message: {envelope}")
+    if envelope["boundaryPath"] != "call_typed[javascript]":
+        raise AssertionError(f"bad interpreter typed boundary path: {envelope}")
+    causes = envelope["causeChain"] or []
+    if not causes or causes[0].get("type") != "Error" or "interp typed inner" not in causes[0].get("message", ""):
+        raise AssertionError(f"bad interpreter typed cause chain: {envelope}")
+    if (envelope["dict"] or {}).get("boundary_path") != "call_typed[javascript]":
+        raise AssertionError(f"bad interpreter typed to_dict boundary: {envelope}")
+    print(json.dumps({"ok": True, "boundary": envelope["boundaryPath"]}))
+finally:
+    omnivm.shutdown()
+"""
+    proc = subprocess.run(
+        ["omnivm", "python", "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"omnivm python interpreter typed bridge exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+    try:
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    except Exception as exc:
+        raise AssertionError(f"bad omnivm python typed bridge output: {proc.stdout!r}") from exc
+    if payload != {"ok": True, "boundary": "call_typed[javascript]"}:
+        raise AssertionError(f"bad omnivm python typed bridge payload: {payload!r}")
+
+
 def test_wsgi_prefork_worker_lifecycle_harness():
     code = """
 import os
@@ -19261,6 +19328,7 @@ def main():
     check("Recycled worker processes initialize cleanly", test_recycled_worker_processes)
     check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
     check("python3-polyscript Django WSGI smoke", test_python3_polyscript_django_wsgi_smoke)
+    check("OmniVM Python interpreter mode exposes typed bridge", test_omnivm_python_interpreter_mode_exposes_typed_bridge)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     check("Prefork worker reload unloads manifest handles", test_prefork_worker_reload_unloads_manifest_handles)
     if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:

@@ -2911,6 +2911,7 @@ static PyObject* pymode_execute(PyObject* self, PyObject* args) {
 static PyMethodDef omnivm_pymode_methods[] = {
     {"init_runtimes", pymode_init_runtimes, METH_VARARGS, "Initialize runtimes: omnivm.init_runtimes(['go', 'javascript'])"},
     {"call",          pymode_call,          METH_VARARGS, "Call a runtime: omnivm.call('go', 'expr')"},
+    {"call_typed",    py_omnivm_call_typed, METH_VARARGS, "Call a function with typed args: omnivm.call_typed(runtime, func, (args,))"},
     {"load_plugin",   pymode_load_plugin,   METH_VARARGS, "Load a plugin: omnivm.load_plugin('go', '/path/to/plugin.so')"},
     {"shutdown",      pymode_shutdown,       METH_NOARGS,  "Shut down runtimes"},
     {"execute",       pymode_execute,        METH_VARARGS, "Execute code: omnivm.execute('javascript', 'code')"},
