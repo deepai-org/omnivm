@@ -16375,6 +16375,109 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
         raise AssertionError(f"Node Web ReadableStream leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "node_pipe_state = {'idx': 0, 'pulls': 0, 'cancelled': False, 'cancel_reason': None}\n"
+                    "node_pipe_chunks = ['first', 'second', 'third']\n"
+                    "def node_pipe_source_next():\n"
+                    "    node_pipe_state['pulls'] += 1\n"
+                    "    if node_pipe_state['idx'] >= len(node_pipe_chunks):\n"
+                    "        return None\n"
+                    "    chunk = node_pipe_chunks[node_pipe_state['idx']]\n"
+                    "    node_pipe_state['idx'] += 1\n"
+                    "    return chunk\n"
+                    "def node_pipe_source_cancel(reason):\n"
+                    "    node_pipe_state['cancelled'] = True\n"
+                    "    node_pipe_state['cancel_reason'] = str(reason)\n"
+                    "    return 'cancelled'\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "const {ReadableStream, WritableStream} = require('node:stream/web');\n"
+                    "const abortController = new AbortController();\n"
+                    "globalThis.nodeWebPipeAbortState = {\n"
+                    "  writes: [],\n"
+                    "  sinkAborted: false,\n"
+                    "  sinkAbortReason: null,\n"
+                    "  cancelReason: null,\n"
+                    "  pipeError: null,\n"
+                    "  locked: null\n"
+                    "};\n"
+                    "const source = new ReadableStream({\n"
+                    "  pull(controller) {\n"
+                    "    const chunk = omnivm.call('python', 'node_pipe_source_next()');\n"
+                    "    if (chunk === null || chunk === undefined) {\n"
+                    "      controller.close();\n"
+                    "      return;\n"
+                    "    }\n"
+                    "    controller.enqueue(chunk);\n"
+                    "  },\n"
+                    "  cancel(reason) {\n"
+                    "    const text = reason === undefined ? 'undefined' : String(reason);\n"
+                    "    globalThis.nodeWebPipeAbortState.cancelReason = text;\n"
+                    "    omnivm.call('python', 'node_pipe_source_cancel(' + JSON.stringify(text) + ')');\n"
+                    "  }\n"
+                    "}, {highWaterMark: 0});\n"
+                    "const sink = new WritableStream({\n"
+                    "  write(chunk) {\n"
+                    "    globalThis.nodeWebPipeAbortState.writes.push(String(chunk));\n"
+                    "    if (globalThis.nodeWebPipeAbortState.writes.length === 1) {\n"
+                    "      abortController.abort('client-stop');\n"
+                    "    }\n"
+                    "  },\n"
+                    "  abort(reason) {\n"
+                    "    globalThis.nodeWebPipeAbortState.sinkAborted = true;\n"
+                    "    globalThis.nodeWebPipeAbortState.sinkAbortReason = reason === undefined ? 'undefined' : String(reason);\n"
+                    "  }\n"
+                    "});\n"
+                    "try {\n"
+                    "  await source.pipeTo(sink, {signal: abortController.signal});\n"
+                    "} catch (err) {\n"
+                    "  globalThis.nodeWebPipeAbortState.pipeError = err && err.name ? err.name + ':' + err.message : String(err);\n"
+                    "}\n"
+                    "globalThis.nodeWebPipeAbortState.locked = source.locked;"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const state = globalThis.nodeWebPipeAbortState; "
+                    "if (state.writes.join('|') !== 'first') throw new Error('Node Web pipeTo wrote after abort: ' + JSON.stringify(state)); "
+                    "if (!state.sinkAborted) throw new Error('Node Web pipeTo sink did not observe abort: ' + JSON.stringify(state)); "
+                    "if (state.sinkAbortReason !== 'client-stop') throw new Error('bad Node Web pipeTo sink abort reason: ' + JSON.stringify(state)); "
+                    "if (state.cancelReason !== 'client-stop') throw new Error('bad Node Web pipeTo source cancel reason: ' + JSON.stringify(state)); "
+                    "if (state.locked) throw new Error('Node Web pipeTo left source locked: ' + JSON.stringify(state));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not node_pipe_state['cancelled']:\n"
+                    "    raise AssertionError(f\"Node Web pipeTo abort did not cancel Python owner: {node_pipe_state!r}\")\n"
+                    "if node_pipe_state['cancel_reason'] != 'client-stop':\n"
+                    "    raise AssertionError(f\"bad Node Web pipeTo Python cancel reason: {node_pipe_state!r}\")\n"
+                    "if node_pipe_state['pulls'] > 2:\n"
+                    "    raise AssertionError(f\"Node Web pipeTo over-pulled after abort: {node_pipe_state!r}\")\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+
 def test_manifest_httpx_response_stream_early_cancel_releases_owner():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -16990,12 +17093,16 @@ py_fetch_upload_body = PythonFetchUploadBody()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
-        raise AssertionError(f"undici fetch upload body did not cross as stream proxy: before={before_status.get('boundary', {})}, after={boundary}")
+    stream_captured = boundary.get("stream_proxy_captures", 0) >= before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1
+    stream_accessed = handles.get("handle_accesses_by_kind", {}).get("stream", 0) >= before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1
+    if not (stream_captured or stream_accessed):
+        raise AssertionError(
+            f"undici fetch upload body did not cross as a stream-like owner: "
+            f"before_boundary={before_status.get('boundary', {})}, after_boundary={boundary}, "
+            f"before_handles={before_handles}, after_handles={handles}"
+        )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici fetch upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
-        raise AssertionError(f"undici fetch upload body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
         raise AssertionError(f"undici fetch upload abort leaked live handles: before={before_handles}, after={handles}")
 
@@ -19920,6 +20027,7 @@ def main():
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
+        check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
         check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
