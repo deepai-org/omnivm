@@ -11572,6 +11572,73 @@ def test_manifest_java_reactor_flux_early_cancel_releases_owner():
         raise AssertionError(f"Reactor Flux stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_rxjava_flowable_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "rxjava_flowable_cancelled",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "rxjava_flowable_requests",
+                "code": "new java.util.concurrent.atomic.AtomicLong(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "rxjava_flowable_body",
+                "code": (
+                    "io.reactivex.rxjava3.core.Flowable.just(\"first\", \"second\", \"third\")"
+                    ".doOnRequest(n -> ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"rxjava_flowable_requests\")).addAndGet(n))"
+                    ".doOnCancel(() -> ((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"rxjava_flowable_cancelled\")).set(true))"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rxjava_flowable_body": "rxjava_flowable_body"},
+                "code": (
+                    "const it = rxjava_flowable_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done || first.value !== 'first') throw new Error('bad RxJava Flowable first item: ' + JSON.stringify(first)); "
+                    "if (rxjava_flowable_body.cancel('client-stop') !== true) throw new Error('RxJava Flowable cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"rxjava_flowable_cancelled\")).get()) "
+                    "throw new RuntimeException(\"RxJava Flowable did not observe cancellation\"); "
+                    "long requests = ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"rxjava_flowable_requests\")).get(); "
+                    "if (requests < 1L) throw new RuntimeException(\"RxJava Flowable did not receive demand\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"RxJava Flowable did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"RxJava Flowable used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"RxJava Flowable did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"RxJava Flowable stream did not release handle: before={before_handles}, after={handles}")
+
+
 def test_manifest_ruby_each_body_capture_as_lazy_stream():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -14236,6 +14303,7 @@ def main():
         check("Manifest Java iterable body capture is lazy stream", test_manifest_java_iterable_body_capture_as_lazy_stream)
         check("Manifest Java BaseStream body capture is lazy stream", test_manifest_java_base_stream_body_capture_as_lazy_stream)
         check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
+        check("Manifest Java RxJava Flowable early cancel releases owner", test_manifest_java_rxjava_flowable_early_cancel_releases_owner)
         check("Manifest Ruby each body capture is lazy stream", test_manifest_ruby_each_body_capture_as_lazy_stream)
         check("Manifest Python iterable body capture is lazy stream", test_manifest_python_iterable_body_capture_as_lazy_stream)
         check("Manifest Python async iterable body capture is lazy stream", test_manifest_python_async_iterable_body_capture_as_lazy_stream)

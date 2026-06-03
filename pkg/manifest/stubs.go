@@ -2747,7 +2747,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 }
 
 func javaToStreamProbeExpr(base string) string {
-	return fmt.Sprintf("(%s != null && java.util.Arrays.stream(%s.getClass().getMethods()).anyMatch(__m -> __m.getName().equals(\"toStream\") && __m.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__m.getReturnType())))", base, base)
+	return fmt.Sprintf("(%s != null && java.util.Arrays.stream(%s.getClass().getMethods()).anyMatch(__m -> (__m.getName().equals(\"toStream\") || __m.getName().equals(\"blockingStream\")) && __m.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__m.getReturnType())))", base, base)
 }
 
 func pythonHTTPMessageProbeExpr(base string) string {
@@ -2965,7 +2965,7 @@ try {
         __omnivm_base_stream = (java.util.stream.BaseStream)__omnivm_stream_obj;
       } else {
         for (java.lang.reflect.Method __omnivm_method : __omnivm_stream_obj.getClass().getMethods()) {
-          if (__omnivm_method.getName().equals("toStream") && __omnivm_method.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__omnivm_method.getReturnType())) {
+          if ((__omnivm_method.getName().equals("toStream") || __omnivm_method.getName().equals("blockingStream")) && __omnivm_method.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__omnivm_method.getReturnType())) {
             Object __omnivm_converted = __omnivm_method.invoke(__omnivm_stream_obj);
             if (__omnivm_converted instanceof java.util.stream.BaseStream) {
               __omnivm_base_stream = (java.util.stream.BaseStream)__omnivm_converted;
