@@ -75,6 +75,19 @@ class TestRuntimeError(unittest.TestCase):
             {"type": "TypeError", "message": "inner"}
         ]
 
+    def test_parses_go_wrapped_error_cause_chain(self):
+        err = omnivm_mod.RuntimeError(
+            "go: outer layer: inner layer\n"
+            "Caused by: inner layer",
+            runtime="go",
+        )
+        assert err.runtime == "go"
+        assert err.type == ""
+        assert err.message == "outer layer: inner layer"
+        assert err.cause_chain == [
+            {"type": "", "message": "inner layer"}
+        ]
+
     def test_parses_manifest_runtime_error_boundary_path(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: python: ValidationError: bad input\n"

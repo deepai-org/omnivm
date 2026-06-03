@@ -14,7 +14,7 @@ open test targets.
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
 | Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
 | Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, and non-callable `then` fields do not become JS thenables | Callable promise-like `then` fields, array-like `length` mutation edge cases, more framework model fields colliding with proxy metadata |
-| Error fidelity: stack/type/cause across boundaries | Medium | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles, language-native catch/rethrow semantics across every guest, Go wrapped error chains as structured causes |
+| Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles and language-native catch/rethrow semantics across every guest |
 
 ## Assessment By Gap Class
 
@@ -120,8 +120,9 @@ OmniVM has strong crash/stability stress around exception propagation and stack
 unwinding, and the Python-facing error wrapper now preserves runtime, type,
 message, traceback/stack, cause chain, and manifest boundary path for common
 library errors: Django `ValidationError`, Pydantic/Zod validation errors,
-SQLAlchemy exceptions, Java causes, JavaScript `Error.cause`, and Ruby
-ActiveRecord exceptions.
+SQLAlchemy exceptions, Java causes, JavaScript `Error.cause`, Ruby
+ActiveRecord exceptions, and Go c-shared errors that wrap causes with
+`errors.Unwrap`.
 
 The target error envelope should preserve:
 
@@ -134,9 +135,9 @@ The target error envelope should preserve:
 - whether an original runtime error handle is still available.
 
 The remaining production gap is native recovery logic: preserving an original
-runtime error handle, exposing Go wrapped causes structurally, and letting
-foreign runtimes catch/rethrow with language-native semantics instead of only
-receiving a host-side diagnostic envelope.
+runtime error handle and letting foreign runtimes catch/rethrow with
+language-native semantics instead of only receiving a host-side diagnostic
+envelope.
 
 ## Priority Test Plan
 

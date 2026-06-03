@@ -234,6 +234,7 @@ import "C"
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -272,7 +273,7 @@ var __omnivmObjectCounter uint64
 func __omnivmCStringEnvelope(value interface{}, err error) *C.char {
 	env := __omnivmEnvelope{OK: err == nil}
 	if err != nil {
-		env.Error = err.Error()
+		env.Error = __omnivmErrorString(err)
 	} else {
 		env = __omnivmEncodeReturn(value)
 	}
@@ -948,7 +949,13 @@ func __omnivmErrorString(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	var b strings.Builder
+	b.WriteString(err.Error())
+	for cause, depth := errors.Unwrap(err), 0; cause != nil && depth < 16; cause, depth = errors.Unwrap(cause), depth+1 {
+		b.WriteString("\nCaused by: ")
+		b.WriteString(cause.Error())
+	}
+	return b.String()
 }
 
 func __omnivmGenericProperty(value interface{}, key string) (interface{}, bool, error) {
