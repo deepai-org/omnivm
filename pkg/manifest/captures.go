@@ -1291,6 +1291,24 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
   };
+  var remoteDescription = function() {
+    if (!descriptor) return "";
+    var parts = [];
+    if (descriptor.runtime != null) parts.push("runtime=" + descriptor.runtime);
+    if (descriptor.kind != null) parts.push("kind=" + descriptor.kind);
+    else if (descriptor.__omnivm_table__ === true) parts.push("kind=table");
+    if (descriptor.id != null) parts.push("id=" + descriptor.id);
+    return parts.length ? " (" + parts.join(", ") + ")" : "";
+  };
+  var lengthSetDiagnostic = function(reason, cause) {
+    var message = "OmniVM cannot resize remote indexed proxy" + remoteDescription() + ": " + reason;
+    if (cause && cause.message) message += ": " + cause.message;
+    var err = new TypeError(message);
+    if (cause) {
+      try { err.cause = cause; } catch (_causeError) {}
+    }
+    return err;
+  };
   var numericIndex = function(value) {
     if (typeof value === "number" && Number.isInteger(value)) return value;
     if (typeof value === "string" && /^(0|-?[1-9][0-9]*)$/.test(value)) return Number(value);
@@ -1382,12 +1400,14 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (prop === 'length' && isIndexedDescriptor()) {
           var lengthValue = Number(value);
-          if (!Number.isInteger(lengthValue) || lengthValue < 0) return false;
+          if (!Number.isInteger(lengthValue) || lengthValue < 0) {
+            throw new RangeError("OmniVM cannot set remote length" + remoteDescription() + ": length must be a non-negative integer");
+          }
           try {
             bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(lengthValue)});
             return true;
           } catch (_lengthSetError) {
-            return false;
+            throw lengthSetDiagnostic("source runtime rejected length write", _lengthSetError);
           }
         }
         try {
