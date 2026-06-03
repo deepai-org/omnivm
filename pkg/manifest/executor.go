@@ -97,12 +97,14 @@ type SpawnHandle struct {
 // JobHandle models delayed/background work. It is a manifest-visible handle:
 // payload/result values may cross, while scheduler internals stay in OmniVM.
 type JobHandle struct {
-	ID      int         `json:"id"`
-	Runtime string      `json:"runtime"`
-	Kind    string      `json:"kind"`
-	Payload interface{} `json:"payload,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
-	Done    bool        `json:"done"`
+	ID           int         `json:"id"`
+	Runtime      string      `json:"runtime"`
+	Kind         string      `json:"kind"`
+	Payload      interface{} `json:"payload,omitempty"`
+	Result       interface{} `json:"result,omitempty"`
+	Done         bool        `json:"done"`
+	Cancelled    bool        `json:"cancelled"`
+	CancelReason interface{} `json:"cancelReason,omitempty"`
 }
 
 // BoundaryStats is a diagnostics snapshot for cross-runtime value movement.
@@ -1842,6 +1844,9 @@ func (e *Executor) opJob(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if job.Cancelled {
+			return nil, fmt.Errorf("job complete: job %d was cancelled", job.ID)
+		}
 		var result interface{}
 		if op.Value != nil {
 			result, err = e.resolveValueExpr(op.Value)
@@ -1857,6 +1862,9 @@ func (e *Executor) opJob(op *Op) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if job.Cancelled {
+			return nil, fmt.Errorf("job wait: job %d was cancelled", job.ID)
+		}
 		if !job.Done {
 			return nil, fmt.Errorf("job wait: job %d is not complete", job.ID)
 		}
@@ -1864,6 +1872,37 @@ func (e *Executor) opJob(op *Op) (interface{}, error) {
 			e.setBinding(op.Bind, job.Result)
 		}
 		return job.Result, nil
+	case "cancel":
+		job, err := e.jobFromTarget(op.Target)
+		if err != nil {
+			return nil, err
+		}
+		if job.Done || job.Cancelled {
+			return job, nil
+		}
+		var reason interface{}
+		if op.Value != nil {
+			reason, err = e.resolveValueExpr(op.Value)
+			if err != nil {
+				return nil, fmt.Errorf("job cancel value: %w", err)
+			}
+		}
+		if op.Code != "" {
+			runtime := op.Runtime
+			if runtime == "" {
+				runtime = job.Runtime
+			}
+			if runtime == "" {
+				runtime = e.defaultRuntime
+			}
+			if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+				return nil, fmt.Errorf("job cancel cleanup: %w", err)
+			}
+		}
+		job.Cancelled = true
+		job.CancelReason = reason
+		job.Done = true
+		return job, nil
 	default:
 		return nil, fmt.Errorf("job: unknown action %q", op.Action)
 	}
@@ -3122,6 +3161,8 @@ func jobProxyValue(job *JobHandle) map[string]interface{} {
 		"runtime":        job.Runtime,
 		"kind":           job.Kind,
 		"done":           job.Done,
+		"cancelled":      job.Cancelled,
+		"cancelReason":   job.CancelReason,
 		"payload":        job.Payload,
 		"result":         job.Result,
 	}

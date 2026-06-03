@@ -1566,9 +1566,11 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
         runtime: value.runtime,
         kind: value.kind,
         done: value.done === true,
+        cancelled: value.cancelled === true,
+        cancelReason: value.cancelReason,
         payload: value.payload,
         result: value.result,
-        toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, done: descriptor.done === true, payload: descriptor.payload, result: descriptor.result}; }
+        toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, done: descriptor.done === true, cancelled: descriptor.cancelled === true, cancelReason: descriptor.cancelReason, payload: descriptor.payload, result: descriptor.result}; }
       });
     }, value);
   }

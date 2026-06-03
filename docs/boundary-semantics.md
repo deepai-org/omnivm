@@ -322,6 +322,9 @@ connections, and job scheduler internals should not cross as JSON copies.
   live object.
 - `job enqueue` creates a delayed-work handle; `job complete` records its
   eventual result; `job wait` materializes that result into a normal binding.
+- `job cancel` runs optional runtime cleanup code, records `cancelled` and
+  `cancelReason` descriptor state, and makes later `job wait`/`job complete`
+  fail with a cancellation diagnostic.
 
 ## Arrow Data Plane
 

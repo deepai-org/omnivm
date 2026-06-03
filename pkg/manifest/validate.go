@@ -330,6 +330,15 @@ func validateOp(path string, op *Op) error {
 			if op.Target == "" {
 				return fmt.Errorf("%s.target: job wait requires target", path)
 			}
+		case "cancel":
+			if op.Target == "" {
+				return fmt.Errorf("%s.target: job cancel requires target", path)
+			}
+			if op.Value != nil {
+				if err := validateValueExpr(path+".value", op.Value); err != nil {
+					return err
+				}
+			}
 		default:
 			return fmt.Errorf("%s.action: unknown job action %q", path, op.Action)
 		}

@@ -508,6 +508,8 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 			"runtime":        v.Runtime,
 			"kind":           v.Kind,
 			"done":           v.Done,
+			"cancelled":      v.Cancelled,
+			"cancelReason":   e.normalizeGoArg(v.CancelReason),
 			"payload":        e.normalizeGoArg(v.Payload),
 			"result":         e.normalizeGoArg(v.Result),
 		}, nil, nil, nil, nil, nil, nil, nil, e.normalizeGoArg, nil, nil)

@@ -1571,6 +1571,49 @@ func TestJobEnqueueCompleteWait(t *testing.T) {
 	}
 }
 
+func TestJobCancelRunsCleanupAndExposesState(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	_, err := e.executeOp(&Op{
+		OpType:  "job",
+		Action:  "enqueue",
+		Runtime: "python",
+		Kind:    "celery.task",
+		Bind:    "job",
+		Payload: &ValueExpr{Kind: "literal", Value: map[string]interface{}{"task": "receipt"}},
+	})
+	if err != nil {
+		t.Fatalf("job enqueue: %v", err)
+	}
+	cancelled, err := e.executeOp(&Op{
+		OpType:  "job",
+		Action:  "cancel",
+		Target:  "job",
+		Runtime: "python",
+		Value:   &ValueExpr{Kind: "literal", Value: "client-abort"},
+		Code:    "cleanup_log.append('cancelled')",
+	})
+	if err != nil {
+		t.Fatalf("job cancel: %v", err)
+	}
+	job := cancelled.(*JobHandle)
+	if !job.Done || !job.Cancelled || job.CancelReason != "client-abort" {
+		t.Fatalf("job cancel state = done=%v cancelled=%v reason=%#v", job.Done, job.Cancelled, job.CancelReason)
+	}
+	if !containsExecCall(mocks["python"].execCalls, "cleanup_log.append('cancelled')") {
+		t.Fatalf("cancel cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+	descriptor := jobProxyValue(job)
+	if descriptor["done"] != true || descriptor["cancelled"] != true || descriptor["cancelReason"] != "client-abort" {
+		t.Fatalf("job descriptor = %#v, want cancelled state", descriptor)
+	}
+	if _, err := e.executeOp(&Op{OpType: "job", Action: "wait", Target: "job"}); err == nil || !strings.Contains(err.Error(), "was cancelled") {
+		t.Fatalf("job wait after cancel err = %v, want cancellation diagnostic", err)
+	}
+	if _, err := e.executeOp(&Op{OpType: "job", Action: "complete", Target: "job", Value: &ValueExpr{Kind: "literal", Value: "late"}}); err == nil || !strings.Contains(err.Error(), "was cancelled") {
+		t.Fatalf("job complete after cancel err = %v, want cancellation diagnostic", err)
+	}
+}
+
 func TestChanClose(t *testing.T) {
 	e, _ := makeExecutor()
 	e.executeOp(&Op{OpType: "chan", Action: "make", Bind: "ch", Size: float64(1)})

@@ -12198,6 +12198,128 @@ def test_manifest_go_cshared_context_resource_close_cancels_owner():
         raise AssertionError(f"Go c-shared context resource leaked a handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_go_cshared_context_job_cancel_cancels_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        marker_path = os.path.join(tmpdir, "context-job-cancel.txt")
+        marker_literal = json.dumps(marker_path)
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {
+                    "op": "func_def",
+                    "name": "contextOwner",
+                    "params": [],
+                    "body": [],
+                    "bodyRuntime": "go",
+                    "source": (
+                        "package polyfunc\n\n"
+                        "import (\n"
+                        "\t\"context\"\n"
+                        "\t\"fmt\"\n"
+                        "\t\"os\"\n"
+                        ")\n\n"
+                        "const markerPath = " + marker_literal + "\n\n"
+                        "func ContextOwner() map[string]interface{} {\n"
+                        "\tctx, cancel := context.WithCancel(context.Background())\n"
+                        "\tstate := map[string]interface{}{}\n"
+                        "\tstate[\"status\"] = func() string {\n"
+                        "\t\tselect {\n"
+                        "\t\tcase <-ctx.Done():\n"
+                        "\t\t\treturn fmt.Sprintf(\"err=%v\", ctx.Err())\n"
+                        "\t\tdefault:\n"
+                        "\t\t\treturn \"active\"\n"
+                        "\t\t}\n"
+                        "\t}\n"
+                        "\tstate[\"cancel\"] = func() string {\n"
+                        "\t\tcancel()\n"
+                        "\t\t<-ctx.Done()\n"
+                        "\t\tstatus := fmt.Sprintf(\"err=%v\", ctx.Err())\n"
+                        "\t\t_ = os.WriteFile(markerPath, []byte(status), 0644)\n"
+                        "\t\treturn status\n"
+                        "\t}\n"
+                        "\treturn state\n"
+                        "}\n"
+                    ),
+                    "exports": ["ContextOwner"],
+                },
+                {
+                    "op": "eval",
+                    "runtime": "go",
+                    "bind": "go_ctx_owner",
+                    "code": "contextOwner()",
+                },
+                {
+                    "op": "job",
+                    "action": "enqueue",
+                    "runtime": "go",
+                    "kind": "go.context.job",
+                    "bind": "go_ctx_job",
+                    "payload": {"kind": "literal", "value": {"task": "context-cancel"}},
+                },
+                {
+                    "op": "job",
+                    "action": "cancel",
+                    "target": "go_ctx_job",
+                    "runtime": "javascript",
+                    "value": {"kind": "literal", "value": "client-abort"},
+                    "code": (
+                        "(() => {"
+                        "const before = go_ctx_owner.status();"
+                        "if (before !== 'active') throw new Error('Go context owner was not active before job cancel: ' + before);"
+                        "const cancelled = go_ctx_owner.cancel();"
+                        "if (cancelled !== 'err=context canceled') throw new Error('bad Go context job cancel status: ' + cancelled);"
+                        "})();"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "code": (
+                        "const meta = go_ctx_job.toJSON();"
+                        "if (meta.done !== true) throw new Error('cancelled job should be done: ' + JSON.stringify(meta));"
+                        "if (meta.cancelled !== true) throw new Error('job did not expose cancelled state: ' + JSON.stringify(meta));"
+                        "if (meta.cancelReason !== 'client-abort') throw new Error('bad job cancel reason: ' + JSON.stringify(meta));"
+                        "if (go_ctx_owner.status() !== 'err=context canceled') throw new Error('Go context owner did not stay cancelled after job cancel');"
+                    ),
+                },
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(manifest, f)
+            path = f.name
+        try:
+            omnivm.run_manifest(path)
+        finally:
+            os.unlink(path)
+        if not os.path.exists(marker_path):
+            raise AssertionError("Go c-shared context job cancel marker was not written")
+        with open(marker_path, "r", encoding="utf-8") as marker_file:
+            close_state = marker_file.read()
+        expected_state = "err=context canceled"
+        if close_state != expected_state:
+            raise AssertionError(f"Go c-shared context job cancel state = {close_state!r}, want {expected_state!r}")
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    handle_accesses = handles.get("handle_accesses_by_kind", {})
+    before_handle_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if boundary.get("job_proxy_captures", 0) < before_boundary.get("job_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared context job did not create a job proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Go c-shared context job did not keep context owner behind a resource proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared context job used JSON fallback: before={before_boundary}, after={boundary}")
+    if handle_accesses.get("call", 0) < before_handle_accesses.get("call", 0) + 3:
+        raise AssertionError(f"Go c-shared context job did not record context owner calls: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Go c-shared context job leaked a handle: before={before_handles}, after={handles}")
+
+
 def test_manifest_go_cshared_sequence_members_cross_generically():
     manifest = {
         "version": 1,
@@ -16779,6 +16901,7 @@ def main():
         check("Manifest Go c-shared reader stream early cancel releases owner", test_manifest_go_cshared_reader_stream_early_cancel_releases_owner)
         check("Manifest Go c-shared context reader cancel observes context done", test_manifest_go_cshared_context_reader_cancel_observes_context_done)
         check("Manifest Go c-shared context resource close cancels owner", test_manifest_go_cshared_context_resource_close_cancels_owner)
+        check("Manifest Go c-shared context job cancel cancels owner", test_manifest_go_cshared_context_job_cancel_cancels_owner)
         check("Manifest Go c-shared sequence members cross generically", test_manifest_go_cshared_sequence_members_cross_generically)
         check("Manifest Go c-shared struct object members cross generically", test_manifest_go_cshared_struct_object_members_cross_generically)
         check("Manifest Go c-shared function preserves complex proxy argument", test_manifest_go_cshared_func_preserves_complex_proxy_argument)

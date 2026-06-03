@@ -5072,6 +5072,10 @@ func jobDescriptorProperty(ref *JobHandle, key string) (interface{}, bool) {
 		return ref.Kind, true
 	case "done":
 		return ref.Done, true
+	case "cancelled":
+		return ref.Cancelled, true
+	case "cancelReason":
+		return ref.CancelReason, true
 	case "payload":
 		return ref.Payload, true
 	case "result":
