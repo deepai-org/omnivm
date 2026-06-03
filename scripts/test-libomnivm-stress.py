@@ -12553,6 +12553,87 @@ def test_validation_error_fidelity_popular_libraries():
             raise AssertionError(f"{name} did not raise an error")
 
 
+def test_javascript_native_runtime_error_fields_cross_runtime_calls():
+    result = omnivm.call(
+        "javascript",
+        r'''
+(() => {
+  const out = {};
+  try {
+    omnivm.call("python", `
+from pydantic import BaseModel, Field
+class User(BaseModel):
+    age:int=Field(gt=0)
+    name:str
+User(age=0)
+`);
+  } catch (err) {
+    out.python = {
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle
+    };
+  }
+  try {
+    omnivm.call("java", '((java.util.concurrent.Callable<String>)(() -> { throw new RuntimeException("outer", new IllegalArgumentException("inner")); })).call()');
+  } catch (err) {
+    out.java = {
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle
+    };
+  }
+  return JSON.stringify(out);
+})()
+'''
+    )
+    envelope = json.loads(result)
+    py_error = envelope.get("python") or {}
+    if not py_error.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for Python failure: {envelope}")
+    if py_error.get("runtime") != "python":
+        raise AssertionError(f"JS Python error runtime lost: {envelope}")
+    if py_error.get("type") != "ValidationError":
+        raise AssertionError(f"JS Python error type lost: {envelope}")
+    if "2 validation errors for User" not in py_error.get("message", ""):
+        raise AssertionError(f"JS Python validation message lost: {envelope}")
+    py_error_text = py_error.get("message", "") + "\n" + py_error.get("traceback", "")
+    for part in ("age", "greater_than", "name", "missing"):
+        if part not in py_error_text:
+            raise AssertionError(f"JS Python validation detail {part!r} lost: {envelope}")
+    if py_error.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS Python boundary path lost: {envelope}")
+    if py_error.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS Python error should not invent original handle: {envelope}")
+
+    java_error = envelope.get("java") or {}
+    if not java_error.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for Java failure: {envelope}")
+    if java_error.get("runtime") != "java":
+        raise AssertionError(f"JS Java error runtime lost: {envelope}")
+    if java_error.get("type") != "java.lang.RuntimeException":
+        raise AssertionError(f"JS Java error type lost: {envelope}")
+    if "outer" not in java_error.get("message", ""):
+        raise AssertionError(f"JS Java error message lost: {envelope}")
+    if java_error.get("boundaryPath") != "call[java]":
+        raise AssertionError(f"JS Java boundary path lost: {envelope}")
+    causes = java_error.get("causeChain") or []
+    if not causes or causes[0].get("type") != "java.lang.IllegalArgumentException" or "inner" not in causes[0].get("message", ""):
+        raise AssertionError(f"JS Java cause chain lost: {envelope}")
+    if java_error.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS Java error should not invent original handle: {envelope}")
+
+
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
     manifest = {
         "version": 1,
@@ -18401,6 +18482,7 @@ def main():
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
+        check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Manifest validation error preserves runtime type and boundary path", test_manifest_validation_error_preserves_runtime_type_and_boundary_path)
         check("Manifest Go c-shared wrapped error preserves cause chain", test_manifest_go_cshared_wrapped_error_preserves_cause_chain)
         check("Manifest function returns JS typed array as Arrow", test_manifest_func_return_exports_js_typed_array_as_arrow)

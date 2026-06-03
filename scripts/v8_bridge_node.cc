@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -147,6 +148,246 @@ static char* omnivm_v8_format_exception(v8::Isolate* isolate,
     return strdup(fallback);
 }
 
+struct OmniRuntimeErrorCause {
+    std::string type;
+    std::string message;
+};
+
+struct OmniRuntimeErrorEnvelope {
+    std::string runtime;
+    std::string type;
+    std::string message;
+    std::string traceback;
+    std::vector<OmniRuntimeErrorCause> cause_chain;
+    std::string boundary_path;
+    std::string original_error_handle;
+};
+
+static bool omnivm_is_error_type_candidate(const std::string& value) {
+    return !value.empty() && value.find(' ') == std::string::npos;
+}
+
+static std::string omnivm_trim(const std::string& value) {
+    size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return "";
+    }
+    size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+static bool omnivm_starts_with(const std::string& value, const char* prefix) {
+    size_t len = strlen(prefix);
+    return value.size() >= len && value.compare(0, len, prefix) == 0;
+}
+
+static void omnivm_parse_runtime_prefix(std::string& body, std::string& runtime) {
+    struct RuntimePrefix {
+        const char* prefix;
+        const char* runtime;
+    };
+    static const RuntimePrefix prefixes[] = {
+        {"javascript: ", "javascript"},
+        {"python: ", "python"},
+        {"ruby: ", "ruby"},
+        {"jvm: ", "java"},
+        {"java: ", "java"},
+        {"go: ", "go"},
+    };
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& entry : prefixes) {
+            if (omnivm_starts_with(body, entry.prefix)) {
+                runtime = entry.runtime;
+                body = body.substr(strlen(entry.prefix));
+                changed = true;
+                break;
+            }
+        }
+    }
+}
+
+static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
+    const std::string& text,
+    const std::string& runtime_hint) {
+    OmniRuntimeErrorEnvelope env;
+    env.runtime = runtime_hint;
+    env.boundary_path = runtime_hint.empty() ? "" : "call[" + runtime_hint + "]";
+
+    std::string body = text;
+    std::vector<std::string> boundary_parts;
+
+    struct BoundaryPrefix {
+        const char* prefix;
+        const char* label;
+    };
+    static const BoundaryPrefix boundary_prefixes[] = {
+        {"execute manifest: ", "execute manifest"},
+        {"load manifest module: ", "load manifest module"},
+        {"manifest module call: ", "manifest module call"},
+    };
+    for (const auto& entry : boundary_prefixes) {
+        if (omnivm_starts_with(body, entry.prefix)) {
+            boundary_parts.emplace_back(entry.label);
+            body = body.substr(strlen(entry.prefix));
+            break;
+        }
+    }
+
+    std::smatch op_match;
+    static const std::regex op_re(
+        R"(^([A-Za-z_][A-Za-z0-9_]*) \[([A-Za-z0-9_-]+)\]: ([\s\S]*))");
+    if (std::regex_match(body, op_match, op_re)) {
+        std::string op_name = op_match[1].str();
+        std::string op_runtime = op_match[2].str();
+        boundary_parts.push_back(op_name + "[" + op_runtime + "]");
+        env.runtime = op_runtime;
+        body = op_match[3].str();
+    }
+
+    omnivm_parse_runtime_prefix(body, env.runtime);
+
+    size_t newline = body.find('\n');
+    std::string first_line = newline == std::string::npos ? body : body.substr(0, newline);
+    std::string rest = newline == std::string::npos ? "" : body.substr(newline + 1);
+    std::string parse_line = first_line;
+    env.traceback = rest;
+    env.message = first_line;
+
+    static const std::regex handle_re(
+        R"((^|\n)\s*(Original[- ]error[- ]handle|original_error_handle):\s*(\S+)\s*($|\n))",
+        std::regex_constants::icase);
+    std::smatch handle_match;
+    if (std::regex_search(body, handle_match, handle_re)) {
+        env.original_error_handle = handle_match[3].str();
+    }
+
+    if (omnivm_starts_with(first_line, "Traceback ")) {
+        env.traceback = body;
+        size_t pos = body.size();
+        while (pos > 0) {
+            size_t prev = body.rfind('\n', pos - 1);
+            size_t line_start = prev == std::string::npos ? 0 : prev + 1;
+            std::string line = omnivm_trim(body.substr(line_start, pos - line_start));
+            if (!line.empty()) {
+                size_t sep = line.find(": ");
+                if (sep != std::string::npos &&
+                    omnivm_is_error_type_candidate(line.substr(0, sep))) {
+                    parse_line = line;
+                    break;
+                }
+            }
+            if (prev == std::string::npos) {
+                break;
+            }
+            pos = prev;
+        }
+    }
+
+    size_t sep = parse_line.find(": ");
+    if (sep != std::string::npos) {
+        std::string candidate = parse_line.substr(0, sep);
+        std::string detail = parse_line.substr(sep + 2);
+        if (omnivm_is_error_type_candidate(candidate)) {
+            if (env.runtime == "python") {
+                size_t dot = candidate.rfind('.');
+                if (dot != std::string::npos) {
+                    candidate = candidate.substr(dot + 1);
+                }
+            }
+            env.type = candidate;
+            env.message = detail;
+        }
+    }
+
+    size_t offset = 0;
+    while (offset <= rest.size()) {
+        size_t next = rest.find('\n', offset);
+        std::string line = next == std::string::npos ? rest.substr(offset) : rest.substr(offset, next - offset);
+        std::string stripped = omnivm_trim(line);
+        const char* cause_prefix = "Caused by: ";
+        if (omnivm_starts_with(stripped, cause_prefix)) {
+            std::string cause_text = stripped.substr(strlen(cause_prefix));
+            OmniRuntimeErrorCause cause;
+            cause.message = cause_text;
+            size_t cause_sep = cause_text.find(": ");
+            if (cause_sep != std::string::npos) {
+                std::string candidate = cause_text.substr(0, cause_sep);
+                if (omnivm_is_error_type_candidate(candidate)) {
+                    cause.type = candidate;
+                    cause.message = cause_text.substr(cause_sep + 2);
+                }
+            }
+            env.cause_chain.push_back(cause);
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        offset = next + 1;
+    }
+
+    if (!boundary_parts.empty()) {
+        env.boundary_path.clear();
+        for (size_t i = 0; i < boundary_parts.size(); ++i) {
+            if (i > 0) {
+                env.boundary_path += " > ";
+            }
+            env.boundary_path += boundary_parts[i];
+        }
+    }
+
+    return env;
+}
+
+static void omnivm_v8_set_string_prop(v8::Isolate* isolate,
+                                      v8::Local<v8::Context> context,
+                                      v8::Local<v8::Object> object,
+                                      const char* key,
+                                      const std::string& value) {
+    object->Set(
+        context,
+        v8::String::NewFromUtf8(isolate, key).ToLocalChecked(),
+        v8::String::NewFromUtf8(isolate, value.c_str()).ToLocalChecked()
+    ).ToChecked();
+}
+
+static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
+                                              v8::Local<v8::Context> context,
+                                              v8::Local<v8::Value> error_value,
+                                              const OmniRuntimeErrorEnvelope& env) {
+    if (error_value.IsEmpty() || !error_value->IsObject()) {
+        return;
+    }
+    v8::Local<v8::Object> error = error_value.As<v8::Object>();
+    omnivm_v8_set_string_prop(isolate, context, error, "runtime", env.runtime);
+    omnivm_v8_set_string_prop(isolate, context, error, "type", env.type);
+    omnivm_v8_set_string_prop(isolate, context, error, "traceback", env.traceback);
+    omnivm_v8_set_string_prop(isolate, context, error, "boundaryPath", env.boundary_path);
+    if (env.original_error_handle.empty()) {
+        error->Set(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "originalErrorHandle"),
+            v8::Null(isolate)
+        ).ToChecked();
+    } else {
+        omnivm_v8_set_string_prop(isolate, context, error, "originalErrorHandle", env.original_error_handle);
+    }
+
+    v8::Local<v8::Array> causes = v8::Array::New(isolate, static_cast<int>(env.cause_chain.size()));
+    for (uint32_t i = 0; i < env.cause_chain.size(); ++i) {
+        v8::Local<v8::Object> cause = v8::Object::New(isolate);
+        omnivm_v8_set_string_prop(isolate, context, cause, "type", env.cause_chain[i].type);
+        omnivm_v8_set_string_prop(isolate, context, cause, "message", env.cause_chain[i].message);
+        causes->Set(context, i, cause).ToChecked();
+    }
+    error->Set(
+        context,
+        v8::String::NewFromUtf8Literal(isolate, "causeChain"),
+        causes
+    ).ToChecked();
+}
+
 static void OmniExternalBufferDeleter(void* data, size_t length, void* deleter_data) {
     (void)data;
     (void)length;
@@ -246,6 +487,7 @@ static std::shared_ptr<node::InitializationResult> init_result;
 
 static void OmnivmCallCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
     v8::Isolate* isolate = info.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
 
     if (info.Length() < 2 || !info[0]->IsString() || !info[1]->IsString()) {
         isolate->ThrowException(v8::Exception::TypeError(
@@ -280,9 +522,14 @@ static void OmnivmCallCallback(const v8::FunctionCallbackInfo<v8::Value>& info) 
     // Check for error prefix — same protocol as Duktape/v8_bridge.cc
     if (strncmp(result, "ERR:", 4) == 0) {
         std::string err_msg(result + 4);
+        std::string runtime_hint(*runtime && **runtime ? *runtime : "");
+        OmniRuntimeErrorEnvelope envelope =
+            omnivm_parse_runtime_error_text(err_msg, runtime_hint);
         if (g_bridge_free) g_bridge_free(result);
-        isolate->ThrowException(v8::Exception::Error(
-            v8::String::NewFromUtf8(isolate, err_msg.c_str()).ToLocalChecked()));
+        v8::Local<v8::Value> error_value = v8::Exception::Error(
+            v8::String::NewFromUtf8(isolate, err_msg.c_str()).ToLocalChecked());
+        omnivm_v8_set_runtime_error_props(isolate, context, error_value, envelope);
+        isolate->ThrowException(error_value);
         return;
     }
 
