@@ -4076,6 +4076,18 @@ func TestRuntimeRefRubyStreamProbeTreatsHTTPMessagesAsResources(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefRubyStreamProbeTreatsResponseWritersAsResources(t *testing.T) {
+	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "ruby", VarName: "stream"})
+	if !ok {
+		t.Fatal("ruby stream probe should be available")
+	}
+	for _, want := range []string{"respond_to?(:write)", "respond_to?(:close)", "respond_to?(:closed?)", "!__omnivm_response_writer"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("ruby stream probe missing response writer guard %q in %q", want, expr)
+		}
+	}
+}
+
 func TestJSStubUnsafeName(t *testing.T) {
 	code := jsStub("bad-name", []*Param{{Name: "class"}})
 	if contains(code, "globalThis.bad-name") {
@@ -6556,11 +6568,13 @@ func TestRuntimeRefRubyZeroArgMethodsReadAsProperties(t *testing.T) {
 	}
 	mocks["ruby"].evalFn = func(code string) pkg.Result {
 		switch {
+		case code == "false":
+			return pkg.Result{Value: "false"}
 		case strings.Contains(code, ".arity == 0") && strings.Contains(code, "label"):
 			return pkg.Result{Value: "true"}
 		case strings.Contains(code, ".arity == 0") && strings.Contains(code, "join"):
 			return pkg.Result{Value: "false"}
-		case strings.Contains(code, "respond_to?") && strings.Contains(code, "join"):
+		case strings.Contains(code, "respond_to?") && (strings.Contains(code, "join") || strings.Contains(code, "close")):
 			return pkg.Result{Value: "true"}
 		case strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_"):
 			primitiveSnapshots++
@@ -6602,6 +6616,15 @@ func TestRuntimeRefRubyZeroArgMethodsReadAsProperties(t *testing.T) {
 	env = decodeResultEnvelopeForTest(t, result)
 	if env.Kind != "json" || !jsonEqual(env.Value, map[string]interface{}{"__omnivm_callable__": true, "key": "join"}) {
 		t.Fatalf("arity Ruby method handle_get envelope = %#v, want callable descriptor", env)
+	}
+
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get close: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "json" || !jsonEqual(env.Value, map[string]interface{}{"__omnivm_callable__": true, "key": "close"}) {
+		t.Fatalf("command-style Ruby method handle_get envelope = %#v, want callable descriptor", env)
 	}
 
 	result, err = e.HandleCall(`{"op":"handle_call","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"join","args":["tail"]}`)

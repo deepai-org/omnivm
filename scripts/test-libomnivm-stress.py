@@ -8393,6 +8393,69 @@ def test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_s
         raise AssertionError(f"Rails ActionDispatch objects used JSON fallback: before={before}, after={after}")
 
 
+def test_manifest_rails_actiondispatch_response_stream_writer_stays_live_after_close():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "require 'action_dispatch'; "
+                    "$rails_writer_response = ActionDispatch::Response.new(200, {}, []); "
+                    "$rails_writer_stream = $rails_writer_response.stream"
+                ),
+            },
+            {
+                "op": "eval",
+                "runtime": "ruby",
+                "bind": "rails_writer_stream",
+                "code": "$rails_writer_stream",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rails_writer_stream": "rails_writer_stream"},
+                "code": (
+                    "if (typeof rails_writer_stream.write !== 'function') throw new Error('Rails stream writer lost write method'); "
+                    "if (typeof rails_writer_stream.close !== 'function') throw new Error('Rails stream writer lost close method'); "
+                    "rails_writer_stream.write('first'); "
+                    "rails_writer_stream.close(); "
+                    "let failed = false; "
+                    "try { rails_writer_stream.write('second'); } "
+                    "catch (err) { failed = String(err && err.message || err).includes('closed stream'); } "
+                    "if (!failed) throw new Error('Rails stream write after close did not fail clearly');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "raise 'Rails response stream did not close' unless $rails_writer_stream.closed?; "
+                    "raise \"bad Rails response body #{$rails_writer_response.body.inspect}\" unless $rails_writer_response.body == 'first'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Rails response stream writer did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Rails response stream writer crossed as a body stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Rails response stream writer used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 3:
+        raise AssertionError(f"Rails response stream writer did not record method calls: before={before_handles}, after={handles}")
+
+
 def test_manifest_rack_rails_socket_abort_closes_response_body_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -18213,6 +18276,7 @@ def main():
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
         check("Manifest Rails ActionDispatch request/response capture uses proxy not stream", test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream)
+        check("Manifest Rails ActionDispatch response stream writer stays live after close", test_manifest_rails_actiondispatch_response_stream_writer_stays_live_after_close)
         check("Manifest Rack Rails socket abort closes response body owner", test_manifest_rack_rails_socket_abort_closes_response_body_owner)
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)

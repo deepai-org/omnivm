@@ -2788,12 +2788,24 @@ func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, 
 	if ref.Runtime != "ruby" {
 		return "", false, nil
 	}
+	if rubyZeroArgCommandMethod(key) {
+		return "false", true, nil
+	}
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
 	if err != nil {
 		return "", false, err
 	}
 	return fmt.Sprintf("(begin; __o = %s; __k = %s; __o.respond_to?(__k) && __o.method(__k).arity == 0; rescue NameError; false; end)", base, keyLit), true, nil
+}
+
+func rubyZeroArgCommandMethod(key string) bool {
+	switch key {
+	case "close", "finish", "flush", "commit!", "rollback!", "cancel", "return", "dispose", "shutdown", "terminate":
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeRefJavaZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, error) {
@@ -2816,7 +2828,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	case "python":
 		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: (not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
 	case "ruby":
-		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; !__omnivm_http_message && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
+		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; __omnivm_response_writer = __v.respond_to?(:write) && __v.respond_to?(:close) && __v.respond_to?(:closed?); !__omnivm_http_message && !__omnivm_response_writer && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
 	case "java":
 		httpMessage := javaHTTPMessageProbeExpr(base)
 		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaToStreamProbeExpr(base), base, base, base, base), true
