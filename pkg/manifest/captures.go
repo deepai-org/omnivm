@@ -1329,7 +1329,14 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     get: function(obj, prop, receiver) {
       if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
-      if (prop === 'get') return bridgeGet;
+      if (prop === 'then' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        try {
+          var thenValue = bridge({op: "handle_get", key: "then"});
+          return typeof thenValue === 'function' ? undefined : thenValue;
+        } catch (_thenError) {
+          return Reflect.get(obj, prop, receiver);
+        }
+      }
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!isIndexedDescriptor()) {
           try {

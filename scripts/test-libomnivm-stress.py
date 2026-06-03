@@ -10333,6 +10333,66 @@ def test_manifest_js_non_callable_then_field_is_not_thenable():
         raise AssertionError(f"non-callable then payload did not record proxy property access: {handles}")
 
 
+def test_manifest_js_callable_then_field_requires_explicit_proxy_get():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "callable_then_calls = []\n"
+                    "def callable_then(value=None, reject=None):\n"
+                    "    callable_then_calls.append(value)\n"
+                    "    return 'called:' + str(value)\n"
+                    "py_callable_then_payload = {'then': callable_then, 'value': 'resolved-proxy'}"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_callable_then_payload": "py_callable_then_payload"},
+                "code": (
+                    "globalThis.__omnivm_callable_then_resolution = 'pending'; "
+                    "if (typeof py_callable_then_payload.then !== 'undefined') throw new Error('callable then should require explicit proxyGet'); "
+                    "Promise.resolve(py_callable_then_payload).then(function(value) { "
+                    "  globalThis.__omnivm_callable_then_resolution = value.value; "
+                    "}); "
+                    "const explicitThen = omnivm.proxyGet(py_callable_then_payload, 'then'); "
+                    "if (typeof explicitThen !== 'function') throw new Error('explicit proxyGet did not expose callable then: ' + explicitThen); "
+                    "const explicitResult = explicitThen('manual'); "
+                    "if (explicitResult !== 'called:manual') throw new Error('bad explicit then result: ' + explicitResult);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (globalThis.__omnivm_callable_then_resolution !== 'resolved-proxy') "
+                    "throw new Error('callable then field was treated as a thenable or did not resolve to proxy: ' + globalThis.__omnivm_callable_then_resolution);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "assert callable_then_calls == ['manual'], callable_then_calls",
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    handles = omnivm.status().get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"callable then payload did not cross as a live proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"callable then payload used JSON fallback: {boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) < 1 or accesses.get("call", 0) < 1:
+        raise AssertionError(f"callable then payload did not record property and call access: {handles}")
+
+
 def test_manifest_js_map_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -13929,7 +13989,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (py_payload.items !== 'js-items') throw new Error('bad items key: ' + py_payload.items); "
                     "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then); "
                     "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
-                    "if (py_payload.get('get') !== 'old-get') throw new Error('synthetic get lost get key: ' + py_payload.get('get')); "
+                    "if (py_payload.get !== 'old-get') throw new Error('get key lost to method: ' + py_payload.get); "
                     "if (omnivm.proxyGet(py_payload, 'get') !== 'old-get') throw new Error('proxyGet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
                     "if (omnivm.proxyLen(py_payload) !== 6) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
@@ -15484,6 +15544,7 @@ def main():
         check("Manifest JS runtime-ref exposes local object members generically", test_manifest_js_runtime_ref_exposes_local_object_members_generically)
         check("Manifest JS plain object/array capture uses proxy not JSON", test_manifest_js_plain_object_array_capture_uses_proxy_not_json)
         check("Manifest JS non-callable then field is not thenable", test_manifest_js_non_callable_then_field_is_not_thenable)
+        check("Manifest JS callable then field requires explicit proxy get", test_manifest_js_callable_then_field_requires_explicit_proxy_get)
         check("Manifest JS Map capture uses proxy not JSON", test_manifest_js_map_capture_uses_proxy_not_json)
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
