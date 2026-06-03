@@ -463,6 +463,9 @@ The manifest executor runs structured JSON programs that dispatch ops across all
 # Run a single manifest
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-concurrency.json
 
+# Verify boundary decisions without starting guest runtimes
+docker run --rm --entrypoint manifest-runner omnivm --doctor /omnivm/examples/cursed-concurrency.json
+
 # Run the focused spawn/channel contract regression
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/spawn-channel-contract.json
 
@@ -810,6 +813,7 @@ make test-cli             # CLI integration tests (29 tests in Docker)
 make test-manifests       # Run manifest examples and edge contract fixtures
 make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
 make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
+make test-libomnivm-stress STRESS_ARGS="--category proxy --name materializes" # Filter stress checks
 make test-poly-libomnivm-smoke # Compile selected Garbage .poly examples, then run via CPython + libomnivm
 make test-stress          # Run 71 stress tests
 ```

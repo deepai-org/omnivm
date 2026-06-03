@@ -699,7 +699,7 @@ class __OmniVMHandleProxy:
     def _materialize_bridge_value(self, value):
         if isinstance(value, dict) and value.get("__omnivm_callable__") is True:
             key = value.get("key")
-            return lambda *args: self._bridge_call(key, args)
+            return lambda *args, **kwargs: self._bridge_call(key, args, kwargs)
         if isinstance(value, dict) and (
             value.get("__omnivm_resource__") is True
             or value.get("__omnivm_table__") is True
@@ -723,8 +723,11 @@ class __OmniVMHandleProxy:
     def _bridge_set(self, key, value):
         return self._bridge({"op": "handle_set", "key": key, "value": _omnivm_encode_arg(value)})
 
-    def _bridge_call(self, key, args):
-        return self._bridge({"op": "handle_call", "key": key, "args": [_omnivm_encode_arg(arg) for arg in args]})
+    def _bridge_call(self, key, args, kwargs=None):
+        payload = {"op": "handle_call", "key": key, "args": [_omnivm_encode_arg(arg) for arg in args]}
+        if kwargs:
+            payload["kwargs"] = {str(k): _omnivm_encode_arg(v) for k, v in kwargs.items()}
+        return self._bridge(payload)
 
     def _bridge_len(self):
         return self._bridge({"op": "handle_len"})
@@ -925,8 +928,8 @@ class __OmniVMHandleProxy:
         return repr(self._value)
 
 class __OmniVMCallableHandleProxy(__OmniVMHandleProxy):
-    def __call__(self, *args):
-        return self._bridge_call("", args)
+    def __call__(self, *args, **kwargs):
+        return self._bridge_call("", args, kwargs)
 
 class __OmniVMMappingHandleProxy(__OmniVMHandleProxy, dict):
     pass
@@ -1196,13 +1199,16 @@ globalThis.__omnivm_prune_proxy_cache = globalThis.__omnivm_prune_proxy_cache ||
     if (!ref || typeof ref.deref !== 'function' || !ref.deref()) cache.delete(key);
   });
 };
-globalThis.__omnivm_cached_proxy = globalThis.__omnivm_cached_proxy || function(kind, id, makeProxy) {
+globalThis.__omnivm_cached_proxy = globalThis.__omnivm_cached_proxy || function(kind, id, makeProxy, descriptor) {
   if (id == null || !globalThis.__omnivm_proxy_cache || typeof WeakRef === 'undefined') return makeProxy();
   var key = kind + ":" + id;
   var existing = globalThis.__omnivm_proxy_cache.get(key);
   if (existing && typeof existing.deref === 'function') {
     var cached = existing.deref();
-    if (cached) return cached;
+    if (cached) {
+      if (descriptor) cached.__omnivm_descriptor__ = descriptor;
+      return cached;
+    }
     globalThis.__omnivm_proxy_cache.delete(key);
   }
   var proxy = makeProxy();
@@ -1450,19 +1456,19 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
   if (value && (value.__omnivm_stream__ === true || value.__omnivm_channel__ === true)) {
     return globalThis.__omnivm_cached_proxy("stream", value.id, function() {
       return globalThis.__omnivm_make_stream_proxy(value);
-    });
+    }, value);
   }
   if (value && value.__omnivm_resource__ === true) {
-    return globalThis.__omnivm_cached_proxy("handle", value.id, function() {
+    return globalThis.__omnivm_cached_proxy("resource", value.id, function() {
       var target = value.kind === "callable" ? function() {} : (value.kind === "sequence" ? [] : {});
       target.__omnivm_proxy__ = true;
       target.__omnivm_descriptor__ = value;
-      target.toJSON = function() { return {id: value.id, runtime: value.runtime, kind: value.kind, closed: value.closed === true}; };
+      target.toJSON = function() { var descriptor = target.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, closed: descriptor.closed === true}; };
       return globalThis.__omnivm_make_handle_proxy(target);
-    });
+    }, value);
   }
   if (value && value.__omnivm_table__ === true) {
-    return globalThis.__omnivm_cached_proxy("handle", value.id, function() {
+    return globalThis.__omnivm_cached_proxy("table", value.id, function() {
       return globalThis.__omnivm_make_handle_proxy({
         __omnivm_proxy__: true,
         __omnivm_descriptor__: value,
@@ -1473,12 +1479,12 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
         buffer: value.buffer || (value.metadata && value.metadata.buffer) || null,
         metadata: value.metadata || null,
         released: value.released === true,
-        toJSON: function() { return {id: value.id, runtime: value.runtime, format: value.format, ownership: value.ownership, buffer: value.buffer || (value.metadata && value.metadata.buffer) || null, metadata: value.metadata || null, released: value.released === true}; }
+        toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, format: descriptor.format, ownership: descriptor.ownership, buffer: descriptor.buffer || (descriptor.metadata && descriptor.metadata.buffer) || null, metadata: descriptor.metadata || null, released: descriptor.released === true}; }
       });
-    });
+    }, value);
   }
   if (value && value.__omnivm_job__ === true) {
-    return globalThis.__omnivm_cached_proxy("handle", value.id, function() {
+    return globalThis.__omnivm_cached_proxy("job", value.id, function() {
       return globalThis.__omnivm_make_handle_proxy({
         __omnivm_proxy__: true,
         __omnivm_descriptor__: value,
@@ -1487,9 +1493,10 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
         kind: value.kind,
         done: value.done === true,
         payload: value.payload,
-        result: value.result
+        result: value.result,
+        toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, done: descriptor.done === true, payload: descriptor.payload, result: descriptor.result}; }
       });
-    });
+    }, value);
   }
   if (value && (value.__omnivm_proxy__ === true || value.__omnivm_disposable__ === true)) {
     return value;
@@ -2305,6 +2312,7 @@ func (e *Executor) unknownRuntimeRefPrimitiveCaptureJSON(binding, targetRuntime 
 	if !snapshot.Primitive {
 		ref.CallableKnown = true
 		ref.Callable = snapshot.Callable
+		ref.CallableShape = snapshot.CallableShape
 		jsonVal, err := e.runtimeRefProxyCaptureJSON(ref)
 		return jsonVal, true, err
 	}

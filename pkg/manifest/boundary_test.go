@@ -1,6 +1,9 @@
 package manifest
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestClassifySerializedBoundary(t *testing.T) {
 	cases := []struct {
@@ -65,5 +68,62 @@ func TestClassifyLocalCaptureBoundary(t *testing.T) {
 				t.Fatalf("form = %s, want %s", got.Form, tc.form)
 			}
 		})
+	}
+}
+
+func TestVerifyManifestBoundariesReportsDoctorCategories(t *testing.T) {
+	arity := 2
+	m := &Manifest{
+		Version:        1,
+		DefaultRuntime: "python",
+		Ops: []*Op{
+			{OpType: "resource", Action: "open", Runtime: "python", Bind: "request"},
+			{OpType: "table", Action: "export", Runtime: "python", Bind: "orders", Format: "arrow_c_data"},
+			{OpType: "chan", Action: "make", Runtime: "go", Bind: "events"},
+			{OpType: "eval", Runtime: "python", Bind: "count", Code: "42"},
+			{OpType: "eval", Runtime: "javascript", Bind: "copied", Code: "count + 1", Captures: map[string]string{"count": "count"}},
+			{OpType: "eval", Runtime: "python", Bind: "opaque", Code: "object()"},
+			{OpType: "eval", Runtime: "javascript", Bind: "fallback", Code: "opaque", Captures: map[string]string{"opaque": "opaque"}},
+			{
+				OpType:      "func_def",
+				Runtime:     "python",
+				Name:        "use_options",
+				BodyRuntime: "python",
+				Params: []*Param{{
+					Name: "handler",
+					CallableShape: &CallableShape{
+						AcceptsOptionsObject: true,
+						DestructuredKeys:     []string{"limit", "payload"},
+						Arity:                &arity,
+					},
+				}},
+				Body: []*Op{{OpType: "return", Value: &ValueExpr{Kind: "literal", Value: nil}}},
+			},
+		},
+		Bridges: []*BridgeOp{{Binding: "count", Op: "copy_array", From: "python", To: "javascript"}},
+	}
+
+	report, err := VerifyManifestBoundaries(m)
+	if err != nil {
+		t.Fatalf("VerifyManifestBoundaries: %v", err)
+	}
+	text := FormatBoundaryDecisionReport(report)
+	for _, want := range []string{
+		"omnivm doctor: ok",
+		"kind=ref",
+		"kind=arrow",
+		"kind=stream",
+		"form=copy",
+		"kind=kwargs_adapter",
+		"adapter=options_object;keys=limit,payload",
+		"form=json_fallback",
+		"risky fallbacks: 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("doctor report missing %q\n%s", want, text)
+		}
+	}
+	if len(report.RiskyFallbacks) != 1 || report.RiskyFallbacks[0].Binding != "opaque" {
+		t.Fatalf("risky fallbacks = %#v, want opaque fallback", report.RiskyFallbacks)
 	}
 }

@@ -199,6 +199,50 @@ Policy:
 - finalizer release breaks non-cyclic stale proxies opportunistically;
 - serialization must not be used to avoid solving identity/lifetime semantics.
 
+## Callable Shape Metadata
+
+Callable shape metadata is the boundary evidence OmniVM uses before turning a
+host-language keyword call into another runtime's callable form. It can come
+from compiler-emitted manifest params, a runtime-ref descriptor, or a
+conservative runtime probe when the value is visible.
+
+The shape fields are intentionally small:
+
+- `acceptsKwargs` means native keyword splatting is known to be valid, as with
+  Python `**kwargs` or Ruby keyword parameters.
+- `acceptsOptionsObject` means JavaScript keyword calls can append one final
+  options object. `destructuredKeys` restricts accepted keywords when known.
+- `arity` and `parameterNames` are diagnostic/probing evidence. They document
+  the callable shape but do not by themselves authorize keyword adaptation.
+- `javaAdapter` names a Java adapter kind, optional method, target type, and
+  allowed keys.
+
+Keyword adaptation is automatic only when the target runtime has a proven
+shape. Python and Ruby calls use native `**kwargs` dispatch. JavaScript keyword
+calls require `acceptsOptionsObject`; unknown keyword names are rejected when
+`destructuredKeys` is present. Java keyword calls require `javaAdapter`; OmniVM
+must reject keyword calls without it rather than guessing from argument names.
+
+Current Java adapter kinds:
+
+- `map`: append a `Map<String,Object>` argument to the Java method/callable.
+- `record`: construct the target record from keyed values, then pass it as the
+  Java argument.
+- `builder`: construct the target builder, call matching setter-style methods,
+  then pass `build()` when present or the builder itself.
+
+Planned Java adapter kinds:
+
+- `namedParameters`: Java parameter-name dispatch when bytecode was compiled
+  with reliable `-parameters` metadata and overload resolution is unambiguous.
+
+Runtime probes are conservative. JavaScript probes function arity and attached
+or destructured options-object metadata. Java probes functional methods,
+records, builders, `Map` parameters, and one-argument adapter methods by
+reflection. Python uses `inspect.signature` where available, and Ruby uses
+`parameters`/`arity`. Probe failure leaves shape absent, which keeps unsupported
+keyword calls explicit.
+
 ## Copies
 
 Copied values are detached from the source runtime.

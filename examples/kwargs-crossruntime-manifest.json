@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "defaultRuntime": "python",
+  "ops": [
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "globalThis.js_options = function(label, options) { return label + ':' + options.limit + ':' + options.payload; };\nglobalThis.js_options.__omnivm_callable_shape__ = {acceptsOptionsObject: true, destructuredKeys: ['limit', 'payload'], arity: 2};"
+    },
+    {
+      "op": "exec",
+      "runtime": "java",
+      "code": "import java.util.Map;\npublic class KwargsManifest {\n  static class KwargsHandler {\n    public String accept(Map<String,Object> kwargs) {\n      return \"java:\" + kwargs.get(\"limit\") + \":\" + kwargs.get(\"payload\");\n    }\n  }\n\n  public static void main(String[] args) {\n    omnivm.OmniVM.setCaptureObject(\"java_handler\", new KwargsHandler());\n  }\n}"
+    },
+    {
+      "op": "exec",
+      "runtime": "ruby",
+      "code": "class RubyKwargsHandler\n  def accept(label, limit:, payload:)\n    \"#{label}:#{limit}:#{payload}\"\n  end\nend\n$ruby_handler = RubyKwargsHandler.new"
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "def py_options(label, **kwargs):\n    return f\"{label}:{kwargs['limit']}:{kwargs['payload']}\""
+    },
+    {
+      "op": "exec",
+      "runtime": "python",
+      "code": "js_result = js_options('js', limit=2, payload='options')\njava_result = java_handler.accept(limit=3, payload='map')\nruby_result = ruby_handler.accept('ruby', limit=4, payload='kwargs')\npython_result = py_options('python', limit=5, payload='kwargs')\nexpected = ['js:2:options', 'java:3:map', 'ruby:4:kwargs', 'python:5:kwargs']\nactual = [js_result, java_result, ruby_result, python_result]\nassert actual == expected, actual\nprint('kwargs e2e ' + ' | '.join(actual))",
+      "captures": {
+        "js_options": "js_options",
+        "java_handler": "java_handler",
+        "ruby_handler": "ruby_handler"
+      }
+    }
+  ]
+}

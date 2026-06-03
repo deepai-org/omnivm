@@ -52,6 +52,18 @@ func (r *goHTTPMessageReaderShape) Read(p []byte) (int, error) {
 	return copy(p, "not-the-request"), nil
 }
 
+type goHTTPResponseReaderShape struct {
+	RequestMethod string
+	Header        map[string]string
+	StatusCode    int
+	reads         int
+}
+
+func (r *goHTTPResponseReaderShape) Read(p []byte) (int, error) {
+	r.reads++
+	return copy(p, "not-the-response"), nil
+}
+
 func newMockRuntime(name string) *mockRuntime {
 	return &mockRuntime{
 		name: name,
@@ -3854,6 +3866,7 @@ func TestJSStubCallableShape(t *testing.T) {
 }
 
 func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
+	arity := 2
 	decoded := decodeRuntimeRefArg(map[string]interface{}{
 		"__omnivm_runtime_ref__": true,
 		"runtime":                "javascript",
@@ -3862,6 +3875,8 @@ func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
 		"callable_shape": map[string]interface{}{
 			"acceptsOptionsObject": true,
 			"destructuredKeys":     []interface{}{"limit", "payload"},
+			"parameterNames":       []interface{}{"options"},
+			"arity":                float64(arity),
 			"javaAdapter": map[string]interface{}{
 				"kind":       "map",
 				"method":     "accept",
@@ -3880,12 +3895,34 @@ func TestDecodeRuntimeRefArgCallableShape(t *testing.T) {
 	if ref.CallableShape == nil || !ref.CallableShape.AcceptsOptionsObject || strings.Join(ref.CallableShape.DestructuredKeys, ",") != "limit,payload" {
 		t.Fatalf("decoded callable shape = %#v", ref.CallableShape)
 	}
+	if ref.CallableShape.Arity == nil || *ref.CallableShape.Arity != arity || strings.Join(ref.CallableShape.ParameterNames, ",") != "options" {
+		t.Fatalf("decoded callable signature shape = %#v", ref.CallableShape)
+	}
 	if ref.CallableShape.JavaAdapter == nil ||
 		ref.CallableShape.JavaAdapter.Kind != "map" ||
 		ref.CallableShape.JavaAdapter.Method != "accept" ||
 		ref.CallableShape.JavaAdapter.TargetType != "com.example.Handler" ||
 		strings.Join(ref.CallableShape.JavaAdapter.Keys, ",") != "limit,payload" {
 		t.Fatalf("decoded Java adapter shape = %#v", ref.CallableShape.JavaAdapter)
+	}
+}
+
+func TestRuntimePrimitiveSnapshotExprProbesCallableShape(t *testing.T) {
+	js := runtimePrimitiveSnapshotExpr("javascript", "handler")
+	if !strings.Contains(js, "Function.prototype.toString") || !strings.Contains(js, "acceptsOptionsObject") || !strings.Contains(js, "arity") {
+		t.Fatalf("JS primitive snapshot should probe arity and destructured options shape, got %q", js)
+	}
+	py := runtimePrimitiveSnapshotExpr("python", "handler")
+	if !strings.Contains(py, "__import__(\"inspect\")") || !strings.Contains(py, "VAR_KEYWORD") || !strings.Contains(py, "parameterNames") {
+		t.Fatalf("Python primitive snapshot should inspect callable signature, got %q", py)
+	}
+	rb := runtimePrimitiveSnapshotExpr("ruby", "handler")
+	if !strings.Contains(rb, ".parameters") || !strings.Contains(rb, ":keyrest") || !strings.Contains(rb, "parameterNames") {
+		t.Fatalf("Ruby primitive snapshot should inspect callable parameters, got %q", rb)
+	}
+	java := runtimePrimitiveSnapshotExpr("java", "handler")
+	if !strings.Contains(java, "primitiveSnapshot(handler)") {
+		t.Fatalf("Java primitive snapshot should delegate to Java reflection helper, got %q", java)
 	}
 }
 
@@ -4557,6 +4594,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def _omnivm_encode_arg") || !contains(code, `"__omnivm_runtime_ref__"`) || !contains(code, `[_omnivm_encode_arg(arg) for arg in args]`) {
 		t.Fatalf("Python proxy calls should preserve complex args as runtime refs, got %q", code)
 	}
+	if !contains(code, `payload["kwargs"] = {str(k): _omnivm_encode_arg(v) for k, v in kwargs.items()}`) || !contains(code, "def __call__(self, *args, **kwargs)") {
+		t.Fatalf("Python proxy calls should forward keyword args, got %q", code)
+	}
 	if !contains(code, `mode = "values" if self._value.get("kind") == "sequence" or self._value.get("__omnivm_table__") is True else "keys"`) {
 		t.Fatalf("Python materializer should iterate sequence proxies by value and mapping proxies by key, got %q", code)
 	}
@@ -4683,8 +4723,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `op: "handle_adopt"`) || !contains(code, "__omnivm_adopt_handle") || !contains(code, "descriptor.transfer === true") {
 		t.Fatalf("JS materializer should adopt returned transfer handles, got %q", code)
 	}
-	if !contains(code, "globalThis.__omnivm_proxy_cache") || !contains(code, "WeakRef") || !contains(code, `__omnivm_cached_proxy("handle", value.id`) {
-		t.Fatalf("JS materializer should weakly cache handle proxies by identity, got %q", code)
+	if !contains(code, "globalThis.__omnivm_proxy_cache") || !contains(code, "WeakRef") ||
+		!contains(code, `__omnivm_cached_proxy("resource", value.id`) ||
+		!contains(code, `__omnivm_cached_proxy("table", value.id`) ||
+		!contains(code, `__omnivm_cached_proxy("job", value.id`) {
+		t.Fatalf("JS materializer should weakly cache descriptor proxies by namespaced identity, got %q", code)
 	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
@@ -6623,6 +6666,62 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 		t.Fatalf("java map-adapter keyword callable should append kwargs map, got %q", javaCallableKwExpr)
 	}
 
+	javaRecordKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{
+					Kind:       "record",
+					Method:     "accept",
+					TargetType: "com.example.SearchOptions",
+					Keys:       []string{"limit", "payload"},
+				},
+			},
+		},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2, "payload": "open"},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder java record kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(javaRecordKwExpr, "kwargsRecord") ||
+		!strings.Contains(javaRecordKwExpr, "com.example.SearchOptions") ||
+		!strings.Contains(javaRecordKwExpr, "proxyCall") ||
+		!strings.Contains(javaRecordKwExpr, "accept") {
+		t.Fatalf("java record-adapter keyword method should construct record arg, got %q", javaRecordKwExpr)
+	}
+
+	javaBuilderKwExpr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{
+			Runtime: "java",
+			VarName: "handler",
+			CallableShape: &CallableShape{
+				JavaAdapter: &JavaCallableAdapter{
+					Kind:       "builder",
+					Method:     "accept",
+					TargetType: "com.example.SearchOptionsBuilder",
+					Keys:       []string{"limit", "payload"},
+				},
+			},
+		},
+		"accept",
+		[]interface{}{},
+		map[string]interface{}{"limit": 2, "payload": "open"},
+		&runtimeExprBuilder{executor: e, targetRuntime: "java"},
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder java builder kwargs: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(javaBuilderKwExpr, "kwargsBuilder") ||
+		!strings.Contains(javaBuilderKwExpr, "com.example.SearchOptionsBuilder") ||
+		!strings.Contains(javaBuilderKwExpr, "proxyCall") ||
+		!strings.Contains(javaBuilderKwExpr, "accept") {
+		t.Fatalf("java builder-adapter keyword method should construct builder arg, got %q", javaBuilderKwExpr)
+	}
+
 	if _, _, err := runtimeRefCallExprWithBuilder(
 		RuntimeRef{
 			Runtime: "java",
@@ -6665,6 +6764,322 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 	}
 	if !strings.Contains(javaExpr, "omnivm.OmniVM.materializeJsonCapture") || !strings.Contains(javaExpr, "omnivm.OmniVM.listOf") {
 		t.Fatalf("Java runtime-ref args should use generic Java materialization helpers, got %q", javaExpr)
+	}
+}
+
+func TestRuntimeRefKwargsDiagnosticsExplainRejectedShape(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript", "java")
+
+	cases := []struct {
+		name   string
+		ref    RuntimeRef
+		key    string
+		kwargs map[string]interface{}
+		target string
+		want   []string
+	}{
+		{
+			name: "javascript callable unknown option key",
+			ref: RuntimeRef{
+				Runtime: "javascript",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					AcceptsOptionsObject: true,
+					DestructuredKeys:     []string{"limit"},
+				},
+			},
+			kwargs: map[string]interface{}{"payload": 2},
+			target: "python",
+			want: []string{
+				"keyword proxy call rejected",
+				"source runtime=javascript",
+				"target runtime=python",
+				"call shape=callable",
+				"kwargs=[payload]",
+				"detected shape=acceptsOptionsObject;destructuredKeys=[limit]",
+				`reason=keyword "payload" is not in destructuredKeys [limit]`,
+				"smallest fix=declare callable_shape.acceptsOptionsObject/destructuredKeys",
+			},
+		},
+		{
+			name: "javascript method kwargs without method shape",
+			ref: RuntimeRef{
+				Runtime: "javascript",
+				VarName: "handler",
+			},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "javascript",
+			want: []string{
+				"source runtime=javascript",
+				"target runtime=javascript",
+				`call shape=method "accept"`,
+				"detected shape=none",
+				"reason=JavaScript method property has no proven options-object callable shape",
+				"smallest fix=capture the JavaScript method as a function",
+			},
+		},
+		{
+			name: "java method adapter mismatch",
+			ref: RuntimeRef{
+				Runtime: "java",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					JavaAdapter: &JavaCallableAdapter{
+						Kind:   "map",
+						Method: "other",
+						Keys:   []string{"limit"},
+					},
+				},
+			},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "java",
+			want: []string{
+				"source runtime=java",
+				"target runtime=java",
+				`call shape=method "accept"`,
+				"kwargs=[limit]",
+				"detected shape=javaAdapter{kind=map,method=other,keys=[limit]}",
+				`reason=javaAdapter method "other" does not match method "accept"`,
+				"smallest fix=declare callable_shape.javaAdapter",
+			},
+		},
+		{
+			name: "java callable without adapter",
+			ref: RuntimeRef{
+				Runtime: "java",
+				VarName: "handler",
+			},
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "java",
+			want: []string{
+				"source runtime=java",
+				"target runtime=java",
+				"call shape=callable",
+				"detected shape=none",
+				"reason=no callable_shape metadata was captured for the Java target",
+				"smallest fix=declare callable_shape.javaAdapter",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := runtimeRefCallExprWithBuilder(
+				tc.ref,
+				tc.key,
+				[]interface{}{},
+				tc.kwargs,
+				&runtimeExprBuilder{executor: e, targetRuntime: tc.target},
+			)
+			if err == nil {
+				t.Fatalf("runtimeRefCallExprWithBuilder should reject kwargs")
+			}
+			got := err.Error()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("diagnostic missing %q\nfull diagnostic: %s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestGoldenProxyAndMaterializationDiagnostics(t *testing.T) {
+	e, _ := makeExecutor("python")
+
+	if _, err := e.HandleCall(`{"op":"handle_get","id":404,"key":"path"}`); err == nil || err.Error() != "manifest HandleCall: unknown handle 404" {
+		t.Fatalf("unknown proxy diagnostic = %v", err)
+	}
+
+	id, err := e.ensureHandleTable().Register(map[string]interface{}{"path": "/orders"}, handles.RegisterOptions{
+		Runtime: "python",
+		Kind:    "resource",
+	})
+	if err != nil {
+		t.Fatalf("register proxy handle: %v", err)
+	}
+	_, err = e.HandleCall(fmt.Sprintf(`{"op":"handle_call","id":%d,"key":"accept","kwargs":{"limit":2}}`, id))
+	wantProxy := fmt.Sprintf("manifest HandleCall: handle %d method %q does not support keyword arguments", id, "accept")
+	if err == nil || err.Error() != wantProxy {
+		t.Fatalf("proxy kwargs diagnostic = %v, want %q", err, wantProxy)
+	}
+
+	_, err = marshalResult(make(chan int))
+	const wantMaterialization = "bridge result value chan int is not JSON-marshalable; boundary classification must produce a primitive, descriptor, table, stream, or proxy"
+	if err == nil || err.Error() != wantMaterialization {
+		t.Fatalf("materialization diagnostic = %v, want %q", err, wantMaterialization)
+	}
+}
+
+func TestAdapterConformanceCoversRuntimeAndFrameworkShapes(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript", "java", "ruby")
+
+	callCases := []struct {
+		name   string
+		ref    RuntimeRef
+		key    string
+		kwargs map[string]interface{}
+		target string
+		want   []string
+	}{
+		{
+			name:   "python method kwargs",
+			ref:    RuntimeRef{Runtime: "python", VarName: "handler"},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "python",
+			want:   []string{"**__kwargs", "limit"},
+		},
+		{
+			name:   "ruby method keyword args",
+			ref:    RuntimeRef{Runtime: "ruby", VarName: "handler"},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "ruby",
+			want:   []string{"transform_keys", "**__kwargs", "limit"},
+		},
+		{
+			name: "javascript options object",
+			ref: RuntimeRef{
+				Runtime: "javascript",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					AcceptsOptionsObject: true,
+					DestructuredKeys:     []string{"limit", "payload"},
+				},
+			},
+			kwargs: map[string]interface{}{"limit": 2, "payload": "open"},
+			target: "javascript",
+			want:   []string{".concat([__kwargs])", "limit", "payload"},
+		},
+		{
+			name: "java map adapter",
+			ref: RuntimeRef{
+				Runtime: "java",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					JavaAdapter: &JavaCallableAdapter{Kind: "map", Method: "accept", Keys: []string{"limit"}},
+				},
+			},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "java",
+			want:   []string{"proxyCall", "accept", "omnivm.OmniVM.mapOf", "limit"},
+		},
+		{
+			name: "java record adapter",
+			ref: RuntimeRef{
+				Runtime: "java",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					JavaAdapter: &JavaCallableAdapter{
+						Kind:       "record",
+						Method:     "accept",
+						TargetType: "com.example.SearchOptions",
+						Keys:       []string{"limit"},
+					},
+				},
+			},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "java",
+			want:   []string{"proxyCall", "kwargsRecord", "com.example.SearchOptions", "limit"},
+		},
+		{
+			name: "java builder adapter",
+			ref: RuntimeRef{
+				Runtime: "java",
+				VarName: "handler",
+				CallableShape: &CallableShape{
+					JavaAdapter: &JavaCallableAdapter{
+						Kind:       "builder",
+						Method:     "accept",
+						TargetType: "com.example.SearchOptionsBuilder",
+						Keys:       []string{"limit"},
+					},
+				},
+			},
+			key:    "accept",
+			kwargs: map[string]interface{}{"limit": 2},
+			target: "java",
+			want:   []string{"proxyCall", "kwargsBuilder", "com.example.SearchOptionsBuilder", "limit"},
+		},
+	}
+
+	for _, tc := range callCases {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, ok, err := runtimeRefCallExprWithBuilder(
+				tc.ref,
+				tc.key,
+				[]interface{}{"open"},
+				tc.kwargs,
+				&runtimeExprBuilder{executor: e, targetRuntime: tc.target},
+			)
+			if err != nil || !ok {
+				t.Fatalf("runtimeRefCallExprWithBuilder: ok=%v err=%v", ok, err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(expr, want) {
+					t.Fatalf("%s missing %q in expr %q", tc.name, want, expr)
+				}
+			}
+		})
+	}
+
+	frameworkCases := []struct {
+		name            string
+		value           interface{}
+		wantHTTPMessage bool
+	}{
+		{
+			name: "request reader shape",
+			value: &goHTTPMessageReaderShape{
+				Method:  "GET",
+				Path:    "/orders/42",
+				Headers: map[string]string{"X-Request-Id": "req-42"},
+			},
+			wantHTTPMessage: true,
+		},
+		{
+			name: "response reader shape",
+			value: &goHTTPResponseReaderShape{
+				RequestMethod: "GET",
+				Header:        map[string]string{"Content-Type": "application/json"},
+				StatusCode:    202,
+			},
+			wantHTTPMessage: true,
+		},
+	}
+
+	for _, tc := range frameworkCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHTTPMessageShapeValue(tc.value); got != tc.wantHTTPMessage {
+				t.Fatalf("isHTTPMessageShapeValue = %v, want %v", got, tc.wantHTTPMessage)
+			}
+			if isReaderStreamValue(tc.value) {
+				t.Fatalf("%s should stay a framework resource, not a reader stream", tc.name)
+			}
+			bridged, err := e.bridgeReturnValue(tc.value)
+			if err != nil {
+				t.Fatalf("bridgeReturnValue: %v", err)
+			}
+			descriptor, ok := bridged.(map[string]interface{})
+			if !ok || descriptor["__omnivm_resource__"] != true || descriptor["runtime"] != "go" || descriptor["kind"] != "object" {
+				t.Fatalf("framework shape should bridge as go object resource proxy, got %#v", bridged)
+			}
+			reads := 0
+			switch v := tc.value.(type) {
+			case *goHTTPMessageReaderShape:
+				reads = v.reads
+			case *goHTTPResponseReaderShape:
+				reads = v.reads
+			}
+			if reads != 0 {
+				t.Fatalf("%s was read during bridge, reads=%d", tc.name, reads)
+			}
+		})
 	}
 }
 

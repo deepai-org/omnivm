@@ -71,6 +71,8 @@ type CallableShape struct {
 	AcceptsKwargs        bool                 `json:"acceptsKwargs,omitempty"`
 	AcceptsOptionsObject bool                 `json:"acceptsOptionsObject,omitempty"`
 	DestructuredKeys     []string             `json:"destructuredKeys,omitempty"`
+	ParameterNames       []string             `json:"parameterNames,omitempty"`
+	Arity                *int                 `json:"arity,omitempty"`
 	JavaAdapter          *JavaCallableAdapter `json:"javaAdapter,omitempty"`
 }
 

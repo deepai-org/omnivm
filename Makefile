@@ -39,7 +39,7 @@ test-libomnivm-manifests: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-manifests.sh
 
 test-libomnivm-stress: build
-	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-stress.sh
+	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-stress.sh $(STRESS_ARGS)
 
 test-poly-libomnivm-smoke: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-poly-libomnivm-smoke.sh

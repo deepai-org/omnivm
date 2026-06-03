@@ -39,6 +39,7 @@ examples=(
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
+  "vertical-order-review-app.poly"
   "compat-python-service.py"
   "compat-go-status.go"
   "compat-order-schema.ts"
@@ -65,6 +66,10 @@ for example in "${examples[@]}"; do
   printf '%s\n' "$output"
   if [ "$example" = "compat-go-status.go" ] && [[ "$output" != *"ok:200"* ]]; then
     echo "expected compat-go-status.go main() output to contain ok:200, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* ]]; then
+    echo "expected vertical order app output, got: $output" >&2
     exit 1
   fi
 done
@@ -102,11 +107,25 @@ environ = {
     "wsgi.multithread": False,
     "wsgi.multiprocess": True,
     "wsgi.run_once": False,
+    "HTTP_X_REQUEST_ID": "req-42",
 }
 body = b"".join(application(environ, start_response)).decode()
 assert captured["status"].startswith("200"), captured
 assert captured["headers"].get("X-Poly-Fixture") == "middleware", captured
-assert body == "poly-feature-ok:GET:/poly/:u-42:poly", body
+import json
+payload = json.loads(body)
+assert payload["status"] == "poly-feature-ok", payload
+assert payload["method"] == "GET", payload
+assert payload["path"] == "/poly/", payload
+assert payload["user_id"] == "u-42", payload
+assert payload["feature"] == "poly", payload
+assert payload["visits"] == 3, payload
+assert payload["request_id"] == "req-42", payload
+assert payload["meta_request_id"] == "req-42", payload
+assert payload["items"] == [
+    {"kind": "feature", "value": "poly"},
+    {"kind": "request", "value": "req-42"},
+], payload
 print(body)'
 done
 

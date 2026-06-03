@@ -1,11 +1,13 @@
-from django.http import HttpResponse
+from django.http import JsonResponse
 from django.urls import path
+from django.views import View
 
 from passenger_demo.services import render_poly_response
 
 
-def poly_view(request):
-    return HttpResponse(render_poly_response(request))
+class PolyView(View):
+    def get(self, request):
+        return JsonResponse(render_poly_response(request))
 
 
-urlpatterns = [path("poly/", poly_view)]
+urlpatterns = [path("poly/", PolyView.as_view())]

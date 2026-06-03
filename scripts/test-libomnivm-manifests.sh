@@ -40,6 +40,7 @@ run "If/else, while loops, recursion" controlflow-test.json
 run "Params, mutability, assign operators" controlflow-manifest.json
 run "Round-trip, accumulate, recursive chains" crossruntime-manifest.json
 run "Java manifest function proxy regression" java-manifest-function-proxy.json "Java manifest function proxy accepted"
+run "Python-hosted cross-runtime kwargs" kwargs-crossruntime-manifest.json "kwargs e2e"
 run "Foreach, try/catch, batch, large data" stress-test-2.json
 run "Async/await, parallel, channels, select" stress-test-4.json
 run "Channels, generators, spawn workers" stress-test-5.json

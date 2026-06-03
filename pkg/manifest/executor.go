@@ -632,9 +632,10 @@ func runtimeSerializeExpr(rtName, expr string) string {
 }
 
 type runtimePrimitiveSnapshot struct {
-	Primitive bool        `json:"primitive"`
-	Value     interface{} `json:"value"`
-	Callable  bool        `json:"callable,omitempty"`
+	Primitive     bool           `json:"primitive"`
+	Value         interface{}    `json:"value"`
+	Callable      bool           `json:"callable,omitempty"`
+	CallableShape *CallableShape `json:"callableShape,omitempty"`
 }
 
 func (e *Executor) boundRuntimeRefSnapshot(rtName, varName string) (RuntimeRef, interface{}, error) {
@@ -662,17 +663,18 @@ func (e *Executor) boundRuntimeRefSnapshot(rtName, varName string) (RuntimeRef, 
 	ref.Opaque = true
 	ref.CallableKnown = true
 	ref.Callable = snapshot.Callable
+	ref.CallableShape = snapshot.CallableShape
 	return ref, ref, nil
 }
 
 func runtimePrimitiveSnapshotExpr(rtName, expr string) string {
 	switch rtName {
 	case "javascript":
-		return fmt.Sprintf(`(function(){ var __v = (%s); var __p = (__v === null || typeof __v === "boolean" || typeof __v === "number" || typeof __v === "string"); return JSON.stringify(__p ? {primitive:true,value:__v} : {primitive:false,callable:typeof __v === "function"}); })()`, expr)
+		return fmt.Sprintf(`(function(){ var __v = (%s); var __p = (__v === null || typeof __v === "boolean" || typeof __v === "number" || typeof __v === "string"); if (__p) return JSON.stringify({primitive:true,value:__v}); var __shape = null; if (typeof __v === "function") { __shape = __v.__omnivm_callable_shape__ || {arity: __v.length}; try { var __src = Function.prototype.toString.call(__v); var __m = __src.match(/^[^(]*\(\s*\{([^}]*)\}/) || __src.match(/^\s*\(?\s*\{([^}]*)\}/); if (__m) { var __keys = __m[1].split(",").map(function(s){ return s.split(":")[0].split("=")[0].trim(); }).filter(Boolean); __shape.acceptsOptionsObject = true; if (__keys.length) __shape.destructuredKeys = __keys; } } catch (_e) {} } return JSON.stringify({primitive:false,callable:typeof __v === "function",callableShape:__shape}); })()`, expr)
 	case "python":
-		return fmt.Sprintf(`(lambda __v: __import__("json").dumps({"primitive": True, "value": __v} if isinstance(__v, (type(None), bool, int, float, str)) else {"primitive": False, "callable": callable(__v)}))(%s)`, expr)
+		return fmt.Sprintf(`(lambda __v: (lambda __json, __inspect: __json.dumps({"primitive": True, "value": __v} if isinstance(__v, (type(None), bool, int, float, str)) else (lambda __shape: {"primitive": False, "callable": callable(__v), "callableShape": __shape})(None if not callable(__v) else (lambda __sig: {"acceptsKwargs": any(__p.kind == __inspect.Parameter.VAR_KEYWORD for __p in __sig.parameters.values()), "parameterNames": [__n for __n, __p in __sig.parameters.items() if __p.kind in (__inspect.Parameter.POSITIONAL_ONLY, __inspect.Parameter.POSITIONAL_OR_KEYWORD, __inspect.Parameter.KEYWORD_ONLY)], "arity": sum(1 for __p in __sig.parameters.values() if __p.default is __inspect.Parameter.empty and __p.kind in (__inspect.Parameter.POSITIONAL_ONLY, __inspect.Parameter.POSITIONAL_OR_KEYWORD))})(__inspect.signature(__v)))))(__import__("json"), __import__("inspect")))(%s)`, expr)
 	case "ruby":
-		return fmt.Sprintf(`begin; require 'json'; __v = (begin; %s; end); __text = __v.is_a?(String) && __v.encoding.ascii_compatible? && __v.valid_encoding?; JSON.generate((__v.nil? || __v == true || __v == false || __v.is_a?(Numeric) || __text) ? {primitive: true, value: __v} : {primitive: false, callable: __v.respond_to?(:call)}); end`, expr)
+		return fmt.Sprintf(`begin; require 'json'; __v = (begin; %s; end); __text = __v.is_a?(String) && __v.encoding.ascii_compatible? && __v.valid_encoding?; if __v.nil? || __v == true || __v == false || __v.is_a?(Numeric) || __text; JSON.generate({primitive: true, value: __v}); else; __params = (__v.respond_to?(:parameters) ? __v.parameters : []); __shape = __v.respond_to?(:call) ? {acceptsKwargs: __params.any? { |p| p[0] == :keyrest }, parameterNames: __params.map { |p| p[1] }.compact.map(&:to_s), arity: (__v.respond_to?(:arity) ? __v.arity : nil)} : nil; JSON.generate({primitive: false, callable: __v.respond_to?(:call), callableShape: __shape}); end; end`, expr)
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.primitiveSnapshot(%s)", expr)
 	default:

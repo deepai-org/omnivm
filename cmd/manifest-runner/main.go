@@ -52,6 +52,8 @@ import "C"
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -247,12 +249,20 @@ func main() {
 	arrow.SetGlobalStore(arrow.NewSharedStore())
 	polyglot.RegisterBuiltins()
 
-	// Parse args: manifest-runner <manifest.json>
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: manifest-runner <manifest.json>\n")
+	flags := flag.NewFlagSet("manifest-runner", flag.ExitOnError)
+	doctor := flags.Bool("doctor", false, "verify manifest boundary decisions without executing runtimes")
+	doctorJSON := flags.Bool("doctor-json", false, "emit doctor report as JSON")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		os.Exit(1)
 	}
-	manifestPath := os.Args[1]
+
+	// Parse args: manifest-runner [--doctor|--doctor-json] <manifest.json>
+	if flags.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: manifest-runner [--doctor|--doctor-json] <manifest.json>\n")
+		os.Exit(1)
+	}
+	manifestPath := flags.Arg(0)
 
 	// Read and parse manifest
 	data, err := os.ReadFile(manifestPath)
@@ -265,6 +275,28 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing manifest: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *doctor || *doctorJSON {
+		report, err := manifest.VerifyManifestBoundaries(m)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error verifying manifest: %v\n", err)
+			os.Exit(1)
+		}
+		if *doctorJSON {
+			data, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error encoding doctor report: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(string(data))
+		} else {
+			fmt.Print(manifest.FormatBoundaryDecisionReport(report))
+		}
+		if len(report.RiskyFallbacks) > 0 {
+			os.Exit(2)
+		}
+		return
 	}
 
 	fmt.Fprintf(os.Stderr, "=== OmniVM Manifest Runner (v%d) ===\n", m.Version)

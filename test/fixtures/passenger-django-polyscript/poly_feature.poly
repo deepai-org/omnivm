@@ -1,2 +1,23 @@
 def describe_request(request):
-    return "poly-feature-ok:" + request.method + ":" + request.path + ":" + request.fixture_user_id + ":" + request.session["feature"]
+    request_id = request.headers.get("X-Request-Id", "missing")
+    meta_request_id = request.META.get("HTTP_X_REQUEST_ID", "missing")
+    return {
+        "status": "poly-feature-ok",
+        "method": request.method,
+        "path": request.path,
+        "user": {"id": request.fixture_user_id},
+        "session": {
+            "feature": request.session["feature"],
+            "visits": request.session["visits"],
+        },
+        "headers": {
+            "request_id": request_id,
+        },
+        "meta": {
+            "request_id": meta_request_id,
+        },
+        "items": [
+            {"kind": "feature", "value": request.session["feature"]},
+            {"kind": "request", "value": request_id},
+        ],
+    }

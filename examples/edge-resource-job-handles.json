@@ -22,10 +22,10 @@
           "payload": {"kind": "literal", "value": {"user": "ada", "task": "receipt"}}
         },
         {
-          "op": "exec",
-          "runtime": "javascript",
-          "captures": {"tx": "tx", "job": "job"},
-          "code": "console.log(`Edge handle proxy tx=${tx.kind} closed=${tx.closed} job=${job.kind} done=${job.done}`)"
+      "op": "exec",
+      "runtime": "javascript",
+      "captures": {"tx": "tx", "job": "job"},
+      "code": "const tx_meta = tx.toJSON(); const job_meta = job.toJSON(); console.log(`Edge handle proxy tx=${tx_meta.kind} closed=${tx_meta.closed} job=${job_meta.kind} done=${job_meta.done}`)"
         },
         {
           "op": "job",
@@ -53,7 +53,7 @@
       "op": "exec",
       "runtime": "javascript",
       "captures": {"tx": "tx", "job_result": "job_result"},
-      "code": "console.log(`Edge resource closed=${tx.closed} result=${job_result}`)"
+      "code": "const tx_meta_after = tx.toJSON(); console.log(`Edge resource closed=${tx_meta_after.closed} result=${job_result}`)"
     }
   ]
 }

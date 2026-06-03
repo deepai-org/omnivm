@@ -198,6 +198,72 @@ public class OmniVM {
         return out;
     }
 
+    public static Object kwargsRecord(String targetType, Object kwargsValue, Object keysValue) {
+        try {
+            Class<?> type = Class.forName(targetType);
+            Map<String, Object> kwargs = coerceStringMap(kwargsValue);
+            List<String> keys = coerceStringList(keysValue);
+            if (type.isRecord()) {
+                java.lang.reflect.RecordComponent[] components = type.getRecordComponents();
+                Object[] args = new Object[components.length];
+                Class<?>[] argTypes = new Class<?>[components.length];
+                for (int i = 0; i < components.length; i++) {
+                    String name = components[i].getName();
+                    args[i] = coerceArg(kwargs.get(name), components[i].getType());
+                    argTypes[i] = components[i].getType();
+                }
+                java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructor(argTypes);
+                makeAccessible(ctor);
+                return ctor.newInstance(args);
+            }
+            if (keys.isEmpty()) {
+                keys.addAll(kwargs.keySet());
+            }
+            for (java.lang.reflect.Constructor<?> ctor : type.getDeclaredConstructors()) {
+                if (ctor.getParameterCount() != keys.size()) {
+                    continue;
+                }
+                Object[] args = new Object[keys.size()];
+                Class<?>[] argTypes = ctor.getParameterTypes();
+                for (int i = 0; i < keys.size(); i++) {
+                    args[i] = coerceArg(kwargs.get(keys.get(i)), argTypes[i]);
+                }
+                makeAccessible(ctor);
+                return ctor.newInstance(args);
+            }
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+        }
+        return null;
+    }
+
+    public static Object kwargsBuilder(String targetType, Object kwargsValue, Object keysValue) {
+        try {
+            Class<?> type = Class.forName(targetType);
+            Object builder = type.getDeclaredConstructor().newInstance();
+            Map<String, Object> kwargs = coerceStringMap(kwargsValue);
+            List<String> keys = coerceStringList(keysValue);
+            if (keys.isEmpty()) {
+                keys.addAll(kwargs.keySet());
+            }
+            for (String key : keys) {
+                java.lang.reflect.Method setter = builderSetter(type, key);
+                if (setter == null) {
+                    return null;
+                }
+                makeAccessible(setter);
+                setter.invoke(builder, coerceArg(kwargs.get(key), setter.getParameterTypes()[0]));
+            }
+            java.lang.reflect.Method build = zeroArgMethod(type, "build");
+            if (build != null) {
+                makeAccessible(build);
+                return build.invoke(builder);
+            }
+            return builder;
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
     public static String toJson(Object value) {
         return jsonBridgeValue(value);
     }
@@ -214,6 +280,10 @@ public class OmniVM {
         } else {
             snapshot.put("primitive", false);
             snapshot.put("callable", isCallableTarget(value));
+            Map<String, Object> shape = callableShape(value);
+            if (shape != null) {
+                snapshot.put("callableShape", shape);
+            }
         }
         return jsonValue(snapshot);
     }
@@ -512,6 +582,155 @@ public class OmniVM {
         } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
             return null;
         }
+    }
+
+    private static Map<String, Object> callableShape(Object value) {
+        Map<String, Object> shape = new LinkedHashMap<>();
+        if (value instanceof Class<?> type) {
+            Map<String, Object> adapter = javaAdapterForType(type);
+            if (adapter != null) {
+                shape.put("javaAdapter", adapter);
+                return shape;
+            }
+            return null;
+        }
+        java.lang.reflect.Method method = functionalMethod(value);
+        if (method == null) {
+            if (value != null) {
+                for (java.lang.reflect.Method candidate : proxyMethods(value.getClass())) {
+                    if (candidate.getParameterCount() != 1) {
+                        continue;
+                    }
+                    Map<String, Object> adapter = javaAdapterForType(candidate.getParameterTypes()[0]);
+                    if (adapter == null) {
+                        continue;
+                    }
+                    adapter.put("method", candidate.getName());
+                    shape.put("javaAdapter", adapter);
+                    return shape;
+                }
+            }
+            return null;
+        }
+        shape.put("arity", method.getParameterCount());
+        List<String> parameterNames = new ArrayList<>();
+        for (java.lang.reflect.Parameter parameter : method.getParameters()) {
+            parameterNames.add(parameter.getName());
+        }
+        if (!parameterNames.isEmpty()) {
+            shape.put("parameterNames", parameterNames);
+        }
+        if (method.getParameterCount() == 1) {
+            Map<String, Object> adapter = javaAdapterForType(method.getParameterTypes()[0]);
+            if (adapter != null) {
+                shape.put("javaAdapter", adapter);
+            }
+        }
+        return shape;
+    }
+
+    private static Map<String, Object> javaAdapterForType(Class<?> type) {
+        if (type == null) {
+            return null;
+        }
+        Map<String, Object> adapter = new LinkedHashMap<>();
+        adapter.put("targetType", type.getName());
+        if (Map.class.isAssignableFrom(type)) {
+            adapter.put("kind", "map");
+            return adapter;
+        }
+        if (type.isRecord()) {
+            adapter.put("kind", "record");
+            List<String> keys = new ArrayList<>();
+            for (java.lang.reflect.RecordComponent component : type.getRecordComponents()) {
+                keys.add(component.getName());
+            }
+            adapter.put("keys", keys);
+            return adapter;
+        }
+        List<String> builderKeys = builderKeys(type);
+        if (!builderKeys.isEmpty()) {
+            adapter.put("kind", "builder");
+            adapter.put("keys", builderKeys);
+            return adapter;
+        }
+        return null;
+    }
+
+    private static List<String> builderKeys(Class<?> type) {
+        List<String> keys = new ArrayList<>();
+        for (java.lang.reflect.Method method : proxyMethods(type)) {
+            if (method.getParameterCount() != 1) {
+                continue;
+            }
+            String key = builderSetterKey(type, method);
+            if (key != null && !keys.contains(key)) {
+                keys.add(key);
+            }
+        }
+        return keys;
+    }
+
+    private static java.lang.reflect.Method builderSetter(Class<?> type, String key) {
+        for (java.lang.reflect.Method method : proxyMethods(type)) {
+            if (method.getParameterCount() != 1) {
+                continue;
+            }
+            String methodKey = builderSetterKey(type, method);
+            if (key.equals(methodKey)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    private static String builderSetterKey(Class<?> type, java.lang.reflect.Method method) {
+        Class<?> returns = method.getReturnType();
+        if (!(returns == Void.TYPE || returns == type || type.isAssignableFrom(returns))) {
+            return null;
+        }
+        String name = method.getName();
+        if (name.startsWith("set") && name.length() > 3 && Character.isUpperCase(name.charAt(3))) {
+            return Character.toLowerCase(name.charAt(3)) + name.substring(4);
+        }
+        if (!name.equals("build") && !name.equals("getClass")) {
+            return name;
+        }
+        return null;
+    }
+
+    private static java.lang.reflect.Method zeroArgMethod(Class<?> type, String name) {
+        for (java.lang.reflect.Method method : proxyMethods(type)) {
+            if (method.getParameterCount() == 0 && method.getName().equals(name)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    private static Map<String, Object> coerceStringMap(Object value) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
+
+    private static List<String> coerceStringList(Object value) {
+        List<String> out = new ArrayList<>();
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                out.add(String.valueOf(item));
+            }
+        } else if (value != null && value.getClass().isArray()) {
+            int n = java.lang.reflect.Array.getLength(value);
+            for (int i = 0; i < n; i++) {
+                out.add(String.valueOf(java.lang.reflect.Array.get(value, i)));
+            }
+        }
+        return out;
     }
 
     private static java.lang.reflect.Field proxyField(Class<?> type, String name) {

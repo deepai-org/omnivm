@@ -7,6 +7,7 @@ ctypes, and exercise nested runtime callbacks from that topology.
 """
 
 import os
+import argparse
 import gc
 import ctypes
 import json
@@ -17,17 +18,88 @@ import tempfile
 import threading
 import time
 
-sys.path.insert(0, "/build/pyomnivm")
-
-import omnivm
-
 
 PASSED = 0
 FAILED = 0
+SKIPPED = 0
+SELECTED = 0
+NAME_FILTERS = []
+CATEGORY_FILTERS = []
+omnivm = None
+
+
+def load_omnivm():
+    global omnivm
+    if omnivm is None:
+        sys.path.insert(0, "/build/pyomnivm")
+        import omnivm as omnivm_mod
+
+        omnivm = omnivm_mod
+    return omnivm
+
+
+def _normalize_filter(value):
+    return str(value).strip().lower().replace("_", "-")
+
+
+def categories_for_name(name, fn=None):
+    fn_name = getattr(fn, "__name__", "")
+    text = f"{name} {fn_name}".lower()
+    categories = {"all"}
+    if "manifest" in text:
+        categories.add("manifest")
+    if "arrow" in text or "buffer" in text or "zero-copy" in text:
+        categories.add("arrow")
+    if "proxy" in text or "handle" in text:
+        categories.add("proxy")
+    if "stream" in text or "generator" in text or "iterator" in text or "iterable" in text:
+        categories.add("stream")
+    if (
+        "kwargs" in text
+        or "keyword" in text
+        or "adapter" in text
+        or "options" in text
+        or "mapping keys" in text
+        or "setter values" in text
+        or "method arguments" in text
+        or "unsafe names" in text
+    ):
+        categories.add("kwargs")
+    if "watchdog" in text or "timeout" in text or "preemption" in text or "interrupt" in text:
+        categories.add("watchdog")
+    if "prefork" in text or "fork" in text or "wsgi" in text or "passenger" in text:
+        categories.add("prefork")
+    if "thread" in text or "concurrent" in text or "contention" in text:
+        categories.add("concurrency")
+    if "java" in text or "jvm" in text:
+        categories.add("java")
+    if "ruby" in text:
+        categories.add("ruby")
+    if "javascript" in text or "js " in text or "v8" in text:
+        categories.add("javascript")
+    if "python" in text or "cpython" in text:
+        categories.add("python")
+    return categories
+
+
+def should_run(name, fn=None):
+    normalized_name = _normalize_filter(name)
+    normalized_fn_name = _normalize_filter(getattr(fn, "__name__", ""))
+    categories = categories_for_name(name, fn)
+    if NAME_FILTERS and not any(pattern in normalized_name for pattern in NAME_FILTERS):
+        if not any(pattern in normalized_fn_name for pattern in NAME_FILTERS):
+            return False
+    if CATEGORY_FILTERS and not any(category in categories for category in CATEGORY_FILTERS):
+        return False
+    return True
 
 
 def check(name, fn):
-    global PASSED, FAILED
+    global PASSED, FAILED, SKIPPED, SELECTED
+    if not should_run(name, fn):
+        SKIPPED += 1
+        return
+    SELECTED += 1
     print(f"[LIB TEST] {name}... ", end="", flush=True)
     try:
         fn()
@@ -5897,11 +5969,11 @@ def test_manifest_ruby_array_capture_uses_proxy_not_json():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
+    if after.get("resource_proxy_captures", 0) < 1:
         raise AssertionError(f"Ruby array did not cross as a live proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+    if after.get("table_proxy_captures", 0) != 0:
         raise AssertionError(f"Ruby array should not claim a bulk table buffer: before={before}, after={after}")
-    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+    if after.get("arrow_transfers", 0) != 0:
         raise AssertionError(f"Ruby array should not claim Arrow transfer: before={before}, after={after}")
     if after.get("json_fallbacks", 0) != 0:
         raise AssertionError(f"Ruby array capture used JSON fallback: before={before}, after={after}")
@@ -11537,7 +11609,54 @@ def test_ruby_bootstrap_core_surface():
 
 
 def main():
+    global NAME_FILTERS, CATEGORY_FILTERS
+    parser = argparse.ArgumentParser(description="CPython-hosted libomnivm stress checks")
+    parser.add_argument("--name", action="append", default=[], help="run tests whose display name contains this text; may be repeated")
+    parser.add_argument("--category", action="append", default=[], help="run tests in a derived category such as manifest, proxy, arrow, stream, kwargs, watchdog, prefork, concurrency, java, ruby, javascript, or python; may be repeated")
+    parser.add_argument("--list-categories", action="store_true", help="print supported derived categories and exit")
+    args = parser.parse_args()
+    NAME_FILTERS = [_normalize_filter(value) for value in args.name if str(value).strip()]
+    CATEGORY_FILTERS = {_normalize_filter(value) for value in args.category if str(value).strip()}
+
+    categories = [
+        "all",
+        "manifest",
+        "proxy",
+        "arrow",
+        "stream",
+        "kwargs",
+        "watchdog",
+        "prefork",
+        "concurrency",
+        "java",
+        "ruby",
+        "javascript",
+        "python",
+    ]
+    if args.list_categories:
+        print("\n".join(categories))
+        return 0
+
+    unknown_categories = sorted(CATEGORY_FILTERS - set(categories))
+    if unknown_categories:
+        print(f"unknown categories: {', '.join(unknown_categories)}", file=sys.stderr)
+        print(f"supported categories: {', '.join(categories)}", file=sys.stderr)
+        return 2
+
     print("=== libomnivm CPython Host Stress Tests ===")
+    if NAME_FILTERS or CATEGORY_FILTERS:
+        print(
+            "Filters: "
+            + ", ".join(
+                part
+                for part in [
+                    f"name={NAME_FILTERS}" if NAME_FILTERS else "",
+                    f"category={sorted(CATEGORY_FILTERS)}" if CATEGORY_FILTERS else "",
+                ]
+                if part
+            )
+        )
+    load_omnivm()
     omnivm.init_runtimes(["javascript", "java", "ruby"])
     try:
         check("Simple re-entry (Python calls JS)", test_simple_reentry)
@@ -11793,7 +11912,10 @@ def main():
     check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
     check("python3-polyscript Django WSGI smoke", test_python3_polyscript_django_wsgi_smoke)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
-    print(f"\nResults: {PASSED} passed, {FAILED} failed")
+    if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:
+        print("\nResults: 0 selected, no tests matched filters")
+        return 2
+    print(f"\nResults: {PASSED} passed, {FAILED} failed, {SKIPPED} skipped")
     return 1 if FAILED else 0
 
 

@@ -165,6 +165,17 @@ func callableShapeForParams(params []*Param) *CallableShape {
 			seenKeys[key] = true
 			shape.DestructuredKeys = append(shape.DestructuredKeys, key)
 		}
+		for _, key := range param.CallableShape.ParameterNames {
+			if key == "" || seenKeys[key] {
+				continue
+			}
+			seenKeys[key] = true
+			shape.ParameterNames = append(shape.ParameterNames, key)
+		}
+		if shape.Arity == nil && param.CallableShape.Arity != nil {
+			arity := *param.CallableShape.Arity
+			shape.Arity = &arity
+		}
 		if shape.JavaAdapter == nil && param.CallableShape.JavaAdapter != nil {
 			adapter := *param.CallableShape.JavaAdapter
 			if len(param.CallableShape.JavaAdapter.Keys) > 0 {
@@ -173,7 +184,7 @@ func callableShapeForParams(params []*Param) *CallableShape {
 			shape.JavaAdapter = &adapter
 		}
 	}
-	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && shape.JavaAdapter == nil {
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && len(shape.ParameterNames) == 0 && shape.Arity == nil && shape.JavaAdapter == nil {
 		return nil
 	}
 	return &shape
@@ -552,13 +563,41 @@ func decodeCallableShape(value interface{}) *CallableShape {
 			}
 		}
 	}
+	if keys, ok := m["parameterNames"].([]interface{}); ok {
+		for _, key := range keys {
+			if s, ok := key.(string); ok && s != "" {
+				shape.ParameterNames = append(shape.ParameterNames, s)
+			}
+		}
+	}
+	if arity, ok := decodeInt(m["arity"]); ok {
+		shape.Arity = &arity
+	}
 	if adapter := decodeJavaCallableAdapter(m["javaAdapter"]); adapter != nil {
 		shape.JavaAdapter = adapter
 	}
-	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && shape.JavaAdapter == nil {
+	if !shape.AcceptsKwargs && !shape.AcceptsOptionsObject && len(shape.DestructuredKeys) == 0 && len(shape.ParameterNames) == 0 && shape.Arity == nil && shape.JavaAdapter == nil {
 		return nil
 	}
 	return &shape
+}
+
+func decodeInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case json.Number:
+		n, err := v.Int64()
+		return int(n), err == nil
+	default:
+		return 0, false
+	}
 }
 
 func decodeJavaCallableAdapter(value interface{}) *JavaCallableAdapter {
@@ -2581,6 +2620,7 @@ func (e *Executor) runtimeRefEvalExpr(ref RuntimeRef, varName, expr string) (int
 		nextRef.Opaque = true
 		nextRef.CallableKnown = true
 		nextRef.Callable = snapshot.Callable
+		nextRef.CallableShape = snapshot.CallableShape
 		return nextRef, true, nil
 	}
 	value, err := e.runtimeRefEvalPrimitive(RuntimeRef{Runtime: ref.Runtime, VarName: varName}, runtimeVarRef(ref.Runtime, varName))
@@ -3154,7 +3194,7 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		case "javascript":
 			if len(kwargs) > 0 {
 				if !runtimeRefAcceptsJSOptionsKwargs(ref, kwargs) {
-					return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls without callable shape metadata", ref.Runtime)
+					return "", false, runtimeRefKeywordDiagnostic(ref, "", kwargs, builder, jsKwargsRejectReason(ref, kwargs, false), "declare callable_shape.acceptsOptionsObject/destructuredKeys for the captured function, or pass an explicit options object as the final positional argument")
 				}
 				expr = fmt.Sprintf("(function(__fn, __args, __kwargs) { return __fn.apply(undefined, __args.concat([__kwargs])); })(%s, %s, %s)", base, argsLit, kwargsLit)
 			} else {
@@ -3170,10 +3210,14 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 			}
 		case "java":
 			if len(kwargs) > 0 {
-				if !runtimeRefAcceptsJavaMapKwargs(ref, "", kwargs) {
-					return "", false, fmt.Errorf("runtime %q does not support keyword callable proxy calls without Java map adapter callable shape metadata", ref.Runtime)
+				if !runtimeRefAcceptsJavaKwargs(ref, "", kwargs) {
+					return "", false, runtimeRefKeywordDiagnostic(ref, "", kwargs, builder, javaKwargsRejectReason(ref, "", kwargs), "declare callable_shape.javaAdapter with kind map, record, or builder and matching keys, or pass an explicit Java options object positionally")
 				}
-				adapterArgsLit, err := builder.expr(appendRuntimeRefKwargsArg(args, kwargs))
+				adapterArgs, err := javaAdapterArgs(ref, args, kwargs, builder)
+				if err != nil {
+					return "", false, err
+				}
+				adapterArgsLit, err := builder.expr(adapterArgs)
 				if err != nil {
 					return "", false, err
 				}
@@ -3193,7 +3237,7 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 	switch ref.Runtime {
 	case "javascript":
 		if len(kwargs) > 0 {
-			return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls", ref.Runtime)
+			return "", false, runtimeRefKeywordDiagnostic(ref, key, kwargs, builder, jsKwargsRejectReason(ref, kwargs, true), "capture the JavaScript method as a function with callable_shape.acceptsOptionsObject/destructuredKeys, or pass an explicit options object as the final positional argument")
 		}
 		expr = fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit)
 	case "python":
@@ -3206,10 +3250,14 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		}
 	case "java":
 		if len(kwargs) > 0 {
-			if !runtimeRefAcceptsJavaMapKwargs(ref, key, kwargs) {
-				return "", false, fmt.Errorf("runtime %q does not support keyword method proxy calls without Java map adapter callable shape metadata", ref.Runtime)
+			if !runtimeRefAcceptsJavaKwargs(ref, key, kwargs) {
+				return "", false, runtimeRefKeywordDiagnostic(ref, key, kwargs, builder, javaKwargsRejectReason(ref, key, kwargs), "declare callable_shape.javaAdapter with kind map, record, or builder, the matching method name, and accepted keys, or pass an explicit Java options object positionally")
 			}
-			adapterArgsLit, err := builder.expr(appendRuntimeRefKwargsArg(args, kwargs))
+			adapterArgs, err := javaAdapterArgs(ref, args, kwargs, builder)
+			if err != nil {
+				return "", false, err
+			}
+			adapterArgsLit, err := builder.expr(adapterArgs)
 			if err != nil {
 				return "", false, err
 			}
@@ -3228,6 +3276,208 @@ func appendRuntimeRefKwargsArg(args []interface{}, kwargs map[string]interface{}
 	out = append(out, args...)
 	out = append(out, kwargs)
 	return out
+}
+
+func javaAdapterArgs(ref RuntimeRef, args []interface{}, kwargs map[string]interface{}, builder *runtimeExprBuilder) ([]interface{}, error) {
+	adapter := ref.CallableShape.JavaAdapter
+	switch adapter.Kind {
+	case "map":
+		return appendRuntimeRefKwargsArg(args, kwargs), nil
+	case "record":
+		if adapter.TargetType == "" {
+			return nil, fmt.Errorf("Java record adapter requires targetType")
+		}
+		kwargsExpr, err := builder.expr(kwargs)
+		if err != nil {
+			return nil, err
+		}
+		keysExpr, err := builder.expr(adapter.Keys)
+		if err != nil {
+			return nil, err
+		}
+		out := append([]interface{}{}, args...)
+		out = append(out, RuntimeRef{
+			Runtime: "java",
+			VarName: fmt.Sprintf("omnivm.OmniVM.kwargsRecord(%q, %s, %s)",
+				adapter.TargetType,
+				kwargsExpr,
+				keysExpr,
+			),
+		})
+		return out, nil
+	case "builder":
+		if adapter.TargetType == "" {
+			return nil, fmt.Errorf("Java builder adapter requires targetType")
+		}
+		kwargsExpr, err := builder.expr(kwargs)
+		if err != nil {
+			return nil, err
+		}
+		keysExpr, err := builder.expr(adapter.Keys)
+		if err != nil {
+			return nil, err
+		}
+		out := append([]interface{}{}, args...)
+		out = append(out, RuntimeRef{
+			Runtime: "java",
+			VarName: fmt.Sprintf("omnivm.OmniVM.kwargsBuilder(%q, %s, %s)",
+				adapter.TargetType,
+				kwargsExpr,
+				keysExpr,
+			),
+		})
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported Java adapter kind %q", adapter.Kind)
+	}
+}
+
+func runtimeRefKeywordDiagnostic(ref RuntimeRef, key string, kwargs map[string]interface{}, builder *runtimeExprBuilder, reason, fix string) error {
+	targetRuntime := ref.Runtime
+	if builder != nil && builder.targetRuntime != "" {
+		targetRuntime = builder.targetRuntime
+	}
+	callShape := "callable"
+	if key != "" {
+		callShape = fmt.Sprintf("method %q", key)
+	}
+	return fmt.Errorf("keyword proxy call rejected: source runtime=%s target runtime=%s call shape=%s kwargs=%s detected shape=%s reason=%s smallest fix=%s",
+		ref.Runtime,
+		targetRuntime,
+		callShape,
+		runtimeRefKeywordNames(kwargs),
+		callableShapeSummary(ref.CallableShape),
+		reason,
+		fix,
+	)
+}
+
+func runtimeRefKeywordNames(kwargs map[string]interface{}) string {
+	if len(kwargs) == 0 {
+		return "[]"
+	}
+	keys := make([]string, 0, len(kwargs))
+	for key := range kwargs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return "[" + strings.Join(keys, ",") + "]"
+}
+
+func callableShapeSummary(shape *CallableShape) string {
+	if shape == nil {
+		return "none"
+	}
+	parts := []string{}
+	if shape.AcceptsKwargs {
+		parts = append(parts, "acceptsKwargs")
+	}
+	if shape.AcceptsOptionsObject {
+		parts = append(parts, "acceptsOptionsObject")
+	}
+	if len(shape.DestructuredKeys) > 0 {
+		parts = append(parts, "destructuredKeys="+runtimeRefSortedList(shape.DestructuredKeys))
+	}
+	if len(shape.ParameterNames) > 0 {
+		parts = append(parts, "parameterNames="+runtimeRefSortedList(shape.ParameterNames))
+	}
+	if shape.Arity != nil {
+		parts = append(parts, fmt.Sprintf("arity=%d", *shape.Arity))
+	}
+	if shape.JavaAdapter != nil {
+		adapterParts := []string{}
+		if shape.JavaAdapter.Kind != "" {
+			adapterParts = append(adapterParts, "kind="+shape.JavaAdapter.Kind)
+		}
+		if shape.JavaAdapter.Method != "" {
+			adapterParts = append(adapterParts, "method="+shape.JavaAdapter.Method)
+		}
+		if shape.JavaAdapter.TargetType != "" {
+			adapterParts = append(adapterParts, "targetType="+shape.JavaAdapter.TargetType)
+		}
+		if len(shape.JavaAdapter.Keys) > 0 {
+			adapterParts = append(adapterParts, "keys="+runtimeRefSortedList(shape.JavaAdapter.Keys))
+		}
+		parts = append(parts, "javaAdapter{"+strings.Join(adapterParts, ",")+"}")
+	}
+	if len(parts) == 0 {
+		return "empty"
+	}
+	return strings.Join(parts, ";")
+}
+
+func runtimeRefSortedList(values []string) string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return "[" + strings.Join(out, ",") + "]"
+}
+
+func jsKwargsRejectReason(ref RuntimeRef, kwargs map[string]interface{}, methodCall bool) string {
+	if methodCall {
+		return "JavaScript method property has no proven options-object callable shape"
+	}
+	shape := ref.CallableShape
+	if shape == nil {
+		return "no callable_shape metadata was captured for the JavaScript function"
+	}
+	if !shape.AcceptsOptionsObject {
+		return "callable_shape does not declare acceptsOptionsObject"
+	}
+	if unknown := firstUnknownKey(kwargs, shape.DestructuredKeys); unknown != "" {
+		return fmt.Sprintf("keyword %q is not in destructuredKeys %s", unknown, runtimeRefSortedList(shape.DestructuredKeys))
+	}
+	return "callable_shape is incompatible with JavaScript options-object kwargs"
+}
+
+func javaKwargsRejectReason(ref RuntimeRef, method string, kwargs map[string]interface{}) string {
+	shape := ref.CallableShape
+	if shape == nil {
+		return "no callable_shape metadata was captured for the Java target"
+	}
+	if shape.JavaAdapter == nil {
+		return "callable_shape has no javaAdapter"
+	}
+	adapter := shape.JavaAdapter
+	switch adapter.Kind {
+	case "map", "record", "builder":
+	default:
+		return fmt.Sprintf("javaAdapter kind %q is unsupported", adapter.Kind)
+	}
+	if method != "" && adapter.Method != method {
+		return fmt.Sprintf("javaAdapter method %q does not match method %q", adapter.Method, method)
+	}
+	if method == "" && adapter.Method != "" {
+		return fmt.Sprintf("javaAdapter is bound to method %q, not the callable itself", adapter.Method)
+	}
+	allowedKeys := adapter.Keys
+	if len(allowedKeys) == 0 {
+		allowedKeys = shape.DestructuredKeys
+	}
+	if unknown := firstUnknownKey(kwargs, allowedKeys); unknown != "" {
+		return fmt.Sprintf("keyword %q is not in javaAdapter keys %s", unknown, runtimeRefSortedList(allowedKeys))
+	}
+	return "javaAdapter is incompatible with keyword proxy call"
+}
+
+func firstUnknownKey(kwargs map[string]interface{}, allowedKeys []string) string {
+	if len(allowedKeys) == 0 {
+		return ""
+	}
+	allowed := make(map[string]bool, len(allowedKeys))
+	for _, key := range allowedKeys {
+		allowed[key] = true
+	}
+	keys := make([]string, 0, len(kwargs))
+	for key := range kwargs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !allowed[key] {
+			return key
+		}
+	}
+	return ""
 }
 
 func runtimeRefAcceptsJSOptionsKwargs(ref RuntimeRef, kwargs map[string]interface{}) bool {
@@ -3250,9 +3500,14 @@ func runtimeRefAcceptsJSOptionsKwargs(ref RuntimeRef, kwargs map[string]interfac
 	return true
 }
 
-func runtimeRefAcceptsJavaMapKwargs(ref RuntimeRef, method string, kwargs map[string]interface{}) bool {
+func runtimeRefAcceptsJavaKwargs(ref RuntimeRef, method string, kwargs map[string]interface{}) bool {
 	shape := ref.CallableShape
-	if shape == nil || shape.JavaAdapter == nil || shape.JavaAdapter.Kind != "map" {
+	if shape == nil || shape.JavaAdapter == nil {
+		return false
+	}
+	switch shape.JavaAdapter.Kind {
+	case "map", "record", "builder":
+	default:
 		return false
 	}
 	if method != "" && shape.JavaAdapter.Method != method {
@@ -3310,9 +3565,6 @@ func genericProperty(value interface{}, key string) (interface{}, bool, error) {
 		}
 		return genericProperty(v.Value, key)
 	case *ResourceRef:
-		if field, ok := resourceDescriptorProperty(v, key); ok {
-			return field, true, nil
-		}
 		return genericProperty(v.Value, key)
 	case ResourceRef:
 		return genericProperty(&v, key)
@@ -3440,11 +3692,6 @@ func genericIndex(value interface{}, key interface{}) (interface{}, bool, error)
 		}
 		return genericIndex(v.Value, key)
 	case *ResourceRef:
-		if keyStr, ok := key.(string); ok {
-			if field, ok := resourceDescriptorProperty(v, keyStr); ok {
-				return field, true, nil
-			}
-		}
 		return genericIndex(v.Value, key)
 	case ResourceRef:
 		return genericIndex(&v, key)
