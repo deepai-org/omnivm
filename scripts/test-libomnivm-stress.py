@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import socket
 
 
 PASSED = 0
@@ -178,6 +179,83 @@ def run_manifest_dict(manifest):
         omnivm.run_manifest(path)
     finally:
         os.unlink(path)
+
+
+def free_tcp_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def postgres_bin(name):
+    root = "/usr/lib/postgresql"
+    versions = sorted(os.listdir(root)) if os.path.isdir(root) else []
+    for version in reversed(versions):
+        path = os.path.join(root, version, "bin", name)
+        if os.path.exists(path):
+            return path
+    raise AssertionError(f"PostgreSQL binary {name!r} is not installed")
+
+
+def start_postgres_fixture():
+    tmp = tempfile.TemporaryDirectory(prefix="omnivm-postgres-")
+    data_dir = os.path.join(tmp.name, "data")
+    socket_dir = os.path.join(tmp.name, "socket")
+    log_path = os.path.join(tmp.name, "postgres.log")
+    os.mkdir(socket_dir)
+    os.chmod(tmp.name, 0o777)
+    os.chmod(socket_dir, 0o777)
+    initdb = postgres_bin("initdb")
+    pg_ctl = postgres_bin("pg_ctl")
+    port = free_tcp_port()
+    started = False
+
+    def run_pg(cmd):
+        return subprocess.run(
+            ["runuser", "-u", "postgres", "--", *cmd],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    try:
+        proc = run_pg([initdb, "-D", data_dir, "-A", "trust", "--no-locale"])
+        if proc.returncode != 0:
+            raise AssertionError(f"initdb failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+        proc = run_pg([
+            pg_ctl,
+            "-D",
+            data_dir,
+            "-l",
+            log_path,
+            "-o",
+            f"-h 127.0.0.1 -p {port} -k {socket_dir}",
+            "-w",
+            "start",
+        ])
+        if proc.returncode != 0:
+            raise AssertionError(f"pg_ctl start failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+        started = True
+
+        def stop():
+            nonlocal started
+            if started:
+                run_pg([pg_ctl, "-D", data_dir, "-m", "fast", "-w", "stop"])
+                started = False
+            tmp.cleanup()
+
+        return {
+            "host": "127.0.0.1",
+            "port": port,
+            "dbname": "postgres",
+            "user": "postgres",
+        }, stop
+    except Exception:
+        if started:
+            run_pg([pg_ctl, "-D", data_dir, "-m", "fast", "-w", "stop"])
+        tmp.cleanup()
+        raise
 
 
 def test_simple_reentry():
@@ -5830,6 +5908,279 @@ for conn in (conn_js, conn_ruby, conn_java, conn_tx):
         raise AssertionError(f"DB-API cursor used JSON fallback: before={before_boundary}, after={boundary}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
         raise AssertionError(f"DB-API cursor streams did not release: before={before_handles}, after={handles}")
+
+
+def test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        conninfo = " ".join(f"{key}={value}" for key, value in pg.items())
+        setup = f'''
+import asyncio
+import asyncpg
+import psycopg
+
+pg_conninfo = {conninfo!r}
+pg_kwargs = {pg!r}
+asyncpg_kwargs = dict(pg_kwargs)
+asyncpg_kwargs["database"] = asyncpg_kwargs.pop("dbname")
+pg_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(pg_loop)
+globals()["__omnivm_stream_loop"] = pg_loop
+
+def reset_postgres_orders():
+    with psycopg.connect(pg_conninfo, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS omnivm_pg_orders")
+        conn.execute("""
+            CREATE TABLE omnivm_pg_orders (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                items TEXT,
+                keys TEXT,
+                count INTEGER,
+                "then" TEXT,
+                length INTEGER,
+                close TEXT
+            )
+        """)
+        conn.execute(
+            'INSERT INTO omnivm_pg_orders (name, items, keys, count, "then", length, close) VALUES '
+            "('ada', 'field-items', 'field-keys', 7, 'field-then', 12, 'field-close'), "
+            "('grace', 'field-items-2', 'field-keys-2', 8, 'field-then-2', 13, 'field-close-2')"
+        )
+
+def make_psycopg_cursor():
+    conn = psycopg.connect(pg_conninfo)
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, items, keys, count, "then", length, close FROM omnivm_pg_orders ORDER BY id')
+    return conn, PsycopgCursorStream(cursor)
+
+def pg_text(value):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8")
+    return str(value)
+
+class PsycopgCursorStream:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.closed_by_owner = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.cursor)
+        return [
+            pg_text(row[0]),
+            pg_text(row[1]),
+            pg_text(row[2]),
+            int(row[3]),
+            pg_text(row[4]),
+            int(row[5]),
+            pg_text(row[6]),
+        ]
+
+    def close(self):
+        self.closed_by_owner = True
+        self.cursor.close()
+
+    @property
+    def closed(self):
+        return self.cursor.closed
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+class AsyncpgOwnedCursor:
+    def __init__(self):
+        self.conn = None
+        self.tx = None
+        self.iterator = None
+        self.iterations = 0
+        self.closed = False
+
+    async def open(self):
+        self.conn = await asyncpg.connect(**asyncpg_kwargs)
+        self.tx = self.conn.transaction()
+        await self.tx.start()
+        self.iterator = self.conn.cursor(
+            'SELECT name, items, keys, count, "then", length, close FROM omnivm_pg_orders ORDER BY id'
+        ).__aiter__()
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        row = await self.iterator.__anext__()
+        self.iterations += 1
+        return [
+            pg_text(row["name"]),
+            pg_text(row["items"]),
+            pg_text(row["keys"]),
+            int(row["count"]),
+            pg_text(row["then"]),
+            int(row["length"]),
+            pg_text(row["close"]),
+        ]
+
+    async def aclose(self):
+        self.closed = True
+        if self.tx is not None:
+            await self.tx.rollback()
+            self.tx = None
+        if self.conn is not None:
+            await self.conn.close()
+            self.conn = None
+
+async def make_asyncpg_cursor():
+    return await AsyncpgOwnedCursor().open()
+
+async def asyncpg_rollback_check():
+    conn = await asyncpg.connect(**asyncpg_kwargs)
+    try:
+        rollback_seen = False
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(
+                'INSERT INTO omnivm_pg_orders (name, items, keys, count, "then", length, close) '
+                "VALUES ('rollback', 'x', 'x', 99, 'x', 99, 'x')"
+            )
+            omnivm.call("javascript", "throw new Error('asyncpg rollback')")
+        except Exception as exc:
+            rollback_seen = "asyncpg rollback" in str(exc)
+            await tx.rollback()
+        else:
+            await tx.commit()
+        if not rollback_seen:
+            raise AssertionError("foreign error did not reach asyncpg transaction")
+        total = await conn.fetchval("SELECT COUNT(*) FROM omnivm_pg_orders")
+        if total != 2:
+            raise AssertionError(f"asyncpg transaction did not roll back: {{total}}")
+    finally:
+        await conn.close()
+
+reset_postgres_orders()
+conn_psycopg_js, psycopg_cursor_js = make_psycopg_cursor()
+conn_psycopg_ruby, psycopg_cursor_ruby = make_psycopg_cursor()
+asyncpg_cursor = pg_loop.run_until_complete(make_asyncpg_cursor())
+'''
+        verify = '''
+for name, cursor in (
+    ("javascript", psycopg_cursor_js),
+    ("ruby", psycopg_cursor_ruby),
+):
+    if not cursor.closed:
+        raise AssertionError(f"{name} psycopg cursor was not closed by stream cancellation")
+    try:
+        cursor.fetchone()
+    except (psycopg.ProgrammingError, psycopg.InterfaceError) as exc:
+        if "closed" not in str(exc).lower():
+            raise
+    else:
+        raise AssertionError(f"{name} psycopg cursor remained usable after stream cancellation")
+
+rollback_seen = False
+with psycopg.connect(pg_conninfo) as conn_tx:
+    try:
+        with conn_tx.transaction():
+            conn_tx.execute(
+                'INSERT INTO omnivm_pg_orders (name, items, keys, count, "then", length, close) '
+                "VALUES ('rollback', 'x', 'x', 99, 'x', 99, 'x')"
+            )
+            omnivm.call("javascript", "throw new Error('psycopg rollback')")
+    except Exception as exc:
+        rollback_seen = "psycopg rollback" in str(exc)
+    if not rollback_seen:
+        raise AssertionError("foreign error did not reach psycopg transaction")
+    total = conn_tx.execute("SELECT COUNT(*) FROM omnivm_pg_orders").fetchone()[0]
+    if total != 2:
+        raise AssertionError(f"psycopg transaction did not roll back: {total}")
+
+if asyncpg_cursor.iterations != 1:
+    raise AssertionError(f"asyncpg cursor read count was {asyncpg_cursor.iterations}")
+if not asyncpg_cursor.closed:
+    raise AssertionError("asyncpg cursor owner was not closed by stream cancellation")
+pg_loop.run_until_complete(asyncpg_rollback_check())
+
+conn_psycopg_js.close()
+conn_psycopg_ruby.close()
+pg_loop.close()
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "python", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"psycopg_cursor_js": "psycopg_cursor_js"},
+                    "code": (
+                        "const it = psycopg_cursor_js[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('psycopg cursor was empty'); "
+                        "if (first.value[0] !== 'ada') throw new Error('bad psycopg JS name: ' + first.value[0]); "
+                        "if (first.value[1] !== 'field-items') throw new Error('items field lost: ' + first.value[1]); "
+                        "if (String(first.value[3]) !== '7') throw new Error('count field lost: ' + first.value[3]); "
+                        "if (first.value[4] !== 'field-then') throw new Error('then field lost: ' + first.value[4]); "
+                        "if (String(first.value[5]) !== '12') throw new Error('length field lost: ' + first.value[5]); "
+                        "if (first.value[6] !== 'field-close') throw new Error('close field lost: ' + first.value[6]); "
+                        "if (psycopg_cursor_js.cancel('client-stop') !== true) throw new Error('psycopg JS cancel failed');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"psycopg_cursor_ruby": "psycopg_cursor_ruby"},
+                    "code": (
+                        "first = psycopg_cursor_ruby.first; "
+                        "raise 'psycopg cursor was empty' if first.nil?; "
+                        "raise \"bad psycopg Ruby name #{first[0]}\" unless first[0] == 'ada'; "
+                        "raise \"items field lost #{first[1]}\" unless first[1] == 'field-items'; "
+                        "raise \"count field lost #{first[3]}\" unless first[3].to_s == '7'; "
+                        "raise \"then field lost #{first[4]}\" unless first[4] == 'field-then'; "
+                        "raise \"length field lost #{first[5]}\" unless first[5].to_s == '12'; "
+                        "raise \"close field lost #{first[6]}\" unless first[6] == 'field-close'; "
+                        "psycopg_cursor_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"asyncpg_cursor": "asyncpg_cursor"},
+                    "code": (
+                        "const it = asyncpg_cursor[Symbol.iterator](); "
+                        "const first = it.next(); "
+                        "if (first.done) throw new Error('asyncpg cursor was empty'); "
+                        "if (first.value[0] !== 'ada') throw new Error('bad asyncpg JS name: ' + first.value[0]); "
+                        "if (first.value[1] !== 'field-items') throw new Error('asyncpg items field lost: ' + first.value[1]); "
+                        "if (String(first.value[3]) !== '7') throw new Error('asyncpg count field lost: ' + first.value[3]); "
+                        "if (first.value[4] !== 'field-then') throw new Error('asyncpg then field lost: ' + first.value[4]); "
+                        "if (String(first.value[5]) !== '12') throw new Error('asyncpg length field lost: ' + first.value[5]); "
+                        "if (first.value[6] !== 'field-close') throw new Error('asyncpg close field lost: ' + first.value[6]); "
+                        "if (asyncpg_cursor.cancel('client-stop') !== true) throw new Error('asyncpg cancel failed');"
+                    ),
+                },
+                {"op": "exec", "runtime": "python", "code": verify},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+            raise AssertionError(f"PostgreSQL cursors did not cross as lazy streams: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"PostgreSQL cursors used JSON fallback: before={before_boundary}, after={boundary}")
+        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+            raise AssertionError(f"PostgreSQL cursor streams did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
 
 
 def test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy():
@@ -13655,6 +14006,7 @@ def main():
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
+        check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
