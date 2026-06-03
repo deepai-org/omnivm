@@ -11867,6 +11867,93 @@ def test_manifest_java_base_stream_body_capture_as_lazy_stream():
         raise AssertionError(f"Java BaseStream body stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_readable_byte_channel_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_channel_cancel_closed",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_channel_cancel_reads",
+                "code": "new java.util.concurrent.atomic.AtomicInteger(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_channel_cancel_body",
+                "code": (
+                    "new java.nio.channels.ReadableByteChannel() { "
+                    "private final java.nio.ByteBuffer data = java.nio.ByteBuffer.wrap(\"firstsecond\".getBytes(java.nio.charset.StandardCharsets.UTF_8)); "
+                    "private boolean open = true; "
+                    "public int read(java.nio.ByteBuffer dst) throws java.io.IOException { "
+                    "if (!open) throw new java.nio.channels.ClosedChannelException(); "
+                    "if (!data.hasRemaining()) return -1; "
+                    "((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_channel_cancel_reads\")).incrementAndGet(); "
+                    "int n = Math.min(Math.min(dst.remaining(), data.remaining()), 5); "
+                    "byte[] chunk = new byte[n]; "
+                    "data.get(chunk); "
+                    "dst.put(chunk); "
+                    "return n; "
+                    "} "
+                    "public boolean isOpen() { return open; } "
+                    "public void close() throws java.io.IOException { "
+                    "open = false; "
+                    "((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_channel_cancel_closed\")).set(true); "
+                    "} "
+                    "}"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_channel_cancel_body": "java_channel_cancel_body"},
+                "code": (
+                    "const it = java_channel_cancel_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "const bytesToString = (chunk) => String.fromCharCode(...Array.from(chunk)); "
+                    "if (first.done || bytesToString(first.value) !== 'first') throw new Error('bad Java ReadableByteChannel first chunk: ' + JSON.stringify(first)); "
+                    "if (java_channel_cancel_body.cancel('client-stop') !== true) throw new Error('Java ReadableByteChannel cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_channel_cancel_closed\")).get()) "
+                    "throw new RuntimeException(\"Java ReadableByteChannel did not close after early cancel\"); "
+                    "int reads = ((java.util.concurrent.atomic.AtomicInteger) omnivm.OmniVM.getCapture(\"java_channel_cancel_reads\")).get(); "
+                    "if (reads != 1) throw new RuntimeException(\"Java ReadableByteChannel read count after early cancel = \" + reads);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Java ReadableByteChannel lost stream proxy state: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java ReadableByteChannel used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Java ReadableByteChannel did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Java ReadableByteChannel cancel did not release handle: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Java ReadableByteChannel early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_reactor_flux_early_cancel_releases_owner():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -14725,6 +14812,7 @@ def main():
         check("Manifest runtime readers capture as lazy streams", test_manifest_runtime_readers_capture_as_lazy_streams)
         check("Manifest Java iterable body capture is lazy stream", test_manifest_java_iterable_body_capture_as_lazy_stream)
         check("Manifest Java BaseStream body capture is lazy stream", test_manifest_java_base_stream_body_capture_as_lazy_stream)
+        check("Manifest Java ReadableByteChannel early cancel releases owner", test_manifest_java_readable_byte_channel_early_cancel_releases_owner)
         check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
         check("Manifest Java RxJava Flowable early cancel releases owner", test_manifest_java_rxjava_flowable_early_cancel_releases_owner)
         check("Manifest Ruby each body capture is lazy stream", test_manifest_ruby_each_body_capture_as_lazy_stream)
