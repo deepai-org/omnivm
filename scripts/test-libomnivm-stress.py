@@ -18405,6 +18405,64 @@ def test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_
         raise AssertionError(f"reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "kotlin_job_status",
+                "code": "kotlinx.coroutines.JobKt.Job((kotlinx.coroutines.Job) null)",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"kotlin_job_status": "kotlin_job_status"},
+                "code": (
+                    "if (!kotlin_job_status.isActive()) throw new Error('Kotlin Job should start active'); "
+                    "if (kotlin_job_status.isCancelled()) throw new Error('Kotlin Job should not start cancelled'); "
+                    "if (kotlin_job_status.isCompleted()) throw new Error('Kotlin Job should not start completed'); "
+                    "kotlin_job_status.cancel(null); "
+                    "if (kotlin_job_status.isActive()) throw new Error('Kotlin Job stayed active after JS cancel'); "
+                    "if (!kotlin_job_status.isCancelled()) throw new Error('Kotlin Job did not report cancelled in JS'); "
+                    "if (!kotlin_job_status.isCompleted()) throw new Error('Kotlin Job did not report completed in JS after cancel');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"kotlin_job_status": "kotlin_job_status"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"kotlin_job_status\"); "
+                    "if (!(raw instanceof kotlinx.coroutines.Job)) throw new RuntimeException(\"Kotlin Job capture lost native type: \" + raw); "
+                    "kotlinx.coroutines.Job job = (kotlinx.coroutines.Job) raw; "
+                    "if (job.isActive()) throw new RuntimeException(\"Kotlin Job stayed active in Java after JS cancel\"); "
+                    "if (!job.isCancelled()) throw new RuntimeException(\"Kotlin Job did not stay cancelled in Java\"); "
+                    "if (!job.isCompleted()) throw new RuntimeException(\"Kotlin Job did not stay completed in Java\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"Kotlin Job did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Kotlin Job used JSON fallback: before={before_boundary}, after={boundary}")
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 7:
+        raise AssertionError(f"Kotlin Job cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe():
     result = omnivm.call(
         "java",
@@ -19534,6 +19592,7 @@ def main():
         check("Java CompletableFuture custom executor callback affinity is diagnostic or safe", test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
+        check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Java Kotlin coroutine callback affinity is diagnostic or safe", test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe)
