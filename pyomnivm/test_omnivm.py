@@ -100,6 +100,26 @@ class TestRuntimeError(unittest.TestCase):
         assert err.boundary_path == "execute manifest > exec[python]"
         assert "Traceback" in err.traceback
 
+    def test_uses_boundary_path_fallback_for_direct_calls(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: TypeError: bad input",
+            runtime="javascript",
+            boundary_path="call[javascript]",
+        )
+        assert err.runtime == "javascript"
+        assert err.type == "TypeError"
+        assert err.message == "bad input"
+        assert err.boundary_path == "call[javascript]"
+
+    def test_parsed_boundary_path_overrides_fallback(self):
+        err = omnivm_mod.RuntimeError(
+            "execute manifest: exec [python]: python: ValidationError: bad input",
+            runtime="javascript",
+            boundary_path="call[javascript]",
+        )
+        assert err.runtime == "python"
+        assert err.boundary_path == "execute manifest > exec[python]"
+
     def test_parses_manifest_python_traceback_tail(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: Traceback (most recent call last):\n"
@@ -128,6 +148,18 @@ class TestCheckResult(unittest.TestCase):
             omnivm_mod._check_result(b"ERR:something went wrong")
         assert str(ctx.exception) == "something went wrong"
         assert ctx.exception.message == "something went wrong"
+
+    def test_err_prefix_sets_boundary_path(self):
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod._check_result(
+                b"ERR:javascript: TypeError: bad",
+                runtime="javascript",
+                boundary_path="call[javascript]",
+            )
+        assert ctx.exception.runtime == "javascript"
+        assert ctx.exception.type == "TypeError"
+        assert ctx.exception.message == "bad"
+        assert ctx.exception.boundary_path == "call[javascript]"
 
     def test_success_bytes(self):
         result = omnivm_mod._check_result(b"hello")

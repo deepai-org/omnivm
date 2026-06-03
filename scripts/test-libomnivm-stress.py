@@ -12379,6 +12379,9 @@ def test_validation_error_fidelity_popular_libraries():
                 raise AssertionError(f"{name} error runtime = {exc.runtime!r}, want {structured['runtime']!r}: {text}") from exc
             if exc.type != structured["type"]:
                 raise AssertionError(f"{name} error type = {exc.type!r}, want {structured['type']!r}: {text}") from exc
+            want_boundary = f"call[{runtime}]"
+            if exc.boundary_path != want_boundary:
+                raise AssertionError(f"{name} error boundary path = {exc.boundary_path!r}, want {want_boundary!r}: {text}") from exc
             if structured["message"] not in exc.message:
                 raise AssertionError(f"{name} error message = {exc.message!r}, want containing {structured['message']!r}: {text}") from exc
             if "traceback" in structured and structured["traceback"] not in exc.traceback:

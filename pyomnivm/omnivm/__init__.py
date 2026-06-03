@@ -64,9 +64,13 @@ import builtins as _builtins
 class RuntimeError(_builtins.RuntimeError):
     """Raised when a runtime call fails (Go panic, JS exception, etc.)."""
 
-    def __init__(self, message, runtime=None):
+    def __init__(self, message, runtime=None, boundary_path=None):
         super().__init__(message)
-        parsed = _parse_runtime_error_text(str(message), runtime=runtime)
+        parsed = _parse_runtime_error_text(
+            str(message),
+            runtime=runtime,
+            boundary_path=boundary_path,
+        )
         self.runtime = parsed["runtime"]
         self.type = parsed["type"]
         self.message = parsed["message"]
@@ -76,7 +80,7 @@ class RuntimeError(_builtins.RuntimeError):
         self.original_error_handle = None
 
 
-def _parse_runtime_error_text(text, runtime=None):
+def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
     source_runtime = runtime
     body = text
     boundary_parts = []
@@ -158,7 +162,7 @@ def _parse_runtime_error_text(text, runtime=None):
         "message": detail,
         "traceback": traceback,
         "cause_chain": cause_chain,
-        "boundary_path": " > ".join(boundary_parts) or None,
+        "boundary_path": " > ".join(boundary_parts) or boundary_path,
     }
 
 
@@ -478,7 +482,7 @@ def _py_to_omni_value(val):
     return ov
 
 
-def _omni_value_to_py(ov):
+def _omni_value_to_py(ov, runtime=None, boundary_path=None):
     """Convert an _OmniValue to a Python value."""
     if ov.tag == _TAG_NULL:
         return None
@@ -500,19 +504,23 @@ def _omni_value_to_py(ov):
         msg = ""
         if ov.v.s.ptr and ov.v.s.len > 0:
             msg = ov.v.s.ptr[:ov.v.s.len].decode("utf-8")
-        raise RuntimeError(msg)
+        raise RuntimeError(msg, runtime=runtime, boundary_path=boundary_path)
     return None
 
 
-def _check_result(result, runtime=None):
+def _check_result(result, runtime=None, boundary_path=None):
     """Check a C string result for ERR: prefix and raise if needed."""
     if result is None:
-        raise RuntimeError("call returned NULL", runtime=runtime)
+        raise RuntimeError(
+            "call returned NULL",
+            runtime=runtime,
+            boundary_path=boundary_path,
+        )
     text = result.decode("utf-8") if isinstance(result, bytes) else result
     if text.startswith("OK:"):
         return text[3:]
     if text.startswith("ERR:"):
-        raise RuntimeError(text[4:], runtime=runtime)
+        raise RuntimeError(text[4:], runtime=runtime, boundary_path=boundary_path)
     return text
 
 
@@ -574,7 +582,7 @@ def call(runtime, code):
         _local.total_call_duration_ns = 0
     _local.total_call_duration_ns += elapsed
 
-    return _check_result(result, runtime=runtime)
+    return _check_result(result, runtime=runtime, boundary_path=f"call[{runtime}]")
 
 
 def call_typed(runtime, func_name, args=()):
@@ -621,7 +629,11 @@ def call_typed(runtime, func_name, args=()):
         ctypes.c_int32(n),
     )
 
-    return _omni_value_to_py(result)
+    return _omni_value_to_py(
+        result,
+        runtime=runtime,
+        boundary_path=f"call_typed[{runtime}]",
+    )
 
 
 def execute(runtime, code):
@@ -648,7 +660,7 @@ def execute(runtime, code):
         runtime.encode("utf-8"),
         code.encode("utf-8"),
     )
-    return _check_result(result, runtime=runtime)
+    return _check_result(result, runtime=runtime, boundary_path=f"execute[{runtime}]")
 
 
 def run_manifest(path):
