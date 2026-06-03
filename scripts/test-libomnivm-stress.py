@@ -5352,6 +5352,59 @@ starlette_loop.close()
         raise AssertionError(f"Starlette StreamingResponse body stream did not release on cancel: before={before_handles}, after={handles}")
 
 
+def test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "aiohttp_resp",
+                "code": (
+                    "(__import__('aiohttp.web', fromlist=['Response']).Response("
+                    "status=207, text='hello-aiohttp', headers={'X-Aiohttp': 'yes'}))"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"aiohttp_resp": "aiohttp_resp"},
+                "code": (
+                    "if (String(aiohttp_resp.status) !== '207') throw new Error('bad aiohttp status: ' + aiohttp_resp.status); "
+                    "if (aiohttp_resp.text !== 'hello-aiohttp') throw new Error('bad aiohttp text: ' + aiohttp_resp.text); "
+                    "const header = aiohttp_resp.headers.get ? aiohttp_resp.headers.get('X-Aiohttp') : aiohttp_resp.headers['X-Aiohttp']; "
+                    "if (header !== 'yes') throw new Error('bad aiohttp header: ' + header); "
+                    "aiohttp_resp.headers['X-From-JS'] = 'yes';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"aiohttp_resp": "aiohttp_resp"},
+                "code": (
+                    "assert aiohttp_resp.status == 207, aiohttp_resp.status\n"
+                    "assert aiohttp_resp.text == 'hello-aiohttp', aiohttp_resp.text\n"
+                    "assert aiohttp_resp.headers['X-From-JS'] == 'yes', aiohttp_resp.headers"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    handles = omnivm.status().get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"aiohttp web response did not cross as a live proxy: {boundary}")
+    if boundary.get("stream_proxy_captures", 0) != 0:
+        raise AssertionError(f"aiohttp web response crossed as a stream: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"aiohttp web response used JSON fallback: {boundary}")
+    for kind in ("property", "mutation"):
+        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
+            raise AssertionError(f"aiohttp web response proxy did not record {kind} access: {handles}")
+
+
 def test_manifest_flask_localproxy_request_and_session_stay_live():
     before_boundary = omnivm.status().get("boundary", {})
     setup = r'''
@@ -14567,6 +14620,7 @@ def main():
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
+        check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
