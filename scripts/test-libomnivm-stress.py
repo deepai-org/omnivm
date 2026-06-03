@@ -17681,6 +17681,111 @@ if failures:
         )
 
 
+def test_prefork_worker_reload_unloads_manifest_handles():
+    code = r"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+
+manifest = {
+    "version": 1,
+    "defaultRuntime": "python",
+    "ops": [
+        {
+            "op": "func_def",
+            "name": "current_request",
+            "params": [],
+            "body": [
+                {
+                    "op": "return",
+                    "value": {
+                        "kind": "literal",
+                        "value": {
+                            "path": "/reload",
+                            "items": ["alpha", "beta"],
+                            "status": "open",
+                        },
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+fd, manifest_path = tempfile.mkstemp(suffix=".manifest.json")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    pids = []
+    for worker_id in range(3):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                omnivm.init_runtimes(["javascript"])
+                module_id = f"reload-{worker_id}"
+                omnivm.load_manifest_module(module_id, manifest_path)
+                leaked_proxy = omnivm.manifest_call(module_id, "current_request")
+                if leaked_proxy.path != "/reload" or leaked_proxy.status != "open":
+                    raise AssertionError(f"bad retained proxy fields: {leaked_proxy!r}")
+                live_before = omnivm.status()["handles"]["live"]
+                if live_before < 1:
+                    raise AssertionError(f"retained proxy did not leave a live handle: {omnivm.status()}")
+
+                omnivm.unload_manifest_modules()
+                live_after = omnivm.status()["handles"]["live"]
+                if live_after != 0:
+                    raise AssertionError(f"manifest unload leaked live handles before={live_before} after={live_after}: {omnivm.status()}")
+
+                failed = False
+                try:
+                    omnivm.manifest_call(module_id, "current_request")
+                except omnivm.RuntimeError as exc:
+                    failed = "manifest module not loaded" in str(exc)
+                if not failed:
+                    raise AssertionError("manifest module remained callable after worker-drain unload")
+
+                leaked_proxy.close()
+                omnivm.shutdown()
+                os._exit(0)
+            except Exception as exc:
+                print(exc, file=sys.stderr)
+                os._exit(1)
+        pids.append(pid)
+
+    failures = []
+    for pid in pids:
+        _, status = os.waitpid(pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        if rc != 0:
+            failures.append((pid, rc))
+    if failures:
+        print(failures, file=sys.stderr)
+        raise SystemExit(1)
+finally:
+    try:
+        os.unlink(manifest_path)
+    except FileNotFoundError:
+        pass
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"prefork worker reload manifest handle unload exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def test_ruby_bootstrap_core_surface():
     got = omnivm.call(
         "ruby",
@@ -18082,6 +18187,7 @@ def main():
     check("python3-polyscript WSGI smoke", test_python3_polyscript_wsgi_smoke)
     check("python3-polyscript Django WSGI smoke", test_python3_polyscript_django_wsgi_smoke)
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
+    check("Prefork worker reload unloads manifest handles", test_prefork_worker_reload_unloads_manifest_handles)
     if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:
         print("\nResults: 0 selected, no tests matched filters")
         return 2

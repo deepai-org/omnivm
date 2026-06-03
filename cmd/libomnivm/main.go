@@ -15,6 +15,7 @@
 //	OmniCall(runtime, code *C.char) *C.char
 //	OmniExec(runtime, code *C.char) *C.char
 //	OmniLoadManifestModule(moduleID, path *C.char) *C.char
+//	OmniUnloadManifestModules() *C.char
 //	OmniManifestCall(moduleID, requestJSON *C.char) *C.char
 //	OmniLoadPlugin(runtime, path *C.char) *C.char
 //	OmniShutdown()
@@ -171,6 +172,17 @@ var eng *engine.Engine
 var manifestExecutor *manifest.Executor
 var manifestExecutionMu sync.Mutex
 var manifestModules = make(map[string]*manifest.Executor)
+
+func unloadManifestModulesForWorkerDrain() error {
+	manifestExecutionMu.Lock()
+	defer manifestExecutionMu.Unlock()
+	manifestExecutor = nil
+	manifestModules = make(map[string]*manifest.Executor)
+	if eng == nil || eng.Handles == nil {
+		return nil
+	}
+	return eng.Handles.ReleaseAll()
+}
 
 // goPlugins maps plugin names to dlopen handles for c-shared Go plugins.
 type goPlugin struct {
@@ -735,6 +747,26 @@ func OmniLoadManifestModule(cModuleID *C.char, cPath *C.char) *C.char {
 	return C.CString("OK")
 }
 
+//export OmniUnloadManifestModules
+func OmniUnloadManifestModules() *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	done, err := beginExternalCall("unload_manifest_modules")
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
+	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
+	if err := unloadManifestModulesForWorkerDrain(); err != nil {
+		return C.CString("ERR:unload manifest modules: " + err.Error())
+	}
+	return C.CString("OK")
+}
+
 //export OmniManifestCall
 func OmniManifestCall(cModuleID *C.char, cRequest *C.char) *C.char {
 	if !initialized {
@@ -821,11 +853,8 @@ func OmniShutdown() {
 	if activeCalls.Load() > 0 {
 		shutdownWhileActiveCount.Add(1)
 	}
+	_ = unloadManifestModulesForWorkerDrain()
 	eng.Shutdown()
-	manifestExecutionMu.Lock()
-	manifestExecutor = nil
-	manifestModules = make(map[string]*manifest.Executor)
-	manifestExecutionMu.Unlock()
 	// Go plugins are c-shared libs — dlclose not needed, process exit cleans up
 	initialized = false
 	initPID = 0

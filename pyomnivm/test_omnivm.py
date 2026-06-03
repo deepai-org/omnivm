@@ -382,6 +382,18 @@ class TestCallWithMockLib(unittest.TestCase):
             b"demo", b"/tmp/app.manifest.json"
         )
 
+    def test_unload_manifest_modules_calls_lib(self):
+        self.mock_lib.OmniUnloadManifestModules.return_value = b"OK"
+        result = omnivm_mod.unload_manifest_modules()
+        assert result == "OK"
+        self.mock_lib.OmniUnloadManifestModules.assert_called_once_with()
+
+    def test_unload_manifest_modules_error_propagation(self):
+        self.mock_lib.OmniUnloadManifestModules.return_value = b"ERR:unload manifest modules: busy"
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.unload_manifest_modules()
+        assert "busy" in str(ctx.exception)
+
     def test_manifest_call_decodes_return_envelope(self):
         self.mock_lib.OmniManifestCall.return_value = (
             b'OK:{"__omnivm_result__":true,"kind":"string","value":"ranked"}'

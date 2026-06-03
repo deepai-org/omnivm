@@ -128,3 +128,46 @@ func TestDrainFinalizerReleasesSkipsActiveManifest(t *testing.T) {
 		t.Fatalf("release after manifest cleared = %d, want 1", releases)
 	}
 }
+
+func TestUnloadManifestModulesForWorkerDrainReleasesHandles(t *testing.T) {
+	prevEng := eng
+	prevManifest := manifestExecutor
+	prevModules := manifestModules
+	defer func() {
+		eng = prevEng
+		manifestExecutor = prevManifest
+		manifestModules = prevModules
+	}()
+
+	eng = engine.New()
+	manifestExecutor = manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles)
+	manifestModules = map[string]*manifest.Executor{
+		"demo": manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles),
+	}
+	releases := 0
+	if _, err := eng.Handles.Register("payload", handles.RegisterOptions{
+		Runtime: "python",
+		Kind:    "object",
+		Release: func(value any) error {
+			releases++
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register handle: %v", err)
+	}
+
+	if err := unloadManifestModulesForWorkerDrain(); err != nil {
+		t.Fatalf("unload manifest modules: %v", err)
+	}
+
+	if releases != 1 {
+		t.Fatalf("handle releases = %d, want 1", releases)
+	}
+	if manifestExecutor != nil || len(manifestModules) != 0 {
+		t.Fatalf("manifest modules not cleared: active=%v modules=%d", manifestExecutor, len(manifestModules))
+	}
+	stats := eng.Handles.Stats(time.Now())
+	if stats.Live != 0 || stats.ScopeReleases != 1 {
+		t.Fatalf("bad handle stats after manifest unload: %+v", stats)
+	}
+}

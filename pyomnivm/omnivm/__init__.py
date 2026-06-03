@@ -40,6 +40,7 @@ __all__ = [
     "execute",
     "run_manifest",
     "load_manifest_module",
+    "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
     "set_task_timeout",
@@ -249,6 +250,10 @@ def _load_lib():
         if hasattr(lib, "OmniLoadManifestModule"):
             lib.OmniLoadManifestModule.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
             lib.OmniLoadManifestModule.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniUnloadManifestModules"):
+            lib.OmniUnloadManifestModules.argtypes = []
+            lib.OmniUnloadManifestModules.restype = ctypes.c_char_p
 
         if hasattr(lib, "OmniManifestCall"):
             lib.OmniManifestCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
@@ -692,6 +697,22 @@ def load_manifest_module(module_id, path):
         str(module_id).encode("utf-8"),
         os.fsencode(path),
     )
+    return _check_result(result)
+
+
+def unload_manifest_modules():
+    """
+    Release all retained manifest module handles before recycling a worker.
+
+    Use this from a server worker-drain/reload hook when live manifest proxies
+    might still exist. It intentionally unloads every retained manifest module
+    in this process because retained handles share the process handle table.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    if not hasattr(_lib, "OmniUnloadManifestModules"):
+        raise RuntimeError("libomnivm does not expose OmniUnloadManifestModules")
+    result = _lib.OmniUnloadManifestModules()
     return _check_result(result)
 
 
