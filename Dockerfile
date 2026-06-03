@@ -99,6 +99,8 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       asyncpg \
       boto3 \
       redis \
+      pymongo \
+      mockupdb \
       Jinja2 \
       Markdown \
       httpx \

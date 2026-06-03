@@ -7009,6 +7009,218 @@ for name, scan in (
         stop_redis()
 
 
+def test_manifest_pymongo_cursor_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import threading
+from mockupdb import MockupDB
+from pymongo import MongoClient
+
+hello_doc = {
+    "ok": 1,
+    "isWritablePrimary": True,
+    "helloOk": True,
+    "minWireVersion": 0,
+    "maxWireVersion": 13,
+}
+
+def make_pymongo_cursor(label):
+    class PyMongoCursorOwner:
+        def __init__(self):
+            self.label = label
+            self.cursor_id = 720000 + len(label)
+            self.items_yielded = 0
+            self.find_requests = 0
+            self.getmore_requests = 0
+            self.killcursors_requests = 0
+            self.closed = False
+            self.server_errors = []
+            self.server = MockupDB(auto_ismaster=hello_doc)
+            self.server.run()
+            self.client = MongoClient(self.server.uri, serverSelectionTimeoutMS=2000)
+            self.thread = threading.Thread(target=self._serve, daemon=True)
+            self.thread.start()
+            self.cursor = self.client.omnivm.orders.find({}, batch_size=1)
+
+        def _serve(self):
+            try:
+                request = self.server.receives(timeout=5)
+                command = getattr(request, "command_name", "")
+                if command != "find":
+                    self.server_errors.append(f"expected find, got {command}: {request}")
+                    request.reply({"ok": 0, "errmsg": "expected find"})
+                    return
+                self.find_requests += 1
+                request.reply({
+                    "ok": 1,
+                    "cursor": {
+                        "id": self.cursor_id,
+                        "ns": "omnivm.orders",
+                        "firstBatch": [{
+                            "_id": f"{label}-id",
+                            "name": f"{label}-ada",
+                            "items": "field-items",
+                            "keys": "field-keys",
+                            "count": 2,
+                            "then": "field-then",
+                            "length": 2,
+                            "close": "field-close",
+                        }],
+                    },
+                })
+                request = self.server.receives(timeout=5)
+                command = getattr(request, "command_name", "")
+                if command == "killCursors":
+                    self.killcursors_requests += 1
+                    request.reply({
+                        "ok": 1,
+                        "cursorsKilled": [self.cursor_id],
+                        "cursorsUnknown": [],
+                        "cursorsAlive": [],
+                        "cursorsNotFound": [],
+                    })
+                elif command == "getMore":
+                    self.getmore_requests += 1
+                    request.reply({
+                        "ok": 1,
+                        "cursor": {
+                            "id": 0,
+                            "ns": "omnivm.orders",
+                            "nextBatch": [{
+                                "_id": f"{label}-late",
+                                "name": f"{label}-late",
+                            }],
+                        },
+                    })
+                else:
+                    self.server_errors.append(f"expected killCursors or getMore, got {command}: {request}")
+                    request.reply({"ok": 0, "errmsg": "expected killCursors or getMore"})
+            except Exception as exc:
+                self.server_errors.append(type(exc).__name__ + ": " + str(exc))
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            doc = next(self.cursor)
+            self.items_yielded += 1
+            return {
+                "id": doc["_id"],
+                "name": doc["name"],
+                "items": doc["items"],
+                "keys": doc["keys"],
+                "count": int(doc["count"]),
+                "then": doc["then"],
+                "length": int(doc["length"]),
+                "close": doc["close"],
+            }
+
+        def close(self):
+            self.closed = True
+            self.cursor.close()
+            self.thread.join(timeout=3)
+            self.client.close()
+            self.server.stop()
+
+    return PyMongoCursorOwner()
+
+pymongo_cursor_js = make_pymongo_cursor("js")
+pymongo_cursor_ruby = make_pymongo_cursor("ruby")
+pymongo_cursor_java = make_pymongo_cursor("java")
+'''
+    verify = r'''
+for name, cursor in (
+    ("javascript", pymongo_cursor_js),
+    ("ruby", pymongo_cursor_ruby),
+    ("java", pymongo_cursor_java),
+):
+    if cursor.server_errors:
+        raise AssertionError(f"{name} PyMongo mock server errors: {cursor.server_errors}")
+    if cursor.items_yielded != 1:
+        raise AssertionError(f"{name} PyMongo cursor yielded {cursor.items_yielded} items instead of one")
+    if cursor.find_requests != 1:
+        raise AssertionError(f"{name} PyMongo cursor find requests = {cursor.find_requests}")
+    if cursor.getmore_requests != 0:
+        raise AssertionError(f"{name} PyMongo cursor drained via getMore before cancellation")
+    if cursor.killcursors_requests != 1:
+        raise AssertionError(f"{name} PyMongo cursor did not send killCursors on close: {cursor.killcursors_requests}")
+    if not cursor.closed:
+        raise AssertionError(f"{name} PyMongo cursor owner was not closed by stream cancellation")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"pymongo_cursor_js": "pymongo_cursor_js"},
+                "code": (
+                    "const it = pymongo_cursor_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('PyMongo cursor was empty'); "
+                    "const row = first.value; "
+                    "if (row.id !== 'js-id' || row.name !== 'js-ada') throw new Error('bad PyMongo JS row: ' + JSON.stringify(row)); "
+                    "if (row.items !== 'field-items' || row.keys !== 'field-keys' || String(row.count) !== '2' || row.then !== 'field-then' || String(row.length) !== '2' || row.close !== 'field-close') throw new Error('PyMongo JS collision fields lost: ' + JSON.stringify(row)); "
+                    "if (pymongo_cursor_js.cancel('client-stop') !== true) throw new Error('PyMongo JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"pymongo_cursor_ruby": "pymongo_cursor_ruby"},
+                "code": (
+                    "row = pymongo_cursor_ruby.first; "
+                    "raise 'PyMongo cursor was empty' if row.nil?; "
+                    "raise \"bad PyMongo Ruby row #{row.inspect}\" unless row['id'] == 'ruby-id' && row['name'] == 'ruby-ada'; "
+                    "raise 'PyMongo Ruby items field lost' unless row['items'] == 'field-items'; "
+                    "raise 'PyMongo Ruby keys field lost' unless row['keys'] == 'field-keys'; "
+                    "raise 'PyMongo Ruby count field lost' unless row['count'].to_s == '2'; "
+                    "raise 'PyMongo Ruby then field lost' unless row['then'] == 'field-then'; "
+                    "raise 'PyMongo Ruby length field lost' unless row['length'].to_s == '2'; "
+                    "raise 'PyMongo Ruby close field lost' unless row['close'] == 'field-close'; "
+                    "pymongo_cursor_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"pymongo_cursor_java": "pymongo_cursor_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"pymongo_cursor_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"PyMongo cursor should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"PyMongo cursor was empty\"); "
+                    "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
+                    "if (!\"java-id\".equals(String.valueOf(row.get(\"id\"))) || !\"java-ada\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad PyMongo Java row: \" + row); "
+                    "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"PyMongo Java items field lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"PyMongo Java keys field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"PyMongo Java count field lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"PyMongo Java then field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"PyMongo Java length field lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"PyMongo Java close field lost\"); "
+                    "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"PyMongo Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+        raise AssertionError(f"PyMongo cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"PyMongo cursor used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+        raise AssertionError(f"PyMongo cursor streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback():
     pg, stop_postgres = start_postgres_fixture()
     try:
@@ -17293,6 +17505,7 @@ def main():
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
         check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
+        check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)
