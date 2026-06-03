@@ -15413,7 +15413,7 @@ httpx_body = httpx_body_iter()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
         raise AssertionError(f"httpx response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"httpx response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
@@ -15574,6 +15574,90 @@ def test_manifest_undici_response_body_early_cancel_releases_owner():
         raise AssertionError(f"undici response body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
         raise AssertionError(f"undici response body early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
+def test_manifest_node_fetch_response_body_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "const http = require('node:http');\n"
+                    "const {fetch: undiciFetch} = require('undici');\n"
+                    "globalThis.nodeFetchState = {requests: 0, chunks: 0, requestClosed: false, responseClosed: false};\n"
+                    "globalThis.nodeFetchServer = http.createServer((req, res) => {\n"
+                    "  const state = globalThis.nodeFetchState;\n"
+                    "  state.requests += 1;\n"
+                    "  req.on('close', () => { state.requestClosed = true; });\n"
+                    "  res.on('close', () => { state.responseClosed = true; });\n"
+                    "  res.writeHead(200, {'content-type': 'text/plain'});\n"
+                    "  res.write('first');\n"
+                    "  state.chunks += 1;\n"
+                    "  setTimeout(() => {\n"
+                    "    if (!res.destroyed && !res.writableEnded) {\n"
+                    "      state.chunks += 1;\n"
+                    "      res.write('second');\n"
+                    "    }\n"
+                    "  }, 200);\n"
+                    "});\n"
+                    "await new Promise((resolve) => globalThis.nodeFetchServer.listen(0, '127.0.0.1', resolve));\n"
+                    "const port = globalThis.nodeFetchServer.address().port;\n"
+                    "globalThis.nodeFetchResponse = await undiciFetch('http://127.0.0.1:' + port + '/stream');\n"
+                    "globalThis.nodeFetchBody = globalThis.nodeFetchResponse.body;"
+                ),
+            },
+            {"op": "eval", "runtime": "javascript", "bind": "node_fetch_body", "code": "globalThis.nodeFetchBody"},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"node_fetch_body": "node_fetch_body"},
+                "code": (
+                    "first = next(node_fetch_body)\n"
+                    "assert bytes(first) == b'first', list(first)\n"
+                    "node_fetch_body.close()\n"
+                    "del node_fetch_body\n"
+                    "import gc\n"
+                    "gc.collect(); gc.collect()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "await new Promise((resolve) => setTimeout(resolve, 50));\n"
+                    "const state = globalThis.nodeFetchState;\n"
+                    "const observedClose = state.requestClosed || state.responseClosed;\n"
+                    "if (!observedClose && typeof globalThis.nodeFetchServer.closeAllConnections === 'function') {\n"
+                    "  globalThis.nodeFetchServer.closeAllConnections();\n"
+                    "}\n"
+                    "await new Promise((resolve) => globalThis.nodeFetchServer.close(resolve));\n"
+                    "if (state.requests !== 1) throw new Error('Node fetch server saw bad request count: ' + state.requests);\n"
+                    "if (!observedClose) throw new Error('Node fetch body cancel did not close request/response owner: ' + JSON.stringify(state));\n"
+                    "if (state.chunks > 1) throw new Error('Node fetch body was pulled past early cancel: ' + JSON.stringify(state));"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0):
+        raise AssertionError(f"Node fetch response body lost stream proxy state: before={before_status.get('boundary', {})}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"Node fetch response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Node fetch response body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Node fetch response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
 def test_manifest_nested_proxy_reference_edges_observable():
@@ -18142,6 +18226,7 @@ def main():
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest aiohttp stream early cancel releases owner", test_manifest_aiohttp_stream_early_cancel_releases_owner)
         check("Manifest undici response body early cancel releases owner", test_manifest_undici_response_body_early_cancel_releases_owner)
+        check("Manifest Node fetch response body early cancel releases owner", test_manifest_node_fetch_response_body_early_cancel_releases_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
