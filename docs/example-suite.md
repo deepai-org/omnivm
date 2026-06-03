@@ -21,7 +21,7 @@ manual JSON encode/decode glue for runtime boundaries.
 | `ruby-activerecord-docs.json` | Ruby ORM-style class and record shapes |
 | `go-http-handler-docs.json` | Go `http.HandlerFunc`-style callable shape |
 | `java-manifest-function-proxy.json` | Java manifest stubs calling Python manifest functions with live object identity and unsafe-name fallback |
-| `vertical-order-review-app.poly` | Source-level Django/FastAPI/Pydantic intake, Express/Zod routing, React rendering, Java service enrichment, Ruby ActiveRecord/Fiber normalization, and Go worker fan-out |
+| `vertical-order-review-app.poly` | Source-level Django/FastAPI/Pydantic intake, Express/Zod routing, React rendering, Java service enrichment, Ruby ActiveRecord/Fiber normalization, Go worker fan-out, and checked runtime output golden |
 
 Broader application fixtures cover Django/Zod/Go HMAC, Express/Pandas/Go workers, Java Gson/Pandas/Zod/Express, Java OkHttp/HTTPX/Go retry, Jinja2/Marked/Go docs, and other cross-runtime package combinations.
 
@@ -50,3 +50,21 @@ make test-poly-libomnivm-smoke
 `make test-all` is the canonical local and CI gate. The last command expects
 the sibling Garbage checkout and compiles selected `.poly` examples before
 running them through CPython-hosted `libomnivm`.
+
+The public vertical example can also be run manually through the Docker-backed
+manifest runner after compiling it from the sibling Garbage checkout:
+
+```bash
+cd ../garbage
+npm run polyc -- examples/vertical-order-review-app.poly -o /tmp/vertical-order-review-app.json
+docker run --rm \
+  -v /tmp/vertical-order-review-app.json:/tmp/vertical-order-review-app.json:ro \
+  --entrypoint manifest-runner omnivm \
+  /tmp/vertical-order-review-app.json
+```
+
+Expected app output:
+
+```text
+Vertical order app order=ord-42 routes=5 django=200 react=71 java=priority ruby=fiber-active workers=2 adjustment=7
+```
