@@ -6424,6 +6424,172 @@ qs = Order.objects.order_by("id")
         raise AssertionError(f"Django QuerySet and rows did not stay behind live proxies: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_django_model_collision_fields_stay_natural():
+    before = omnivm.status()
+    setup = r'''
+import os
+import tempfile
+import uuid
+from django.conf import settings
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-django-collisions-" + uuid.uuid4().hex + ".sqlite3")
+db_config = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": db_path}}
+if not settings.configured:
+    settings.configure(
+        DEFAULT_CHARSET="utf-8",
+        SECRET_KEY="poly",
+        INSTALLED_APPS=[],
+        DATABASES=db_config,
+        USE_TZ=True,
+    )
+else:
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.DATABASES = db_config
+    settings.INSTALLED_APPS = []
+
+import django
+from django.apps import apps
+if not apps.ready:
+    django.setup()
+
+from django.db import connection, models
+
+suffix = uuid.uuid4().hex[:10]
+table_name = "omnivm_collision_order_" + suffix
+Meta = type("Meta", (), {"app_label": "omnivm_stress", "db_table": table_name})
+CollisionOrder = type(
+    "OmniVMCollisionOrder" + suffix,
+    (models.Model,),
+    {
+        "__module__": "__main__",
+        "name": models.CharField(max_length=64),
+        "items": models.CharField(max_length=64),
+        "keys": models.CharField(max_length=64),
+        "count": models.IntegerField(),
+        "then": models.CharField(max_length=64),
+        "length": models.IntegerField(),
+        "get": models.CharField(max_length=64),
+        "close": models.CharField(max_length=64),
+        "Meta": Meta,
+    },
+)
+with connection.schema_editor() as schema:
+    schema.create_model(CollisionOrder)
+
+CollisionOrder.objects.create(
+    name="ada",
+    items="field-items",
+    keys="field-keys",
+    count=7,
+    then="field-then",
+    length=12,
+    get="field-get",
+    close="field-close",
+)
+CollisionOrder.objects.create(
+    name="grace",
+    items="field-items-2",
+    keys="field-keys-2",
+    count=8,
+    then="field-then-2",
+    length=13,
+    get="field-get-2",
+    close="field-close-2",
+)
+django_collision_order = CollisionOrder.objects.order_by("id").first()
+django_collision_qs = CollisionOrder.objects.order_by("id")
+'''
+    verify = r'''
+row = CollisionOrder.objects.order_by("id").first()
+assert row.items == "js-items", row.items
+assert row.keys == "field-keys", row.keys
+assert row.count == 7, row.count
+assert row.then == "field-then", row.then
+assert row.length == 12, row.length
+assert row.get == "js-get", row.get
+assert row.close == "field-close", row.close
+assert CollisionOrder.objects.count() == 2, CollisionOrder.objects.count()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"row": "django_collision_order"},
+                "code": (
+                    "if (row.name !== 'ada') throw new Error('bad Django model name: ' + row.name); "
+                    "if (row.items !== 'field-items') throw new Error('Django items field lost: ' + row.items); "
+                    "if (row.keys !== 'field-keys') throw new Error('Django keys field lost: ' + row.keys); "
+                    "if (String(row.count) !== '7') throw new Error('Django count field lost: ' + row.count); "
+                    "if (row.then !== 'field-then') throw new Error('Django then field lost: ' + row.then); "
+                    "if (String(row.length) !== '12') throw new Error('Django length field lost: ' + row.length); "
+                    "if (row.get !== 'field-get') throw new Error('Django get field lost: ' + row.get); "
+                    "if (row.close !== 'field-close') throw new Error('Django close field lost: ' + row.close); "
+                    "if (omnivm.proxyGet(row, 'length') !== 12) throw new Error('Django explicit length get failed'); "
+                    "row.items = 'js-items'; "
+                    "row.get = 'js-get'; "
+                    "row.save();"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"row": "django_collision_order"},
+                "code": (
+                    "raise \"bad Django items field #{row.items}\" unless row.items == 'js-items'; "
+                    "raise \"bad Django keys field #{row.keys}\" unless row.keys == 'field-keys'; "
+                    "raise \"bad Django count field #{row.count}\" unless row.count == 7; "
+                    "raise \"bad Django then field #{row.then}\" unless row.then == 'field-then'; "
+                    "raise \"bad Django length field #{row.length}\" unless row.length == 12; "
+                    "raise \"bad Django get field #{row.get}\" unless row.get == 'js-get'; "
+                    "raise \"bad Django close field #{row.close}\" unless row.close == 'field-close';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"qs": "django_collision_qs"},
+                "code": (
+                    "const rows = Array.from(qs); "
+                    "if (rows.length !== 2) throw new Error('bad Django collision QuerySet length: ' + rows.length); "
+                    "const second = rows[1]; "
+                    "if (second.items !== 'field-items-2' || second.keys !== 'field-keys-2' || String(second.count) !== '8' || second.then !== 'field-then-2' || String(second.length) !== '13' || second.get !== 'field-get-2' || second.close !== 'field-close-2') "
+                    "throw new Error('Django collision QuerySet row fields lost');"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after = omnivm.status()
+    boundary = after.get("boundary", {})
+    before_boundary = before.get("boundary", {})
+    handles = after.get("handles", {})
+    before_handles = before.get("handles", {})
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallbacks != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django collision model used JSON fallback: before={before_boundary}, after={boundary}")
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 2 and resource_capture_delta < 2:
+        raise AssertionError(f"Django collision model/queryset did not stay live: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    property_accesses = accesses.get("property", 0)
+    property_access_delta = property_accesses - before_accesses.get("property", 0)
+    if property_accesses < 8 and property_access_delta < 8:
+        raise AssertionError(f"Django collision model did not record property access: before={before_handles}, after={handles}")
+    mutation_accesses = accesses.get("mutation", 0)
+    mutation_access_delta = mutation_accesses - before_accesses.get("mutation", 0)
+    if mutation_accesses < 2 and mutation_access_delta < 2:
+        raise AssertionError(f"Django collision model did not record field mutation: before={before_handles}, after={handles}")
+
+
 def test_manifest_django_request_body_after_close_requires_materialized_dto():
     before = omnivm.status()
     setup = r'''
@@ -20841,6 +21007,7 @@ def main():
         check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
+        check("Manifest Django model collision fields stay natural", test_manifest_django_model_collision_fields_stay_natural)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
         check("Manifest Django async StreamingHttpResponse body is lazy and cancellable", test_manifest_django_async_streaming_response_body_is_lazy_and_cancellable)
