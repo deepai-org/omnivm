@@ -183,6 +183,14 @@ def post_fork(server, worker):
     omnivm.execute("javascript", "global.marked = require('marked')")
     omnivm.execute("ruby", "require 'json'")
 
+def worker_exit(server, worker):
+    """Optional: release retained handles before an app-server worker exits."""
+    import omnivm
+    try:
+        omnivm.drain_worker()
+    except RuntimeError:
+        pass
+
 # middleware.py
 from omnivm import call
 
@@ -286,6 +294,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.watchdog_capabilities()` | Return the runtime timeout/preemption support matrix |
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
 | `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state, handle/boundary diagnostics) |
+| `omnivm.drain_worker()` | Release retained handles and retained manifest modules before worker drain/reload hooks |
 | `omnivm.worker_tainted()` | Return whether this worker should be recycled after a non-recoverable timeout |
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |

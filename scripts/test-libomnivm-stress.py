@@ -17736,7 +17736,7 @@ try:
                 if live_before < 1:
                     raise AssertionError(f"retained proxy did not leave a live handle: {omnivm.status()}")
 
-                omnivm.unload_manifest_modules()
+                omnivm.drain_worker()
                 live_after = omnivm.status()["handles"]["live"]
                 if live_after != 0:
                     raise AssertionError(f"manifest unload leaked live handles before={live_before} after={live_after}: {omnivm.status()}")

@@ -394,6 +394,19 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.unload_manifest_modules()
         assert "busy" in str(ctx.exception)
 
+    def test_drain_worker_calls_lib(self):
+        self.mock_lib.OmniDrainWorker.return_value = b"OK"
+        result = omnivm_mod.drain_worker()
+        assert result == "OK"
+        self.mock_lib.OmniDrainWorker.assert_called_once_with()
+
+    def test_drain_worker_error_boundary_path(self):
+        self.mock_lib.OmniDrainWorker.return_value = b"ERR:drain worker: busy"
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.drain_worker()
+        assert "busy" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "drain_worker"
+
     def test_manifest_call_decodes_return_envelope(self):
         self.mock_lib.OmniManifestCall.return_value = (
             b'OK:{"__omnivm_result__":true,"kind":"string","value":"ranked"}'

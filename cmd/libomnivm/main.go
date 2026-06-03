@@ -15,6 +15,7 @@
 //	OmniCall(runtime, code *C.char) *C.char
 //	OmniExec(runtime, code *C.char) *C.char
 //	OmniLoadManifestModule(moduleID, path *C.char) *C.char
+//	OmniDrainWorker() *C.char
 //	OmniUnloadManifestModules() *C.char
 //	OmniManifestCall(moduleID, requestJSON *C.char) *C.char
 //	OmniLoadPlugin(runtime, path *C.char) *C.char
@@ -182,6 +183,25 @@ func unloadManifestModulesForWorkerDrain() error {
 		return nil
 	}
 	return eng.Handles.ReleaseAll()
+}
+
+func drainWorkerForReload(apiName, errorPrefix string) *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	done, err := beginExternalCall(apiName)
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	defer done()
+	threadID := int64(C.get_thread_id())
+	pumpBeforeHostCall(threadID)
+	defer pumpAfterHostCall(threadID)
+
+	if err := unloadManifestModulesForWorkerDrain(); err != nil {
+		return C.CString("ERR:" + errorPrefix + ": " + err.Error())
+	}
+	return C.CString("OK")
 }
 
 // goPlugins maps plugin names to dlopen handles for c-shared Go plugins.
@@ -747,24 +767,14 @@ func OmniLoadManifestModule(cModuleID *C.char, cPath *C.char) *C.char {
 	return C.CString("OK")
 }
 
+//export OmniDrainWorker
+func OmniDrainWorker() *C.char {
+	return drainWorkerForReload("drain_worker", "drain worker")
+}
+
 //export OmniUnloadManifestModules
 func OmniUnloadManifestModules() *C.char {
-	if !initialized {
-		return C.CString("ERR:not initialized — call OmniInit first")
-	}
-	done, err := beginExternalCall("unload_manifest_modules")
-	if err != nil {
-		return C.CString("ERR:" + err.Error())
-	}
-	defer done()
-	threadID := int64(C.get_thread_id())
-	pumpBeforeHostCall(threadID)
-	defer pumpAfterHostCall(threadID)
-
-	if err := unloadManifestModulesForWorkerDrain(); err != nil {
-		return C.CString("ERR:unload manifest modules: " + err.Error())
-	}
-	return C.CString("OK")
+	return drainWorkerForReload("unload_manifest_modules", "unload manifest modules")
 }
 
 //export OmniManifestCall

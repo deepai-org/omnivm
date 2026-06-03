@@ -40,6 +40,7 @@ __all__ = [
     "execute",
     "run_manifest",
     "load_manifest_module",
+    "drain_worker",
     "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
@@ -250,6 +251,10 @@ def _load_lib():
         if hasattr(lib, "OmniLoadManifestModule"):
             lib.OmniLoadManifestModule.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
             lib.OmniLoadManifestModule.restype = ctypes.c_char_p
+
+        if hasattr(lib, "OmniDrainWorker"):
+            lib.OmniDrainWorker.argtypes = []
+            lib.OmniDrainWorker.restype = ctypes.c_char_p
 
         if hasattr(lib, "OmniUnloadManifestModules"):
             lib.OmniUnloadManifestModules.argtypes = []
@@ -714,6 +719,26 @@ def unload_manifest_modules():
         raise RuntimeError("libomnivm does not expose OmniUnloadManifestModules")
     result = _lib.OmniUnloadManifestModules()
     return _check_result(result)
+
+
+def drain_worker():
+    """
+    Release retained OmniVM state before recycling a server worker.
+
+    Call this from worker-drain/reload hooks when live proxies, retained
+    manifest modules, streams, or resource handles might still exist. The
+    operation is process-wide because retained handles share one process handle
+    table.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    if hasattr(_lib, "OmniDrainWorker"):
+        result = _lib.OmniDrainWorker()
+    elif hasattr(_lib, "OmniUnloadManifestModules"):
+        result = _lib.OmniUnloadManifestModules()
+    else:
+        raise RuntimeError("libomnivm does not expose OmniDrainWorker")
+    return _check_result(result, boundary_path="drain_worker")
 
 
 def manifest_call(module_id, func, args=()):
