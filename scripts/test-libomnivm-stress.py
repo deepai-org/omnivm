@@ -14851,6 +14851,96 @@ def test_manifest_java_rxjava_flowable_early_cancel_releases_owner():
         raise AssertionError(f"RxJava Flowable stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "java.util.concurrent.atomic.AtomicBoolean reactorCancelled = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "java.util.concurrent.atomic.AtomicBoolean reactorDisposed = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "java.util.concurrent.atomic.AtomicReference<String> reactorSignal = new java.util.concurrent.atomic.AtomicReference<>(\"\"); "
+                    "reactor.core.scheduler.Scheduler reactorScheduler = reactor.core.scheduler.Schedulers.newSingle(\"omnivm-reactor-cancel\"); "
+                    "reactor.core.publisher.Flux<String> reactorStream = reactor.core.publisher.Flux.interval(java.time.Duration.ofMillis(10), reactorScheduler)"
+                    ".map(n -> \"reactor-\" + n)"
+                    ".doOnCancel(() -> reactorCancelled.set(true))"
+                    ".doFinally(signal -> { reactorSignal.set(signal.name()); reactorScheduler.dispose(); reactorDisposed.set(reactorScheduler.isDisposed()); }); "
+                    "java.util.concurrent.ExecutorService rxExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(); "
+                    "java.util.concurrent.atomic.AtomicBoolean rxCancelled = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "java.util.concurrent.atomic.AtomicBoolean rxShutdown = new java.util.concurrent.atomic.AtomicBoolean(false); "
+                    "io.reactivex.rxjava3.core.Scheduler rxScheduler = io.reactivex.rxjava3.schedulers.Schedulers.from(rxExecutor); "
+                    "io.reactivex.rxjava3.core.Flowable<String> rxStream = io.reactivex.rxjava3.core.Flowable.interval(10, java.util.concurrent.TimeUnit.MILLISECONDS, rxScheduler)"
+                    ".map(n -> \"rxjava-\" + n)"
+                    ".doOnCancel(() -> { rxCancelled.set(true); rxExecutor.shutdownNow(); rxShutdown.set(rxExecutor.isShutdown()); }); "
+                    "omnivm.OmniVM.setCaptureObject(\"reactor_scheduled_stream\", reactorStream); "
+                    "omnivm.OmniVM.setCaptureObject(\"reactor_scheduled_cancelled\", reactorCancelled); "
+                    "omnivm.OmniVM.setCaptureObject(\"reactor_scheduled_disposed\", reactorDisposed); "
+                    "omnivm.OmniVM.setCaptureObject(\"reactor_scheduled_signal\", reactorSignal); "
+                    "omnivm.OmniVM.setCaptureObject(\"rxjava_scheduled_stream\", rxStream); "
+                    "omnivm.OmniVM.setCaptureObject(\"rxjava_scheduled_cancelled\", rxCancelled); "
+                    "omnivm.OmniVM.setCaptureObject(\"rxjava_scheduled_shutdown\", rxShutdown);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {
+                    "reactor_scheduled_stream": "reactor_scheduled_stream",
+                    "rxjava_scheduled_stream": "rxjava_scheduled_stream",
+                },
+                "code": (
+                    "const reactorIter = reactor_scheduled_stream[Symbol.iterator](); "
+                    "const reactorFirst = reactorIter.next(); "
+                    "if (reactorFirst.done || reactorFirst.value !== 'reactor-0') throw new Error('bad scheduled Reactor item: ' + JSON.stringify(reactorFirst)); "
+                    "if (reactor_scheduled_stream.cancel('client-stop') !== true) throw new Error('scheduled Reactor cancel failed'); "
+                    "const rxIter = rxjava_scheduled_stream[Symbol.iterator](); "
+                    "const rxFirst = rxIter.next(); "
+                    "if (rxFirst.done || rxFirst.value !== 'rxjava-0') throw new Error('bad scheduled RxJava item: ' + JSON.stringify(rxFirst)); "
+                    "if (rxjava_scheduled_stream.cancel('client-stop') !== true) throw new Error('scheduled RxJava cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Thread.sleep(100); "
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"reactor_scheduled_cancelled\")).get()) "
+                    "throw new RuntimeException(\"scheduled Reactor stream did not observe cancellation\"); "
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"reactor_scheduled_disposed\")).get()) "
+                    "throw new RuntimeException(\"scheduled Reactor stream did not dispose scheduler\"); "
+                    "String reactorSignal = String.valueOf(((java.util.concurrent.atomic.AtomicReference) omnivm.OmniVM.getCapture(\"reactor_scheduled_signal\")).get()); "
+                    "if (!\"CANCEL\".equals(reactorSignal)) throw new RuntimeException(\"scheduled Reactor final signal = \" + reactorSignal); "
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"rxjava_scheduled_cancelled\")).get()) "
+                    "throw new RuntimeException(\"scheduled RxJava stream did not observe cancellation\"); "
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"rxjava_scheduled_shutdown\")).get()) "
+                    "throw new RuntimeException(\"scheduled RxJava stream did not shut down executor\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2:
+        raise AssertionError(f"scheduled reactive streams did not cross as stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"scheduled reactive streams used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 2:
+        raise AssertionError(f"scheduled reactive streams did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 2:
+        raise AssertionError(f"scheduled reactive stream cancel did not release handles: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"scheduled reactive stream cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_ruby_each_body_capture_as_lazy_stream():
     before_status = omnivm.status()
     before_handles = before_status.get("handles", {})
@@ -18226,6 +18316,7 @@ def main():
         check("Manifest Java ReadableByteChannel early cancel releases owner", test_manifest_java_readable_byte_channel_early_cancel_releases_owner)
         check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
         check("Manifest Java RxJava Flowable early cancel releases owner", test_manifest_java_rxjava_flowable_early_cancel_releases_owner)
+        check("Manifest Java scheduled reactive stream cancel tears down scheduler", test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler)
         check("Manifest Ruby each body capture is lazy stream", test_manifest_ruby_each_body_capture_as_lazy_stream)
         check("Manifest Python iterable body capture is lazy stream", test_manifest_python_iterable_body_capture_as_lazy_stream)
         check("Manifest Python async iterable body capture is lazy stream", test_manifest_python_async_iterable_body_capture_as_lazy_stream)
