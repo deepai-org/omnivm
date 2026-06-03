@@ -19298,6 +19298,120 @@ attrs_collision = CollisionAttrs(
         raise AssertionError(f"attrs collision model did not record mutation access: before={before_handles}, after={handles}")
 
 
+def test_manifest_dataclass_model_collision_fields_stay_natural():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import dataclasses
+
+@dataclasses.dataclass
+class CollisionDataclass:
+    items: str
+    keys: str
+    count: int
+    then: str
+    length: int
+    get: str
+    close: str
+
+dataclass_collision = CollisionDataclass(
+    items="field-items",
+    keys="field-keys",
+    count=7,
+    then="field-then",
+    length=12,
+    get="field-get",
+    close="field-close",
+)
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"dataclass_collision": "dataclass_collision"},
+                "code": (
+                    "if (dataclass_collision.items !== 'field-items') throw new Error('dataclass items field lost: ' + dataclass_collision.items); "
+                    "if (dataclass_collision.keys !== 'field-keys') throw new Error('dataclass keys field lost: ' + dataclass_collision.keys); "
+                    "if (String(dataclass_collision.count) !== '7') throw new Error('dataclass count field lost: ' + dataclass_collision.count); "
+                    "if (dataclass_collision.then !== 'field-then') throw new Error('dataclass then field lost: ' + dataclass_collision.then); "
+                    "if (String(dataclass_collision.length) !== '12') throw new Error('dataclass length field lost: ' + dataclass_collision.length); "
+                    "if (dataclass_collision.get !== 'field-get') throw new Error('dataclass get field lost: ' + dataclass_collision.get); "
+                    "if (dataclass_collision.close !== 'field-close') throw new Error('dataclass close field lost: ' + dataclass_collision.close); "
+                    "dataclass_collision.items = 'js-items'; "
+                    "dataclass_collision.then = 'js-then'; "
+                    "dataclass_collision.length = 13; "
+                    "if (omnivm.proxyGet(dataclass_collision, 'length') !== 13) throw new Error('proxyGet lost dataclass length field');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"dataclass_collision": "dataclass_collision"},
+                "code": (
+                    "raise \"bad dataclass items #{dataclass_collision.items}\" unless dataclass_collision.items == 'js-items'; "
+                    "raise \"bad dataclass then #{dataclass_collision.then}\" unless dataclass_collision.then == 'js-then'; "
+                    "raise \"bad dataclass length #{dataclass_collision.length}\" unless dataclass_collision.length == 13; "
+                    "dataclass_collision.keys = 'ruby-keys'; "
+                    "dataclass_collision.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"dataclass_collision": "dataclass_collision"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"dataclass_collision\"); "
+                    "if (!\"js-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"dataclass Java items field lost: \" + payload.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(payload.get(\"keys\")))) throw new RuntimeException(\"dataclass Java keys field lost: \" + payload.get(\"keys\")); "
+                    "if (!\"field-get\".equals(String.valueOf(payload.get(\"get\")))) throw new RuntimeException(\"dataclass Java get field lost: \" + payload.get(\"get\")); "
+                    "if (!\"ruby-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"dataclass Java close field lost: \" + payload.get(\"close\")); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"dataclass count set failed\"); "
+                    "if (!payload.set(\"get\", \"java-get\")) throw new RuntimeException(\"dataclass get set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert dataclass_collision.items == 'js-items', dataclass_collision\n"
+                    "assert dataclass_collision.keys == 'ruby-keys', dataclass_collision\n"
+                    "assert dataclass_collision.count == 42, dataclass_collision\n"
+                    "assert dataclass_collision.then == 'js-then', dataclass_collision\n"
+                    "assert dataclass_collision.length == 13, dataclass_collision\n"
+                    "assert dataclass_collision.get == 'java-get', dataclass_collision\n"
+                    "assert dataclass_collision.close == 'ruby-close', dataclass_collision\n"
+                    "dump = dataclasses.asdict(dataclass_collision)\n"
+                    "assert dump == {'items': 'js-items', 'keys': 'ruby-keys', 'count': 42, 'then': 'js-then', 'length': 13, 'get': 'java-get', 'close': 'ruby-close'}, dump"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"dataclass collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"dataclass collision model used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"dataclass collision model crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"dataclass collision model crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"dataclass collision model did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"dataclass collision model did not record mutation access: before={before_handles}, after={handles}")
+
+
 def test_manifest_js_sequence_length_set_resizes_mutable_sources():
     java_values_expr = (
         "((java.util.function.Supplier<java.util.ArrayList<String>>)(() -> { "
@@ -21911,6 +22025,7 @@ def main():
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest Pydantic model collision fields stay natural", test_manifest_pydantic_model_collision_fields_stay_natural)
         check("Manifest attrs model collision fields stay natural", test_manifest_attrs_model_collision_fields_stay_natural)
+        check("Manifest dataclass model collision fields stay natural", test_manifest_dataclass_model_collision_fields_stay_natural)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
         check("Manifest JS fixed-size length set rejects Java array and ByteBuffer", test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer)
