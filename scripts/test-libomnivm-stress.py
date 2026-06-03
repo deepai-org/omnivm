@@ -6577,6 +6577,13 @@ return null;
                 "runtime": "ruby",
                 "captures": {"jdbc_h2_ruby": "jdbc_h2_ruby"},
                 "code": (
+                    "raise \"bad H2 JDBC Ruby name #{jdbc_h2_ruby.firstName.inspect}\" unless jdbc_h2_ruby.firstName == 'ada'; "
+                    "raise 'H2 JDBC Ruby items field lost' unless jdbc_h2_ruby.firstItems == 'field-items'; "
+                    "raise 'H2 JDBC Ruby keys field lost' unless jdbc_h2_ruby.firstKeys == 'field-keys'; "
+                    "raise 'H2 JDBC Ruby count field lost' unless jdbc_h2_ruby.firstCount.to_s == '7'; "
+                    "raise 'H2 JDBC Ruby then field lost' unless jdbc_h2_ruby.firstThen == 'field-then'; "
+                    "raise 'H2 JDBC Ruby length field lost' unless jdbc_h2_ruby.firstLength.to_s == '12'; "
+                    "raise 'H2 JDBC Ruby close field lost' unless jdbc_h2_ruby.firstClose == 'field-close'; "
                     "jdbc_h2_ruby.close; "
                     "raise 'H2 JDBC Ruby ResultSet owner did not close' unless jdbc_h2_ruby.isClosed && jdbc_h2_ruby.isStatementClosed && jdbc_h2_ruby.isConnectionClosed"
                 ),

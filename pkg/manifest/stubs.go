@@ -960,10 +960,18 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 				return "", err
 			}
 			if ok {
-				return marshalResult(map[string]interface{}{
+				descriptor := map[string]interface{}{
 					"__omnivm_callable__": true,
 					"key":                 req.Key,
-				})
+				}
+				zeroArg, err := e.handleZeroArgCallable(id, req.Key)
+				if err != nil {
+					return "", err
+				}
+				if zeroArg {
+					descriptor["zeroArg"] = true
+				}
+				return marshalResult(descriptor)
 			}
 		}
 		if !ok {
@@ -1131,6 +1139,22 @@ func (e *Executor) handleCallable(id handles.ID, key string) (bool, error) {
 		return e.runtimeRefCallable(ref, key)
 	}
 	return genericCallable(entry.Value, key), nil
+}
+
+func (e *Executor) handleZeroArgCallable(id handles.ID, key string) (bool, error) {
+	entry, ok := e.ensureHandleTable().Get(id)
+	if !ok {
+		return false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	}
+	if ref, ok := runtimeRefFromHandleValue(entry.Value); ok {
+		switch ref.Runtime {
+		case "ruby":
+			return e.runtimeRefRubyZeroArgMethod(ref, key)
+		case "java":
+			return e.runtimeRefJavaZeroArgMethod(ref, key)
+		}
+	}
+	return genericZeroArgCallable(entry.Value, key), nil
 }
 
 func (e *Executor) marshalBridgeResult(parent handles.ID, value interface{}) (string, error) {
@@ -2336,6 +2360,22 @@ func (e *Executor) runtimeRefRubyZeroArgMethod(ref RuntimeRef, key string) (bool
 	return zeroArg, nil
 }
 
+func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool, error) {
+	if ref.Runtime != "java" {
+		return false, nil
+	}
+	expr, ok, err := runtimeRefJavaZeroArgMethodExpr(ref, key)
+	if err != nil || !ok {
+		return false, err
+	}
+	value, err := e.runtimeRefEvalPrimitive(ref, expr)
+	if err != nil {
+		return false, err
+	}
+	zeroArg, _ := value.(bool)
+	return zeroArg, nil
+}
+
 func (e *Executor) runtimeRefTargetCallable(ref RuntimeRef) (bool, error) {
 	expr, ok := runtimeRefTargetCallableExpr(ref)
 	if !ok {
@@ -2742,6 +2782,18 @@ func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, 
 		return "", false, err
 	}
 	return fmt.Sprintf("(begin; __o = %s; __k = %s; __o.respond_to?(__k) && __o.method(__k).arity == 0; rescue NameError; false; end)", base, keyLit), true, nil
+}
+
+func runtimeRefJavaZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, error) {
+	if ref.Runtime != "java" {
+		return "", false, nil
+	}
+	base := runtimeVarRef(ref.Runtime, ref.VarName)
+	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
+	if err != nil {
+		return "", false, err
+	}
+	return fmt.Sprintf("omnivm.OmniVM.proxyZeroArgCallable(%s, %s)", base, keyLit), true, nil
 }
 
 func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
@@ -3848,6 +3900,52 @@ func genericCallable(value interface{}, key string) bool {
 	}
 	if rv.Kind() != reflect.Pointer && rv.CanAddr() {
 		return rv.Addr().MethodByName(key).IsValid()
+	}
+	return false
+}
+
+func genericZeroArgCallable(value interface{}, key string) bool {
+	switch v := value.(type) {
+	case RuntimeRef:
+		return genericZeroArgCallable(v.Value, key)
+	case *RuntimeRef:
+		if v == nil {
+			return false
+		}
+		return genericZeroArgCallable(v.Value, key)
+	case *ResourceRef:
+		return genericZeroArgCallable(v.Value, key)
+	case ResourceRef:
+		return genericZeroArgCallable(&v, key)
+	case *TableRef:
+		return genericZeroArgCallable(v.Value, key)
+	case TableRef:
+		return genericZeroArgCallable(&v, key)
+	case *JobHandle:
+		return genericZeroArgCallable(v.Payload, key)
+	case JobHandle:
+		return genericZeroArgCallable(&v, key)
+	}
+
+	if key == "" {
+		rv := reflect.ValueOf(value)
+		return rv.IsValid() && rv.Kind() == reflect.Func && rv.Type().NumIn() == 0
+	}
+	if prop, ok, err := genericProperty(value, key); err == nil && ok {
+		fn := reflect.ValueOf(prop)
+		return fn.IsValid() && fn.Kind() == reflect.Func && fn.Type().NumIn() == 0
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return false
+	}
+	if method := rv.MethodByName(key); method.IsValid() {
+		return method.Type().NumIn() == 0
+	}
+	if rv.Kind() != reflect.Pointer && rv.CanAddr() {
+		if method := rv.Addr().MethodByName(key); method.IsValid() {
+			return method.Type().NumIn() == 0
+		}
 	}
 	return false
 }

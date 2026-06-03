@@ -1750,6 +1750,11 @@ class OmniVMHandleProxy
 
   def __omnivm_materialize_bridge_value(value)
     if value.is_a?(Hash) && value["__omnivm_callable__"] == true
+      if value["zeroArg"] == true
+        raw_call = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: value["key"], args: []}))
+        env_call = JSON.parse(raw_call)
+        return env_call.is_a?(Hash) && env_call["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env_call["value"]) : raw_call
+      end
       return proc do |*call_args|
         raw_call = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: value["key"], args: call_args.map { |arg| __omnivm_encode_arg(arg) }}))
         env_call = JSON.parse(raw_call)

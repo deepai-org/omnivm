@@ -528,6 +528,21 @@ public class OmniVM {
         return isCallableTarget(value);
     }
 
+    public static boolean proxyZeroArgCallable(Object target, Object keyValue) {
+        String key = proxyKey(keyValue);
+        if (target == null || key == null || key.isEmpty()) {
+            return false;
+        }
+        for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
+            if (method.getName().equals(key) && method.getParameterCount() == 0) {
+                return true;
+            }
+        }
+        Object value = proxyGet(target, key);
+        java.lang.reflect.Method method = functionalMethod(value);
+        return method != null && method.getParameterCount() == 0;
+    }
+
     public static Object proxyCall(Object target, Object keyValue, Object argsValue) {
         String key = proxyKey(keyValue);
         List<?> args = argsValue instanceof List<?> list ? list : Collections.emptyList();

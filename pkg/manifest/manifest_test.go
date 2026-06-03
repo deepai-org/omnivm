@@ -4817,6 +4817,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("Ruby materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}
+	if !contains(code, `value["zeroArg"] == true`) {
+		t.Fatalf("Ruby materializer should invoke zero-arg callable descriptors as property access, got %q", code)
+	}
 	if !contains(code, `key.end_with?("=")`) || !contains(code, `key[0...-1]`) {
 		t.Fatalf("Ruby materializer should route property assignment syntax through handle_set, got %q", code)
 	}
@@ -7138,6 +7141,45 @@ func TestRuntimeRefProxyReadsLiveJavaProperty(t *testing.T) {
 	}
 	if !strings.Contains(execCode, "omnivm.OmniVM.proxyGet") || !strings.Contains(execCode, `omnivm.OmniVM.getCapture("user")`) {
 		t.Fatalf("Java property read should execute through generic live proxy helpers, got %q", execCode)
+	}
+}
+
+func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
+	e, mocks := makeExecutor("java", "javascript")
+	mocks["java"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "proxyCallable") {
+			return pkg.Result{Value: "true"}
+		}
+		if strings.Contains(code, "proxyZeroArgCallable") {
+			return pkg.Result{Value: "true"}
+		}
+		return pkg.Result{Value: `{"__omnivm_java_object__":true,"class":"ResultSet"}`}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "java", VarName: "rows", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	result, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"isClosed"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	want := map[string]interface{}{"__omnivm_callable__": true, "key": "isClosed", "zeroArg": true}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java zero-arg method descriptor = %#v, want %#v", env, want)
 	}
 }
 
