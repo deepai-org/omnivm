@@ -9133,8 +9133,6 @@ def test_manifest_active_record_relation_like_stays_lazy_and_collision_safe():
 
 
 def test_manifest_sqlite3_native_gem_executes_inside_ruby():
-    before_status = omnivm.status()
-    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -9163,13 +9161,11 @@ $sqlite_db.close
 
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
-    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
-        raise AssertionError(f"sqlite3 native gem test used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"sqlite3 native gem test used JSON fallback: {boundary}")
 
 
 def test_manifest_active_record_sqlite_adapter_is_natural_and_collision_safe():
-    before_status = omnivm.status()
-    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -9259,10 +9255,10 @@ File.unlink($ar_sqlite_db_path) if File.exist?($ar_sqlite_db_path)
 
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
-        raise AssertionError(f"ActiveRecord model did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
-        raise AssertionError(f"ActiveRecord SQLite adapter test used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"ActiveRecord model did not cross as a live resource proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"ActiveRecord SQLite adapter test used JSON fallback: {boundary}")
 
 
 def test_manifest_python_dict_list_capture_uses_proxy_not_json():
@@ -13133,7 +13129,10 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "py_payload.items = 'js-items'; "
                     "py_payload.then = 'js-then'; "
                     "if (py_payload.items !== 'js-items') throw new Error('bad items key: ' + py_payload.items); "
-                    "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then);"
+                    "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then); "
+                    "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
+                    "py_payload.length = 11; "
+                    "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },
             {
@@ -13179,7 +13178,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
     handles = omnivm.status().get("handles", {})
     if boundary.get("json_fallbacks", 0) != 0:
         raise AssertionError(f"collision-key mapping setters should not use JSON fallback: {boundary}")
-    if handles.get("handle_accesses_by_kind", {}).get("mutation", 0) < 5:
+    if handles.get("handle_accesses_by_kind", {}).get("mutation", 0) < 6:
         raise AssertionError(f"collision-key mapping setters should record proxy mutations: {handles}")
 
 

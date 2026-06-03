@@ -1302,6 +1302,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        if (!isIndexedDescriptor()) {
+          try {
+            if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});
+          } catch (_fieldLengthError) {}
+        }
         try {
           return bridge({op: "handle_len"});
         } catch (_e) {}

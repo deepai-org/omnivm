@@ -4717,6 +4717,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `op: "handle_get"`) {
 		t.Fatalf("JS materializer should fetch handle properties, got %q", code)
 	}
+	if !contains(code, `if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});`) {
+		t.Fatalf("JS materializer should prefer remote length fields before collection length on non-indexed proxies, got %q", code)
+	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("JS materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}
