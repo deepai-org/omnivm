@@ -68,3 +68,6 @@ Expected app output:
 ```text
 Vertical order app order=ord-42 routes=5 django=200 react=71 java=priority ruby=fiber-active workers=2 adjustment=7
 ```
+
+For the real-library gap matrix behind the next ecosystem fixtures, see
+[`ecosystem-gap-assessment.md`](ecosystem-gap-assessment.md).

@@ -170,6 +170,16 @@ finally:
         )
 
 
+def run_manifest_dict(manifest):
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+
 def test_simple_reentry():
     expect(omnivm.call("javascript", "2 + 2"), "4")
 
@@ -4915,6 +4925,224 @@ def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"FastAPI request used JSON fallback: {boundary}")
 
 
+def test_manifest_django_queryset_transaction_rollback_cross_runtime():
+    before = omnivm.status()
+    setup = r'''
+import os
+import tempfile
+import uuid
+from django.conf import settings
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-django-orm-" + uuid.uuid4().hex + ".sqlite3")
+db_config = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": db_path}}
+if not settings.configured:
+    settings.configure(
+        DEFAULT_CHARSET="utf-8",
+        SECRET_KEY="poly",
+        INSTALLED_APPS=[],
+        DATABASES=db_config,
+        USE_TZ=True,
+    )
+else:
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.DATABASES = db_config
+    settings.INSTALLED_APPS = []
+
+import django
+from django.apps import apps
+if not apps.ready:
+    django.setup()
+
+from django.db import connection, models, transaction
+
+suffix = uuid.uuid4().hex[:10]
+table_name = "omnivm_order_" + suffix
+Meta = type("Meta", (), {"app_label": "omnivm_stress", "db_table": table_name})
+Order = type(
+    "OmniVMOrder" + suffix,
+    (models.Model,),
+    {
+        "__module__": "__main__",
+        "name": models.CharField(max_length=64),
+        "total": models.IntegerField(),
+        "Meta": Meta,
+    },
+)
+with connection.schema_editor() as schema:
+    schema.create_model(Order)
+
+Order.objects.bulk_create([
+    Order(name="ada", total=11),
+    Order(name="grace", total=12),
+    Order(name="linus", total=13),
+])
+qs = Order.objects.order_by("id")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const rows = Array.from(qs); "
+                    "const names = rows.map(row => row.name).join(','); "
+                    "if (names !== 'ada,grace,linus') throw new Error('bad Django QuerySet JS names: ' + names);"
+                ),
+                "captures": {"qs": "qs"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "names = []; qs.each { |row| names << row.name }; names = names.join(','); "
+                    "raise \"bad Django QuerySet Ruby names: #{names}\" unless names == 'ada,grace,linus'"
+                ),
+                "captures": {"qs": "qs"},
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"qs\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"QuerySet did not materialize as handle proxy: \" + raw); "
+                    "omnivm.OmniVM.HandleProxy qsProxy = (omnivm.OmniVM.HandleProxy) raw; "
+                    "java.util.List<String> names = new java.util.ArrayList<>(); "
+                    "for (Object rowObj : qsProxy.values()) { "
+                    "  if (!(rowObj instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"QuerySet row was not a handle proxy: \" + rowObj); "
+                    "  names.add(String.valueOf(((omnivm.OmniVM.HandleProxy) rowObj).get(\"name\"))); "
+                    "} "
+                    "if (!\"ada,grace,linus\".equals(String.join(\",\", names))) throw new RuntimeException(\"bad Django QuerySet Java names: \" + names);"
+                ),
+                "captures": {"qs": "qs"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "rollback_seen = False\n"
+                    "try:\n"
+                    "    with transaction.atomic():\n"
+                    "        Order.objects.create(name='rollback', total=99)\n"
+                    "        omnivm.call('javascript', \"throw new Error('foreign rollback')\")\n"
+                    "except Exception as exc:\n"
+                    "    rollback_seen = 'foreign rollback' in str(exc)\n"
+                    "assert rollback_seen, 'foreign runtime error did not reach transaction.atomic()'\n"
+                    "assert Order.objects.filter(name='rollback').count() == 0, list(Order.objects.values_list('name', flat=True))\n"
+                    "assert Order.objects.count() == 3, Order.objects.count()"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after = omnivm.status()
+    boundary = after.get("boundary", {})
+    before_boundary = before.get("boundary", {})
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django QuerySet crossing used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 4:
+        raise AssertionError(f"Django QuerySet and rows did not stay behind live proxies: before={before_boundary}, after={boundary}")
+
+
+def test_manifest_django_request_body_after_close_requires_materialized_dto():
+    before = omnivm.status()
+    setup = r'''
+import io
+from django.conf import settings
+from django.core.handlers.wsgi import WSGIRequest
+
+if not settings.configured:
+    settings.configure(DEFAULT_CHARSET="utf-8", SECRET_KEY="poly")
+
+class ClosingBody(io.BytesIO):
+    def read(self, *args, **kwargs):
+        if self.closed:
+            raise ValueError("request body is closed")
+        return super().read(*args, **kwargs)
+
+body_stream = ClosingBody(b'{"order_id":"ord-42","total":7}')
+environ = {
+    "REQUEST_METHOD": "POST",
+    "PATH_INFO": "/orders/closed",
+    "SERVER_NAME": "example.test",
+    "SERVER_PORT": "443",
+    "wsgi.version": (1, 0),
+    "wsgi.url_scheme": "https",
+    "wsgi.input": body_stream,
+    "wsgi.errors": io.StringIO(),
+    "wsgi.multithread": False,
+    "wsgi.multiprocess": False,
+    "wsgi.run_once": False,
+    "CONTENT_LENGTH": str(len(body_stream.getvalue())),
+    "CONTENT_TYPE": "application/json",
+}
+req = WSGIRequest(environ)
+body_dto = req.body.decode("utf-8")
+if hasattr(req, "_body"):
+    delattr(req, "_body")
+req._stream = body_stream
+body_stream.close()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (!body_dto.includes('ord-42')) throw new Error('materialized DTO missing in JS'); "
+                    "let failed = false; "
+                    "try { req.read(); } catch (err) { failed = /closed|I\\/O|request body/.test(String(err && err.message || err)); } "
+                    "if (!failed) throw new Error('JS read of closed Django body did not fail clearly');"
+                ),
+                "captures": {"req": "req", "body_dto": "body_dto"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "raise 'materialized DTO missing in Ruby' unless body_dto.include?('ord-42'); "
+                    "failed = false; "
+                    "begin; reader = req.read; reader.respond_to?(:call) ? reader.call : reader; rescue => e; failed = e.message.include?('closed') || e.message.include?('I/O') || e.message.include?('request body'); end; "
+                    "raise 'Ruby read of closed Django body did not fail clearly' unless failed"
+                ),
+                "captures": {"req": "req", "body_dto": "body_dto"},
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!String.valueOf(omnivm.OmniVM.getCapture(\"body_dto\")).contains(\"ord-42\")) throw new RuntimeException(\"materialized DTO missing in Java\"); "
+                    "Object raw = omnivm.OmniVM.getCapture(\"req\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"request did not materialize as handle proxy: \" + raw); "
+                    "boolean failed = false; "
+                    "try { ((omnivm.OmniVM.HandleProxy) raw).call(\"read\"); } "
+                    "catch (RuntimeException err) { String msg = String.valueOf(err.getMessage()); failed = msg.contains(\"closed\") || msg.contains(\"I/O\") || msg.contains(\"request body\"); } "
+                    "if (!failed) throw new RuntimeException(\"Java read of closed Django body did not fail clearly\");"
+                ),
+                "captures": {"req": "req", "body_dto": "body_dto"},
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after = omnivm.status()
+    boundary = after.get("boundary", {})
+    before_boundary = before.get("boundary", {})
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django closed request body test used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Django closed request did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Django closed request object should not cross as stream: before={before_boundary}, after={boundary}")
+
+
 def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
     manifest = {
         "version": 1,
@@ -7462,6 +7690,95 @@ def test_manifest_java_set_capture_uses_proxy_not_stream():
     for kind in ("property", "call"):
         if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
             raise AssertionError(f"Java set proxy did not record {kind} access: {handles}")
+
+
+def test_manifest_active_record_relation_like_stays_lazy_and_collision_safe():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "require 'active_record'\n"
+                    "class ActiveRecordRelationLike\n"
+                    "  include Enumerable\n"
+                    "  attr_reader :iterations\n"
+                    "  def initialize\n"
+                    "    @closed = false\n"
+                    "    @iterations = 0\n"
+                    "    @rows = [\n"
+                    "      {'items' => 'field-items', 'keys' => 'field-keys', 'count' => 7, 'then' => 'field-then', 'length' => 12, 'name' => 'ada'},\n"
+                    "      {'items' => 'field-items-2', 'keys' => 'field-keys-2', 'count' => 8, 'then' => 'field-then-2', 'length' => 13, 'name' => 'grace'}\n"
+                    "    ]\n"
+                    "  end\n"
+                    "  def each\n"
+                    "    return enum_for(:each) unless block_given?\n"
+                    "    raise 'relation connection closed' if @closed\n"
+                    "    @iterations += 1\n"
+                    "    @rows.each { |row| yield row }\n"
+                    "  end\n"
+                    "  def where(*_args)\n"
+                    "    self\n"
+                    "  end\n"
+                    "  def close\n"
+                    "    @closed = true\n"
+                    "  end\n"
+                    "  def closed?\n"
+                    "    @closed\n"
+                    "  end\n"
+                    "end\n"
+                    "$active_record_relation_like = ActiveRecordRelationLike.new"
+                ),
+            },
+            {"op": "eval", "runtime": "ruby", "bind": "ar_relation", "code": "$active_record_relation_like.where(:active)"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const rows = Array.from(ar_relation); "
+                    "if (rows.length !== 2) throw new Error('bad relation row count: ' + rows.length); "
+                    "if (rows[0].items !== 'field-items') throw new Error('items field lost to method: ' + rows[0].items); "
+                    "if (rows[0].keys !== 'field-keys') throw new Error('keys field lost to method: ' + rows[0].keys); "
+                    "if (String(rows[0].count) !== '7') throw new Error('count field lost: ' + rows[0].count); "
+                    "if (rows[0].then !== 'field-then') throw new Error('then field lost: ' + rows[0].then); "
+                    "if (String(rows[0].get('length')) !== '12') throw new Error('length field lost: ' + rows[0].get('length'));"
+                ),
+                "captures": {"ar_relation": "ar_relation"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": "raise 'relation should close after stream EOF' unless $active_record_relation_like.closed?\nraise 'relation should iterate exactly once' unless $active_record_relation_like.iterations == 1",
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"ar_relation\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"ActiveRecord relation-like value should rematerialize as stream proxy: \" + raw); "
+                    "try { ((omnivm.OmniVM.StreamProxy) raw).toList(); throw new RuntimeException(\"closed relation stream should not be reusable\"); } "
+                    "catch (RuntimeException ex) { if (!String.valueOf(ex.getMessage()).contains(\"relation connection closed\")) throw ex; }"
+                ),
+                "captures": {"ar_relation": "ar_relation"},
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2:
+        raise AssertionError(f"ActiveRecord relation-like value did not cross as stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"ActiveRecord relation-like value used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"ActiveRecord relation-like stream did not explicitly release: before={before_handles}, after={handles}")
 
 
 def test_manifest_python_dict_list_capture_uses_proxy_not_json():
@@ -10156,6 +10473,68 @@ def test_manifest_js_readable_stream_body_capture_as_lazy_stream():
         raise AssertionError(f"JS ReadableStream body stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_js_readable_stream_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "globalThis.jsEarlyReadable = {"
+                    "cancelled: false,"
+                    "released: false,"
+                    "readers: 0,"
+                    "getReader: function() {"
+                    "  this.readers += 1;"
+                    "  const chunks = ['first', 'second', 'third'];"
+                    "  let index = 0;"
+                    "  const owner = this;"
+                    "  return {"
+                    "    read() { return Promise.resolve(index < chunks.length ? {value: chunks[index++], done: false} : {done: true}); },"
+                    "    releaseLock() { owner.released = true; },"
+                    "    cancel() { owner.cancelled = true; return Promise.resolve(); }"
+                    "  };"
+                    "}"
+                    "};"
+                ),
+            },
+            {"op": "eval", "runtime": "javascript", "bind": "js_early_stream", "code": "globalThis.jsEarlyReadable"},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "first = next(js_early_stream)\nassert first == 'first', first\njs_early_stream.close()\ndel js_early_stream\nimport gc\ngc.collect(); gc.collect()",
+                "captures": {"js_early_stream": "js_early_stream"},
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (globalThis.jsEarlyReadable.readers !== 1) throw new Error('bad reader count: ' + globalThis.jsEarlyReadable.readers); "
+                    "if (!globalThis.jsEarlyReadable.cancelled) throw new Error('ReadableStream reader was not cancelled early'); "
+                    "if (!globalThis.jsEarlyReadable.released) throw new Error('ReadableStream reader lock was not released early');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"JS ReadableStream early-cancel capture did not use stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"JS ReadableStream early-cancel used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"JS ReadableStream early-cancel did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"JS ReadableStream early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -11214,6 +11593,50 @@ assert omnivm.call("java", "40 + 2") == "42"
     )
 
 
+def test_java_completable_future_callback_affinity_is_diagnostic_or_safe():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+java.util.concurrent.CompletableFuture<String> pyFuture =
+    java.util.concurrent.CompletableFuture.supplyAsync(() -> "py")
+        .thenApplyAsync(label -> {
+            try {
+                return "OK:" + omnivm.OmniVM.call("python", "'from-' + '" + label + "'");
+            } catch (Throwable t) {
+                return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+            }
+        });
+java.util.concurrent.CompletableFuture<String> jsFuture =
+    java.util.concurrent.CompletableFuture.supplyAsync(() -> "js")
+        .thenApplyAsync(label -> {
+            try {
+                return "OK:" + omnivm.OmniVM.call("javascript", "'from-' + '" + label + "'");
+            } catch (Throwable t) {
+                return "ERR:" + t.getClass().getName() + ":" + t.getMessage();
+            }
+        });
+String pyResult = pyFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
+String jsResult = jsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
+String combined = pyResult + "|" + jsResult;
+boolean pySafe = pyResult.equals("OK:from-py");
+boolean jsSafe = jsResult.equals("OK:from-js");
+boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
+boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
+if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python callback affinity was neither safe nor diagnostic: " + pyResult);
+if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS callback affinity was neither safe nor diagnostic: " + jsResult);
+return combined;
+})).call()
+'''
+    )
+    parts = result.split("|")
+    if len(parts) != 2:
+        raise AssertionError(f"unexpected Java CompletableFuture callback result: {result}")
+    for part in parts:
+        if not (part.startswith("OK:from-") or ("ERR:" in part and "non-Golden Thread" in part)):
+            raise AssertionError(f"Java CompletableFuture callback affinity was not safe or diagnostic: {result}")
+
+
 def test_nested_js_to_java_interrupt_timeout():
     child_check(
         """
@@ -11783,6 +12206,8 @@ def main():
         check("Manifest heterogeneous DataFrame capture uses proxy not JSON", test_manifest_heterogeneous_dataframe_capture_uses_proxy_not_json)
         check("Manifest Django request capture uses proxy not JSON", test_manifest_django_request_capture_uses_proxy_not_json)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
+        check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
+        check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
@@ -11834,6 +12259,7 @@ def main():
         check("Manifest Java collections capture uses proxy not stream", test_manifest_java_collections_capture_use_proxy_not_stream)
         check("Manifest Python set capture uses proxy not stream", test_manifest_python_set_capture_uses_proxy_not_stream)
         check("Manifest Java set capture uses proxy not stream", test_manifest_java_set_capture_uses_proxy_not_stream)
+        check("Manifest ActiveRecord relation-like stays lazy and collision safe", test_manifest_active_record_relation_like_stays_lazy_and_collision_safe)
         check("Manifest Python dict/list capture uses proxy not JSON", test_manifest_python_dict_list_capture_uses_proxy_not_json)
         check("Manifest Ruby hash capture uses proxy not JSON", test_manifest_ruby_hash_capture_uses_proxy_not_json)
         check("Manifest Python runtime-ref exposes local object members generically", test_manifest_python_runtime_ref_exposes_local_object_members_generically)
@@ -11878,6 +12304,7 @@ def main():
         check("Manifest JS iterable body capture is lazy stream", test_manifest_js_iterable_body_capture_as_lazy_stream)
         check("Manifest JS async iterable body capture is lazy stream", test_manifest_js_async_iterable_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
+        check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
@@ -11900,6 +12327,7 @@ def main():
         check("Manifest proxy finalizer preserves scope owner", test_manifest_proxy_finalizer_preserves_scope_owner)
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
+        check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
         check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:
