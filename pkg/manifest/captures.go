@@ -1380,6 +1380,14 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     },
     set: function(obj, prop, value, receiver) {
       if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        if (prop === 'length' && isIndexedDescriptor()) {
+          try {
+            bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(value)});
+            return true;
+          } catch (_lengthSetError) {
+            return false;
+          }
+        }
         try {
           bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(value)});
           if (hasLocalProp(obj, prop)) Reflect.set(obj, prop, value, receiver);

@@ -14046,6 +14046,54 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
         raise AssertionError(f"collision-key mapping setters should record proxy mutations: {handles}")
 
 
+def test_manifest_js_sequence_length_set_rejects_local_shadow():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "code": "[1, 2, 3]",
+                "bind": "py_values",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_values": "py_values"},
+                "code": (
+                    "if (py_values.length !== 3) throw new Error('bad initial length: ' + py_values.length); "
+                    "let strictRejected = false; "
+                    "try { (function() { 'use strict'; py_values.length = 1; })(); } "
+                    "catch (err) { strictRejected = err instanceof TypeError; } "
+                    "if (!strictRejected) throw new Error('strict length assignment should reject unsupported remote resize'); "
+                    "py_values.length = 1; "
+                    "if (py_values.length !== 3) throw new Error('local length shadow changed sequence length: ' + py_values.length); "
+                    "if (omnivm.proxyLen(py_values) !== 3) throw new Error('proxyLen changed after rejected resize: ' + omnivm.proxyLen(py_values)); "
+                    "py_values[0] = 10; "
+                    "if (py_values[0] !== 10) throw new Error('indexed mutation failed after rejected resize: ' + py_values[0]);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "assert py_values == [10, 2, 3], py_values",
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    boundary = omnivm.status().get("boundary", {})
+    handles = omnivm.status().get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"sequence length collision should use a live proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"sequence length collision used JSON fallback: {boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    if accesses.get("length", 0) < 1 or accesses.get("mutation", 0) < 1:
+        raise AssertionError(f"sequence length collision did not record length and mutation access: {handles}")
+
+
 def test_manifest_channel_captures_are_lazy_streams():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -15606,6 +15654,7 @@ def main():
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
+        check("Manifest JS sequence length set rejects local shadow", test_manifest_js_sequence_length_set_rejects_local_shadow)
         check("Manifest channel captures are lazy streams", test_manifest_channel_captures_are_lazy_streams)
         check("Manifest channel auto-injects as lazy stream", test_manifest_channel_auto_injects_as_lazy_stream)
         check("Manifest handle proxy chatty warning stats", test_manifest_handle_proxy_chatty_warning_stats)
