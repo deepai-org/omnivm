@@ -12,7 +12,7 @@ open test targets.
 | Lifecycle-owned objects: requests, responses, sessions, transactions | Medium | Django/FastAPI/Starlette/aiohttp/Rack/Rails/Express request and response objects cross as live proxies; Starlette direct-request and ASGI app disconnect checks plus Express abort lifecycle checks stay live; Django closed-body diagnostics; Django/SQLAlchemy/ActiveRecord rollback after foreign-runtime errors; resource/job manifest ops model transaction-like handles | End-to-end app-server abort propagation, worker reload with live request/stream/resource handles, response writers after owner close in more servers |
 | Thread/event-loop affinity: Ruby fiber/thread, JS loop, Java executor, Python async loop | Medium-high | Ruby Fiber and Async gem callbacks, JS timer/promise pumping, JVM thread bridge calls, Python asyncio and TaskGroup, Starlette ASGI app disconnect loop, Java `CompletableFuture`, Reactor scheduler, RxJava executor, Kotlin coroutine callback affinity as safe or diagnostic; Java `CompletableFuture` cancellation status crosses runtimes | Full ASGI server cancellation, Node event-loop ownership from Express/undici internals, Ruby thread-local/fiber-local framework state under nested callbacks |
 | Native memory: Arrow, buffers, tensors, direct ByteBuffers, GPU memory | Medium | Python buffers, NumPy/Pandas/Polars/dataframe interchange, Arrow PyCapsule/stream, DLPack CPU, JS typed arrays/DataView/ArrayBuffer, Java primitive arrays and direct/read-only/sliced ByteBuffers, non-CPU dataframe interchange stays proxy | Real PyTorch/CuPy/JAX tensors, GPU DLPack/device transfer policy, multi-buffer/nested/chunked Arrow dictionaries and strings |
-| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
+| Cancellation/teardown: request aborts, worker reloads, timeouts | Medium-high | Watchdog timeout/interrupt stress, stream EOF/cancel release, finalizer/scope release, prefork worker lifecycle fixture, Starlette direct-request and ASGI app disconnect, Express request abort state, Starlette/aiohttp/httpx/undici/Node Web Stream early cancel, Go c-shared context-owned reader cancel, Java `CompletableFuture` cancellation status, Reactor/RxJava cancel | Full app-server abort propagation, worker reload while handles are live, broader cross-runtime cancellation status attached to handles |
 | Method/key collisions: `items`, `keys`, `count`, `then`, `length` | Medium-high | RuntimeRef mapping keys beat methods; Python HTTP message attributes such as `headers` beat raw scope mapping keys; descriptor fields do not shadow runtime object fields; SQLAlchemy rows, ActiveRecord rows/models, Python mappings, Java JDBC/H2 rows, Ruby materialized Java zero-arg methods stay natural, non-callable `then` fields do not become JS thenables, and JS `.get`/`omnivm.proxyGet`/`proxyLen` provide explicit access when names collide | Callable promise-like `then` fields, mutable array-like `length` edge cases beyond explicit helper access, more framework model fields colliding with proxy metadata |
 | Error fidelity: stack/type/cause across boundaries | Medium-high | Pydantic, Zod, Django forms, SQLAlchemy, Java cause chains, JavaScript `Error.cause`, Ruby ActiveRecord errors, and Go c-shared wrapped errors preserve runtime/type/message/stack/cause/boundary path in Python-facing errors | Original runtime error handles and language-native catch/rethrow semantics across every guest |
 
@@ -92,12 +92,14 @@ status. This covers many isolated runtime hazards.
 
 Production cancellation is more demanding. The suite now has framework-object
 abort/disconnect coverage for Starlette and Express, a Starlette ASGI app-call
-disconnect fixture, plus Java `CompletableFuture` cancellation status crossing
-the JS boundary, but full app-server aborts, worker reloads, transaction
-rollback, stream cancellation, broader Java reactive cancellation status, and Go
-`context.Context` should all produce observable cleanup. The next fixture should
-assert handle counts before/after an aborted request or worker reload and should
-expose cancellation status rather than hiding it in logs.
+disconnect fixture, Go c-shared stream cancellation reaching a context-owned
+reader's `ctx.Done()`, plus Java `CompletableFuture` cancellation status
+crossing the JS boundary. Full app-server aborts, worker reloads, transaction
+rollback, broader stream cancellation status, broader Java reactive cancellation
+status, and Go `context.Context` propagation outside c-shared stream owner close
+should all produce observable cleanup. The next fixture should assert handle
+counts before/after an aborted request or worker reload and should expose
+cancellation status rather than hiding it in logs.
 
 ### Method And Key Collisions
 
@@ -155,7 +157,7 @@ envelope.
 2. Add Prisma, MongoDB, Redis scan, and cloud SDK pager/cursor tests for lazy
    result windows, owner close, and backpressure.
 3. Add Go `context.Context` cancellation propagation from manifest jobs and
-   c-shared plugin calls.
+   resource handles beyond the covered c-shared stream owner-close path.
 4. Add broader Java Reactor/Future cancellation status assertions beyond
    `CompletableFuture` object cancellation and callback-affinity diagnostics.
 5. Add callable promise-like `then` and mutable array-like `length` collision
