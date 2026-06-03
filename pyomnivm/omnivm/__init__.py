@@ -65,7 +65,64 @@ class RuntimeError(_builtins.RuntimeError):
 
     def __init__(self, message, runtime=None):
         super().__init__(message)
-        self.runtime = runtime
+        parsed = _parse_runtime_error_text(str(message), runtime=runtime)
+        self.runtime = parsed["runtime"]
+        self.type = parsed["type"]
+        self.message = parsed["message"]
+        self.traceback = parsed["traceback"]
+        self.cause_chain = parsed["cause_chain"]
+        self.boundary_path = None
+        self.original_error_handle = None
+
+
+def _parse_runtime_error_text(text, runtime=None):
+    source_runtime = runtime
+    body = text
+    for prefix, canonical in (
+        ("javascript: ", "javascript"),
+        ("python: ", "python"),
+        ("ruby: ", "ruby"),
+        ("jvm: ", "java"),
+        ("java: ", "java"),
+        ("go: ", "go"),
+    ):
+        if body.startswith(prefix):
+            source_runtime = canonical
+            body = body[len(prefix) :]
+            break
+
+    first_line, _, rest = body.partition("\n")
+    err_type = ""
+    detail = first_line
+    if ": " in first_line:
+        candidate, tail = first_line.split(": ", 1)
+        if candidate and " " not in candidate:
+            err_type = candidate
+            detail = tail
+
+    cause_chain = []
+    if rest:
+        for line in rest.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("Caused by: "):
+                continue
+            cause_text = stripped[len("Caused by: ") :]
+            cause_type = ""
+            cause_message = cause_text
+            if ": " in cause_text:
+                candidate, tail = cause_text.split(": ", 1)
+                if candidate and " " not in candidate:
+                    cause_type = candidate
+                    cause_message = tail
+            cause_chain.append({"type": cause_type, "message": cause_message})
+
+    return {
+        "runtime": source_runtime,
+        "type": err_type,
+        "message": detail,
+        "traceback": rest,
+        "cause_chain": cause_chain,
+    }
 
 
 # Lazy-loaded shared library handle. Not loaded until init_runtimes() is called.

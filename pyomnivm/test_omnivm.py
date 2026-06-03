@@ -25,10 +25,40 @@ class TestRuntimeError(unittest.TestCase):
     def test_with_runtime(self):
         err = omnivm_mod.RuntimeError("fail", runtime="python")
         assert err.runtime == "python"
+        assert err.type == ""
+        assert err.message == "fail"
+        assert err.traceback == ""
+        assert err.cause_chain == []
 
     def test_is_builtin_runtime_error(self):
         err = omnivm_mod.RuntimeError("x")
         assert isinstance(err, builtins.RuntimeError)
+
+    def test_parses_prefixed_type_message_and_traceback(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: ZodError: invalid input\n    at <anonymous>:1:1",
+            runtime="javascript",
+        )
+        assert str(err) == "javascript: ZodError: invalid input\n    at <anonymous>:1:1"
+        assert err.runtime == "javascript"
+        assert err.type == "ZodError"
+        assert err.message == "invalid input"
+        assert "anonymous" in err.traceback
+
+    def test_parses_java_cause_chain(self):
+        err = omnivm_mod.RuntimeError(
+            "jvm: java.lang.RuntimeException: outer\n"
+            "\tat OmniVMEval.run(OmniVMEval.java:3)\n"
+            "Caused by: java.lang.IllegalArgumentException: inner\n"
+            "\t... 6 more",
+            runtime="java",
+        )
+        assert err.runtime == "java"
+        assert err.type == "java.lang.RuntimeException"
+        assert err.message == "outer"
+        assert err.cause_chain == [
+            {"type": "java.lang.IllegalArgumentException", "message": "inner"}
+        ]
 
 
 class TestCheckResult(unittest.TestCase):
@@ -42,6 +72,7 @@ class TestCheckResult(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod._check_result(b"ERR:something went wrong")
         assert str(ctx.exception) == "something went wrong"
+        assert ctx.exception.message == "something went wrong"
 
     def test_success_bytes(self):
         result = omnivm_mod._check_result(b"hello")

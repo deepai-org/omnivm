@@ -8956,6 +8956,7 @@ def test_validation_error_fidelity_popular_libraries():
                 "z.object({age:z.number().min(1), name:z.string()}).parse({age:0});"
             ),
             ["ZodError", "too_small", "age", "invalid_type", "name"],
+            {"runtime": "javascript", "type": "ZodError", "message": "["},
         ),
         (
             "pydantic",
@@ -8968,6 +8969,7 @@ def test_validation_error_fidelity_popular_libraries():
                 "User(age=0)"
             ),
             ["ValidationError", "age", "greater_than", "name", "missing"],
+            {"runtime": "python", "type": "ValidationError", "message": "2 validation errors for User"},
         ),
         (
             "django forms",
@@ -8984,6 +8986,7 @@ def test_validation_error_fidelity_popular_libraries():
                 "raise ValidationError(form.errors.as_json())"
             ),
             ["ValidationError", "age", "min_value", "name", "required"],
+            {"runtime": "python", "type": "ValidationError", "message": "age"},
         ),
         (
             "java cause chain",
@@ -8994,15 +8997,17 @@ def test_validation_error_fidelity_popular_libraries():
                 '})).call()'
             ),
             ["java.lang.RuntimeException", "outer", "Caused by", "java.lang.IllegalArgumentException", "inner"],
+            {"runtime": "java", "type": "java.lang.RuntimeException", "message": "outer", "cause_type": "java.lang.IllegalArgumentException", "cause_message": "inner"},
         ),
         (
             "ruby activerecord",
             "ruby",
             "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)",
             ["ActiveRecord::RecordInvalid", "Record invalid"],
+            {"runtime": "ruby", "type": "ActiveRecord::RecordInvalid", "message": "Record invalid"},
         ),
     ]
-    for name, runtime, code, expected in cases:
+    for name, runtime, code, expected, structured in cases:
         try:
             omnivm.call(runtime, code)
         except omnivm.RuntimeError as exc:
@@ -9010,6 +9015,20 @@ def test_validation_error_fidelity_popular_libraries():
             missing = [part for part in expected if part not in text]
             if missing:
                 raise AssertionError(f"{name} error lost details {missing}: {text}") from exc
+            if exc.runtime != structured["runtime"]:
+                raise AssertionError(f"{name} error runtime = {exc.runtime!r}, want {structured['runtime']!r}: {text}") from exc
+            if exc.type != structured["type"]:
+                raise AssertionError(f"{name} error type = {exc.type!r}, want {structured['type']!r}: {text}") from exc
+            if structured["message"] not in exc.message:
+                raise AssertionError(f"{name} error message = {exc.message!r}, want containing {structured['message']!r}: {text}") from exc
+            if "traceback" in structured and structured["traceback"] not in exc.traceback:
+                raise AssertionError(f"{name} error traceback = {exc.traceback!r}, want containing {structured['traceback']!r}: {text}") from exc
+            if "cause_type" in structured:
+                if not exc.cause_chain:
+                    raise AssertionError(f"{name} error lost cause chain: {text}") from exc
+                cause = exc.cause_chain[0]
+                if cause.get("type") != structured["cause_type"] or structured["cause_message"] not in cause.get("message", ""):
+                    raise AssertionError(f"{name} error cause = {cause!r}, want {structured}: {text}") from exc
         else:
             raise AssertionError(f"{name} did not raise an error")
 
