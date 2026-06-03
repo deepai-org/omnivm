@@ -1640,7 +1640,7 @@ public class OmniVM {
 
     @SuppressWarnings("unchecked")
     private static Object materializeStreamChunk(Object value) {
-        if (value instanceof Map<?, ?> rawMap && Boolean.TRUE.equals(rawMap.get("__omnivm_table__"))) {
+        if (!(value instanceof HandleProxy) && value instanceof Map<?, ?> rawMap && Boolean.TRUE.equals(rawMap.get("__omnivm_table__"))) {
             Map<String, Object> table = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
                 table.put(String.valueOf(entry.getKey()), entry.getValue());

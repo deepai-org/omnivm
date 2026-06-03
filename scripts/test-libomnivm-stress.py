@@ -8992,6 +8992,109 @@ pg_loop.close()
         stop_postgres()
 
 
+def test_manifest_asyncpg_connection_lifecycle_proxy_stays_live():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        setup = f'''
+import asyncio
+import asyncpg
+
+asyncpg_conn_kwargs = {pg!r}
+asyncpg_conn_kwargs["database"] = asyncpg_conn_kwargs.pop("dbname")
+asyncpg_conn_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(asyncpg_conn_loop)
+asyncpg_conn = asyncpg_conn_loop.run_until_complete(asyncpg.connect(**asyncpg_conn_kwargs))
+asyncpg_conn_state = []
+
+def close_asyncpg_conn_owner():
+    asyncpg_conn_state.append("close-called")
+    asyncpg_conn_loop.run_until_complete(asyncpg_conn.close())
+    return asyncpg_conn.is_closed()
+
+def close_asyncpg_conn_loop():
+    asyncpg_conn_loop.close()
+'''
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "python", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"asyncpg_conn": "asyncpg_conn"},
+                    "code": (
+                        "if (typeof asyncpg_conn.is_closed !== 'function') "
+                        "throw new Error('asyncpg connection lost is_closed method'); "
+                        "if (asyncpg_conn.is_closed() !== false) "
+                        "throw new Error('asyncpg connection should start open');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"asyncpg_conn": "asyncpg_conn"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"asyncpg_conn\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"asyncpg connection should cross as HandleProxy: \" + raw); "
+                        "omnivm.OmniVM.HandleProxy conn = (omnivm.OmniVM.HandleProxy) raw; "
+                        "Object closed = conn.call(\"is_closed\"); "
+                        "if (!Boolean.FALSE.equals(closed)) throw new RuntimeException(\"asyncpg connection should start open in Java: \" + closed);"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "python",
+                    "code": (
+                        "assert close_asyncpg_conn_owner() is True\n"
+                        "assert asyncpg_conn_state == ['close-called'], asyncpg_conn_state"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "captures": {"asyncpg_conn": "asyncpg_conn"},
+                    "code": (
+                        "if (asyncpg_conn.is_closed() !== true) "
+                        "throw new Error('asyncpg connection closed state was not visible in JS');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"asyncpg_conn": "asyncpg_conn"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"asyncpg_conn\"); "
+                        "omnivm.OmniVM.HandleProxy conn = (omnivm.OmniVM.HandleProxy) raw; "
+                        "Object closed = conn.call(\"is_closed\"); "
+                        "if (!Boolean.TRUE.equals(closed)) throw new RuntimeException(\"asyncpg connection closed state was not visible in Java: \" + closed);"
+                    ),
+                },
+                {"op": "exec", "runtime": "python", "code": "close_asyncpg_conn_loop()"},
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+            raise AssertionError(f"asyncpg connection did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+        if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+            raise AssertionError(f"asyncpg connection crossed as a stream: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"asyncpg connection used JSON fallback: before={before_boundary}, after={boundary}")
+        if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 4:
+            raise AssertionError(f"asyncpg connection lifecycle calls were not recorded: before={before_handles}, after={handles}")
+        if handles.get("live", 0) > before_handles.get("live", 0):
+            raise AssertionError(f"asyncpg connection lifecycle leaked handles: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
+
+
 def test_manifest_psycopg_server_side_cursor_early_cancel_closes_owner():
     pg, stop_postgres = start_postgres_fixture()
     try:
@@ -22557,6 +22660,7 @@ def main():
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
+        check("Manifest asyncpg connection lifecycle proxy stays live", test_manifest_asyncpg_connection_lifecycle_proxy_stays_live)
         check("Manifest psycopg server-side cursor early cancel closes owner", test_manifest_psycopg_server_side_cursor_early_cancel_closes_owner)
         check("Manifest SQLAlchemy async Result and AsyncSession lifecycle", test_manifest_sqlalchemy_async_result_session_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
