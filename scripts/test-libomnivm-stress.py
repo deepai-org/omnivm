@@ -17302,7 +17302,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
             {
                 "op": "eval",
                 "runtime": "python",
-                "code": "{'items': 'old-items', 'keys': 'old-keys', 'count': 0, 'then': 'old-then', 'get': 'old-get', 'length': 5}",
+                "code": "{'items': 'old-items', 'keys': 'old-keys', 'count': 0, 'then': 'old-then', 'get': 'old-get', 'close': 'old-close', 'length': 5}",
                 "bind": "py_payload",
             },
             {
@@ -17316,12 +17316,14 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (py_payload.then !== 'js-then') throw new Error('bad then key: ' + py_payload.then); "
                     "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
                     "if (py_payload.get !== 'old-get') throw new Error('get key lost to method: ' + py_payload.get); "
+                    "if (py_payload.close !== 'old-close') throw new Error('close key lost to proxy lifecycle method: ' + py_payload.close); "
                     "if (omnivm.proxyGet(py_payload, 'get') !== 'old-get') throw new Error('proxyGet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
+                    "if (omnivm.proxyGet(py_payload, 'close') !== 'old-close') throw new Error('proxyGet lost close key: ' + omnivm.proxyGet(py_payload, 'close')); "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
-                    "if (omnivm.proxyLen(py_payload) !== 6) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
+                    "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
                     "py_payload.length = 11; "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
-                    "if (omnivm.proxyLen(py_payload) !== 6) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
+                    "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
                     "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },
@@ -17344,8 +17346,10 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"py_payload\"); "
                     "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"count set failed\"); "
                     "if (!payload.set(\"items\", \"java-items\")) throw new RuntimeException(\"items set failed\"); "
+                    "if (!payload.set(\"close\", \"java-close\")) throw new RuntimeException(\"close set failed\"); "
                     "if (!\"42\".equals(String.valueOf(payload.get(\"count\")))) throw new RuntimeException(\"bad count key: \" + payload.get(\"count\")); "
-                    "if (!\"java-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"bad items key: \" + payload.get(\"items\"));"
+                    "if (!\"java-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"bad items key: \" + payload.get(\"items\")); "
+                    "if (!\"java-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"bad close key: \" + payload.get(\"close\"));"
                 ),
             },
             {
@@ -17356,6 +17360,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "assert py_payload['keys'] == 'ruby-keys', py_payload\n"
                     "assert py_payload['count'] == 42, py_payload\n"
                     "assert py_payload['then'] == 'js-then', py_payload\n"
+                    "assert py_payload['close'] == 'java-close', py_payload\n"
                     "assert py_payload['length'] == 9, py_payload\n"
                     "assert callable(dict.items) and callable(dict.keys)"
                 ),
