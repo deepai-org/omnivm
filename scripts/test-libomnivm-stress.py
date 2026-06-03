@@ -10011,6 +10011,22 @@ def test_validation_error_fidelity_popular_libraries():
             {"runtime": "python", "type": "ValidationError", "message": "age"},
         ),
         (
+            "sqlalchemy",
+            "python",
+            (
+                "from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine\n"
+                "engine = create_engine('sqlite:///:memory:')\n"
+                "metadata = MetaData()\n"
+                "users = Table('users', metadata, Column('id', Integer, primary_key=True), Column('name', String, unique=True))\n"
+                "metadata.create_all(engine)\n"
+                "with engine.begin() as conn:\n"
+                "    conn.execute(users.insert().values(name='ada'))\n"
+                "    conn.execute(users.insert().values(name='ada'))"
+            ),
+            ["IntegrityError", "UNIQUE constraint failed", "users.name", "INSERT INTO users"],
+            {"runtime": "python", "type": "IntegrityError", "message": "UNIQUE constraint failed"},
+        ),
+        (
             "java cause chain",
             "java",
             (
