@@ -7221,6 +7221,213 @@ for name, cursor in (
         raise AssertionError(f"PyMongo cursor streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_prisma_cursor_pager_is_lazy_and_cancellable():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        before_status = omnivm.status()
+        before_boundary = before_status.get("boundary", {})
+        before_handles = before_status.get("handles", {})
+        pg_url = f"postgresql://{pg['user']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
+        setup = r'''
+(() => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omnivm-prisma-'));
+  const pgUrl = __PG_URL__;
+  const clientDir = process.env.OMNIVM_PRISMA_CLIENT_DIR || '/omnivm/prisma/generated/client';
+
+  const {PrismaClient} = require(clientDir);
+  const {PrismaPg} = require('@prisma/adapter-pg');
+  globalThis.prismaPagerState = {root, pageFetches: {}, closed: {}, errors: []};
+  globalThis.prismaClients = [];
+  globalThis.prismaTableReady = false;
+
+  async function seedClient(label) {
+    const adapter = new PrismaPg({connectionString: pgUrl});
+    const client = new PrismaClient({adapter});
+    globalThis.prismaClients.push(client);
+    await client.$connect();
+    if (!globalThis.prismaTableReady) {
+      await client.$executeRawUnsafe('DROP TABLE IF EXISTS "Order"');
+      await client.$executeRawUnsafe('CREATE TABLE "Order" ("id" SERIAL PRIMARY KEY, "name" TEXT NOT NULL, "items" TEXT NOT NULL, "keys" TEXT NOT NULL, "count" INTEGER NOT NULL, "then" TEXT NOT NULL, "length" INTEGER NOT NULL, "close" TEXT NOT NULL)');
+      globalThis.prismaTableReady = true;
+    }
+    for (const suffix of ['ada', 'grace', 'later']) {
+      await client.order.create({
+        data: {
+          name: `${label}-${suffix}`,
+          items: 'field-items',
+          keys: 'field-keys',
+          count: suffix === 'later' ? 99 : 2,
+          then: 'field-then',
+          length: 2,
+          close: 'field-close',
+        },
+      });
+    }
+    return client;
+  }
+
+  globalThis.makePrismaCursorPager = async function(label) {
+    const client = await seedClient(label);
+    const state = globalThis.prismaPagerState;
+    state.pageFetches[label] = 0;
+    state.closed[label] = false;
+    let cursor = undefined;
+    let buffer = [];
+    let index = 0;
+    let done = false;
+    const pager = {
+      async next() {
+        if (done) return {done: true};
+        if (index >= buffer.length) {
+          state.pageFetches[label] += 1;
+          buffer = await client.order.findMany({
+            where: {name: {startsWith: `${label}-`}},
+            orderBy: {id: 'asc'},
+            take: 2,
+            ...(cursor === undefined ? {} : {skip: 1, cursor: {id: cursor}}),
+          });
+          index = 0;
+          if (buffer.length === 0) {
+            done = true;
+            return {done: true};
+          }
+          cursor = buffer[buffer.length - 1].id;
+        }
+        const row = buffer[index++];
+        return {
+          done: false,
+          value: {
+            id: row.id,
+            name: row.name,
+            items: row.items,
+            keys: row.keys,
+            count: row.count,
+            then: row.then,
+            length: row.length,
+            close: row.close,
+          },
+        };
+      },
+      async return() {
+        state.closed[label] = true;
+        done = true;
+        await client.$disconnect();
+        return {done: true};
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    return pager;
+  };
+})();
+'''.replace("__PG_URL__", json.dumps(pg_url))
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "javascript", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "async": True,
+                    "code": (
+                        "globalThis.prismaPagerPy = await globalThis.makePrismaCursorPager('python');\n"
+                        "globalThis.prismaPagerRuby = await globalThis.makePrismaCursorPager('ruby');\n"
+                        "globalThis.prismaPagerJava = await globalThis.makePrismaCursorPager('java');"
+                    ),
+                },
+                {"op": "eval", "runtime": "javascript", "bind": "prisma_pager_py", "code": "globalThis.prismaPagerPy"},
+                {"op": "eval", "runtime": "javascript", "bind": "prisma_pager_ruby", "code": "globalThis.prismaPagerRuby"},
+                {"op": "eval", "runtime": "javascript", "bind": "prisma_pager_java", "code": "globalThis.prismaPagerJava"},
+                {
+                    "op": "exec",
+                    "runtime": "python",
+                    "captures": {"prisma_pager_py": "prisma_pager_py"},
+                    "code": (
+                        "row = next(prisma_pager_py)\n"
+                        "assert row['name'] == 'python-ada', row\n"
+                        "assert row['items'] == 'field-items', row\n"
+                        "assert row['keys'] == 'field-keys', row\n"
+                        "assert str(row['count']) == '2', row\n"
+                        "assert row['then'] == 'field-then', row\n"
+                        "assert str(row['length']) == '2', row\n"
+                        "assert row['close'] == 'field-close', row\n"
+                        "prisma_pager_py.close()"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"prisma_pager_ruby": "prisma_pager_ruby"},
+                    "code": (
+                        "row = prisma_pager_ruby.first; "
+                        "raise 'Prisma pager was empty' if row.nil?; "
+                        "raise \"bad Prisma Ruby name #{row['name']}\" unless row['name'] == 'ruby-ada'; "
+                        "raise 'Prisma Ruby items field lost' unless row['items'] == 'field-items'; "
+                        "raise 'Prisma Ruby keys field lost' unless row['keys'] == 'field-keys'; "
+                        "raise 'Prisma Ruby count field lost' unless row['count'].to_s == '2'; "
+                        "raise 'Prisma Ruby then field lost' unless row['then'] == 'field-then'; "
+                        "raise 'Prisma Ruby length field lost' unless row['length'].to_s == '2'; "
+                        "raise 'Prisma Ruby close field lost' unless row['close'] == 'field-close'; "
+                        "prisma_pager_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"prisma_pager_java": "prisma_pager_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"prisma_pager_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"Prisma cursor pager should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"Prisma cursor pager was empty\"); "
+                        "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
+                        "if (!\"java-ada\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Prisma Java name: \" + row); "
+                        "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"Prisma Java items field lost\"); "
+                        "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"Prisma Java keys field lost\"); "
+                        "if (!\"2\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"Prisma Java count field lost\"); "
+                        "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"Prisma Java then field lost\"); "
+                        "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"Prisma Java length field lost\"); "
+                        "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"Prisma Java close field lost\"); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"Prisma Java cancel failed\");"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "async": True,
+                    "code": (
+                        "const state = globalThis.prismaPagerState; "
+                        "for (const label of ['python', 'ruby', 'java']) { "
+                        "  if (state.pageFetches[label] !== 1) throw new Error(label + ' Prisma pager fetched ' + state.pageFetches[label] + ' pages instead of one'); "
+                        "  if (!state.closed[label]) throw new Error(label + ' Prisma pager was not closed by stream cancellation'); "
+                        "} "
+                        "await Promise.all(globalThis.prismaClients.map(client => client.$disconnect().catch(() => {}))); "
+                        "require('node:fs').rmSync(state.root, {recursive: true, force: true});"
+                    ),
+                },
+            ],
+        }
+        run_manifest_dict(manifest)
+
+        after_status = omnivm.status()
+        boundary = after_status.get("boundary", {})
+        handles = after_status.get("handles", {})
+        if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+            raise AssertionError(f"Prisma cursor pagers did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+        if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+            raise AssertionError(f"Prisma cursor pager used JSON fallback: before={before_boundary}, after={boundary}")
+        if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+            raise AssertionError(f"Prisma cursor pager streams did not release: before={before_handles}, after={handles}")
+    finally:
+        stop_postgres()
+
+
 def test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback():
     pg, stop_postgres = start_postgres_fixture()
     try:
@@ -17506,6 +17713,7 @@ def main():
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
         check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
+        check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest H2 JDBC ResultSet lifecycle and rollback", test_manifest_jdbc_h2_resultset_lifecycle_and_rollback)

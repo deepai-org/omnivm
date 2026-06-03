@@ -117,6 +117,10 @@ RUN cd /usr/local/lib && npm install \
       react \
       react-dom \
       undici \
+      prisma \
+      @prisma/client \
+      @prisma/adapter-pg \
+      pg \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
@@ -150,8 +154,17 @@ COPY pkg/ pkg/
 COPY cmd/ cmd/
 COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
+COPY test/fixtures/prisma/ test/fixtures/prisma/
 RUN chmod +x scripts/python3-polyscript && \
     ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript
+
+# Prisma code generation forks a Node helper process, so do it during image
+# construction rather than inside the embedded polyglot process.
+RUN mkdir -p /omnivm/prisma && \
+    cp test/fixtures/prisma/schema.prisma /omnivm/prisma/schema.prisma && \
+    ln -s /usr/local/lib/node_modules /omnivm/prisma/node_modules && \
+    cd /omnivm/prisma && \
+    /usr/local/lib/node_modules/.bin/prisma generate --schema schema.prisma
 
 # ---- Prepare Docker-specific source files ----
 # Replace the JS package with the Docker-compatible version (no C++)
@@ -334,6 +347,10 @@ RUN cd /usr/local/lib && npm install \
       react \
       react-dom \
       undici \
+      prisma \
+      @prisma/client \
+      @prisma/adapter-pg \
+      pg \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
