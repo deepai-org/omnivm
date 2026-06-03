@@ -17518,6 +17518,25 @@ def test_ruby_bootstrap_core_surface():
         raise AssertionError(f"Ruby bootstrap surface mismatch: {got}")
 
 
+def test_ruby_thread_new_reports_diagnostic():
+    got = rb(
+        """
+begin
+  Thread.new { nil }
+  "missing-diagnostic"
+rescue => e
+  [
+    e.class.name,
+    e.message.include?("Ruby Thread.new is not supported in OmniVM embedded Ruby").to_s,
+    Thread.current.is_a?(Thread).to_s
+  ].join("|")
+end
+"""
+    )
+    if got != "RuntimeError|true|true":
+        raise AssertionError(f"Ruby Thread.new diagnostic mismatch: {got}")
+
+
 def main():
     global NAME_FILTERS, CATEGORY_FILTERS
     parser = argparse.ArgumentParser(description="CPython-hosted libomnivm stress checks")
@@ -17617,6 +17636,7 @@ def main():
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
+        check("Ruby Thread.new reports unsupported diagnostic", test_ruby_thread_new_reports_diagnostic)
         check("JS try/finally with bridge throw + bridge in finally", test_js_try_finally_bridge_throw)
         check("4-runtime mutual recursion (18 levels deep)", test_four_runtime_mutual_recursion)
         check("Rogue guest preemption (JS+Ruby infinite loops)", test_rogue_guest_preemption)
