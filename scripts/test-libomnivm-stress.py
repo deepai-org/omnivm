@@ -18932,6 +18932,46 @@ def test_ruby_bootstrap_core_surface():
         raise AssertionError(f"Ruby bootstrap surface mismatch: {got}")
 
 
+def test_ruby_queue_surface_supports_webrick_initialization():
+    got = rb(
+        r"""
+require 'thread'
+q = Thread::Queue.new
+q.push('a')
+q << 'b'
+queue_checks = [q.pop, q.deq, q.empty?.to_s]
+
+sq = Thread::SizedQueue.new(2)
+sq.push('x')
+sq.enq('y')
+sized_checks = [sq.shift, sq.pop, sq.max.to_s]
+sq.max = 3
+sized_checks << sq.max.to_s
+
+begin
+  Thread::Queue.new.pop
+  blocking_diag = 'missing'
+rescue ThreadError => e
+  blocking_diag = e.message.include?('OmniVM embedded Ruby').to_s
+end
+
+require 'webrick'
+require 'rackup/handler/webrick'
+server = WEBrick::HTTPServer.new(
+  :BindAddress => '127.0.0.1',
+  :Port => 0,
+  :Logger => WEBrick::Log.new($stderr, WEBrick::Log::FATAL),
+  :AccessLog => []
+)
+server.shutdown
+
+(queue_checks + sized_checks + [blocking_diag, server.class.name]).join('|')
+"""
+    )
+    if got != "a|b|true|x|y|2|3|true|WEBrick::HTTPServer":
+        raise AssertionError(f"Ruby Queue/WEBrick compatibility mismatch: {got}")
+
+
 def test_ruby_thread_new_reports_diagnostic():
     got = rb(
         """
@@ -19050,6 +19090,7 @@ def main():
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
+        check("Ruby Queue surface supports WEBrick initialization", test_ruby_queue_surface_supports_webrick_initialization)
         check("Ruby Thread.new reports unsupported diagnostic", test_ruby_thread_new_reports_diagnostic)
         check("JS try/finally with bridge throw + bridge in finally", test_js_try_finally_bridge_throw)
         check("4-runtime mutual recursion (18 levels deep)", test_four_runtime_mutual_recursion)
