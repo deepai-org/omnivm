@@ -60,6 +60,68 @@ struct OmniExportedBufferHandle {
     std::shared_ptr<v8::BackingStore> backing;
 };
 
+static std::string omnivm_v8_value_string(v8::Isolate* isolate,
+                                          v8::Local<v8::Context> context,
+                                          v8::Local<v8::Value> value) {
+    if (value.IsEmpty()) {
+        return "";
+    }
+    v8::Local<v8::String> str;
+    if (!value->ToString(context).ToLocal(&str)) {
+        return "";
+    }
+    v8::String::Utf8Value utf8(isolate, str);
+    return (*utf8 && **utf8) ? std::string(*utf8) : "";
+}
+
+static std::string omnivm_v8_error_stack(v8::Isolate* isolate,
+                                         v8::Local<v8::Context> context,
+                                         v8::Local<v8::Value> value) {
+    if (value.IsEmpty()) {
+        return "";
+    }
+    if (value->IsObject()) {
+        v8::Local<v8::Object> obj = value.As<v8::Object>();
+        v8::Local<v8::String> stack_key =
+            v8::String::NewFromUtf8Literal(isolate, "stack");
+        v8::Local<v8::Value> stack;
+        if (obj->Get(context, stack_key).ToLocal(&stack) && !stack.IsEmpty()) {
+            std::string stack_text = omnivm_v8_value_string(isolate, context, stack);
+            if (!stack_text.empty()) {
+                return stack_text;
+            }
+        }
+    }
+    return omnivm_v8_value_string(isolate, context, value);
+}
+
+static void omnivm_v8_append_error_causes(v8::Isolate* isolate,
+                                          v8::Local<v8::Context> context,
+                                          v8::Local<v8::Value> value,
+                                          std::string& out,
+                                          int depth) {
+    if (depth >= 16 || value.IsEmpty() || !value->IsObject()) {
+        return;
+    }
+    v8::Local<v8::Object> obj = value.As<v8::Object>();
+    v8::Local<v8::String> cause_key =
+        v8::String::NewFromUtf8Literal(isolate, "cause");
+    v8::Local<v8::Value> cause;
+    if (!obj->Get(context, cause_key).ToLocal(&cause) ||
+        cause.IsEmpty() ||
+        cause->IsUndefined() ||
+        cause->IsNull()) {
+        return;
+    }
+    std::string cause_text = omnivm_v8_error_stack(isolate, context, cause);
+    if (cause_text.empty()) {
+        return;
+    }
+    out += "\nCaused by: ";
+    out += cause_text;
+    omnivm_v8_append_error_causes(isolate, context, cause, out, depth + 1);
+}
+
 static char* omnivm_v8_format_exception(v8::Isolate* isolate,
                                         v8::Local<v8::Context> context,
                                         v8::TryCatch& try_catch,
@@ -70,20 +132,10 @@ static char* omnivm_v8_format_exception(v8::Isolate* isolate,
     }
 
     v8::Local<v8::Value> exception = try_catch.Exception();
-    if (!exception.IsEmpty() && exception->IsObject()) {
-        v8::Local<v8::Object> obj = exception.As<v8::Object>();
-        v8::Local<v8::String> stack_key =
-            v8::String::NewFromUtf8Literal(isolate, "stack");
-        v8::Local<v8::Value> stack;
-        if (obj->Get(context, stack_key).ToLocal(&stack) && !stack.IsEmpty()) {
-            v8::Local<v8::String> stack_str;
-            if (stack->ToString(context).ToLocal(&stack_str)) {
-                v8::String::Utf8Value utf8(isolate, stack_str);
-                if (*utf8 && **utf8) {
-                    return strdup(*utf8);
-                }
-            }
-        }
+    std::string text = omnivm_v8_error_stack(isolate, context, exception);
+    if (!text.empty()) {
+        omnivm_v8_append_error_causes(isolate, context, exception, text, 0);
+        return strdup(text.c_str());
     }
 
     if (!exception.IsEmpty()) {

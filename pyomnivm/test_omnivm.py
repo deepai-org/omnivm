@@ -60,6 +60,21 @@ class TestRuntimeError(unittest.TestCase):
             {"type": "java.lang.IllegalArgumentException", "message": "inner"}
         ]
 
+    def test_parses_javascript_error_cause_chain(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: Error: outer\n"
+            "    at <anonymous>:1:7\n"
+            "Caused by: TypeError: inner\n"
+            "    at <anonymous>:1:42",
+            runtime="javascript",
+        )
+        assert err.runtime == "javascript"
+        assert err.type == "Error"
+        assert err.message == "outer"
+        assert err.cause_chain == [
+            {"type": "TypeError", "message": "inner"}
+        ]
+
     def test_parses_manifest_runtime_error_boundary_path(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: python: ValidationError: bad input\n"

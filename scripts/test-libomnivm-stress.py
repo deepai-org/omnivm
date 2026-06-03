@@ -10207,6 +10207,13 @@ def test_validation_error_fidelity_popular_libraries():
             {"runtime": "javascript", "type": "ZodError", "message": "["},
         ),
         (
+            "javascript error cause",
+            "javascript",
+            "throw new Error('outer', {cause: new TypeError('inner')})",
+            ["Error", "outer", "Caused by", "TypeError", "inner"],
+            {"runtime": "javascript", "type": "Error", "message": "outer", "cause_type": "TypeError", "cause_message": "inner"},
+        ),
+        (
             "pydantic",
             "python",
             (
