@@ -4917,6 +4917,108 @@ def test_manifest_django_request_capture_uses_proxy_not_json():
         raise AssertionError(f"Django request used JSON fallback: {boundary}")
 
 
+def test_manifest_django_async_view_request_response_stay_live():
+    before_boundary = omnivm.status().get("boundary", {})
+    setup = r'''
+import asyncio
+import json
+from django.conf import settings
+
+if not settings.configured:
+    settings.configure(DEFAULT_CHARSET="utf-8", SECRET_KEY="poly", ALLOWED_HOSTS=["testserver"])
+else:
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.ALLOWED_HOSTS = list(getattr(settings, "ALLOWED_HOSTS", []) or ["testserver"])
+
+from django.test import AsyncRequestFactory
+from django.http import JsonResponse
+
+factory = AsyncRequestFactory()
+async_req = factory.post(
+    "/django/async/42?mode=poly",
+    data=b"hello-async",
+    content_type="text/plain",
+    headers={"x-request-id": "django-async-42"},
+)
+async_view_marker = None
+async_resp = None
+
+async def django_async_view(request):
+    global async_view_marker
+    await asyncio.sleep(0)
+    async_view_marker = omnivm.call("javascript", "async_req.path + ':' + async_req.META.HTTP_X_REQUEST_ID")
+    return JsonResponse(
+        {
+            "path": request.path,
+            "body": request.body.decode(),
+            "marker": async_view_marker,
+        },
+        status=202,
+        headers={"X-View": "async"},
+    )
+'''
+    run_view = r'''
+import asyncio
+import json
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    async_resp = loop.run_until_complete(django_async_view(async_req))
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if async_view_marker != "/django/async/42:django-async-42":
+    raise AssertionError(f"bad async view marker: {async_view_marker!r}")
+payload = json.loads(async_resp.content.decode())
+if payload != {
+    "path": "/django/async/42",
+    "body": "hello-async",
+    "marker": "/django/async/42:django-async-42",
+}:
+    raise AssertionError(f"bad async response payload: {payload!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"async_req": "async_req"},
+                "code": (
+                    "globalThis.async_req = async_req; "
+                    "if (async_req.method !== 'POST') throw new Error('bad Django async method: ' + async_req.method); "
+                    "if (async_req.path !== '/django/async/42') throw new Error('bad Django async path: ' + async_req.path); "
+                    "if (async_req.META.HTTP_X_REQUEST_ID !== 'django-async-42') throw new Error('bad Django async header');"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": run_view},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"async_resp": "async_resp"},
+                "code": (
+                    "if (String(async_resp.status_code) !== '202') throw new Error('bad Django async response status: ' + async_resp.status_code); "
+                    "if (async_resp.headers['X-View'] !== 'async') throw new Error('bad Django async response header: ' + async_resp.headers['X-View']);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_boundary = omnivm.status().get("boundary", {})
+    if after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
+        raise AssertionError(f"Django async request/response did not cross as live proxies: {after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Django async request/response crossed as a stream: {after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django async request/response used JSON fallback: {after_boundary}")
+
+
 def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
     manifest = {
         "version": 1,
@@ -13447,6 +13549,7 @@ def main():
         check("Manifest Polars DataFrame capture uses Arrow", test_manifest_polars_dataframe_capture_uses_arrow)
         check("Manifest heterogeneous DataFrame capture uses proxy not JSON", test_manifest_heterogeneous_dataframe_capture_uses_proxy_not_json)
         check("Manifest Django request capture uses proxy not JSON", test_manifest_django_request_capture_uses_proxy_not_json)
+        check("Manifest Django async view request/response stay live", test_manifest_django_async_view_request_response_stay_live)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
