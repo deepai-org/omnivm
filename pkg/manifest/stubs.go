@@ -2737,7 +2737,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	case "python":
 		return fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: (not __omnivm_http_message and ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
 	case "ruby":
-		return fmt.Sprintf("(begin; __v = %s; __omnivm_method_like = __v.respond_to?(:request_method) || (begin; __v.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__v.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__v.respond_to?(:path) || __v.respond_to?(:url) || __v.respond_to?(:headers) || __v.respond_to?(:env) || __v.respond_to?(:path_info)); !__omnivm_http_message && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base), true
+		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; !__omnivm_http_message && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
 	case "java":
 		httpMessage := javaHTTPMessageProbeExpr(base)
 		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaToStreamProbeExpr(base), base, base, base, base), true
@@ -2752,6 +2752,10 @@ func javaToStreamProbeExpr(base string) string {
 
 func pythonHTTPMessageProbeExpr(base string) string {
 	return fmt.Sprintf("((hasattr(%s, 'method') and (hasattr(%s, 'path') or hasattr(%s, 'url') or hasattr(%s, 'headers') or hasattr(%s, 'META'))) or (hasattr(%s, 'status_code') and (hasattr(%s, 'headers') or hasattr(%s, 'content') or hasattr(%s, 'streaming_content'))))", base, base, base, base, base, base, base, base, base)
+}
+
+func rubyHTTPMessageProbeExpr(base string) string {
+	return fmt.Sprintf("((begin; __omnivm_method_like = %s.respond_to?(:request_method) || (begin; %s.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(%s.method(:method).owner); rescue; false; end); __omnivm_method_like && (%s.respond_to?(:path) || %s.respond_to?(:url) || %s.respond_to?(:headers) || %s.respond_to?(:env) || %s.respond_to?(:path_info)); end) || ((%s.respond_to?(:status) || %s.respond_to?(:status_code) || %s.respond_to?(:code)) && (%s.respond_to?(:headers) || %s.respond_to?(:get_header) || %s.respond_to?(:body) || %s.respond_to?(:each))))", base, base, base, base, base, base, base, base, base, base, base, base, base, base, base)
 }
 
 func javaHTTPMessageProbeExpr(base string) string {

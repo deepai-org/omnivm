@@ -52,6 +52,7 @@ RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("nokogiri"); sit
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
 RUN gem install activerecord sqlite3 --no-document
 RUN gem install async -v 2.39.0 --no-document
+RUN gem install actionpack --no-document
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'
@@ -290,6 +291,7 @@ RUN apt-get update && apt-get install -y \
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("rack"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack.rb"), File.join(site, "rack.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "rack"), File.join(site, "rack"))'
 RUN gem install activerecord sqlite3 --no-document
 RUN gem install async -v 2.39.0 --no-document
+RUN gem install actionpack --no-document
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("concurrent-ruby"); site = RbConfig::CONFIG["sitedir"]; lib = File.join(spec.full_gem_path, "lib", "concurrent-ruby"); FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(lib, "concurrent.rb"), File.join(site, "concurrent.rb")); FileUtils.ln_sf(File.join(lib, "concurrent"), File.join(site, "concurrent"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("i18n"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n.rb"), File.join(site, "i18n.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "i18n"), File.join(site, "i18n"))'
 RUN ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("tzinfo"); site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(site); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo.rb"), File.join(site, "tzinfo.rb")); FileUtils.ln_sf(File.join(spec.full_gem_path, "lib", "tzinfo"), File.join(site, "tzinfo"))'

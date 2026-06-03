@@ -6498,6 +6498,74 @@ def test_manifest_rack_request_capture_uses_proxy_not_stream():
         raise AssertionError(f"Rack request used JSON fallback: {boundary}")
 
 
+def test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream():
+    before = omnivm.status().get("boundary", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "ruby",
+                "bind": "rails_req",
+                "code": (
+                    "require 'stringio'; require 'action_dispatch'; "
+                    "env = {'REQUEST_METHOD' => 'PATCH', 'PATH_INFO' => '/rails/42', "
+                    "'QUERY_STRING' => 'mode=poly', 'rack.input' => StringIO.new('hello-rails'), "
+                    "'CONTENT_LENGTH' => '11', "
+                    "'HTTP_X_REQUEST_ID' => 'rails-42'}; "
+                    "ActionDispatch::Request.new(env)"
+                ),
+            },
+            {
+                "op": "eval",
+                "runtime": "ruby",
+                "bind": "rails_resp",
+                "code": "ActionDispatch::Response.new(202, {'X-Rails' => 'yes'}, ['rails-body'])",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (rails_req.request_method !== 'PATCH') throw new Error('bad Rails method: ' + rails_req.request_method); "
+                    "if (rails_req.path !== '/rails/42') throw new Error('bad Rails path: ' + rails_req.path); "
+                    "if (rails_req.query_string !== 'mode=poly') throw new Error('bad Rails query: ' + rails_req.query_string); "
+                    "if (rails_req.get_header('HTTP_X_REQUEST_ID') !== 'rails-42') throw new Error('bad Rails request header'); "
+                    "if (typeof rails_resp !== 'object' || rails_resp === null) throw new Error('bad Rails response proxy'); "
+                    "if (rails_resp.status !== 202) throw new Error('bad Rails response status: ' + rails_resp.status); "
+                    "if (rails_resp.get_header('X-Rails') !== 'yes') throw new Error('bad Rails response header');"
+                ),
+                "captures": {"rails_req": "rails_req", "rails_resp": "rails_resp"},
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "raise 'bad Rails response status' unless $rails_resp.status == 202; "
+                    "raise 'bad Rails response header' unless $rails_resp.get_header('X-Rails') == 'yes'"
+                ),
+            },
+        ],
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after = omnivm.status().get("boundary", {})
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Rails ActionDispatch request/response did not cross as live proxies: before={before}, after={after}")
+    if after.get("stream_proxy_captures", 0) != before.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Rails ActionDispatch objects crossed as streams: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0) or after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"Rails ActionDispatch objects should not claim bulk transfer: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"Rails ActionDispatch objects used JSON fallback: before={before}, after={after}")
+
+
 def test_manifest_java_http_message_shape_capture_uses_proxy_not_stream():
     java_msg_expr = (
         "((java.util.function.Supplier<Object>)(() -> { "
@@ -14302,6 +14370,7 @@ def main():
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest Rack request capture uses proxy not stream", test_manifest_rack_request_capture_uses_proxy_not_stream)
+        check("Manifest Rails ActionDispatch request/response capture uses proxy not stream", test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream)
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
         check("Manifest Express request capture uses proxy not stream", test_manifest_express_request_capture_uses_proxy_not_stream)

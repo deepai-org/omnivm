@@ -3926,6 +3926,18 @@ func TestRuntimePrimitiveSnapshotExprProbesCallableShape(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefRubyStreamProbeTreatsHTTPMessagesAsResources(t *testing.T) {
+	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "ruby", VarName: "response"})
+	if !ok {
+		t.Fatal("ruby stream probe should be available")
+	}
+	for _, want := range []string{"respond_to?(:request_method)", "respond_to?(:status)", "respond_to?(:get_header)", "!__omnivm_http_message"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("ruby stream probe missing %q in %q", want, expr)
+		}
+	}
+}
+
 func TestJSStubUnsafeName(t *testing.T) {
 	code := jsStub("bad-name", []*Param{{Name: "class"}})
 	if contains(code, "globalThis.bad-name") {
