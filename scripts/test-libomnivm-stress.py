@@ -15305,8 +15305,7 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
     before_boundary = before_status.get("boundary", {})
     before_handles = before_status.get("handles", {})
     with tempfile.TemporaryDirectory() as tmpdir:
-        marker_path = os.path.join(tmpdir, "reader-close.txt")
-        marker_literal = json.dumps(marker_path)
+        marker_dir_literal = json.dumps(tmpdir)
         manifest = {
             "version": 1,
             "defaultRuntime": "python",
@@ -15314,7 +15313,7 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
                 {
                     "op": "func_def",
                     "name": "reader",
-                    "params": [],
+                    "params": [{"name": "label"}],
                     "body": [],
                     "bodyRuntime": "go",
                     "source": (
@@ -15323,9 +15322,11 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
                         "\t\"fmt\"\n"
                         "\t\"io\"\n"
                         "\t\"os\"\n"
+                        "\t\"path/filepath\"\n"
                         ")\n\n"
-                        "const markerPath = " + marker_literal + "\n\n"
+                        "const markerDir = " + marker_dir_literal + "\n\n"
                         "type trackingReader struct {\n"
+                        "\tlabel string\n"
                         "\tchunks [][]byte\n"
                         "\tidx int\n"
                         "\tclosed bool\n"
@@ -15340,20 +15341,24 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
                         "}\n\n"
                         "func (r *trackingReader) Close() error {\n"
                         "\tr.closed = true\n"
-                        "\tstate := fmt.Sprintf(\"closed=%t reads=%d remaining=%d\", r.closed, r.idx, len(r.chunks)-r.idx)\n"
-                        "\treturn os.WriteFile(markerPath, []byte(state), 0644)\n"
+                        "\tstate := fmt.Sprintf(\"label=%s closed=%t reads=%d remaining=%d\", r.label, r.closed, r.idx, len(r.chunks)-r.idx)\n"
+                        "\treturn os.WriteFile(filepath.Join(markerDir, r.label+\".txt\"), []byte(state), 0644)\n"
                         "}\n\n"
-                        "func Reader() io.Reader {\n"
-                        "\treturn &trackingReader{chunks: [][]byte{[]byte(\"first\"), []byte(\"second\")}}\n"
+                        "func Reader(label string) io.Reader {\n"
+                        "\treturn &trackingReader{label: label, chunks: [][]byte{[]byte(\"first\"), []byte(\"second\")}}\n"
                         "}\n"
                     ),
                     "exports": ["Reader"],
                 },
+                {"op": "eval", "runtime": "go", "bind": "go_reader_js", "code": "reader(\"javascript\")"},
+                {"op": "eval", "runtime": "go", "bind": "go_reader_ruby", "code": "reader(\"ruby\")"},
+                {"op": "eval", "runtime": "go", "bind": "go_reader_java", "code": "reader(\"java\")"},
                 {
                     "op": "exec",
                     "runtime": "javascript",
+                    "captures": {"go_reader_js": "go_reader_js"},
                     "code": (
-                        "const stream = reader();"
+                        "const stream = go_reader_js;"
                         "const it = stream[Symbol.iterator]();"
                         "const first = it.next();"
                         "if (first.done) throw new Error('Go c-shared reader was empty');"
@@ -15362,6 +15367,37 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
                         "const text = String.fromCharCode(...bytes);"
                         "if (text !== 'first') throw new Error('bad Go c-shared reader chunk: ' + text);"
                         "if (stream.cancel('client-stop') !== true) throw new Error('Go c-shared reader cancel failed');"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"go_reader_ruby": "go_reader_ruby"},
+                    "code": (
+                        "chunk = go_reader_ruby.first; "
+                        "raise 'Go c-shared Ruby reader was empty' if chunk.nil?; "
+                        "text = chunk.is_a?(String) ? chunk : chunk.map { |b| b.to_i.chr }.join; "
+                        "raise \"bad Go c-shared Ruby reader chunk: #{text}\" unless text == 'first'; "
+                        "go_reader_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"go_reader_java": "go_reader_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"go_reader_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"Go c-shared reader should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"Go c-shared Java reader was empty\"); "
+                        "Object chunk = it.next(); "
+                        "String text; "
+                        "if (chunk instanceof byte[]) { text = new String((byte[]) chunk, java.nio.charset.StandardCharsets.UTF_8); } "
+                        "else if (chunk instanceof String) { text = (String) chunk; } "
+                        "else if (chunk instanceof java.util.List<?>) { StringBuilder sb = new StringBuilder(); for (Object b : (java.util.List<?>) chunk) sb.append((char) ((Number) b).intValue()); text = sb.toString(); } "
+                        "else { throw new RuntimeException(\"unexpected Go c-shared Java reader chunk: \" + chunk); } "
+                        "if (!\"first\".equals(text)) throw new RuntimeException(\"bad Go c-shared Java reader chunk: \" + text); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"Go c-shared Java reader cancel failed\");"
                     ),
                 },
             ],
@@ -15373,26 +15409,28 @@ def test_manifest_go_cshared_reader_stream_early_cancel_releases_owner():
             omnivm.run_manifest(path)
         finally:
             os.unlink(path)
-        if not os.path.exists(marker_path):
-            raise AssertionError("Go c-shared reader close marker was not written")
-        with open(marker_path, "r", encoding="utf-8") as marker_file:
-            close_state = marker_file.read()
-        expected_state = "closed=true reads=1 remaining=1"
-        if close_state != expected_state:
-            raise AssertionError(f"Go c-shared reader close state = {close_state!r}, want {expected_state!r}")
+        for label in ("javascript", "ruby", "java"):
+            marker_path = os.path.join(tmpdir, f"{label}.txt")
+            if not os.path.exists(marker_path):
+                raise AssertionError(f"Go c-shared {label} reader close marker was not written")
+            with open(marker_path, "r", encoding="utf-8") as marker_file:
+                close_state = marker_file.read()
+            expected_state = f"label={label} closed=true reads=1 remaining=1"
+            if close_state != expected_state:
+                raise AssertionError(f"Go c-shared {label} reader close state = {close_state!r}, want {expected_state!r}")
 
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1:
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
         raise AssertionError(f"Go c-shared reader did not create a stream proxy: before={before_boundary}, after={boundary}")
     if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
         raise AssertionError(f"Go c-shared reader degraded to resource proxy: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Go c-shared reader used JSON fallback: before={before_boundary}, after={boundary}")
-    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 3:
         raise AssertionError(f"Go c-shared reader stream did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
         raise AssertionError(f"Go c-shared reader cancel did not release handle: before={before_handles}, after={handles}")
 
 

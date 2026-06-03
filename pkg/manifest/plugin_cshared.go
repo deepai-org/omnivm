@@ -77,6 +77,21 @@ type cSharedObjectProxy struct {
 	handle   cSharedPluginHandle
 	objectID string
 	kind     string
+	state    *cSharedObjectState
+}
+
+type cSharedObjectState struct {
+	mu       sync.Mutex
+	released bool
+}
+
+func newCSharedObjectProxy(handle cSharedPluginHandle, objectID, kind string) *cSharedObjectProxy {
+	return &cSharedObjectProxy{
+		handle:   handle,
+		objectID: objectID,
+		kind:     kind,
+		state:    &cSharedObjectState{},
+	}
 }
 
 func openCSharedGoPlugin(path string) (cSharedPluginHandle, error) {
@@ -130,7 +145,7 @@ func decodeCSharedEnvelopeValue(handle cSharedPluginHandle, env cSharedPluginEnv
 		if env.HandleID == "" {
 			return nil, fmt.Errorf("decode Go c-shared object handle: missing handle_id")
 		}
-		return &cSharedObjectProxy{handle: handle, objectID: env.HandleID, kind: env.Kind}, nil
+		return newCSharedObjectProxy(handle, env.HandleID, env.Kind), nil
 	}
 	if env.Boundary == "typed_slice" {
 		return decodeCSharedTypedSlice(env.Dtype, env.Value)
@@ -273,6 +288,9 @@ func (p *cSharedObjectProxy) Close() error {
 	if p == nil || p.Kind() != "reader" {
 		return nil
 	}
+	if p.isReleased() {
+		return nil
+	}
 	env, err := p.call("close", nil)
 	if err != nil {
 		return err
@@ -287,7 +305,26 @@ func (p *cSharedObjectProxy) Release() error {
 	if p == nil || p.objectID == "" {
 		return nil
 	}
+	if p.state == nil {
+		p.state = &cSharedObjectState{}
+	}
+	p.state.mu.Lock()
+	if p.state.released {
+		p.state.mu.Unlock()
+		return nil
+	}
+	p.state.released = true
+	p.state.mu.Unlock()
 	return releaseCSharedGoPluginObject(p.handle, p.objectID)
+}
+
+func (p *cSharedObjectProxy) isReleased() bool {
+	if p == nil || p.state == nil {
+		return false
+	}
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	return p.state.released
 }
 
 func (p *cSharedObjectProxy) call(op string, payload map[string]interface{}) (cSharedPluginEnvelope, error) {

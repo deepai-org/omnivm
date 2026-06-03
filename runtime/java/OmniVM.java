@@ -1632,10 +1632,114 @@ public class OmniVM {
                         done = true;
                         return;
                     }
-                    next = materializeCapture(((Map<String, Object>) item).get("value"));
+                    next = materializeStreamChunk(((Map<String, Object>) item).get("value"));
                 }
             };
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object materializeStreamChunk(Object value) {
+        if (value instanceof Map<?, ?> rawMap && Boolean.TRUE.equals(rawMap.get("__omnivm_table__"))) {
+            Map<String, Object> table = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                table.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            Object rawMetadata = table.get("metadata");
+            Map<String, Object> metadata = rawMetadata instanceof Map<?, ?>
+                ? new LinkedHashMap<>()
+                : Collections.emptyMap();
+            if (rawMetadata instanceof Map<?, ?> metadataMap) {
+                for (Map.Entry<?, ?> entry : metadataMap.entrySet()) {
+                    metadata.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            Object dtypeValue = metadata.containsKey("dtype") ? metadata.get("dtype") : table.get("dtype");
+            Object bufferValue = table.get("buffer") != null ? table.get("buffer") : metadata.get("buffer");
+            if (dtypeValue instanceof Number dtype && bufferValue != null && isByteDtype(dtype.intValue())) {
+                byte[] raw = getBuffer(String.valueOf(bufferValue));
+                if (raw != null) {
+                    int length = raw.length;
+                    Object shapeValue = metadata.get("shape");
+                    if (shapeValue instanceof List<?> shape && !shape.isEmpty() && shape.get(0) instanceof Number n) {
+                        length = Math.max(0, n.intValue());
+                    }
+                    int offset = metadata.get("offset") instanceof Number n ? Math.max(0, n.intValue()) : 0;
+                    int stride = 1;
+                    Object stridesValue = metadata.get("strides");
+                    if (stridesValue instanceof List<?> strides && !strides.isEmpty() && strides.get(0) instanceof Number n) {
+                        stride = n.intValue() == 0 ? 1 : n.intValue();
+                    }
+                    if (length == 0) {
+                        return new byte[0];
+                    }
+                    if (stride == 1 && offset <= raw.length) {
+                        int end = Math.min(raw.length, offset + length);
+                        byte[] out = new byte[Math.max(0, end - offset)];
+                        System.arraycopy(raw, offset, out, 0, out.length);
+                        return out;
+                    }
+                    byte[] out = new byte[length];
+                    int written = 0;
+                    for (int i = 0; i < length; i++) {
+                        int src = offset + i * stride;
+                        if (src >= 0 && src < raw.length) {
+                            out[written++] = raw[src];
+                        }
+                    }
+                    if (written == out.length) {
+                        return out;
+                    }
+                    byte[] trimmed = new byte[written];
+                    System.arraycopy(out, 0, trimmed, 0, written);
+                    return trimmed;
+                }
+            }
+        }
+        if (value instanceof Map<?, ?> rawMap) {
+            byte[] bytes = contiguousByteMap(rawMap);
+            if (bytes != null) {
+                return bytes;
+            }
+        }
+        return materializeCapture(value);
+    }
+
+    private static boolean isByteDtype(int dtype) {
+        return dtype == 0 || dtype == 5 || dtype == 10 || dtype == 11;
+    }
+
+    private static byte[] contiguousByteMap(Map<?, ?> rawMap) {
+        int size = rawMap.size();
+        if (size == 0) {
+            return null;
+        }
+        byte[] out = new byte[size];
+        for (int i = 0; i < size; i++) {
+            Object rawValue = rawMap.get(i);
+            if (rawValue == null) {
+                rawValue = rawMap.get(String.valueOf(i));
+            }
+            if (!(rawValue instanceof Number n)) {
+                return null;
+            }
+            int value = n.intValue();
+            if (value < 0 || value > 255) {
+                return null;
+            }
+            out[i] = (byte) value;
+        }
+        for (Object key : rawMap.keySet()) {
+            try {
+                int idx = Integer.parseInt(String.valueOf(key));
+                if (idx < 0 || idx >= size) {
+                    return null;
+                }
+            } catch (NumberFormatException err) {
+                return null;
+            }
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

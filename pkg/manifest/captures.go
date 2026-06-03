@@ -2091,6 +2091,41 @@ class OmniVMCallableHandleProxy < OmniVMHandleProxy
   end
 end
 
+def __omnivm_stream_chunk_value(value)
+  if value.is_a?(Hash) && value["__omnivm_table__"] == true
+    metadata = value["metadata"].is_a?(Hash) ? value["metadata"] : {}
+    dtype = metadata.key?("dtype") ? metadata["dtype"] : value["dtype"]
+    buffer_name = value["buffer"] || metadata["buffer"]
+    byte_dtype = !dtype.nil? && [0, 5, 10, 11].include?(dtype.to_i)
+    if byte_dtype && buffer_name && defined?(OmniVM) && OmniVM.respond_to?(:get_buffer)
+      raw = OmniVM.get_buffer(buffer_name)
+      if raw.is_a?(String)
+        shape = metadata["shape"].is_a?(Array) ? metadata["shape"] : []
+        length = shape.empty? ? raw.bytesize : shape[0].to_i
+        raw_offset = metadata.key?("offset") ? metadata["offset"] : value["offset"]
+        offset = raw_offset.nil? ? 0 : raw_offset.to_i
+        strides = metadata["strides"].is_a?(Array) ? metadata["strides"] : []
+        stride = strides.empty? ? 1 : strides[0].to_i
+        length = 0 if length < 0
+        offset = 0 if offset < 0
+        stride = 1 if stride == 0
+        return "".b if length == 0
+        if stride == 1
+          return (raw.byteslice(offset, length) || "".b).b
+        end
+        bytes = raw.bytes
+        out = []
+        length.times do |i|
+          src = offset + i * stride
+          out << bytes[src] if src >= 0 && src < bytes.length
+        end
+        return out.pack("C*").b
+      end
+    end
+  end
+  __omnivm_materialize_capture(value)
+end
+
 class OmniVMStreamProxy
   include Enumerable
 
@@ -2110,7 +2145,7 @@ class OmniVMStreamProxy
       env = JSON.parse(raw)
       item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
       break if item.nil? || item["done"] == true
-      yield __omnivm_materialize_capture(item["value"])
+      yield __omnivm_stream_chunk_value(item["value"])
     end
   end
 

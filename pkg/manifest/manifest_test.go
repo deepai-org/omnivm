@@ -5028,6 +5028,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "value[\"__omnivm_job__\"] == true ||\n      value[\"__omnivm_stream__\"] == true") || !contains(code, `return __omnivm_materialize_capture(value)`) {
 		t.Fatalf("Ruby bridge results should materialize returned stream descriptors, got %q", code)
 	}
+	if !contains(code, "def __omnivm_stream_chunk_value") || !contains(code, "OmniVM.get_buffer(buffer_name)") || !contains(code, "yield __omnivm_stream_chunk_value(item[\"value\"])") {
+		t.Fatalf("Ruby stream proxy should materialize byte-table chunks as binary strings, got %q", code)
+	}
 }
 
 func TestInjectRubyCapturesUsesSafeBindingNames(t *testing.T) {

@@ -663,6 +663,9 @@ func Request() map[string]interface{} {
 	if err := e.ensureHandleTable().Release(id); err != nil {
 		t.Fatalf("release c-shared resource handle: %v", err)
 	}
+	if err := proxy.Release(); err != nil {
+		t.Fatalf("second c-shared proxy release should be idempotent: %v", err)
+	}
 	if _, _, err := proxy.Get("path"); err == nil {
 		t.Fatal("old c-shared proxy handle remained usable after host release")
 	}
