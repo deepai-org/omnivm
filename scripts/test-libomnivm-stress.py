@@ -5575,6 +5575,161 @@ conn_java, sa_result_java = open_result()
         raise AssertionError(f"SQLAlchemy Result streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import sqlite3
+
+class TrackingCursor(sqlite3.Cursor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.closed_by_owner = False
+
+    def close(self):
+        self.closed_by_owner = True
+        return super().close()
+
+def make_cursor():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.execute(
+        'CREATE TABLE orders ('
+        'id INTEGER PRIMARY KEY, name TEXT, items TEXT, keys TEXT, count INTEGER, '
+        '"then" TEXT, length INTEGER, close TEXT)'
+    )
+    conn.executemany(
+        'INSERT INTO orders (name, items, keys, count, "then", length, close) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+            ("ada", "field-items", "field-keys", 7, "field-then", 12, "field-close"),
+            ("grace", "field-items-2", "field-keys-2", 8, "field-then-2", 13, "field-close-2"),
+        ],
+    )
+    conn.commit()
+    cursor = conn.cursor(factory=TrackingCursor)
+    cursor.execute('SELECT name, items, keys, count, "then", length, close FROM orders ORDER BY id')
+    return conn, cursor
+
+conn_js, db_cursor_js = make_cursor()
+conn_ruby, db_cursor_ruby = make_cursor()
+conn_java, db_cursor_java = make_cursor()
+'''
+    verify = r'''
+for name, cursor in (
+    ("javascript", db_cursor_js),
+    ("ruby", db_cursor_ruby),
+    ("java", db_cursor_java),
+):
+    if not cursor.closed_by_owner:
+        raise AssertionError(f"{name} DB-API cursor was not closed by stream cancellation")
+    try:
+        cursor.fetchone()
+    except sqlite3.ProgrammingError as exc:
+        if "closed" not in str(exc).lower():
+            raise
+    else:
+        raise AssertionError(f"{name} DB-API cursor remained usable after stream cancellation")
+
+rollback_seen = False
+conn_tx, _ = make_cursor()
+try:
+    conn_tx.execute("BEGIN")
+    conn_tx.execute(
+        'INSERT INTO orders (name, items, keys, count, "then", length, close) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ("rollback", "x", "x", 99, "x", 99, "x"),
+    )
+    omnivm.call("javascript", "throw new Error('dbapi rollback')")
+except Exception as exc:
+    rollback_seen = "dbapi rollback" in str(exc)
+    conn_tx.rollback()
+
+if not rollback_seen:
+    raise AssertionError("foreign error did not reach DB-API transaction")
+total = conn_tx.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+if total != 2:
+    raise AssertionError(f"DB-API transaction did not roll back: {total}")
+
+for conn in (conn_js, conn_ruby, conn_java, conn_tx):
+    conn.close()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"db_cursor_js": "db_cursor_js"},
+                "code": (
+                    "const it = db_cursor_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('DB-API cursor was empty'); "
+                    "if (first.value[0] !== 'ada') throw new Error('bad DB-API JS name: ' + first.value[0]); "
+                    "if (first.value[1] !== 'field-items') throw new Error('items field lost: ' + first.value[1]); "
+                    "if (String(first.value[3]) !== '7') throw new Error('count field lost: ' + first.value[3]); "
+                    "if (first.value[4] !== 'field-then') throw new Error('then field lost: ' + first.value[4]); "
+                    "if (String(first.value[5]) !== '12') throw new Error('length field lost: ' + first.value[5]); "
+                    "if (first.value[6] !== 'field-close') throw new Error('close field lost: ' + first.value[6]); "
+                    "if (db_cursor_js.cancel('client-stop') !== true) throw new Error('DB-API JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"db_cursor_ruby": "db_cursor_ruby"},
+                "code": (
+                    "first = db_cursor_ruby.first; "
+                    "raise 'DB-API cursor was empty' if first.nil?; "
+                    "raise \"bad DB-API Ruby name #{first[0]}\" unless first[0] == 'ada'; "
+                    "raise \"items field lost #{first[1]}\" unless first[1] == 'field-items'; "
+                    "raise \"count field lost #{first[3]}\" unless first[3].to_s == '7'; "
+                    "raise \"then field lost #{first[4]}\" unless first[4] == 'field-then'; "
+                    "raise \"length field lost #{first[5]}\" unless first[5].to_s == '12'; "
+                    "raise \"close field lost #{first[6]}\" unless first[6] == 'field-close'; "
+                    "db_cursor_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"db_cursor_java": "db_cursor_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"db_cursor_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"DB-API cursor should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"DB-API cursor was empty\"); "
+                    "final Object first = it.next(); "
+                    "java.util.function.Function<Integer, Object> cell = (idx) -> { "
+                    "    if (first instanceof java.util.List<?>) return ((java.util.List<?>) first).get(idx); "
+                    "    if (first instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> row = (java.util.Map<?, ?>) first; return row.containsKey(idx) ? row.get(idx) : row.get(String.valueOf(idx)); } "
+                    "    throw new RuntimeException(\"unexpected DB-API row shape: \" + first); "
+                    "}; "
+                    "if (!\"ada\".equals(String.valueOf(cell.apply(0)))) throw new RuntimeException(\"bad DB-API Java name: \" + cell.apply(0)); "
+                    "if (!\"field-items\".equals(String.valueOf(cell.apply(1)))) throw new RuntimeException(\"items field lost: \" + cell.apply(1)); "
+                    "if (!\"7\".equals(String.valueOf(cell.apply(3)))) throw new RuntimeException(\"count field lost: \" + cell.apply(3)); "
+                    "if (!\"field-then\".equals(String.valueOf(cell.apply(4)))) throw new RuntimeException(\"then field lost: \" + cell.apply(4)); "
+                    "if (!\"12\".equals(String.valueOf(cell.apply(5)))) throw new RuntimeException(\"length field lost: \" + cell.apply(5)); "
+                    "if (!\"field-close\".equals(String.valueOf(cell.apply(6)))) throw new RuntimeException(\"close field lost: \" + cell.apply(6)); "
+                    "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"DB-API Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+        raise AssertionError(f"DB-API cursors did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"DB-API cursor used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 3:
+        raise AssertionError(f"DB-API cursor streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -13300,6 +13455,7 @@ def main():
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
+        check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest JDBC ResultSet overloaded calls stay natural", test_manifest_jdbc_cached_rowset_lifecycle_crosses_as_proxy)
         check("Manifest Python file-like request shape capture uses proxy not stream", test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream)
         check("Manifest Ruby HTTP message shape capture uses proxy not stream", test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream)
