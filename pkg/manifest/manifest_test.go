@@ -7537,6 +7537,59 @@ end
 	}
 }
 
+func TestRubyHandleProxyIdentityNameCollisionsPreferRemoteFields(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  @@fields = {
+    "class" => "remote-class",
+    "object_id" => "remote-object-id",
+    "hash" => "remote-hash",
+    "to_s" => "remote-to-s",
+    "to_h" => {"remote" => true},
+    "to_json" => "{\"remote\":true}"
+  }
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.key?(req["value"])}) if req["op"] == "handle_contains"
+    if req["op"] == "handle_get" && @@fields.key?(req["key"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["key"]]})
+    end
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 81, "runtime" => "python", "kind" => "object"})
+raise "class was not remote-first: #{proxy.class.inspect}" unless proxy.class == "remote-class"
+raise "object_id was not remote-first: #{proxy.object_id.inspect}" unless proxy.object_id == "remote-object-id"
+raise "hash was not remote-first: #{proxy.hash.inspect}" unless proxy.hash == "remote-hash"
+raise "to_s was not remote-first: #{proxy.to_s.inspect}" unless proxy.to_s == "remote-to-s"
+raise "to_h was not remote-first: #{proxy.to_h.inspect}" unless proxy.to_h == {"remote" => true}
+raise "to_json was not remote-first: #{proxy.to_json.inspect}" unless proxy.to_json == "{\"remote\":true}"
+requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
+["class", "object_id", "hash", "to_s", "to_h", "to_json"].each do |key|
+  raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
+end
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby identity-name collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestRubyHandleProxyTableDescriptorMetadataDoesNotShadowRemoteFields(t *testing.T) {
 	ruby, err := exec.LookPath("ruby")
 	if err != nil {
