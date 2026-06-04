@@ -2280,6 +2280,8 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniBufStatus.return_value = (
             b'{"name":"payload","state":"released_detached","live":false,'
             b'"lease_state":"detached","memory_space":"host","released":true,'
+            b'"dtype":1,"format":"i","shape":[2],"strides":[4],'
+            b'"offset":1,"null_count":1,"validity_bytes":1,"validity_bit_offset":3,'
             b'"active_borrows":1,"active_named_borrows":1,'
             b'"named_borrow_queue":1,"detached_buffers":1}'
         )
@@ -2289,6 +2291,14 @@ class TestCallWithMockLib(unittest.TestCase):
         assert status["lease_state"] == "detached"
         assert status["memory_space"] == "host"
         assert status["released"] is True
+        assert status["dtype"] == 1
+        assert status["format"] == "i"
+        assert status["shape"] == [2]
+        assert status["strides"] == [4]
+        assert status["offset"] == 1
+        assert status["null_count"] == 1
+        assert status["validity_bytes"] == 1
+        assert status["validity_bit_offset"] == 3
         assert status["active_borrows"] == 1
         assert status["active_named_borrows"] == 1
         assert status["named_borrow_queue"] == 1
