@@ -615,21 +615,41 @@ func parseCauseChain(text, runtime string) []RuntimeErrorCause {
 func parseDetails(text string) interface{} {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "Details: ") {
+		label, raw, ok := splitDetailsMetadataLine(line)
+		if !ok {
 			continue
 		}
 		var details interface{}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "Details: "))), &details); err == nil {
+		if err := json.Unmarshal([]byte(raw), &details); err == nil {
 			return details
+		}
+		if label == "details_json" || label == "detailsjson" {
+			return raw
 		}
 	}
 	return nil
+}
+
+func splitDetailsMetadataLine(line string) (label, raw string, ok bool) {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	label = strings.ToLower(strings.TrimSpace(line[:idx]))
+	switch label {
+	case "details", "details_json", "detailsjson":
+		return label, strings.TrimSpace(line[idx+1:]), true
+	default:
+		return "", "", false
+	}
 }
 
 func isMetadataLine(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
 	return strings.HasPrefix(lower, "caused by:") ||
 		strings.HasPrefix(lower, "details:") ||
+		strings.HasPrefix(lower, "details_json:") ||
+		strings.HasPrefix(lower, "detailsjson:") ||
 		strings.HasPrefix(lower, "original_error_handle:") ||
 		strings.HasPrefix(lower, "original error handle:") ||
 		strings.HasPrefix(lower, "original-error-handle:")

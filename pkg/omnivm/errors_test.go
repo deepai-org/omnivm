@@ -365,6 +365,35 @@ Details: [{"path":["user","age"],"code":"too_small"}]`)
 	}
 }
 
+func TestParseError_TextDetailsJSONAliases(t *testing.T) {
+	re := ParseError("javascript", `ERR:javascript: AggregateError: invalid
+    at parse (<anonymous>:1:2)
+details_json: [{"path":["user","age"],"code":"too_small"}]`)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	details, ok := re.Details.([]interface{})
+	if !ok || len(details) != 1 {
+		t.Fatalf("Details = %#v, want parsed details_json array", re.Details)
+	}
+	first, ok := details[0].(map[string]interface{})
+	if !ok || first["code"] != "too_small" {
+		t.Fatalf("Details[0] = %#v, want parsed object", details[0])
+	}
+	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
+		t.Fatalf("StackFrames = %#v, want details_json metadata omitted", re.StackFrames)
+	}
+
+	raw := ParseError("javascript", `ERR:javascript: AggregateError: invalid
+detailsJson: not json`)
+	if raw == nil {
+		t.Fatal("expected non-nil raw RuntimeError")
+	}
+	if raw.Details != "not json" {
+		t.Fatalf("raw detailsJson = %#v, want raw string", raw.Details)
+	}
+}
+
 func TestParseError_StructuredCauseDefaultsOriginRuntime(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime": "javascript",
