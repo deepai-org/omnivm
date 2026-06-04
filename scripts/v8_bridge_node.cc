@@ -1093,6 +1093,7 @@ static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::V
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "original_error_handle", "originalErrorHandle", "original_error_handle");
         omnivm_v8_copy_prop(isolate, context, error, out, "details", "details");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "details_json", "detailsJson", "details_json");
     }
     info.GetReturnValue().Set(out);
 }
@@ -1161,6 +1162,16 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
         if (!env.cause_chain[i].details_json.empty()) {
             v8::Local<v8::String> details_text =
                 v8::String::NewFromUtf8(isolate, env.cause_chain[i].details_json.c_str()).ToLocalChecked();
+            cause->Set(
+                context,
+                v8::String::NewFromUtf8Literal(isolate, "detailsJson"),
+                details_text
+            ).ToChecked();
+            cause->Set(
+                context,
+                v8::String::NewFromUtf8Literal(isolate, "details_json"),
+                details_text
+            ).ToChecked();
             v8::Local<v8::Value> details;
             if (v8::JSON::Parse(context, details_text).ToLocal(&details) && !details.IsEmpty()) {
                 cause->Set(
@@ -1205,6 +1216,21 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
         v8::String::NewFromUtf8Literal(isolate, "details"),
         details
     ).ToChecked();
+    if (env.details_json.empty()) {
+        error->Set(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "detailsJson"),
+            v8::Null(isolate)
+        ).ToChecked();
+        error->Set(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "details_json"),
+            v8::Null(isolate)
+        ).ToChecked();
+    } else {
+        omnivm_v8_set_string_prop(isolate, context, error, "detailsJson", env.details_json);
+        omnivm_v8_set_string_prop(isolate, context, error, "details_json", env.details_json);
+    }
     v8::Local<v8::Function> to_json;
     if (v8::Function::New(context, omnivm_v8_runtime_error_to_json).ToLocal(&to_json)) {
         error->Set(

@@ -8309,6 +8309,7 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "cause_chain", "causeChain", "cause_chain")`,
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path")`,
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "original_error_handle", "originalErrorHandle", "original_error_handle")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "details_json", "detailsJson", "details_json")`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("V8 runtime error toJSON should normalize snake_case and camelCase fields, missing %q", want)
@@ -8333,6 +8334,10 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`cause.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "traceback", "stack")`,
 		`cause.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, cause_object)`,
 		`omnivm_v8_set_string_prop(isolate, context, cause, "origin_runtime", env.cause_chain[i].origin_runtime)`,
+		`v8::String::NewFromUtf8Literal(isolate, "detailsJson")`,
+		`v8::String::NewFromUtf8Literal(isolate, "details_json")`,
+		`omnivm_v8_set_string_prop(isolate, context, error, "detailsJson", env.details_json)`,
+		`omnivm_v8_set_string_prop(isolate, context, error, "details_json", env.details_json)`,
 		`const char* keys[] = {"details_json", "detailsJson"}`,
 		`std::string issues = omnivm_v8_json_stringify_prop(isolate, context, object, "issues")`,
 		`return "{\"issues\":" + issues + "}"`,
