@@ -2219,6 +2219,8 @@ public class OmniVM {
         public void releaseFromFinalizer() {
             if (cleanable != null) {
                 cleanable.clean();
+            } else {
+                markReleased();
             }
         }
 

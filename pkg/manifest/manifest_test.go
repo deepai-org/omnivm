@@ -7695,6 +7695,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	if !contains(code, "private final List<?> localValues;") ||
 		!contains(code, "this.localValues = values instanceof List<?> ? (List<?>) values : null;") ||
+		!contains(code, "public void releaseFromFinalizer() {\n            if (cleanable != null) {\n                cleanable.clean();\n            } else {\n                markReleased();\n            }\n        }") ||
 		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
 		!contains(code, "if (localValues != null) {\n                        if (released.get() || localIndex >= localValues.size())") ||
 		!contains(code, "next = materializeCapture(localValues.get(localIndex++));") ||
@@ -8075,6 +8076,12 @@ public final class LocalStreamProxyCloseCheck {
         require(!stream.iterator().hasNext(), "closed local stream still had items");
         require(!stream.releaseExplicit(), "local stream releaseExplicit should be idempotent false");
         require(!OmniVM.proxyClose(stream), "proxyClose after local stream close should be idempotent false");
+
+        OmniVM.setCapture("again", "{\"__omnivm_stream__\":true,\"values\":[\"c\"]}");
+        OmniVM.StreamProxy cleanup = (OmniVM.StreamProxy) OmniVM.getCapture("again");
+        cleanup.releaseFromFinalizer();
+        require(!cleanup.iterator().hasNext(), "local stream finalizer cleanup left items visible");
+        require(!cleanup.releaseExplicit(), "local stream releaseExplicit after finalizer cleanup should be idempotent false");
     }
 }
 `
