@@ -9429,6 +9429,7 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"releaseBuffer(name)",
 		"released = true",
 		"public void close() {\n            release();",
+		"if (target instanceof BufferOwner owner) {\n            return owner.release();",
 	} {
 		if !contains(javaCode, want) {
 			t.Fatalf("Java BufferOwner helper contract missing %q", want)

@@ -1246,6 +1246,9 @@ public class OmniVM {
         if (target instanceof StreamProxy proxy) {
             return proxy.cancel();
         }
+        if (target instanceof BufferOwner owner) {
+            return owner.release();
+        }
         if (target instanceof AutoCloseable closeable) {
             try {
                 closeable.close();
