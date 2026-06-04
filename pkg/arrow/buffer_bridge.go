@@ -75,7 +75,7 @@ func (s *SharedStore) SetWithMetadata(name string, data []byte, meta BufferMetad
 
 // SetWithValidityMetadata stores a buffer and optional Arrow validity bitmap
 // with generic Arrow-compatible metadata.
-func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity []byte, meta BufferMetadata) (*Buffer, error) {
+func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity []byte, meta BufferMetadata) (buf *Buffer, err error) {
 	if err := validateBufferMetadata(name, meta); err != nil {
 		return nil, err
 	}
@@ -83,7 +83,9 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 	var release func() error
 	defer func() {
 		s.mu.Unlock()
-		_ = callBufferRelease(release)
+		if releaseErr := callBufferRelease(release); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
 	}()
 
 	s.forgetReleasedLocked(name)
@@ -98,7 +100,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 			if refs > 0 {
 				s.detached[existing] = struct{}{}
 			}
-			buf := &Buffer{
+			buf = &Buffer{
 				Name:     name,
 				Data:     data,
 				Len:      len(data),
@@ -125,7 +127,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		return existing, nil
 	}
 
-	buf := &Buffer{
+	buf = &Buffer{
 		Name:     name,
 		Data:     data,
 		Len:      len(data),
@@ -148,7 +150,7 @@ func (s *SharedStore) SetExternalWithMetadata(name string, data unsafe.Pointer, 
 // SetExternalArrowWithMetadata stores producer-owned value and validity buffers
 // under one release callback. Runtime adapters use this for Arrow C Data imports
 // where the producer has transferred lifetime control to OmniVM.
-func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Pointer, length int64, validity unsafe.Pointer, validityLength int64, meta BufferMetadata, release func() error) (*Buffer, error) {
+func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Pointer, length int64, validity unsafe.Pointer, validityLength int64, meta BufferMetadata, release func() error) (buf *Buffer, err error) {
 	fail := func(err error) (*Buffer, error) {
 		return nil, errors.Join(err, callBufferRelease(release))
 	}
@@ -178,7 +180,9 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 	var oldRelease func() error
 	defer func() {
 		s.mu.Unlock()
-		_ = callBufferRelease(oldRelease)
+		if releaseErr := callBufferRelease(oldRelease); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
 	}()
 
 	s.forgetReleasedLocked(name)
@@ -219,7 +223,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		return existing, nil
 	}
 
-	buf := &Buffer{
+	buf = &Buffer{
 		Name:             name,
 		ExternalData:     data,
 		Len:              int(length),

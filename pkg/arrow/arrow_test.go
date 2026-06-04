@@ -280,6 +280,72 @@ func TestSetWithMetadataRejectsNonHostMemorySpace(t *testing.T) {
 	}
 }
 
+func TestSetWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
+	s := NewSharedStore()
+	oldData := []byte{1, 2, 3}
+	releaseErr := errors.New("old producer release failed")
+	releases := 0
+	if _, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&oldData[0]), int64(len(oldData)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := s.SetWithMetadata("payload", []byte{9, 8}, BufferMetadata{Dtype: DtypeI16})
+	if !errors.Is(err, releaseErr) {
+		t.Fatalf("SetWithMetadata replacement error = %v, want old release failure", err)
+	}
+	if replacement == nil || replacement.Len != 2 || replacement.Dtype != DtypeI16 {
+		t.Fatalf("SetWithMetadata replacement = %+v, want registered owned replacement", replacement)
+	}
+	if releases != 1 {
+		t.Fatalf("old producer release callback called %d times, want 1", releases)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.Len != 2 || status.Dtype != DtypeI16 || status.Ownership != "omnivm" {
+		t.Fatalf("replacement status = %+v, want live owned replacement", status)
+	}
+}
+
+func TestSetExternalWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
+	s := NewSharedStore()
+	oldData := []byte{1}
+	newData := []byte{2}
+	releaseErr := errors.New("old producer release failed")
+	releases := 0
+	if _, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&oldData[0]), int64(len(oldData)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&newData[0]), int64(len(newData)), BufferMetadata{
+		Dtype:     DtypeU8,
+		Ownership: "producer",
+	}, nil)
+	if !errors.Is(err, releaseErr) {
+		t.Fatalf("SetExternalWithMetadata replacement error = %v, want old release failure", err)
+	}
+	if replacement == nil || replacement.Len != 1 || replacement.Dtype != DtypeU8 {
+		t.Fatalf("SetExternalWithMetadata replacement = %+v, want registered external replacement", replacement)
+	}
+	if releases != 1 {
+		t.Fatalf("old producer release callback called %d times, want 1", releases)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.Len != 1 || status.Dtype != DtypeU8 || status.Ownership != "producer" {
+		t.Fatalf("replacement status = %+v, want live producer replacement", status)
+	}
+}
+
 func TestBorrowZeroCopyLease(t *testing.T) {
 	s := NewSharedStore()
 	buf, err := s.SetWithMetadata("tensor", []byte{1, 2, 3, 4}, BufferMetadata{
