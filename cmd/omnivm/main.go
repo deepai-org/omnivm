@@ -267,7 +267,7 @@ func main() {
 		}
 	}
 
-	// Set up watchdog, bridge, dispatcher
+	// Set up watchdog and bridge
 	eng.SetupWatchdog()
 	eng.SetupPythonInterruptTimeout()
 
@@ -308,7 +308,6 @@ func main() {
 	go sigMgr.Wait(eng.Context())
 
 	// Determine execution mode
-	dispatcherRunning := false
 	switch cmd.Mode {
 	case ModeExec:
 		r, ok := eng.Runtimes[cmd.Language]
@@ -325,9 +324,8 @@ func main() {
 		executeFileNew(cmd)
 
 	default:
-		// REPL mode — start the dispatcher
-		dispatcherRunning = true
-		eng.StartDispatcher()
+		// REPL mode executes directly on the initialized Golden Thread. Do not
+		// start the dispatcher on a background goroutine after runtime init.
 		repl(eng.Context())
 	}
 
@@ -336,10 +334,7 @@ func main() {
 
 	// Graceful shutdown
 	fmt.Fprintln(os.Stderr, "\n[shutdown] Shutting down runtimes...")
-	if !dispatcherRunning {
-		// If dispatcher wasn't started, cancel context before shutdown
-		eng.Cancel()
-	}
+	eng.Cancel()
 	eng.Shutdown()
 }
 
@@ -713,7 +708,7 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 		eng.Runtimes[name] = rt
 	}
 
-	// Set up watchdog, bridge, dispatcher
+	// Set up watchdog and bridge
 	eng.SetupWatchdog()
 	eng.ActivateForkGuard()
 
@@ -755,7 +750,9 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 		}
 	}
 
-	eng.StartDispatcher()
+	// Python interpreter mode runs direct runtime calls on the pinned host
+	// thread. Starting a Go background dispatcher here would move runtime
+	// access away from the thread that initialized CPython and the guest VMs.
 
 	return C.CString("OK")
 }

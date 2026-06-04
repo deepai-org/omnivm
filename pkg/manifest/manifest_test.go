@@ -8112,11 +8112,16 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		`"ruby_threading": map[string]interface{}{`,
 		`"native_threads_supported": false`,
 		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
+		"Python interpreter mode runs direct runtime calls on the pinned host",
+		"Starting a Go background dispatcher here would move runtime",
 		"json.Marshal(status)",
 	} {
 		if !contains(cmdCode, want) {
 			t.Fatalf("Python interpreter mode Go status contract missing %q", want)
 		}
+	}
+	if contains(cmdCode, "eng.StartDispatcher()") {
+		t.Fatalf("cmd/omnivm should not start a background dispatcher after host-thread runtime initialization")
 	}
 	if contains(cmdCode, `"owner_dispatch_supported": true`) ||
 		contains(cmdCode, `"supported":           true`) {
