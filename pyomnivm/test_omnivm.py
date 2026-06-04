@@ -44,6 +44,7 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == "ZodError"
         assert err.message == "invalid input"
         assert "anonymous" in err.traceback
+        assert err.stack_frames == ["at <anonymous>:1:1"]
 
     def test_parses_java_cause_chain(self):
         err = omnivm_mod.RuntimeError(
@@ -58,6 +59,10 @@ class TestRuntimeError(unittest.TestCase):
         assert err.message == "outer"
         assert err.cause_chain == [
             {"type": "java.lang.IllegalArgumentException", "message": "inner"}
+        ]
+        assert err.stack_frames == [
+            "at OmniVMEval.run(OmniVMEval.java:3)",
+            "... 6 more",
         ]
 
     def test_parses_javascript_error_cause_chain(self):
@@ -131,6 +136,7 @@ class TestRuntimeError(unittest.TestCase):
             "type": "Error",
             "message": "outer",
             "traceback": "    at <anonymous>:1:7\nCaused by: TypeError: inner",
+            "stack_frames": ["at <anonymous>:1:7"],
             "cause_chain": [{"type": "TypeError", "message": "inner"}],
             "boundary_path": "call[javascript]",
             "original_error_handle": None,

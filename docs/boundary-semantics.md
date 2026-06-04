@@ -106,7 +106,7 @@ The automatic classifier is:
 | maps/objects/structs | `ref` when identity/mutation/laziness matters; `copy` only for plain data records | source runtime | yes for refs, no for copies | Framework objects, ORM models, clients, modules, and native objects default to refs. |
 | functions/callbacks | `ref` | defining runtime | yes, via calls | Calls marshal arguments/results through this contract. |
 | runtime objects/classes/modules | `ref` | source runtime | yes, via methods | Target receives an opaque handle or generated stub. |
-| errors/exceptions | `copy` summary plus optional `ref` | source runtime | no | Structured error data should include runtime, type, message, traceback. |
+| errors/exceptions | `copy` summary plus optional `ref` | source runtime | no | Structured error data should include runtime, origin runtime, type, message, traceback, stack frames, cause chain, boundary path, details. |
 | channels | `stream` | OmniVM manifest scope | consumption-dependent | See channel rules below. |
 | iterators/generators | `stream` or `ref` | defining runtime | consumption-dependent | Must declare whether crossing drains or proxies. |
 

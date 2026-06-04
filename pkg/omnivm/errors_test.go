@@ -98,6 +98,9 @@ func TestParseError_WithTraceback(t *testing.T) {
 	if re.Traceback == "" {
 		t.Error("expected non-empty traceback")
 	}
+	if len(re.StackFrames) != 2 || re.StackFrames[0] != "Traceback (most recent call last):" || re.StackFrames[1] != "File \"<string>\", line 1" {
+		t.Errorf("StackFrames = %#v, want normalized traceback lines", re.StackFrames)
+	}
 	if re.BoundaryPath != "call[python]" {
 		t.Errorf("BoundaryPath = %q, want call[python]", re.BoundaryPath)
 	}
@@ -174,6 +177,9 @@ func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
 	}
 	if len(re.CauseChain) != 1 {
 		t.Fatalf("CauseChain len = %d, want 1: %#v", len(re.CauseChain), re.CauseChain)
+	}
+	if len(re.StackFrames) != 1 || re.StackFrames[0] != "at OmniVMEval.run(OmniVMEval.java:3)" {
+		t.Errorf("StackFrames = %#v, want Java stack line without cause metadata", re.StackFrames)
 	}
 	if re.CauseChain[0].Type != "java.lang.IllegalArgumentException" || re.CauseChain[0].Message != "inner" {
 		t.Errorf("CauseChain[0] = %#v, want java.lang.IllegalArgumentException: inner", re.CauseChain[0])

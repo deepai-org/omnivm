@@ -97,6 +97,7 @@ class RuntimeError(_builtins.RuntimeError):
         self.type = parsed["type"]
         self.message = parsed["message"]
         self.traceback = parsed["traceback"]
+        self.stack_frames = parsed["stack_frames"]
         self.cause_chain = parsed["cause_chain"]
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
@@ -110,6 +111,7 @@ class RuntimeError(_builtins.RuntimeError):
             "type": self.type,
             "message": self.message,
             "traceback": self.traceback,
+            "stack_frames": list(self.stack_frames),
             "cause_chain": list(self.cause_chain),
             "boundary_path": self.boundary_path,
             "original_error_handle": self.original_error_handle,
@@ -217,6 +219,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "type": err_type,
         "message": detail,
         "traceback": traceback,
+        "stack_frames": _runtime_error_stack_frames(traceback),
         "cause_chain": cause_chain,
         "boundary_path": " > ".join(boundary_parts)
         or (f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path),
@@ -238,6 +241,14 @@ def _is_runtime_error_metadata_line(line):
         or lower.startswith("original error handle:")
         or lower.startswith("original-error-handle:")
     )
+
+
+def _runtime_error_stack_frames(traceback):
+    return [
+        line.strip()
+        for line in str(traceback or "").splitlines()
+        if line.strip() and not _is_runtime_error_metadata_line(line)
+    ]
 
 
 def _parse_runtime_error_details(text):

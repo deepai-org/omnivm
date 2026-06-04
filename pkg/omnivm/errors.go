@@ -15,6 +15,7 @@ type RuntimeError struct {
 	Type                string              // exception type name (e.g. "SyntaxError", "DoesNotExist")
 	Message             string              // human-readable error message
 	Traceback           string              // full stack trace from the source runtime
+	StackFrames         []string            // normalized non-metadata traceback lines
 	CauseChain          []RuntimeErrorCause // nested causes from languages that expose them
 	BoundaryPath        string              // call/manifest boundary path, if available
 	OriginalErrorHandle string              // source-runtime handle marker, if one was reported
@@ -121,11 +122,24 @@ func ParseError(runtime, s string) *RuntimeError {
 		Type:                errType,
 		Message:             message,
 		Traceback:           traceback,
+		StackFrames:         stackFrames(traceback),
 		CauseChain:          parseCauseChain(body),
 		BoundaryPath:        boundaryPath(boundaryParts, sourceRuntime),
 		OriginalErrorHandle: extractOriginalErrorHandle(body),
 		Details:             parseDetails(body),
 	}
+}
+
+func stackFrames(traceback string) []string {
+	frames := []string{}
+	for _, line := range strings.Split(traceback, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isMetadataLine(line) {
+			continue
+		}
+		frames = append(frames, line)
+	}
+	return frames
 }
 
 func stripBoundaryPrefix(text, prefix string, parts *[]string) (string, bool) {
@@ -227,7 +241,7 @@ func parseDetails(text string) map[string]interface{} {
 
 func isMetadataLine(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
-	return strings.HasPrefix(line, "caused by:") ||
+	return strings.HasPrefix(lower, "caused by:") ||
 		strings.HasPrefix(lower, "details:") ||
 		strings.HasPrefix(lower, "original_error_handle:") ||
 		strings.HasPrefix(lower, "original error handle:") ||

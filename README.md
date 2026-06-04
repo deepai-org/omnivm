@@ -284,7 +284,7 @@ except omnivm.RuntimeError as exc:
 ```
 
 `RuntimeError.to_dict()` returns a JSON-serializable envelope with `runtime`,
-`origin_runtime`, `type`, `message`, `traceback`, `cause_chain`,
+`origin_runtime`, `type`, `message`, `traceback`, `stack_frames`, `cause_chain`,
 `boundary_path`, and `original_error_handle`. The handle is only populated when
 the source runtime reports one; callers should treat it as optional diagnostic
 metadata.

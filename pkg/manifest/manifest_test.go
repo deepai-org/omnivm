@@ -5298,6 +5298,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "public String getOriginRuntime()") || !contains(code, `out.put("origin_runtime", runtime)`) {
 		t.Fatalf("Java runtime error envelope should expose origin_runtime alias")
 	}
+	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", stackFrames)`) {
+		t.Fatalf("Java runtime error envelope should expose normalized stack frames")
+	}
 }
 
 func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {

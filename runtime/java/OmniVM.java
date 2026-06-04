@@ -128,6 +128,7 @@ public class OmniVM {
         private final String runtime;
         private final String type;
         private final String traceback;
+        private final List<String> stackFrames;
         private final List<Map<String, String>> causeChain;
         private final String boundaryPath;
         private final String originalErrorHandle;
@@ -138,6 +139,7 @@ public class OmniVM {
             this.runtime = parsed.runtime;
             this.type = parsed.type;
             this.traceback = parsed.traceback;
+            this.stackFrames = Collections.unmodifiableList(parsed.stackFrames);
             this.causeChain = Collections.unmodifiableList(parsed.causeChain);
             this.boundaryPath = parsed.boundaryPath;
             this.originalErrorHandle = parsed.originalErrorHandle;
@@ -158,6 +160,10 @@ public class OmniVM {
 
         public String getTraceback() {
             return traceback;
+        }
+
+        public List<String> getStackFrames() {
+            return stackFrames;
         }
 
         public List<Map<String, String>> getCauseChain() {
@@ -183,6 +189,7 @@ public class OmniVM {
             out.put("type", type);
             out.put("message", getMessage());
             out.put("traceback", traceback);
+            out.put("stack_frames", stackFrames);
             out.put("cause_chain", causeChain);
             out.put("boundary_path", boundaryPath);
             out.put("original_error_handle", originalErrorHandle);
@@ -200,6 +207,7 @@ public class OmniVM {
         String type = "";
         String message = "";
         String traceback;
+        List<String> stackFrames = new ArrayList<>();
         List<Map<String, String>> causeChain = new ArrayList<>();
         String boundaryPath = "";
         String originalErrorHandle;
@@ -235,6 +243,7 @@ public class OmniVM {
         }
 
         parseMessageAndType(text, parsed);
+        parsed.stackFrames = parseStackFrames(parsed.traceback);
         parsed.causeChain = parseCauseChain(text);
         if (parsed.message.isEmpty()) {
             parsed.message = text;
@@ -388,6 +397,19 @@ public class OmniVM {
             causes.add(Collections.unmodifiableMap(entry));
         }
         return causes;
+    }
+
+    private static List<String> parseStackFrames(String traceback) {
+        List<String> frames = new ArrayList<>();
+        String[] lines = safeString(traceback).split("\\R");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || isMetadataLine(line)) {
+                continue;
+            }
+            frames.add(line);
+        }
+        return frames;
     }
 
     private static String extractOriginalErrorHandle(String text) {

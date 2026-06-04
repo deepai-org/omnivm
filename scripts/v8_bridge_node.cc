@@ -261,6 +261,7 @@ struct OmniRuntimeErrorEnvelope {
     std::string type;
     std::string message;
     std::string traceback;
+    std::vector<std::string> stack_frames;
     std::vector<OmniRuntimeErrorCause> cause_chain;
     std::string boundary_path;
     std::string original_error_handle;
@@ -365,6 +366,26 @@ static bool omnivm_is_runtime_error_metadata_line(const std::string& line) {
            omnivm_starts_with(lower, "original_error_handle:") ||
            omnivm_starts_with(lower, "original error handle:") ||
            omnivm_starts_with(lower, "original-error-handle:");
+}
+
+static std::vector<std::string> omnivm_runtime_error_stack_frames(const std::string& traceback) {
+    std::vector<std::string> frames;
+    size_t offset = 0;
+    while (offset <= traceback.size()) {
+        size_t next = traceback.find('\n', offset);
+        std::string line = next == std::string::npos
+            ? traceback.substr(offset)
+            : traceback.substr(offset, next - offset);
+        std::string stripped = omnivm_trim(line);
+        if (!stripped.empty() && !omnivm_is_runtime_error_metadata_line(stripped)) {
+            frames.push_back(stripped);
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        offset = next + 1;
+    }
+    return frames;
 }
 
 static void omnivm_parse_runtime_prefix(std::string& body, std::string& runtime) {
@@ -527,6 +548,8 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
         offset = next + 1;
     }
 
+    env.stack_frames = omnivm_runtime_error_stack_frames(env.traceback);
+
     if (!boundary_parts.empty()) {
         env.boundary_path.clear();
         for (size_t i = 0; i < boundary_parts.size(); ++i) {
@@ -554,6 +577,26 @@ static void omnivm_v8_set_string_prop(v8::Isolate* isolate,
     ).ToChecked();
 }
 
+static void omnivm_v8_set_string_array_prop(v8::Isolate* isolate,
+                                            v8::Local<v8::Context> context,
+                                            v8::Local<v8::Object> object,
+                                            const char* key,
+                                            const std::vector<std::string>& values) {
+    v8::Local<v8::Array> array = v8::Array::New(isolate, static_cast<int>(values.size()));
+    for (uint32_t i = 0; i < values.size(); ++i) {
+        array->Set(
+            context,
+            i,
+            v8::String::NewFromUtf8(isolate, values[i].c_str()).ToLocalChecked()
+        ).ToChecked();
+    }
+    object->Set(
+        context,
+        v8::String::NewFromUtf8(isolate, key).ToLocalChecked(),
+        array
+    ).ToChecked();
+}
+
 static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
                                               v8::Local<v8::Context> context,
                                               v8::Local<v8::Value> error_value,
@@ -567,6 +610,8 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
     omnivm_v8_set_string_prop(isolate, context, error, "origin_runtime", env.runtime);
     omnivm_v8_set_string_prop(isolate, context, error, "type", env.type);
     omnivm_v8_set_string_prop(isolate, context, error, "traceback", env.traceback);
+    omnivm_v8_set_string_array_prop(isolate, context, error, "stackFrames", env.stack_frames);
+    omnivm_v8_set_string_array_prop(isolate, context, error, "stack_frames", env.stack_frames);
     omnivm_v8_set_string_prop(isolate, context, error, "boundaryPath", env.boundary_path);
     if (env.original_error_handle.empty()) {
         error->Set(
