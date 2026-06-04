@@ -1480,6 +1480,19 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var isProxyBookkeepingProp = function(prop) {
     return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
   };
+  var mergeRequiredOwnKeys = function(obj, keys) {
+    var out = Array.isArray(keys) ? keys.slice() : [];
+    var add = function(key) {
+      if (out.indexOf(key) < 0) out.push(key);
+    };
+    var extensible = true;
+    try { extensible = Object.isExtensible(obj); } catch (_extensibleError) {}
+    Reflect.ownKeys(obj).forEach(function(key) {
+      var desc = Object.getOwnPropertyDescriptor(obj, key);
+      if (!extensible || (desc && desc.configurable === false)) add(key);
+    });
+    return out;
+  };
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
   };
@@ -1738,7 +1751,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           if (Array.isArray(keys)) {
             var out = keys.map(function(key) { return String(key); });
             if (Array.isArray(obj) && out.indexOf("length") < 0) out.push("length");
-            return out;
+            return mergeRequiredOwnKeys(obj, out);
           }
         } catch (_e) {
           if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;

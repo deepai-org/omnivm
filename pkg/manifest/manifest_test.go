@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -5802,6 +5803,42 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
+	}
+}
+
+func TestJSCaptureCallableProxyOwnKeysPreservesProxyInvariants(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(map[string]string{
+		"handler": `{"__omnivm_resource__":true,"id":7,"runtime":"javascript","kind":"callable","closed":false}`,
+	})
+	script := `
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    var payload = JSON.parse(payloadRaw);
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "handle_access") return JSON.stringify({__omnivm_result__: true, value: {}});
+    if (payload.op === "handle_iter" && payload.mode === "keys") return JSON.stringify({__omnivm_result__: true, value: ["remoteKey"]});
+    if (payload.op === "handle_contains") return JSON.stringify({__omnivm_result__: true, value: payload.value === "remoteKey"});
+    if (payload.op === "handle_get" && payload.key === "remoteKey") return JSON.stringify({__omnivm_result__: true, value: "remote-value"});
+    throw new Error("handle " + payload.id + " has no property " + (payload.key || payload.value || payload.op));
+  }
+};
+` + code + `
+var keys = Reflect.ownKeys(globalThis.handler);
+if (keys.indexOf("remoteKey") < 0) throw new Error("missing remote key: " + keys.join(","));
+if (keys.indexOf("prototype") < 0) {
+  throw new Error("missing required function own keys: " + keys.join(","));
+}
+var enumerable = Object.keys(globalThis.handler);
+if (enumerable.indexOf("remoteKey") < 0) throw new Error("Object.keys missed remote key: " + enumerable.join(","));
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node callable proxy ownKeys check failed: %v\n%s", err, out)
 	}
 }
 
