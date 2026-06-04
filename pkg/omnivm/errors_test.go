@@ -561,6 +561,51 @@ func TestParseError_StructuredJSONEnvelopeAcceptsCamelCase(t *testing.T) {
 	}
 }
 
+func TestParseError_StructuredJSONEnvelopeNormalizesScalarFields(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":             8,
+		"originRuntime":       9,
+		"type":                10,
+		"message":             true,
+		"traceback":           11,
+		"boundaryPath":        12,
+		"originalErrorHandle": 13,
+		"causeChain": []interface{}{map[string]interface{}{
+			"runtime":             14,
+			"originRuntime":       15,
+			"type":                16,
+			"message":             false,
+			"traceback":           17,
+			"boundaryPath":        18,
+			"originalErrorHandle": 19,
+		}},
+		"details": []interface{}{"kept"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "8" || re.OriginRuntime != "9" || re.Type != "10" || re.Message != "true" ||
+		re.Traceback != "11" || re.BoundaryPath != "12" || re.OriginalErrorHandle != "13" {
+		t.Fatalf("scalar envelope fields were not normalized: %#v", re)
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	cause := re.CauseChain[0]
+	if cause.Runtime != "14" || cause.OriginRuntime != "15" || cause.Type != "16" ||
+		cause.Message != "false" || cause.Traceback != "17" ||
+		cause.BoundaryPath != "18" || cause.OriginalErrorHandle != "19" {
+		t.Fatalf("scalar cause fields were not normalized: %#v", cause)
+	}
+	if details, ok := re.Details.([]interface{}); !ok || len(details) != 1 || details[0] != "kept" {
+		t.Fatalf("Details = %#v, want copied structured details", re.Details)
+	}
+}
+
 func TestParseError_WrappedStructuredJSONEnvelopePreservesFields(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":        "javascript",

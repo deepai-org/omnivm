@@ -380,11 +380,48 @@ func firstEnvelopeValue(envelope map[string]interface{}, keys ...string) interfa
 
 func stringEnvelopeValue(envelope map[string]interface{}, keys ...string) string {
 	for _, key := range keys {
-		if value, ok := envelope[key].(string); ok && value != "" {
+		if value, ok := scalarEnvelopeString(envelope[key]); ok && value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+func scalarEnvelopeString(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case nil:
+		return "", false
+	case string:
+		return v, true
+	case bool:
+		return fmt.Sprint(v), true
+	case float64:
+		return fmt.Sprint(v), true
+	case float32:
+		return fmt.Sprint(v), true
+	case int:
+		return fmt.Sprint(v), true
+	case int8:
+		return fmt.Sprint(v), true
+	case int16:
+		return fmt.Sprint(v), true
+	case int32:
+		return fmt.Sprint(v), true
+	case int64:
+		return fmt.Sprint(v), true
+	case uint:
+		return fmt.Sprint(v), true
+	case uint8:
+		return fmt.Sprint(v), true
+	case uint16:
+		return fmt.Sprint(v), true
+	case uint32:
+		return fmt.Sprint(v), true
+	case uint64:
+		return fmt.Sprint(v), true
+	default:
+		return "", false
+	}
 }
 
 func stringSliceEnvelopeValue(value interface{}, fallback []string) []string {
