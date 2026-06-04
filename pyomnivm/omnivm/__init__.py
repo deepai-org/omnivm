@@ -1707,9 +1707,33 @@ def release_buffer(name):
     if hasattr(_lib, "OmniBufFree"):
         rc = _lib.OmniBufFree(encoded_name)
         if rc != 0:
-            raise RuntimeError(f"omnivm.release_buffer failed for {name!r}")
+            detail = _buffer_status_summary(name)
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"omnivm.release_buffer failed for {name!r}{suffix}")
         return
     _lib.OmniBufRelease(encoded_name)
+
+
+def _buffer_status_summary(name):
+    try:
+        status = buffer_status(name)
+    except Exception:
+        return ""
+    if not isinstance(status, dict):
+        return ""
+    fields = []
+    for key in (
+        "state",
+        "live",
+        "released",
+        "active_borrows",
+        "active_borrowed_bytes",
+        "detached_buffers",
+        "detached_bytes",
+    ):
+        if key in status:
+            fields.append(f"{key}={status[key]!r}")
+    return ", ".join(fields)
 
 
 def buffer_status(name):

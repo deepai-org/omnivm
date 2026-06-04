@@ -621,7 +621,9 @@ finalizer arrives, and those unnamed leases remain visible through
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports
 `live` with dtype/format/ownership metadata, `released` after explicit release,
 `released_detached` while active borrowed views keep released memory alive, and
-`missing` for names that are not known to the store.
+`missing` for names that are not known to the store. Python
+`omnivm.release_buffer(name)` failures include the same status fields when the
+loaded library exposes `OmniBufStatus`.
 Named borrow queue counters expose runtime buffer views that can only release
 by public buffer name. A `max_named_borrow_queue` greater than one means more
 than one active view shares that release name, so finalizer-order issues are
