@@ -5438,8 +5438,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
 		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")
 	}
-	if !contains(code, "public String getOriginRuntime()") || !contains(code, `out.put("origin_runtime", runtime)`) {
-		t.Fatalf("Java runtime error envelope should expose origin_runtime alias")
+	if !contains(code, "private final String originRuntime;") ||
+		!contains(code, "public String getOriginRuntime()") ||
+		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
+		!contains(code, "ParsedRuntimeError envelope = parseStructuredErrorEnvelope") ||
+		!contains(code, `parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime)`) {
+		t.Fatalf("Java runtime error envelope should preserve structured origin_runtime")
 	}
 	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", new ArrayList<>(stackFrames))`) {
 		t.Fatalf("Java runtime error envelope should expose normalized stack frames")
@@ -5453,6 +5457,10 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private static Object parseDetailsJson(String detailsJson)",
 		"private static Object copyJsonValue(Object value)",
 		`out.put("cause_chain", copyJsonValue(causeChain))`,
+		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
+		`parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")))`,
+		"private static List<String> stringListJsonValue",
+		"private static List<Map<String, String>> causeChainJsonValue",
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)

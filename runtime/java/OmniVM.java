@@ -127,6 +127,7 @@ public class OmniVM {
 
     public static class RuntimeError extends RuntimeException {
         private final String runtime;
+        private final String originRuntime;
         private final String type;
         private final String traceback;
         private final List<String> stackFrames;
@@ -139,6 +140,7 @@ public class OmniVM {
         private RuntimeError(ParsedRuntimeError parsed, Throwable cause) {
             super(parsed.message, cause);
             this.runtime = parsed.runtime;
+            this.originRuntime = parsed.originRuntime == null || parsed.originRuntime.isEmpty() ? parsed.runtime : parsed.originRuntime;
             this.type = parsed.type;
             this.traceback = parsed.traceback;
             this.stackFrames = Collections.unmodifiableList(parsed.stackFrames);
@@ -154,7 +156,7 @@ public class OmniVM {
         }
 
         public String getOriginRuntime() {
-            return runtime;
+            return originRuntime;
         }
 
         public String getType() {
@@ -192,7 +194,7 @@ public class OmniVM {
         public Map<String, Object> toMap() {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("runtime", runtime);
-            out.put("origin_runtime", runtime);
+            out.put("origin_runtime", originRuntime);
             out.put("type", type);
             out.put("message", getMessage());
             out.put("traceback", traceback);
@@ -241,6 +243,7 @@ public class OmniVM {
 
     private static class ParsedRuntimeError {
         String runtime = "";
+        String originRuntime = "";
         String type = "";
         String message = "";
         String traceback;
@@ -259,6 +262,10 @@ public class OmniVM {
         String text = safeString(bridgeMessage).trim();
         if (text.startsWith("ERR:")) {
             text = text.substring(4).trim();
+        }
+        ParsedRuntimeError envelope = parseStructuredErrorEnvelope(text, parsed.runtime, parsed.boundaryPath);
+        if (envelope != null) {
+            return envelope;
         }
         parsed.originalErrorHandle = extractOriginalErrorHandle(text);
         parsed.detailsJson = extractDetailsJson(text);
@@ -280,12 +287,95 @@ public class OmniVM {
         }
 
         parseMessageAndType(text, parsed);
+        parsed.originRuntime = parsed.runtime;
         parsed.stackFrames = parseStackFrames(parsed.traceback);
         parsed.causeChain = parseCauseChain(text);
         if (parsed.message.isEmpty()) {
             parsed.message = text;
         }
         return parsed;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ParsedRuntimeError parseStructuredErrorEnvelope(String text, String fallbackRuntime, String fallbackBoundary) {
+        String body = safeString(text).trim();
+        if (!body.startsWith("{")) {
+            return null;
+        }
+        Object parsedJson;
+        try {
+            parsedJson = parseJson(body);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        if (!(parsedJson instanceof Map<?, ?> rawEnvelope)) {
+            return null;
+        }
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : rawEnvelope.entrySet()) {
+            envelope.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        ParsedRuntimeError parsed = new ParsedRuntimeError();
+        parsed.runtime = nonEmptyJsonString(envelope.get("runtime"), safeString(fallbackRuntime));
+        parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime);
+        parsed.type = jsonString(envelope.get("type"));
+        parsed.message = jsonString(envelope.get("message"));
+        parsed.traceback = jsonString(envelope.get("traceback"));
+        if (parsed.runtime.isEmpty() && parsed.type.isEmpty() && parsed.message.isEmpty() && safeString(parsed.traceback).isEmpty()) {
+            return null;
+        }
+        parsed.boundaryPath = nonEmptyJsonString(envelope.get("boundary_path"), safeString(fallbackBoundary));
+        parsed.originalErrorHandle = emptyToNull(jsonString(envelope.get("original_error_handle")));
+        if (envelope.containsKey("details")) {
+            parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
+        }
+        parsed.stackFrames = stringListJsonValue(envelope.get("stack_frames"), parseStackFrames(parsed.traceback));
+        parsed.causeChain = causeChainJsonValue(envelope.get("cause_chain"));
+        return parsed;
+    }
+
+    private static String jsonString(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static String nonEmptyJsonString(Object value, String fallback) {
+        String text = jsonString(value);
+        return text.isEmpty() ? safeString(fallback) : text;
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static List<String> stringListJsonValue(Object value, List<String> fallback) {
+        if (!(value instanceof Iterable<?> iterable)) {
+            return fallback;
+        }
+        List<String> out = new ArrayList<>();
+        for (Object item : iterable) {
+            if (!(item instanceof String text)) {
+                return fallback;
+            }
+            out.add(text);
+        }
+        return out;
+    }
+
+    private static List<Map<String, String>> causeChainJsonValue(Object value) {
+        List<Map<String, String>> out = new ArrayList<>();
+        if (!(value instanceof Iterable<?> iterable)) {
+            return out;
+        }
+        for (Object item : iterable) {
+            if (!(item instanceof Map<?, ?> cause)) {
+                continue;
+            }
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("type", jsonString(cause.get("type")));
+            entry.put("message", jsonString(cause.get("message")));
+            out.add(Collections.unmodifiableMap(entry));
+        }
+        return out;
     }
 
     private static String stripBoundaryPrefix(String text, String prefix, List<String> boundaryParts) {
