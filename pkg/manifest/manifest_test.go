@@ -7857,7 +7857,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)") ||
 		!contains(code, "if __omnivm_actual_public_method?(value, :close)") ||
 		!contains(code, "result = value.public_send(:close)\n    return result.nil? ? true : result") ||
-		!contains(code, "result = value.public_send(:close)\n        return result.nil? ? true : result") {
+		!contains(code, "result = value.public_send(:close)\n        return result.nil? ? true : result") ||
+		!contains(code, "def cleanup_errors(error)") ||
+		!contains(code, "def __record_cleanup_error(error, cleanup_error)") ||
+		!contains(code, "error.instance_variable_set(:@omnivm_cleanup_errors, errors)") {
 		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
 	}
 	if contains(code, "value.respond_to?(:close)") || contains(code, "value.respond_to?(:omnivm_close)") {
@@ -7892,14 +7895,16 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "begin\n      if @local_values\n        @local_values.each do |item|") ||
 		!contains(code, "yield __omnivm_materialize_capture(item)") ||
 		!contains(code, "ensure\n      if @__omnivm_closed != true") ||
-		!contains(code, "begin\n          close\n        rescue\n        end") ||
+		!contains(code, "begin\n          close\n        rescue => cleanup_error") ||
 		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
 		!contains(code, "rescue\n          __omnivm_mark_closed\n          raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "__omnivm_mark_closed if released") ||
-		!contains(code, "def omnivm_close\n    close\n  end") {
+		!contains(code, "def omnivm_close\n    close\n  end") ||
+		!contains(code, "body_error = $!") ||
+		!contains(code, "OmniVM.__record_cleanup_error(body_error, cleanup_error)") {
 		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and mark pull errors closed, got %q", code)
 	}
 	if contains(code, "def close\n    return false if @__omnivm_closed == true\n    begin\n      OmniVM.call(\"__manifest\", JSON.generate({op: \"stream_cancel\"") {
@@ -8210,7 +8215,7 @@ class OmniVM
     @@requests << req
     return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
     return JSON.generate({"__omnivm_result__" => true, "value" => {"done" => false, "value" => {"bad" => true}}}) if req["op"] == "stream_next"
-    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "stream_cancel"
+    raise "cancel failed" if req["op"] == "stream_cancel"
     raise "unexpected manifest op #{req["op"]}"
   end
 end
@@ -8223,6 +8228,10 @@ begin
   stream.each { |_item| }
 rescue => e
   raise unless e.message.include?("chunk boom")
+  cleanup_errors = OmniVM.cleanup_errors(e)
+  raise "cleanup error was not retained: #{cleanup_errors.inspect}" unless cleanup_errors.length == 1 && cleanup_errors.first.message == "cancel failed"
+  cleanup_errors.clear
+  raise "cleanup_errors returned internal storage" unless OmniVM.cleanup_errors(e).first.message == "cancel failed"
 else
   raise "chunk materialization error was not raised"
 end

@@ -2481,6 +2481,21 @@ if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
       end
       false
     end
+
+    def __record_cleanup_error(error, cleanup_error)
+      errors = error.instance_variable_get(:@omnivm_cleanup_errors)
+      errors = [] unless errors.is_a?(Array)
+      errors << cleanup_error
+      error.instance_variable_set(:@omnivm_cleanup_errors, errors)
+    rescue
+    end
+
+    def cleanup_errors(error)
+      errors = error.instance_variable_get(:@omnivm_cleanup_errors)
+      errors.is_a?(Array) ? errors.dup : []
+    rescue
+      []
+    end
   end
 end
 
@@ -3093,7 +3108,10 @@ class OmniVMStreamProxy
       if @__omnivm_closed != true
         begin
           close
-        rescue
+        rescue => cleanup_error
+          body_error = $!
+          OmniVM.__record_cleanup_error(body_error, cleanup_error) if body_error && defined?(OmniVM) && OmniVM.respond_to?(:__record_cleanup_error)
+          __omnivm_mark_closed
         end
       end
     end
