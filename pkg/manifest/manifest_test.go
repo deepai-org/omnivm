@@ -6623,6 +6623,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, `catch (RuntimeException err)`) ||
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
 		!contains(code, "markReleased();") ||
+		!contains(code, "StreamProxy.this.cancel();") ||
+		!contains(code, "err.addSuppressed(closeErr);") ||
 		!contains(code, "throw err;") {
 		t.Fatalf("Java stream proxy should mark itself released after terminal owner stream errors")
 	}

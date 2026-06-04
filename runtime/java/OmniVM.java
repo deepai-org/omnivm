@@ -2217,7 +2217,13 @@ public class OmniVM {
                             markReleased();
                             return;
                         }
-                        next = materializeCapture(localValues.get(localIndex++));
+                        try {
+                            next = materializeCapture(localValues.get(localIndex++));
+                        } catch (RuntimeException err) {
+                            done = true;
+                            markReleased();
+                            throw err;
+                        }
                         return;
                     }
                     Object id = value.get("id");
@@ -2239,7 +2245,17 @@ public class OmniVM {
                         markReleased();
                         return;
                     }
-                    next = materializeStreamChunk(((Map<String, Object>) item).get("value"));
+                    try {
+                        next = materializeStreamChunk(((Map<String, Object>) item).get("value"));
+                    } catch (RuntimeException err) {
+                        done = true;
+                        try {
+                            StreamProxy.this.cancel();
+                        } catch (RuntimeException closeErr) {
+                            err.addSuppressed(closeErr);
+                        }
+                        throw err;
+                    }
                 }
             };
         }
