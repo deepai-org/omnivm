@@ -7797,9 +7797,11 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("Java explicit close should claim released before owner calls and reset it only after failed calls")
 	}
 	if !contains(code, "public String toString()") ||
+		!contains(code, `if (hasLocalValue("toString")) {`) ||
+		!contains(code, `return String.valueOf(localValue("toString"));`) ||
 		!contains(code, `return String.valueOf(bridgeGet("toString"));`) ||
 		!contains(code, "if (!isMissingBridgeError(err)) {\n                    throw err;\n                }") {
-		t.Fatalf("Java HandleProxy.toString should prefer a remote toString field with missing-bridge fallback")
+		t.Fatalf("Java HandleProxy.toString should prefer materialized then remote toString fields with missing-bridge fallback")
 	}
 	if !contains(code, `catch (RuntimeException err)`) ||
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
@@ -8040,6 +8042,59 @@ public final class ProxyCloseCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyCloseCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java proxy close check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaHandleProxyToStringPrefersMaterializedField(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/ProxyToStringCheck.java"
+	check := `package omnivm;
+
+public final class ProxyToStringCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Object proxy = OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":82,\"runtime\":\"python\",\"kind\":\"object\",\"toString\":\"remote-to-string\"}");
+        String text = String.valueOf(proxy);
+        require("remote-to-string".equals(text), "toString did not prefer local materialized remote field: " + text);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java proxy toString check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java proxy toString check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyToStringCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java proxy toString check: %v\n%s", err, out)
 	}
 }
 

@@ -1839,6 +1839,9 @@ public class OmniVM {
 
         @Override
         public String toString() {
+            if (hasLocalValue("toString")) {
+                return String.valueOf(localValue("toString"));
+            }
             try {
                 return String.valueOf(bridgeGet("toString"));
             } catch (RuntimeException err) {
