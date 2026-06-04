@@ -5968,6 +5968,61 @@ if len(cancels) != 1 or cancels[0].get("id") != 88:
 	}
 }
 
+func TestPythonCaptureOmnivmClosePreservesLocalCloseResult(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := code + `
+class FalseCloser:
+    def close(self):
+        return False
+
+class TextCloser:
+    def close(self):
+        return "closed"
+
+class NoneCloser:
+    def close(self):
+        return None
+
+class BothClosers:
+    def _omnivm_close(self):
+        return "omnivm-closed"
+
+    def close(self):
+        return "public-close"
+
+class DynamicCloseTrap:
+    dynamic_lookup_count = 0
+
+    def __getattr__(self, name):
+        if name == "close":
+            self.dynamic_lookup_count += 1
+            return lambda: "dynamic-close"
+        raise AttributeError(name)
+
+trap = DynamicCloseTrap()
+if omnivm_close(FalseCloser()) is not False:
+    raise RuntimeError("false close result was not preserved")
+if omnivm_close(TextCloser()) != "closed":
+    raise RuntimeError("string close result was not preserved")
+if omnivm_close(NoneCloser()) is not True:
+    raise RuntimeError("None close result should normalize to true")
+if omnivm_close(BothClosers()) != "omnivm-closed":
+    raise RuntimeError("collision-safe _omnivm_close was not preferred")
+if omnivm_close(trap) is not False:
+    raise RuntimeError("dynamic close lookup should not be used")
+if trap.dynamic_lookup_count != 0:
+    raise RuntimeError("dynamic close lookup was invoked")
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python generated omnivm_close return preservation check failed: %v\n%s", err, out)
+	}
+}
+
 func TestPythonRemoteStreamCancelsOnChunkMaterializationError(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
