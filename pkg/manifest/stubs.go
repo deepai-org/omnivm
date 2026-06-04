@@ -3039,7 +3039,7 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; __omnivm_response_writer = __v.respond_to?(:write) && __v.respond_to?(:close) && __v.respond_to?(:closed?) && !__v.respond_to?(:read); !__omnivm_http_message && !__omnivm_response_writer && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
 	case "java":
 		httpMessage := javaHTTPMessageProbeExpr(base)
-		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaToStreamProbeExpr(base), base, base, base, base), true
+		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaFlowPublisherProbeExpr(base), javaToStreamProbeExpr(base), base, base, base, base), true
 	default:
 		return "", false
 	}
@@ -3047,6 +3047,10 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 
 func javaToStreamProbeExpr(base string) string {
 	return fmt.Sprintf("(%s != null && java.util.Arrays.stream(%s.getClass().getMethods()).anyMatch(__m -> (__m.getName().equals(\"toStream\") || __m.getName().equals(\"blockingStream\")) && __m.getParameterCount() == 0 && java.util.stream.BaseStream.class.isAssignableFrom(__m.getReturnType())))", base, base)
+}
+
+func javaFlowPublisherProbeExpr(base string) string {
+	return fmt.Sprintf("(%s instanceof java.util.concurrent.Flow.Publisher)", base)
 }
 
 func pythonHTTPMessageProbeExpr(base string) string {
@@ -3248,6 +3252,21 @@ try {
       omnivm.OmniVM.setCaptureObject("%s", new String(__omnivm_buf, 0, __omnivm_n));
       omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
     }
+  } else if (%s) {
+    Object __omnivm_state = omnivm.OmniVM.getCapture("%s");
+    java.util.Iterator __omnivm_next = (__omnivm_state instanceof java.util.Iterator) ? (java.util.Iterator)__omnivm_state : null;
+    if (__omnivm_next == null) {
+      __omnivm_next = new omnivm.OmniVM.FlowPublisherIterator((java.util.concurrent.Flow.Publisher)__omnivm_stream_obj);
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_next);
+    }
+    if (__omnivm_next.hasNext()) {
+      omnivm.OmniVM.setCaptureObject("%s", __omnivm_next.next());
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.FALSE);
+    } else {
+      omnivm.OmniVM.setCaptureObject("%s", null);
+      omnivm.OmniVM.setCaptureObject("%s", Boolean.TRUE);
+      omnivm.OmniVM.setCaptureObject("%s", null);
+    }
   } else if (__omnivm_stream_obj instanceof java.util.stream.BaseStream || %s) {
     Object __omnivm_state = omnivm.OmniVM.getCapture("%s");
     java.util.stream.BaseStream __omnivm_base_stream = null;
@@ -3316,6 +3335,8 @@ try {
 		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
 		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
 		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar),
+		javaFlowPublisherProbeExpr("__omnivm_stream_obj"), escapeJavaString(stateVar), escapeJavaString(stateVar),
+		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar),
 		javaToStreamProbeExpr("__omnivm_stream_obj"), escapeJavaString(stateVar), escapeJavaString(stateVar),
 		escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar),
 		escapeJavaString(stateVar), escapeJavaString(stateVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(valueVar), escapeJavaString(doneVar), escapeJavaString(stateVar),

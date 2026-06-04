@@ -295,9 +295,10 @@ objects with `read`, unsized non-collection `__iter__`, or unsized
 non-collection `__aiter__`, Ruby objects with
 `read`, `to_io`, or non-collection `each`, JavaScript iterator objects,
 non-collection sync iterables, async iterables, or `getReader` streams, Java
-`InputStream`, `ReadableByteChannel`, `Reader`, `BaseStream`, or non-collection
-`Iterable` values, and Go `io.Reader` values. The bridge pulls bounded chunks with
-`stream_next` and releases the stream handle at EOF.
+`InputStream`, `ReadableByteChannel`, `Reader`, `BaseStream`,
+`Flow.Publisher`, or non-collection `Iterable` values, and Go `io.Reader`
+values. The bridge pulls bounded chunks with `stream_next` and releases the
+stream handle at EOF.
 Closeable stream sources are closed through their host
 protocol on EOF, cancellation, or scope/finalizer release: Python and Ruby
 `close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
@@ -408,8 +409,8 @@ branches:
 - JavaScript: `ArrayBuffer`, TypedArray, `DataView`, sync/async iterables,
   `getReader` streams, and Arrow C Data compatible vectors when exposed;
 - Java: `ByteBuffer`, `DirectByteBuffer`, `InputStream`, `ReadableByteChannel`,
-  `Reader`, `BaseStream`, `AutoCloseable` ownership, and Arrow C Data compatible
-  vectors when exposed;
+  `Reader`, `BaseStream`, `Flow.Publisher`, `AutoCloseable` ownership, and
+  Arrow C Data compatible vectors when exposed;
 - Go: slices, `io.Reader`/`io.Writer`, `io.Closer`, and Arrow C Data compatible
   values when exposed;
 - Ruby: `to_io`, `each`, frozen/binary strings, Fiddle-backed views, and Arrow C

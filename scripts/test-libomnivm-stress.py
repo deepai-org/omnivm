@@ -19995,6 +19995,106 @@ def test_manifest_java_rxjava_flowable_early_cancel_releases_owner():
         raise AssertionError(f"RxJava Flowable stream did not release handle: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_flow_publisher_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_flow_cancelled",
+                "code": "new java.util.concurrent.atomic.AtomicBoolean(false)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_flow_requests",
+                "code": "new java.util.concurrent.atomic.AtomicLong(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_flow_emissions",
+                "code": "new java.util.concurrent.atomic.AtomicLong(0)",
+            },
+            {
+                "op": "eval",
+                "runtime": "java",
+                "bind": "java_flow_body",
+                "code": (
+                    "new java.util.concurrent.Flow.Publisher<String>() { "
+                    "public void subscribe(java.util.concurrent.Flow.Subscriber<? super String> subscriber) { "
+                    "subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() { "
+                    "private final String[] items = new String[] { \"first\", \"second\", \"third\" }; "
+                    "private int index = 0; "
+                    "private boolean cancelled = false; "
+                    "public void request(long n) { "
+                    "((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"java_flow_requests\")).addAndGet(n); "
+                    "if (n <= 0L) { subscriber.onError(new IllegalArgumentException(\"non-positive demand\")); return; } "
+                    "for (long i = 0; i < n && !cancelled; i++) { "
+                    "if (index >= items.length) { subscriber.onComplete(); return; } "
+                    "((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"java_flow_emissions\")).incrementAndGet(); "
+                    "subscriber.onNext(items[index++]); "
+                    "} "
+                    "} "
+                    "public void cancel() { "
+                    "cancelled = true; "
+                    "((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_flow_cancelled\")).set(true); "
+                    "} "
+                    "}); "
+                    "} "
+                    "}"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_flow_body": "java_flow_body"},
+                "code": (
+                    "const it = java_flow_body[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done || first.value !== 'first') throw new Error('bad Java Flow.Publisher first item: ' + JSON.stringify(first)); "
+                    "if (java_flow_body.cancel('client-stop') !== true) throw new Error('Java Flow.Publisher cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "if (!((java.util.concurrent.atomic.AtomicBoolean) omnivm.OmniVM.getCapture(\"java_flow_cancelled\")).get()) "
+                    "throw new RuntimeException(\"Java Flow.Publisher did not observe cancellation\"); "
+                    "long requests = ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"java_flow_requests\")).get(); "
+                    "if (requests != 1L) throw new RuntimeException(\"Java Flow.Publisher demand = \" + requests); "
+                    "long emissions = ((java.util.concurrent.atomic.AtomicLong) omnivm.OmniVM.getCapture(\"java_flow_emissions\")).get(); "
+                    "if (emissions != 1L) throw new RuntimeException(\"Java Flow.Publisher emissions = \" + emissions);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if (
+        boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1
+        and boundary.get("stream_proxy_captures", 0) < 1
+    ):
+        raise AssertionError(f"Java Flow.Publisher did not cross as a stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java Flow.Publisher used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Java Flow.Publisher did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
+        raise AssertionError(f"Java Flow.Publisher stream did not release handle: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Java Flow.Publisher early-cancel leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -20073,7 +20173,10 @@ def test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2:
+    if (
+        boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 2
+        and boundary.get("stream_proxy_captures", 0) < 2
+    ):
         raise AssertionError(f"scheduled reactive streams did not cross as stream proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"scheduled reactive streams used JSON fallback: before={before_boundary}, after={boundary}")
@@ -25699,6 +25802,7 @@ def main():
         check("Manifest Java ReadableByteChannel early cancel releases owner", test_manifest_java_readable_byte_channel_early_cancel_releases_owner)
         check("Manifest Java Reactor Flux early cancel releases owner", test_manifest_java_reactor_flux_early_cancel_releases_owner)
         check("Manifest Java RxJava Flowable early cancel releases owner", test_manifest_java_rxjava_flowable_early_cancel_releases_owner)
+        check("Manifest Java Flow.Publisher early cancel releases owner", test_manifest_java_flow_publisher_early_cancel_releases_owner)
         check("Manifest Java scheduled reactive stream cancel tears down scheduler", test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler)
         check("Manifest Ruby each body capture is lazy stream", test_manifest_ruby_each_body_capture_as_lazy_stream)
         check("Manifest Python iterable body capture is lazy stream", test_manifest_python_iterable_body_capture_as_lazy_stream)

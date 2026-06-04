@@ -15,8 +15,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OmniVM - Cross-runtime bridge for Java.
@@ -1593,6 +1598,110 @@ public class OmniVM {
                 OmniVM.call("__manifest", "{\"op\":\"handle_release_finalizer\",\"id\":" + jsonScalar(id) + "}");
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    public static final class FlowPublisherIterator implements Iterator<Object>, AutoCloseable, Flow.Subscriber<Object> {
+        private final Object doneSignal = new Object();
+        private final Object nullSignal = new Object();
+        private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>();
+        private final CountDownLatch subscribed = new CountDownLatch(1);
+        private final AtomicReference<Throwable> error = new AtomicReference<>();
+        private volatile Flow.Subscription subscription;
+        private volatile boolean closed;
+        private boolean loaded;
+        private boolean finished;
+        private Object item;
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        public FlowPublisherIterator(Flow.Publisher<?> publisher) {
+            ((Flow.Publisher) publisher).subscribe(this);
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            if (this.subscription != null) {
+                subscription.cancel();
+                return;
+            }
+            this.subscription = subscription;
+            subscribed.countDown();
+        }
+
+        @Override
+        public void onNext(Object item) {
+            queue.offer(item == null ? nullSignal : item);
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            this.error.set(error);
+            queue.offer(doneSignal);
+        }
+
+        @Override
+        public void onComplete() {
+            queue.offer(doneSignal);
+        }
+
+        private void load() {
+            if (loaded || finished) {
+                return;
+            }
+            if (closed) {
+                finished = true;
+                return;
+            }
+            try {
+                subscribed.await();
+                Flow.Subscription current = subscription;
+                if (current == null) {
+                    finished = true;
+                    return;
+                }
+                current.request(1);
+                Object next = queue.take();
+                if (next == doneSignal) {
+                    finished = true;
+                    Throwable currentError = error.get();
+                    if (currentError != null) {
+                        throw new RuntimeException(currentError);
+                    }
+                    return;
+                }
+                item = next == nullSignal ? null : next;
+                loaded = true;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(interrupted);
+            }
+        }
+
+        @Override
+        public boolean hasNext() {
+            load();
+            return !finished;
+        }
+
+        @Override
+        public Object next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            Object out = item;
+            item = null;
+            loaded = false;
+            return out;
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+            Flow.Subscription current = subscription;
+            if (current != null) {
+                current.cancel();
+            }
+            queue.offer(doneSignal);
         }
     }
 
