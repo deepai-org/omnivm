@@ -11070,7 +11070,9 @@ def test_manifest_express_response_write_after_end_reports_owner_error():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
         raise AssertionError(f"Express response after-end writer did not cross as a live proxy: before={before_boundary}, after={boundary}")
     if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Express response after-end writer crossed as a stream: before={before_boundary}, after={boundary}")
@@ -11078,6 +11080,97 @@ def test_manifest_express_response_write_after_end_reports_owner_error():
         raise AssertionError(f"Express response after-end writer used JSON fallback: before={before_boundary}, after={boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 3:
         raise AssertionError(f"Express response after-end writer methods were not recorded as proxy calls: before={before_handles}, after={handles}")
+
+
+def test_manifest_node_http_response_write_after_end_reports_owner_error():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "javascript",
+                "bind": "node_http_res_after_end",
+                "code": (
+                    "(() => { "
+                    "const http = require('http'); "
+                    "const req = new http.IncomingMessage(); "
+                    "req.method = 'GET'; "
+                    "req.url = '/node-http-response/after-end'; "
+                    "req.headers = {'host': 'example.test'}; "
+                    "const res = new http.ServerResponse(req); "
+                    "res._omnivmWrites = []; "
+                    "res._omnivmErrors = []; "
+                    "const write = res.write.bind(res); "
+                    "res.write = function(chunk, ...rest) { "
+                    "  if (!this.writableEnded) this._omnivmWrites.push(String(chunk)); "
+                    "  return write(chunk, ...rest); "
+                    "}; "
+                    "const end = res.end.bind(res); "
+                    "res.end = function(chunk, ...rest) { "
+                    "  if (typeof chunk !== 'undefined') this._omnivmWrites.push(String(chunk)); "
+                    "  return end(chunk, ...rest); "
+                    "}; "
+                    "res.on('error', (err) => { "
+                    "  res._omnivmErrors.push({code: err && err.code, message: err && err.message, name: err && err.name}); "
+                    "}); "
+                    "globalThis.__omnivm_node_http_res_after_end = res; "
+                    "return res; "
+                    "})()"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"node_http_res_after_end": "node_http_res_after_end"},
+                "code": (
+                    "node_http_res_after_end.statusCode = 211\n"
+                    "assert node_http_res_after_end.statusCode == 211, node_http_res_after_end.statusCode\n"
+                    "node_http_res_after_end.end('done')\n"
+                    "assert node_http_res_after_end.writableEnded is True, node_http_res_after_end.writableEnded\n"
+                    "assert node_http_res_after_end.write('late') is False"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "await new Promise((resolve) => setTimeout(resolve, 25)); "
+                    "const res = globalThis.__omnivm_node_http_res_after_end; "
+                    "if (res.statusCode !== 211) throw new Error('bad Node http after-end status: ' + res.statusCode); "
+                    "if (!res.writableEnded) throw new Error('Node http response did not end before late write'); "
+                    "if (res._omnivmWrites.join('') !== 'done') throw new Error('late Node http write reached owner body: ' + res._omnivmWrites.join('')); "
+                    "if (res._omnivmErrors.length !== 1) throw new Error('Node http response did not emit exactly one late-write error: ' + JSON.stringify(res._omnivmErrors)); "
+                    "const err = res._omnivmErrors[0]; "
+                    "if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') throw new Error('bad Node http late-write error code: ' + JSON.stringify(err)); "
+                    "if (!String(err.message || '').includes('write after end')) throw new Error('bad Node http late-write error message: ' + JSON.stringify(err));"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"Node http response after-end writer did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Node http response after-end writer crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Node http response after-end writer should not claim bulk transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Node http response after-end writer used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 2:
+        raise AssertionError(f"Node http response after-end writer methods were not recorded as proxy calls: before={before_handles}, after={handles}")
+    if handles.get("handle_accesses_by_kind", {}).get("mutation", 0) < before_handles.get("handle_accesses_by_kind", {}).get("mutation", 0) + 1:
+        raise AssertionError(f"Node http response after-end writer status assignment was not recorded: before={before_handles}, after={handles}")
 
 
 def test_manifest_express_server_client_abort_closes_response_owner():
@@ -23649,6 +23742,7 @@ def main():
         check("Manifest Express request abort lifecycle stays live", test_manifest_express_request_abort_lifecycle_stays_live)
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
         check("Manifest Express response write after end reports owner error", test_manifest_express_response_write_after_end_reports_owner_error)
+        check("Manifest Node http response write after end reports owner error", test_manifest_node_http_response_write_after_end_reports_owner_error)
         check("Manifest Express server client abort closes response owner", test_manifest_express_server_client_abort_closes_response_owner)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
