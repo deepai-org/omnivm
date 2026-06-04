@@ -20966,6 +20966,101 @@ def test_manifest_node_classic_readable_early_cancel_releases_owner():
         raise AssertionError(f"Node classic Readable leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_node_classic_pipeline_abort_cancels_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "class NodeClassicPipelineSource:\n"
+                    "    def __init__(self):\n"
+                    "        self.chunks = ['first', 'second', 'third']\n"
+                    "        self.index = 0\n"
+                    "        self.pulls = 0\n"
+                    "        self.closed = False\n"
+                    "    def __iter__(self):\n"
+                    "        return self\n"
+                    "    def __next__(self):\n"
+                    "        self.pulls += 1\n"
+                    "        if self.index >= len(self.chunks):\n"
+                    "            raise StopIteration\n"
+                    "        chunk = self.chunks[self.index]\n"
+                    "        self.index += 1\n"
+                    "        return chunk\n"
+                    "    def close(self):\n"
+                    "        self.closed = True\n"
+                    "node_classic_pipeline_source = NodeClassicPipelineSource()\n"
+                ),
+            },
+            {"op": "eval", "runtime": "python", "bind": "node_classic_pipeline_source", "code": "node_classic_pipeline_source"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "(async () => {\n"
+                    "  const {Readable, Writable} = require('node:stream');\n"
+                    "  const {pipeline} = require('node:stream/promises');\n"
+                    "  globalThis.nodeClassicPipelineState = {writes: [], errorName: null, errorMessage: null};\n"
+                    "  const readable = Readable.from(node_classic_pipeline_source, {objectMode: true, highWaterMark: 1});\n"
+                    "  const sink = new Writable({\n"
+                    "    objectMode: true,\n"
+                    "    highWaterMark: 1,\n"
+                    "    write(chunk, encoding, callback) {\n"
+                    "      globalThis.nodeClassicPipelineState.writes.push(String(chunk));\n"
+                    "      callback(new Error('sink-stop'));\n"
+                    "    }\n"
+                    "  });\n"
+                    "  try {\n"
+                    "    await pipeline(readable, sink);\n"
+                    "  } catch (err) {\n"
+                    "    globalThis.nodeClassicPipelineState.errorName = err && err.name ? err.name : null;\n"
+                    "    globalThis.nodeClassicPipelineState.errorMessage = err && err.message ? err.message : String(err);\n"
+                    "  }\n"
+                    "  if (globalThis.nodeClassicPipelineState.writes.join('|') !== 'first') {\n"
+                    "    throw new Error('Node classic pipeline wrote after abort: ' + JSON.stringify(globalThis.nodeClassicPipelineState));\n"
+                    "  }\n"
+                    "  if (globalThis.nodeClassicPipelineState.errorMessage !== 'sink-stop') {\n"
+                    "    throw new Error('Node classic pipeline did not preserve sink error: ' + JSON.stringify(globalThis.nodeClassicPipelineState));\n"
+                    "  }\n"
+                    "})()\n"
+                ),
+                "captures": {"node_classic_pipeline_source": "node_classic_pipeline_source"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not node_classic_pipeline_source.closed:\n"
+                    "    raise AssertionError('Node classic pipeline abort did not close Python owner')\n"
+                    "if node_classic_pipeline_source.index < 1:\n"
+                    "    raise AssertionError(f'Node classic pipeline did not consume first chunk: {node_classic_pipeline_source.__dict__!r}')\n"
+                    "if node_classic_pipeline_source.index > 2:\n"
+                    "    raise AssertionError(f'Node classic pipeline read too far after abort: {node_classic_pipeline_source.__dict__!r}')\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Node classic pipeline source did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Node classic pipeline source used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Node classic pipeline did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Node classic pipeline leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -26085,6 +26180,7 @@ def main():
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
         check("Manifest Node classic Readable early cancel releases owner", test_manifest_node_classic_readable_early_cancel_releases_owner)
+        check("Manifest Node classic pipeline abort cancels Python owner", test_manifest_node_classic_pipeline_abort_cancels_python_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
