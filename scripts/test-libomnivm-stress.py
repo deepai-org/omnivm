@@ -12608,6 +12608,177 @@ if (globalThis.fastifyLateWriteApp && !globalThis.fastifyLateWriteState.closed) 
         raise AssertionError(f"Fastify late-write reply property access was not recorded: before={before_handles}, after={handles}")
 
 
+def test_manifest_koa_response_write_after_end_is_rejected():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+const Koa = require('koa');
+globalThis.koaLateWriteState = {{
+  started: false,
+  handler: false,
+  closed: false,
+  writes: [],
+  errors: []
+}};
+globalThis.koa_late_ctx = null;
+const app = new Koa();
+globalThis.koaLateWriteApp = app;
+app.use(async ctx => {{
+  if (ctx.path !== '/koa/late-write') {{
+    ctx.status = 404;
+    return;
+  }}
+  const state = globalThis.koaLateWriteState;
+  state.handler = true;
+  globalThis.koa_late_ctx = ctx;
+  const raw = ctx.res;
+  const write = raw.write.bind(raw);
+  raw.write = function(chunk, ...rest) {{
+    if (!this.writableEnded) state.writes.push(String(chunk));
+    return write(chunk, ...rest);
+  }};
+  const end = raw.end.bind(raw);
+  raw.end = function(chunk, ...rest) {{
+    if (typeof chunk !== 'undefined' && chunk !== null) state.writes.push(String(chunk));
+    return end(chunk, ...rest);
+  }};
+  raw.on('error', (err) => {{
+    state.errors.push({{
+      code: err && err.code,
+      message: err && err.message,
+      name: err && err.name
+    }});
+  }});
+  ctx.status = 206;
+  ctx.set('X-Poly', 'koa-late');
+  ctx.body = 'done';
+}});
+const server = app.listen({port!r}, '127.0.0.1');
+globalThis.koaLateWriteServer = server;
+await new Promise((resolve, reject) => {{
+  server.once('listening', resolve);
+  server.once('error', reject);
+}});
+globalThis.koaLateWriteState.started = true;
+'''
+    drive_client = f'''
+import socket
+import time
+
+def pump_started():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.koaLateWriteState && globalThis.koaLateWriteState.started)"
+    ))
+
+def state_text():
+    return str(omnivm.call(
+        "javascript",
+        "JSON.stringify(globalThis.koaLateWriteState || {{}})"
+    ))
+
+deadline = time.time() + 5
+while not pump_started() and time.time() < deadline:
+    time.sleep(0.01)
+if not pump_started():
+    raise AssertionError(f"Koa late-write server did not start: {{state_text()}}")
+
+sock = socket.create_connection(("127.0.0.1", {port!r}), timeout=5)
+try:
+    sock.settimeout(0.2)
+    sock.sendall(
+        b"GET /koa/late-write HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            omnivm.call("javascript", "true")
+            continue
+        if not chunk:
+            break
+        data += chunk
+    data_lower = data.lower()
+    if b"206 partial content" not in data_lower or b"done" not in data_lower or b"x-poly: koa-late" not in data_lower:
+        raise AssertionError(f"bad Koa late-write response bytes: {{data!r}}")
+finally:
+    sock.close()
+'''
+    verify = r'''
+await new Promise((resolve) => setTimeout(resolve, 25));
+const state = globalThis.koaLateWriteState;
+const ctx = globalThis.koa_late_ctx;
+if (!state.started) throw new Error('Koa late-write server never started');
+if (!state.handler) throw new Error('Koa late-write handler never ran');
+if (!ctx) throw new Error('Koa context was not captured');
+if (ctx.status !== 206) throw new Error('bad Koa late-write status: ' + ctx.status);
+if (ctx.response.get('X-Poly') !== 'koa-late') throw new Error('bad Koa late-write header: ' + ctx.response.get('X-Poly'));
+if (!ctx.res.writableEnded) throw new Error('Koa raw response did not end before late write');
+if (state.lateWriteReturn !== false) throw new Error('Koa late write did not report rejection: ' + state.lateWriteReturn);
+if (state.writes.join('') !== 'done') throw new Error('late Koa write reached owner body: ' + state.writes.join(''));
+if (state.errors.length > 1) throw new Error('Koa response emitted multiple late-write errors: ' + JSON.stringify(state.errors));
+if (state.errors.length === 1) {
+  const err = state.errors[0];
+  if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') throw new Error('bad Koa late-write error code: ' + JSON.stringify(err));
+  if (!String(err.message || '').includes('write after end')) throw new Error('bad Koa late-write error message: ' + JSON.stringify(err));
+}
+'''
+    close_server = r'''
+if (globalThis.koaLateWriteServer && !globalThis.koaLateWriteState.closed) {
+  await new Promise(resolve => globalThis.koaLateWriteServer.close(resolve));
+  globalThis.koaLateWriteState.closed = true;
+}
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "javascript", "async": True, "code": setup},
+            {"op": "exec", "runtime": "python", "code": drive_client},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"koa_late_ctx": "koa_late_ctx"},
+                "code": (
+                    "assert koa_late_ctx.status == 206, koa_late_ctx.status\n"
+                    "assert koa_late_ctx.response.get('X-Poly') == 'koa-late', koa_late_ctx.response.get('X-Poly')\n"
+                    "assert koa_late_ctx.res.writableEnded is True, koa_late_ctx.res.writableEnded\n"
+                    "late_write_result = koa_late_ctx.res.write('late')\n"
+                    "assert late_write_result is False, late_write_result\n"
+                    "omnivm.call('javascript', 'globalThis.koaLateWriteState.lateWriteReturn = false')"
+                ),
+            },
+            {"op": "exec", "runtime": "javascript", "async": True, "code": verify},
+            {"op": "exec", "runtime": "javascript", "async": True, "code": close_server},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"Koa late-write context did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Koa late-write context crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Koa late-write context should not claim bulk transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Koa late-write context used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 2:
+        raise AssertionError(f"Koa late-write response methods were not recorded as proxy calls: before={before_handles}, after={handles}")
+    if handles.get("handle_accesses_by_kind", {}).get("property", 0) < before_handles.get("handle_accesses_by_kind", {}).get("property", 0) + 2:
+        raise AssertionError(f"Koa late-write response property access was not recorded: before={before_handles}, after={handles}")
+
+
 def test_manifest_fastify_server_client_abort_closes_response_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -26670,6 +26841,7 @@ def main():
         check("Manifest Node http response write after end reports owner error", test_manifest_node_http_response_write_after_end_reports_owner_error)
         check("Manifest Fastify request reply lifecycle stays live", test_manifest_fastify_request_reply_lifecycle_stays_live)
         check("Manifest Fastify reply write after end is rejected", test_manifest_fastify_reply_write_after_end_is_rejected)
+        check("Manifest Koa response write after end is rejected", test_manifest_koa_response_write_after_end_is_rejected)
         check("Manifest Fastify server client abort closes response owner", test_manifest_fastify_server_client_abort_closes_response_owner)
         check("Manifest Express server client abort closes response owner", test_manifest_express_server_client_abort_closes_response_owner)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
