@@ -1706,7 +1706,7 @@ static int omnivm_ruby_init(void) {
         "    alias __omnivm_native_start start unless method_defined?(:__omnivm_native_start)\n"
         "    alias __omnivm_native_fork fork unless method_defined?(:__omnivm_native_fork)\n"
         "    def __omnivm_unsupported_new(*args, &block)\n"
-        "      raise RuntimeError, \"Ruby Thread.new is not supported in OmniVM embedded Ruby; Ruby executes on a single VM-owned thread, so use Fiber/Async or run threaded Ruby app servers out of process\"\n"
+        "      raise RuntimeError, \"Ruby Thread.new is not supported in OmniVM embedded Ruby; Ruby executes on a single VM-owned thread, so use Fiber/Async or run native-threaded Ruby app servers such as Puma out of process\"\n"
         "    end\n"
         "    alias new __omnivm_unsupported_new\n"
         "    alias start __omnivm_unsupported_new\n"

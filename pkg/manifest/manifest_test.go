@@ -8598,6 +8598,7 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		"Thread.new diagnostic",
 		"Thread.start diagnostic",
 		"Thread.fork diagnostic",
+		"native-threaded Ruby app servers such as Puma out of process",
 		"def push(value, non_block = false)",
 		"raise ThreadError, 'queue full' if non_block",
 		"Ruby SizedQueue#push would block in OmniVM embedded Ruby",
