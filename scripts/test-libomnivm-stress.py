@@ -26225,12 +26225,15 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                 "captures": {"py_payload": "py_payload"},
                 "code": (
                     "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"py_payload\"); "
-                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"count set failed\"); "
-                    "if (!payload.set(\"items\", \"java-items\")) throw new RuntimeException(\"items set failed\"); "
-                    "if (!payload.set(\"close\", \"java-close\")) throw new RuntimeException(\"close set failed\"); "
-                    "if (!\"42\".equals(String.valueOf(payload.get(\"count\")))) throw new RuntimeException(\"bad count key: \" + payload.get(\"count\")); "
-                    "if (!\"java-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"bad items key: \" + payload.get(\"items\")); "
-                    "if (!\"java-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"bad close key: \" + payload.get(\"close\"));"
+                    "if (!omnivm.OmniVM.proxySet(payload, \"count\", 42)) throw new RuntimeException(\"count set failed\"); "
+                    "if (!omnivm.OmniVM.proxySet(payload, \"items\", \"java-items\")) throw new RuntimeException(\"items set failed\"); "
+                    "if (!omnivm.OmniVM.proxySet(payload, \"close\", \"java-close\")) throw new RuntimeException(\"close set failed\"); "
+                    "if (!omnivm.OmniVM.proxySet(payload, \"length\", 14)) throw new RuntimeException(\"length set failed\"); "
+                    "if (!\"42\".equals(String.valueOf(omnivm.OmniVM.proxyGet(payload, \"count\")))) throw new RuntimeException(\"bad count key: \" + omnivm.OmniVM.proxyGet(payload, \"count\")); "
+                    "if (!\"java-items\".equals(String.valueOf(omnivm.OmniVM.proxyGet(payload, \"items\")))) throw new RuntimeException(\"bad items key: \" + omnivm.OmniVM.proxyGet(payload, \"items\")); "
+                    "if (!\"java-close\".equals(String.valueOf(omnivm.OmniVM.proxyGet(payload, \"close\")))) throw new RuntimeException(\"bad close key: \" + omnivm.OmniVM.proxyGet(payload, \"close\")); "
+                    "if (!\"14\".equals(String.valueOf(omnivm.OmniVM.proxyGet(payload, \"length\")))) throw new RuntimeException(\"bad length key: \" + omnivm.OmniVM.proxyGet(payload, \"length\")); "
+                    "if (omnivm.OmniVM.proxyLen(payload) != 7) throw new RuntimeException(\"proxyLen lost mapping length: \" + omnivm.OmniVM.proxyLen(payload));"
                 ),
             },
             {
@@ -26242,7 +26245,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "assert py_payload['count'] == 42, py_payload\n"
                     "assert py_payload['then'] == 'js-then', py_payload\n"
                     "assert py_payload['close'] == 'java-close', py_payload\n"
-                    "assert py_payload['length'] == 10, py_payload\n"
+                    "assert py_payload['length'] == 14, py_payload\n"
                     "assert callable(dict.items) and callable(dict.keys)"
                 ),
             },
@@ -26301,8 +26304,21 @@ def test_manifest_js_proxy_meta_set_and_call_escape_hatches():
             },
             {
                 "op": "exec",
+                "runtime": "java",
+                "captures": {"remote_tool": "remote_tool"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy tool = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"remote_tool\"); "
+                    "if (!\"field-ruby\".equals(String.valueOf(omnivm.OmniVM.proxyGet(tool, \"close\")))) throw new RuntimeException(\"Java explicit get lost close: \" + omnivm.OmniVM.proxyGet(tool, \"close\")); "
+                    "Object accepted = omnivm.OmniVM.proxyCall(tool, \"accept\", java.util.Arrays.asList(\"java\")); "
+                    "if (!\"accepted-java\".equals(String.valueOf(accepted))) throw new RuntimeException(\"Java explicit call failed: \" + accepted); "
+                    "if (!omnivm.OmniVM.proxySet(tool, \"close\", \"field-java\")) throw new RuntimeException(\"Java explicit set rejected close\"); "
+                    "if (!\"field-java\".equals(String.valueOf(omnivm.OmniVM.proxyGet(tool, \"close\")))) throw new RuntimeException(\"Java explicit set lost close: \" + omnivm.OmniVM.proxyGet(tool, \"close\"));"
+                ),
+            },
+            {
+                "op": "exec",
                 "runtime": "python",
-                "code": "assert remote_tool.close == 'field-ruby', remote_tool.close\nassert remote_tool.count == 2, remote_tool.count",
+                "code": "assert remote_tool.close == 'field-java', remote_tool.close\nassert remote_tool.count == 3, remote_tool.count",
             },
         ],
     }

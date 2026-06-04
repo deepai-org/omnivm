@@ -348,6 +348,11 @@ when method names or `.length` would be ambiguous. Python retained manifest
 proxies expose the same explicit operations as `omnivm.proxy_get`,
 `omnivm.proxy_set`, `omnivm.proxy_call`, and `omnivm.proxy_len`; Ruby proxies
 expose `omnivm_get`, `omnivm_set`, `omnivm_call`, and `omnivm_len`.
+Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
+`OmniVM.proxyCall`, and `OmniVM.proxyLen`; for runtime-owned `HandleProxy`
+values these helpers now force the remote handle operation before Java `Map` or
+reflection behavior can collide with keys such as `get`, `set`, `call`,
+`close`, or `length`.
 
 ### Error Fidelity
 

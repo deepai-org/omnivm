@@ -506,6 +506,10 @@ Python retained manifest proxies expose the same escape hatches as
 Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`.
+Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
+`OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
+`OmniVM.proxyLen(proxy)` to force remote get/set/call/length operations when a
+remote key collides with Java proxy methods or `Map` methods.
 
 ```bash
 # Run a single manifest

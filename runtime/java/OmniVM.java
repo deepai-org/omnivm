@@ -692,6 +692,9 @@ public class OmniVM {
         if (target == null || key == null) {
             return null;
         }
+        if (target instanceof HandleProxy proxy) {
+            return proxy.get(key);
+        }
         if (target instanceof Map<?, ?> map) {
             return map.get(key);
         }
@@ -754,6 +757,9 @@ public class OmniVM {
         if (target == null || key == null) {
             return false;
         }
+        if (target instanceof HandleProxy proxy) {
+            return proxy.set(key, value);
+        }
         if (target instanceof Map map) {
             map.put(key, value);
             return true;
@@ -806,6 +812,9 @@ public class OmniVM {
     public static int proxyLen(Object target) {
         if (target == null) {
             return 0;
+        }
+        if (target instanceof HandleProxy proxy) {
+            return proxy.size();
         }
         if (target instanceof Map<?, ?> map) {
             return map.size();
@@ -932,6 +941,12 @@ public class OmniVM {
         List<?> args = argsValue instanceof List<?> list ? list : Collections.emptyList();
         if (target == null) {
             return null;
+        }
+        if (target instanceof HandleProxy proxy) {
+            if (key == null || key.isEmpty()) {
+                return proxy.apply(args.toArray());
+            }
+            return proxy.call(key, args.toArray());
         }
         if (key == null || key.isEmpty()) {
             return invokeCallableTarget(target, args);
