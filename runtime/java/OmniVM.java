@@ -131,6 +131,7 @@ public class OmniVM {
         private final List<Map<String, String>> causeChain;
         private final String boundaryPath;
         private final String originalErrorHandle;
+        private final String detailsJson;
 
         private RuntimeError(ParsedRuntimeError parsed, Throwable cause) {
             super(parsed.message, cause);
@@ -140,6 +141,7 @@ public class OmniVM {
             this.causeChain = Collections.unmodifiableList(parsed.causeChain);
             this.boundaryPath = parsed.boundaryPath;
             this.originalErrorHandle = parsed.originalErrorHandle;
+            this.detailsJson = parsed.detailsJson;
         }
 
         public String getRuntime() {
@@ -166,6 +168,10 @@ public class OmniVM {
             return originalErrorHandle;
         }
 
+        public String getDetailsJson() {
+            return detailsJson;
+        }
+
         public Map<String, Object> toMap() {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("runtime", runtime);
@@ -175,6 +181,7 @@ public class OmniVM {
             out.put("cause_chain", causeChain);
             out.put("boundary_path", boundaryPath);
             out.put("original_error_handle", originalErrorHandle);
+            out.put("details_json", detailsJson);
             return out;
         }
 
@@ -191,6 +198,7 @@ public class OmniVM {
         List<Map<String, String>> causeChain = new ArrayList<>();
         String boundaryPath = "";
         String originalErrorHandle;
+        String detailsJson;
     }
 
     private static ParsedRuntimeError parseBridgeRuntimeError(String bridgeMessage, String fallbackRuntime, String fallbackBoundary) {
@@ -203,6 +211,7 @@ public class OmniVM {
             text = text.substring(4).trim();
         }
         parsed.originalErrorHandle = extractOriginalErrorHandle(text);
+        parsed.detailsJson = extractDetailsJson(text);
 
         List<String> boundaryParts = new ArrayList<>();
         text = stripBoundaryPrefix(text, "execute manifest", boundaryParts);
@@ -300,7 +309,7 @@ public class OmniVM {
             parsed.traceback = text;
             for (int i = lines.length - 1; i >= 0; i--) {
                 String line = lines[i].trim();
-                if (line.isEmpty() || isOriginalErrorHandleLine(line) || line.startsWith("Caused by: ")) {
+                if (line.isEmpty() || isMetadataLine(line)) {
                     continue;
                 }
                 int colon = line.indexOf(": ");
@@ -342,6 +351,13 @@ public class OmniVM {
             || lower.startsWith("original_error_handle:");
     }
 
+    private static boolean isMetadataLine(String line) {
+        String lower = safeString(line).toLowerCase(Locale.ROOT);
+        return lower.startsWith("caused by:")
+            || lower.startsWith("details:")
+            || isOriginalErrorHandleLine(line);
+    }
+
     private static List<Map<String, String>> parseCauseChain(String text) {
         List<Map<String, String>> causes = new ArrayList<>();
         String[] lines = text.split("\\R");
@@ -378,6 +394,18 @@ public class OmniVM {
                 int colon = line.indexOf(':');
                 String handle = line.substring(colon + 1).trim();
                 return handle.isEmpty() ? null : handle;
+            }
+        }
+        return null;
+    }
+
+    private static String extractDetailsJson(String text) {
+        String[] lines = text.split("\\R");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.startsWith("Details: ")) {
+                String details = line.substring("Details: ".length()).trim();
+                return details.isEmpty() ? null : details;
             }
         }
         return null;

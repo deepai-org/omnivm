@@ -17895,7 +17895,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "z.object({age:z.number().min(1), name:z.string()}).parse({age:0});"
             ),
             ["ZodError", "too_small", "age", "invalid_type", "name"],
-            {"runtime": "javascript", "type": "ZodError", "message": "["},
+            {
+                "runtime": "javascript",
+                "type": "ZodError",
+                "message": "[",
+                "details_key": "issues",
+                "details_terms": ["too_small", "age", "invalid_type", "name"],
+            },
         ),
         (
             "javascript error cause",
@@ -17915,7 +17921,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "User(age=0)"
             ),
             ["ValidationError", "age", "greater_than", "name", "missing"],
-            {"runtime": "python", "type": "ValidationError", "message": "2 validation errors for User"},
+            {
+                "runtime": "python",
+                "type": "ValidationError",
+                "message": "2 validation errors for User",
+                "details_key": "errors",
+                "details_terms": ["greater_than", "age", "missing", "name"],
+            },
         ),
         (
             "marshmallow",
@@ -18023,6 +18035,16 @@ def test_validation_error_fidelity_popular_libraries():
                 raise AssertionError(f"{name} structured envelope lost boundary path: {envelope!r}") from exc
             if envelope.get("original_error_handle") is not None:
                 raise AssertionError(f"{name} structured envelope should not invent an error handle: {envelope!r}") from exc
+            if "details_key" in structured:
+                details = getattr(exc, "details", None)
+                if not isinstance(details, dict) or structured["details_key"] not in details:
+                    raise AssertionError(f"{name} structured details missing {structured['details_key']!r}: {details!r}") from exc
+                details_text = json.dumps(details, sort_keys=True)
+                missing_terms = [part for part in structured["details_terms"] if part not in details_text]
+                if missing_terms:
+                    raise AssertionError(f"{name} structured details lost {missing_terms}: {details!r}") from exc
+                if envelope.get("details") != details:
+                    raise AssertionError(f"{name} structured envelope lost details: {envelope!r}") from exc
             if "cause_type" in structured:
                 if not exc.cause_chain:
                     raise AssertionError(f"{name} error lost cause chain: {text}") from exc
@@ -18731,7 +18753,8 @@ User(age=0)
       traceback: err.traceback,
       boundaryPath: err.boundaryPath,
       causeChain: err.causeChain,
-      originalErrorHandle: err.originalErrorHandle
+      originalErrorHandle: err.originalErrorHandle,
+      details: err.details
     };
   }
   try {
@@ -18778,6 +18801,13 @@ User(age=0)
     for part in ("age", "greater_than", "name", "missing"):
         if part not in py_error_text:
             raise AssertionError(f"JS Python validation detail {part!r} lost: {envelope}")
+    py_details = py_error.get("details")
+    if not isinstance(py_details, dict) or "errors" not in py_details:
+        raise AssertionError(f"JS Python validation structured details lost: {envelope}")
+    py_details_text = json.dumps(py_details, sort_keys=True)
+    for part in ("age", "greater_than", "name", "missing"):
+        if part not in py_details_text:
+            raise AssertionError(f"JS Python validation structured detail {part!r} lost: {envelope}")
     if py_error.get("boundaryPath") != "call[python]":
         raise AssertionError(f"JS Python boundary path lost: {envelope}")
     if py_error.get("originalErrorHandle") is not None:
@@ -19079,11 +19109,17 @@ def test_native_runtime_error_rethrow_preserves_source_runtime():
             (
                 "import omnivm\n"
                 "try:\n"
-                "    omnivm.call('javascript', \"throw new Error('js-rethrow')\")\n"
+                "    omnivm.call('javascript', \"const err = new Error('js-rethrow'); err.details = {code: 'E_JS_RETHROW', path: ['user', 'age']}; throw err\")\n"
                 "except omnivm.RuntimeError as exc:\n"
                 "    raise exc\n"
             ),
-            {"runtime": "javascript", "type": "Error", "message": "js-rethrow", "boundary": "call[javascript]"},
+            {
+                "runtime": "javascript",
+                "type": "Error",
+                "message": "js-rethrow",
+                "boundary": "call[javascript]",
+                "details_terms": ["E_JS_RETHROW", "user", "age"],
+            },
         ),
         (
             "ruby rethrows python",
@@ -19119,6 +19155,13 @@ def test_native_runtime_error_rethrow_preserves_source_runtime():
             envelope = exc.to_dict()
             if envelope.get("runtime") != expected["runtime"] or envelope.get("type") != expected["type"]:
                 raise AssertionError(f"{name} to_dict lost source runtime/type: {envelope!r}") from exc
+            if "details_terms" in expected:
+                details_text = json.dumps(getattr(exc, "details", None), sort_keys=True)
+                for part in expected["details_terms"]:
+                    if part not in details_text:
+                        raise AssertionError(f"{name} lost structured details term {part!r}: {envelope!r}") from exc
+                if envelope.get("details") != exc.details:
+                    raise AssertionError(f"{name} to_dict lost structured details: {envelope!r}") from exc
         else:
             raise AssertionError(f"{name} did not rethrow an error")
 

@@ -182,7 +182,8 @@ func TestParseError_PythonTracebackIgnoresMetadataLines(t *testing.T) {
 		"  File \"<string>\", line 1, in <module>\n" +
 		"sqlalchemy.exc.IntegrityError: UNIQUE constraint failed: users.name\n" +
 		"[SQL: INSERT INTO users (name) VALUES (?)]\n" +
-		"[parameters: ('ada',)]\n"
+		"[parameters: ('ada',)]\n" +
+		"Details: {\"errors\":[{\"loc\":[\"age\"],\"type\":\"greater_than\"}]}\n"
 	re := ParseError("python", raw)
 	if re == nil {
 		t.Fatal("expected non-nil RuntimeError")
@@ -195,6 +196,13 @@ func TestParseError_PythonTracebackIgnoresMetadataLines(t *testing.T) {
 	}
 	if !contains(re.Traceback, "[parameters:") {
 		t.Errorf("Traceback should retain metadata lines, got: %q", re.Traceback)
+	}
+	if re.Details == nil {
+		t.Fatal("expected parsed details")
+	}
+	errors, ok := re.Details["errors"].([]interface{})
+	if !ok || len(errors) != 1 {
+		t.Fatalf("Details[errors] = %#v, want one error", re.Details["errors"])
 	}
 }
 

@@ -54,6 +54,7 @@ static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
 
 static const char* omnivm_py_runtime_error_code =
 "import builtins as __omnivm_builtins\n"
+"import json as __omnivm_json\n"
 "import re as __omnivm_re\n"
 "class RuntimeError(__omnivm_builtins.RuntimeError):\n"
 "    def __init__(self, message, runtime=None, boundary_path=None):\n"
@@ -66,10 +67,29 @@ static const char* omnivm_py_runtime_error_code =
 "        self.cause_chain = parsed['cause_chain']\n"
 "        self.boundary_path = parsed['boundary_path']\n"
 "        self.original_error_handle = parsed['original_error_handle']\n"
+"        self.details = parsed['details']\n"
 "    def to_dict(self):\n"
-"        return {'runtime': self.runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'cause_chain': list(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle}\n"
+"        return {'runtime': self.runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'cause_chain': list(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle, 'details': self.details}\n"
 "def _is_error_type_candidate(candidate):\n"
 "    return bool(__omnivm_re.match(r'^[A-Za-z_][A-Za-z0-9_.$:]*$', candidate or ''))\n"
+"def _is_runtime_error_metadata_line(line):\n"
+"    lower = (line or '').strip().lower()\n"
+"    return lower.startswith('caused by:') or lower.startswith('details:') or lower.startswith('original_error_handle:') or lower.startswith('original error handle:') or lower.startswith('original-error-handle:')\n"
+"def _parse_runtime_error_details(text):\n"
+"    for line in str(text).splitlines():\n"
+"        stripped = line.strip()\n"
+"        if not stripped.startswith('Details: '):\n"
+"            continue\n"
+"        try:\n"
+"            value = __omnivm_json.loads(stripped[len('Details: '):])\n"
+"        except Exception:\n"
+"            return None\n"
+"        if isinstance(value, dict):\n"
+"            return value\n"
+"        if isinstance(value, list):\n"
+"            return {'errors': value}\n"
+"        return {'value': value}\n"
+"    return None\n"
 "def _parse_runtime_error_text(text, runtime=None, boundary_path=None):\n"
 "    source_runtime = runtime\n"
 "    body = text[4:] if text.startswith('ERR:') else text\n"
@@ -107,6 +127,8 @@ static const char* omnivm_py_runtime_error_code =
 "    if first_line.startswith('Traceback '):\n"
 "        traceback = body\n"
 "        for line in reversed([line.strip() for line in body.splitlines() if line.strip()]):\n"
+"            if _is_runtime_error_metadata_line(line):\n"
+"                continue\n"
 "            if ': ' not in line:\n"
 "                continue\n"
 "            candidate, _tail = line.split(': ', 1)\n"
@@ -134,7 +156,7 @@ static const char* omnivm_py_runtime_error_code =
 "                cause_type = candidate\n"
 "                cause_message = tail\n"
 "        cause_chain.append({'type': cause_type, 'message': cause_message})\n"
-"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle}\n"
+"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle, 'details': _parse_runtime_error_details(body)}\n"
 ;
 
 static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
@@ -2401,6 +2423,81 @@ static void omnivm_py_append_text(char** out, size_t* len, const char* text) {
     *len += add;
 }
 
+static PyObject* omnivm_py_get_validation_details(PyObject* value) {
+    if (!value) return NULL;
+
+    if (PyObject_HasAttrString(value, "details")) {
+        PyObject* details = PyObject_GetAttrString(value, "details");
+        if (details && details != Py_None) return details;
+        Py_XDECREF(details);
+        PyErr_Clear();
+    }
+
+    PyObject* details = omnivm_py_call_noarg_method(value, "errors");
+    if (details) return details;
+
+    details = omnivm_py_call_noarg_method(value, "normalized_messages");
+    if (details) return details;
+
+    static const char* attrs[] = {"messages", "message_dict", "error_dict", NULL};
+    for (int i = 0; attrs[i]; ++i) {
+        if (!PyObject_HasAttrString(value, attrs[i])) continue;
+        details = PyObject_GetAttrString(value, attrs[i]);
+        if (details && details != Py_None) return details;
+        Py_XDECREF(details);
+        PyErr_Clear();
+    }
+
+    return NULL;
+}
+
+static char* omnivm_py_error_details_json(PyObject* value) {
+    PyObject* details = omnivm_py_get_validation_details(value);
+    if (!details) return NULL;
+    PyObject* wrapped = NULL;
+    if (!PyMapping_Check(details)) {
+        wrapped = PyDict_New();
+        if (wrapped && PyDict_SetItemString(wrapped, "errors", details) != 0) {
+            Py_DECREF(wrapped);
+            wrapped = NULL;
+            PyErr_Clear();
+        }
+    }
+    PyObject* serializable = wrapped ? wrapped : details;
+
+    PyObject* json_module = PyImport_ImportModule("json");
+    if (!json_module) {
+        Py_XDECREF(wrapped);
+        Py_DECREF(details);
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* dumps = PyObject_GetAttrString(json_module, "dumps");
+    PyObject* str_type = (PyObject*)&PyUnicode_Type;
+    PyObject* result = NULL;
+    if (dumps) {
+        PyObject* args = PyTuple_Pack(1, serializable);
+        PyObject* kwargs = PyDict_New();
+        if (args && kwargs && PyDict_SetItemString(kwargs, "default", str_type) == 0) {
+            result = PyObject_Call(dumps, args, kwargs);
+        }
+        Py_XDECREF(args);
+        Py_XDECREF(kwargs);
+    }
+    Py_XDECREF(dumps);
+    Py_DECREF(json_module);
+    Py_XDECREF(wrapped);
+    Py_DECREF(details);
+    if (!result) {
+        PyErr_Clear();
+        return NULL;
+    }
+    const char* utf8 = PyUnicode_AsUTF8(result);
+    char* out = (utf8 && utf8[0]) ? strdup(utf8) : NULL;
+    Py_DECREF(result);
+    return out;
+}
+
 static char* omnivm_py_format_runtime_error_value(PyObject* value) {
     if (!value) return NULL;
     char* runtime = omnivm_py_unicode_attr_dup(value, "runtime");
@@ -2409,6 +2506,7 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
     char* message = omnivm_py_unicode_attr_dup(value, "message");
     char* traceback = omnivm_py_unicode_attr_dup(value, "traceback");
     char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
+    char* details_json = omnivm_py_error_details_json(value);
 
     char* out = NULL;
     size_t len = 0;
@@ -2486,11 +2584,16 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
         omnivm_py_append_text(&out, &len, "\nOriginal error handle: ");
         omnivm_py_append_text(&out, &len, handle);
     }
+    if (details_json) {
+        omnivm_py_append_text(&out, &len, "\nDetails: ");
+        omnivm_py_append_text(&out, &len, details_json);
+    }
     free(runtime);
     free(err_type);
     free(message);
     free(traceback);
     free(handle);
+    free(details_json);
     if (!out) return strdup("");
     return out;
 }
@@ -2547,6 +2650,13 @@ static char* omnivm_py_fetch_traceback_error_inner() {
             omnivm_py_append_text(&result, &len, "\nOriginal error handle: ");
             omnivm_py_append_text(&result, &len, handle);
             free(handle);
+        }
+        char* details_json = omnivm_py_error_details_json(value);
+        if (details_json) {
+            size_t len = strlen(result);
+            omnivm_py_append_text(&result, &len, "\nDetails: ");
+            omnivm_py_append_text(&result, &len, details_json);
+            free(details_json);
         }
     }
 

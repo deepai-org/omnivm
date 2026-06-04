@@ -80,6 +80,7 @@ class RuntimeError(_builtins.RuntimeError):
         self.cause_chain = parsed["cause_chain"]
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
+        self.details = parsed["details"]
 
     def to_dict(self):
         """Return a structured, JSON-serializable runtime error envelope."""
@@ -91,6 +92,7 @@ class RuntimeError(_builtins.RuntimeError):
             "cause_chain": list(self.cause_chain),
             "boundary_path": self.boundary_path,
             "original_error_handle": self.original_error_handle,
+            "details": self.details,
         }
 
 
@@ -156,6 +158,8 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         traceback = body
         traceback_lines = [line.strip() for line in body.splitlines() if line.strip()]
         for line in reversed(traceback_lines):
+            if _is_runtime_error_metadata_line(line):
+                continue
             if ": " not in line:
                 continue
             candidate, _ = line.split(": ", 1)
@@ -196,11 +200,40 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "boundary_path": " > ".join(boundary_parts)
         or (f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path),
         "original_error_handle": original_error_handle,
+        "details": _parse_runtime_error_details(body),
     }
 
 
 def _is_error_type_candidate(candidate):
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_.$:]*$", candidate or ""))
+
+
+def _is_runtime_error_metadata_line(line):
+    lower = (line or "").strip().lower()
+    return (
+        lower.startswith("caused by:")
+        or lower.startswith("details:")
+        or lower.startswith("original_error_handle:")
+        or lower.startswith("original error handle:")
+        or lower.startswith("original-error-handle:")
+    )
+
+
+def _parse_runtime_error_details(text):
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Details: "):
+            continue
+        try:
+            value = json.loads(stripped[len("Details: ") :])
+        except Exception:
+            return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            return {"errors": value}
+        return {"value": value}
+    return None
 
 
 # Lazy-loaded shared library handle. Not loaded until init_runtimes() is called.

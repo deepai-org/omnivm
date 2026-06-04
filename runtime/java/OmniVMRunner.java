@@ -664,6 +664,9 @@ public class OmniVMRunner {
                 }
                 out.append(cause.getOrDefault("message", ""));
             }
+            if (e.getDetailsJson() != null && !e.getDetailsJson().isEmpty()) {
+                out.append("\nDetails: ").append(e.getDetailsJson());
+            }
             if (e.getOriginalErrorHandle() != null && !e.getOriginalErrorHandle().isEmpty()) {
                 out.append("\nOriginal error handle: ").append(e.getOriginalErrorHandle());
             }

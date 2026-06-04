@@ -1,6 +1,7 @@
 package omnivm
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
@@ -16,6 +17,7 @@ type RuntimeError struct {
 	CauseChain          []RuntimeErrorCause // nested causes from languages that expose them
 	BoundaryPath        string              // call/manifest boundary path, if available
 	OriginalErrorHandle string              // source-runtime handle marker, if one was reported
+	Details             map[string]interface{}
 }
 
 type RuntimeErrorCause struct {
@@ -90,6 +92,9 @@ func ParseError(runtime, s string) *RuntimeError {
 	if strings.HasPrefix(message, "Traceback ") {
 		traceback = body
 		for _, line := range reverseNonEmptyLines(body) {
+			if isMetadataLine(line) {
+				continue
+			}
 			if idx := strings.Index(line, ": "); idx >= 0 && isErrorTypeCandidate(line[:idx]) {
 				parseLine = line
 				break
@@ -117,6 +122,7 @@ func ParseError(runtime, s string) *RuntimeError {
 		CauseChain:          parseCauseChain(body),
 		BoundaryPath:        boundaryPath(boundaryParts, sourceRuntime),
 		OriginalErrorHandle: extractOriginalErrorHandle(body),
+		Details:             parseDetails(body),
 	}
 }
 
@@ -201,6 +207,29 @@ func parseCauseChain(text string) []RuntimeErrorCause {
 		causes = append(causes, cause)
 	}
 	return causes
+}
+
+func parseDetails(text string) map[string]interface{} {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Details: ") {
+			continue
+		}
+		var details map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "Details: "))), &details); err == nil {
+			return details
+		}
+	}
+	return nil
+}
+
+func isMetadataLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(line, "caused by:") ||
+		strings.HasPrefix(lower, "details:") ||
+		strings.HasPrefix(lower, "original_error_handle:") ||
+		strings.HasPrefix(lower, "original error handle:") ||
+		strings.HasPrefix(lower, "original-error-handle:")
 }
 
 func extractOriginalErrorHandle(text string) string {

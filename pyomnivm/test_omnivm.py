@@ -82,6 +82,7 @@ class TestRuntimeError(unittest.TestCase):
             "sqlalchemy.exc.IntegrityError: UNIQUE constraint failed: users.name\n"
             "[SQL: INSERT INTO users (name) VALUES (?)]\n"
             "[parameters: ('ada',)]\n"
+            "Details: {\"errors\":[{\"loc\":[\"age\"],\"type\":\"greater_than\"}]}\n"
             "(Background on this error at: https://sqlalche.me/e/20/gkpj)\n",
             runtime="python",
         )
@@ -89,6 +90,7 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == "IntegrityError"
         assert err.message == "UNIQUE constraint failed: users.name"
         assert "[parameters:" in err.traceback
+        assert err.details == {"errors": [{"loc": ["age"], "type": "greater_than"}]}
 
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
@@ -131,6 +133,7 @@ class TestRuntimeError(unittest.TestCase):
             "cause_chain": [{"type": "TypeError", "message": "inner"}],
             "boundary_path": "call[javascript]",
             "original_error_handle": None,
+            "details": None,
         }
 
     def test_parses_go_wrapped_error_cause_chain(self):
