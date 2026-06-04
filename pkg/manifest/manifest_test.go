@@ -6154,6 +6154,9 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	}
 	if !contains(code, "var cancelRemote = function()") ||
 		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "var closeListeners = []") ||
+		!contains(code, "var addCloseListener = function(listener)") ||
+		!contains(code, "var listeners = closeListeners.slice()") ||
 		!contains(code, "if (localValues) return markRemoteClosed();") ||
 		!contains(code, "if (remoteClosed) return {done: true};") ||
 		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed();\n        return {done: true};\n      }") ||
@@ -6165,6 +6168,8 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "catch (_e) {\n      cancelRemoteQuiet();\n      throw _e;\n    }") ||
 		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "if (closed) return;") ||
+		!contains(code, "var unregisterCloseListener = null") ||
+		!contains(code, "unregisterCloseListener = addCloseListener(function()") ||
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") ||
@@ -6677,6 +6682,72 @@ nextStarted.then(function() {
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node readable destroy late-chunk check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSNodeReadableDropsLateChunksAfterSourceCancel(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 94, runtime: "javascript", kind: "stream"});
+var resolveNext;
+var nextStartedResolve;
+var nextStarted = new Promise(function(resolve) {
+  nextStartedResolve = resolve;
+});
+var returned = 0;
+stream[Symbol.asyncIterator] = function() {
+  return {
+    next: function() {
+      nextStartedResolve();
+      return new Promise(function(resolve) {
+        resolveNext = resolve;
+      });
+    },
+    return: function(_reason) {
+      returned++;
+      return Promise.resolve(true);
+    }
+  };
+};
+var readable = stream.toNodeReadable({objectMode: true});
+var pushed = [];
+var originalPush = readable.push;
+readable.push = function(value) {
+  pushed.push(value);
+  return originalPush.call(this, value);
+};
+readable.on("error", function() {});
+readable.resume();
+nextStarted.then(function() {
+  if (stream.cancel("client abort") !== true) throw new Error("source cancel did not release remote stream");
+  resolveNext({done: false, value: "late"});
+  setImmediate(function() {
+    if (returned !== 1) throw new Error("source cancel did not close readable iterator exactly once: " + returned);
+    if (pushed.length !== 0) throw new Error("cancelled readable pushed late chunks: " + JSON.stringify(pushed));
+    var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+    if (cancels.length !== 1 || cancels[0].id !== 94) throw new Error("stream cancel requests mismatch: " + JSON.stringify(cancels));
+  });
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node readable source-cancel late-chunk check failed: %v\n%s", err, out)
 	}
 }
 
