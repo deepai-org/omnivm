@@ -1892,6 +1892,8 @@ def _buffer_status_summary(status):
         "released",
         "active_borrows",
         "active_borrowed_bytes",
+        "active_named_borrows",
+        "named_borrow_queue",
         "detached_buffers",
         "detached_bytes",
     ):

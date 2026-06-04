@@ -1374,6 +1374,7 @@ class TestCallWithMockLib(unittest.TestCase):
             b'{"name":"payload","state":"released_detached","live":false,'
             b'"lease_state":"detached","memory_space":"host",'
             b'"released":true,"active_borrows":2,'
+            b'"active_named_borrows":2,"named_borrow_queue":2,'
             b'"active_borrowed_bytes":6,"detached_buffers":1}'
         )
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
@@ -1383,19 +1384,24 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "lease_state='detached'" in str(ctx.exception)
         assert "memory_space='host'" in str(ctx.exception)
         assert "active_borrows=2" in str(ctx.exception)
+        assert "active_named_borrows=2" in str(ctx.exception)
+        assert "named_borrow_queue=2" in str(ctx.exception)
         assert "detached_buffers=1" in str(ctx.exception)
         assert ctx.exception.boundary_path == "native_memory"
         assert ctx.exception.details["buffer"]["state"] == "released_detached"
         assert ctx.exception.details["buffer"]["lease_state"] == "detached"
         assert ctx.exception.details["buffer"]["memory_space"] == "host"
         assert ctx.exception.details["buffer"]["active_borrows"] == 2
+        assert ctx.exception.details["buffer"]["active_named_borrows"] == 2
+        assert ctx.exception.details["buffer"]["named_borrow_queue"] == 2
         self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
 
     def test_buffer_status_returns_lifecycle_diagnostics(self):
         self.mock_lib.OmniBufStatus.return_value = (
             b'{"name":"payload","state":"released_detached","live":false,'
             b'"lease_state":"detached","memory_space":"host","released":true,'
-            b'"active_borrows":1,"detached_buffers":1}'
+            b'"active_borrows":1,"active_named_borrows":1,'
+            b'"named_borrow_queue":1,"detached_buffers":1}'
         )
         status = omnivm_mod.buffer_status("payload")
         self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
@@ -1404,6 +1410,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert status["memory_space"] == "host"
         assert status["released"] is True
         assert status["active_borrows"] == 1
+        assert status["active_named_borrows"] == 1
+        assert status["named_borrow_queue"] == 1
         assert status["detached_buffers"] == 1
 
     def test_buffer_status_requires_capability(self):
