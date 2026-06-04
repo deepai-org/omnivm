@@ -140,9 +140,13 @@ compatibility alias for code that used the original manifest-specific name. The
 Python retained-manifest wrapper also keeps app-owned complex arguments alive
 when a retained function returns them as live proxies, and releases those
 argument refs when the proxy closes or is finalized.
-The remaining tests should cover Puma and other native-threaded Ruby server
-processes plus additional server hook reload paths with observable cancellation
-after abort/reload events.
+The remaining lifecycle risk is true native-threaded Ruby app-server
+propagation: Puma now reaches the explicit unsupported-thread diagnostic, but
+running Puma in process still requires a Ruby-thread scheduling strategy outside
+the current Golden Thread model. Additional server-specific reload hooks are
+useful only when they expose a distinct lifecycle path not already covered by
+the direct `drain_worker()` and app-server-compatible `drain_worker_hook()`
+fixtures.
 
 ### Thread And Event-Loop Affinity
 
@@ -302,10 +306,11 @@ foreign-owned upload stream. Request-scoped Go host calls also skip queued
 guest-runtime tasks when their context is cancelled before golden-thread
 execution starts; once guest code starts, it remains governed by the existing
 runtime interrupt/timeout path. Additional Puma/native-threaded Ruby server
-aborts, worker reloads, transaction rollback, and broader library-specific
-stream cancellation status should all produce observable cleanup. The next
-fixture should assert handle counts before/after an aborted request or worker
-reload and should expose cancellation status rather than hiding it in logs.
+abort propagation remains blocked by native Ruby thread scheduling. New
+cancellation or reload fixtures should be added only when they exercise a
+distinct owner lifecycle; they should continue to assert handle counts
+before/after the abort or reload and expose cancellation status rather than
+hiding it in logs.
 
 ### Method And Key Collisions
 
