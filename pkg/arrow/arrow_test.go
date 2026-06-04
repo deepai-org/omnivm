@@ -481,6 +481,67 @@ func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
 	}
 }
 
+func TestReplaceWithActiveBorrowKeepsOldAndNewMetadataSeparate(t *testing.T) {
+	s := NewSharedStore()
+	old, err := s.SetWithMetadata("payload", []byte{1, 2, 3, 4}, BufferMetadata{
+		Dtype:       DtypeI32,
+		Format:      "i",
+		Shape:       []int64{1},
+		Strides:     []int64{4},
+		ReadOnly:    true,
+		Ownership:   "producer",
+		MemorySpace: "host",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := s.SetWithMetadata("payload", []byte{9, 8}, BufferMetadata{
+		Dtype:       DtypeU8,
+		Format:      "C",
+		Shape:       []int64{2},
+		Strides:     []int64{1},
+		Ownership:   "omnivm",
+		MemorySpace: "host",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement == old {
+		t.Fatal("replacement reused an actively borrowed buffer")
+	}
+
+	if lease.Metadata.Dtype != DtypeI32 || lease.Metadata.Format != "i" || !lease.Metadata.ReadOnly || lease.Metadata.Ownership != "producer" {
+		t.Fatalf("borrow lease metadata changed after replacement: %+v", lease.Metadata)
+	}
+	oldMeta := old.Metadata()
+	if oldMeta.Dtype != DtypeI32 || oldMeta.Format != "i" || !oldMeta.ReadOnly || oldMeta.Ownership != "producer" {
+		t.Fatalf("old detached metadata changed after replacement: %+v", oldMeta)
+	}
+	current, err := s.Get("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentMeta := current.Metadata()
+	if current != replacement || currentMeta.Dtype != DtypeU8 || currentMeta.Format != "C" || currentMeta.ReadOnly || currentMeta.Ownership != "omnivm" {
+		t.Fatalf("replacement metadata = %+v current=%p replacement=%p", currentMeta, current, replacement)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.LeaseState != "borrowed" || status.Dtype != DtypeU8 || status.Format != "C" || status.ReadOnly || status.Ownership != "omnivm" || status.DetachedBuffers != 1 || status.ActiveBorrows != 1 {
+		t.Fatalf("status should report live replacement plus detached borrow: %+v", status)
+	}
+
+	lease.Release()
+	status = s.Status("payload")
+	if status.LeaseState != "owned" || status.DetachedBuffers != 0 || status.ActiveBorrows != 0 {
+		t.Fatalf("status did not clear detached metadata after borrow release: %+v", status)
+	}
+}
+
 func TestReplaceExternalWithActiveBorrowReportsDetachedLease(t *testing.T) {
 	s := NewSharedStore()
 	oldData := []byte{1, 2, 3}
