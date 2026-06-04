@@ -1954,7 +1954,8 @@ class TestCallWithMockLib(unittest.TestCase):
             b'"lease_state":"detached","memory_space":"host",'
             b'"released":true,"active_borrows":2,'
             b'"active_named_borrows":2,"named_borrow_queue":2,'
-            b'"active_borrowed_bytes":6,"detached_buffers":1}'
+            b'"active_borrowed_bytes":6,"detached_buffers":1,'
+            b'"release_error":"producer release failed"}'
         )
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.release_buffer("payload")
@@ -1966,6 +1967,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "active_named_borrows=2" in str(ctx.exception)
         assert "named_borrow_queue=2" in str(ctx.exception)
         assert "detached_buffers=1" in str(ctx.exception)
+        assert "release_error='producer release failed'" in str(ctx.exception)
         assert ctx.exception.boundary_path == "native_memory"
         assert ctx.exception.details["buffer"]["state"] == "released_detached"
         assert ctx.exception.details["buffer"]["lease_state"] == "detached"
@@ -1973,6 +1975,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert ctx.exception.details["buffer"]["active_borrows"] == 2
         assert ctx.exception.details["buffer"]["active_named_borrows"] == 2
         assert ctx.exception.details["buffer"]["named_borrow_queue"] == 2
+        assert ctx.exception.details["buffer"]["release_error"] == "producer release failed"
         self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
 
     def test_buffer_status_returns_lifecycle_diagnostics(self):

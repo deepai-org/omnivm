@@ -2097,6 +2097,7 @@ def _buffer_status_summary(status):
         "named_borrow_queue",
         "detached_buffers",
         "detached_bytes",
+        "release_error",
     ):
         if key in status:
             fields.append(f"{key}={status[key]!r}")

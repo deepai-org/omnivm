@@ -719,6 +719,35 @@ func TestBorrowedBufferReleaseWithErrorReportsLastOwnerReleaseFailure(t *testing
 	if status.State != "released" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || status.Ownership != "producer" {
 		t.Fatalf("released external buffer status lost metadata: %+v", status)
 	}
+	if status.ReleaseError != "producer release failed" {
+		t.Fatalf("released external buffer status release error = %q, want producer release failed", status.ReleaseError)
+	}
+}
+
+func TestBufferFreeRecordsProducerReleaseFailureInStatus(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3, 4}
+	releaseErr := errors.New("producer release failed")
+	if _, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:       DtypeBytes,
+		Format:      "C",
+		Ownership:   "producer",
+		MemorySpace: "host",
+	}, func() error {
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Free("payload"); !errors.Is(err, releaseErr) {
+		t.Fatalf("Free = %v, want producer release failure", err)
+	}
+	status := s.Status("payload")
+	if status.State != "released" || status.LeaseState != "released" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || status.Ownership != "producer" || status.MemorySpace != "host" {
+		t.Fatalf("released external buffer status lost metadata after free failure: %+v", status)
+	}
+	if status.ReleaseError != "producer release failed" {
+		t.Fatalf("release error status = %q, want producer release failed", status.ReleaseError)
+	}
 }
 
 func TestBufFreeDoesNotConsumeBorrowFinalizerQueue(t *testing.T) {

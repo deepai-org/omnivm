@@ -120,6 +120,7 @@ type BufferStatus struct {
 	NamedBorrowQueue    int    `json:"named_borrow_queue,omitempty"`
 	DetachedBuffers     int    `json:"detached_buffers,omitempty"`
 	DetachedBytes       int64  `json:"detached_bytes,omitempty"`
+	ReleaseError        string `json:"release_error,omitempty"`
 }
 
 // SharedStore manages named Arrow buffers accessible to all runtimes.
@@ -174,6 +175,23 @@ func (s *SharedStore) markReleasedLocked(name string, status BufferStatus) {
 		delete(s.released, oldest)
 		delete(s.releasedMeta, oldest)
 	}
+}
+
+func (s *SharedStore) recordReleaseError(name string, err error) {
+	if name == "" || err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status, ok := s.releasedMeta[name]
+	if !ok {
+		return
+	}
+	status.Name = name
+	status.State = "released"
+	status.Released = true
+	status.ReleaseError = err.Error()
+	s.releasedMeta[name] = status
 }
 
 func (s *SharedStore) forgetReleasedLocked(name string) {
@@ -329,7 +347,11 @@ func (s *SharedStore) releaseBorrow(name string, buf *Buffer, namedTracked bool)
 	}
 	release := s.releaseBufferLocked(name, buf)
 	s.mu.Unlock()
-	return callBufferRelease(release)
+	err := callBufferRelease(release)
+	if err != nil {
+		s.recordReleaseError(name, err)
+	}
+	return err
 }
 
 func (s *SharedStore) removeNamedBorrowLocked(name string, buf *Buffer) {
@@ -368,7 +390,11 @@ func (s *SharedStore) releaseNamedBorrow(name string) error {
 
 	release := s.releaseBufferLocked(name, buf)
 	s.mu.Unlock()
-	return callBufferRelease(release)
+	err := callBufferRelease(release)
+	if err != nil {
+		s.recordReleaseError(name, err)
+	}
+	return err
 }
 
 func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error {
@@ -438,7 +464,11 @@ func (s *SharedStore) Free(name string) error {
 	s.releases++
 	s.mu.Unlock()
 	if refs <= 0 {
-		return callBufferRelease(release)
+		err := callBufferRelease(release)
+		if err != nil {
+			s.recordReleaseError(name, err)
+		}
+		return err
 	}
 	return nil
 }
