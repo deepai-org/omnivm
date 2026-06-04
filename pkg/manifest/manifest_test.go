@@ -6237,6 +6237,9 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_free(name)") || !contains(files["../../pkg/ruby/ruby.go"], "g_buf_release(name)") {
 		t.Fatalf("embedded Ruby should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
 	}
+	if !contains(files["../../pkg/ruby/ruby.go"], `rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized")`) {
+		t.Fatalf("embedded Ruby explicit release_buffer should diagnose a missing buffer-free callback")
+	}
 	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_free(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_release(lease->name)") {
 		t.Fatalf("V8 bridge should use g_buf_free for releaseBuffer and g_buf_release for external buffer cleanup")
 	}

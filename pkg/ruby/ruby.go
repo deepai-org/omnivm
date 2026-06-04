@@ -1988,7 +1988,10 @@ static VALUE rb_omnivm_set_buffer(int argc, VALUE* argv, VALUE self) {
 
 // OmniVM.release_buffer(name)
 static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
-    if (!g_buf_free) return Qnil;
+    if (!g_buf_free) {
+        rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized");
+        return Qnil;
+    }
     const char* name = StringValueCStr(rb_name);
     if (g_buf_free(name) != 0) {
         rb_raise(rb_eRuntimeError, "OmniVM.release_buffer failed");
