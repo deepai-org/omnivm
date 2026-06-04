@@ -5046,6 +5046,11 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	if !contains(code, `op: "stream_cancel"`) {
 		t.Error("should support explicit stream cancellation")
 	}
+	if !contains(code, "var cancelRemote = function()") ||
+		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") {
+		t.Fatalf("JS stream proxy close should cancel the remote stream through the explicit path, got %q", code)
+	}
 }
 
 func TestInjectJSCapturesUsesSafeBindingNames(t *testing.T) {
@@ -5244,9 +5249,13 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby explicit proxy close should be idempotent and unregister its finalizer after release, got %q", code)
 	}
 	if !contains(code, "class OmniVMStreamProxy") ||
+		!contains(code, "def __omnivm_mark_closed") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, "def omnivm_close\n    close\n  end") {
 		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, got %q", code)
+	}
+	if contains(code, "def close\n    return false if @__omnivm_closed == true\n    begin\n      OmniVM.call(\"__manifest\", JSON.generate({op: \"stream_cancel\"") {
+		t.Fatalf("Ruby stream close should not swallow user-initiated cancellation failures")
 	}
 	if !contains(code, `op: "handle_retain"`) || !contains(code, "def self.omnivm_retain") {
 		t.Fatalf("Ruby materializer should retain handles for guest proxy lifetime, got %q", code)
@@ -5314,7 +5323,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
 		!contains(code, "return proxy.releaseExplicit();") ||
+		!contains(code, "return proxy.cancel();") ||
 		!contains(code, "public boolean releaseExplicit()") ||
+		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
 		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")

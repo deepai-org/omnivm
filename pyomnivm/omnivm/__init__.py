@@ -1045,6 +1045,7 @@ class ManifestProxy:
         object.__setattr__(self, "_descriptor", dict(descriptor))
         object.__setattr__(self, "_handle_id", int(descriptor["id"]))
         object.__setattr__(self, "_arg_finalizers", [])
+        object.__setattr__(self, "_closed", False)
         if descriptor.get("transfer") is True:
             _manifest_bridge_call(module_id, {"op": "handle_adopt", "id": self._handle_id})
         else:
@@ -1055,6 +1056,25 @@ class ManifestProxy:
             weakref.finalize(self, _manifest_proxy_release, self._module_id, self._handle_id),
         )
 
+    def _is_stream_proxy(self):
+        descriptor = object.__getattribute__(self, "_descriptor")
+        return (
+            descriptor.get("__omnivm_stream__") is True
+            or descriptor.get("__omnivm_channel__") is True
+        )
+
+    def _release_arg_finalizers(self):
+        for arg_finalizer in object.__getattribute__(self, "_arg_finalizers"):
+            if arg_finalizer.alive:
+                arg_finalizer()
+
+    def _detach_after_remote_close(self):
+        object.__setattr__(self, "_closed", True)
+        finalizer = object.__getattribute__(self, "_finalizer")
+        if finalizer.alive:
+            finalizer.detach()
+        self._release_arg_finalizers()
+
     @property
     def __omnivm_descriptor__(self):
         return dict(self._descriptor)
@@ -1064,20 +1084,17 @@ class ManifestProxy:
         return self._handle_id
 
     def close(self):
-        finalizer = object.__getattribute__(self, "_finalizer")
-        released = False
-        if finalizer.alive:
-            released = bool(_manifest_bridge_call(
-                object.__getattribute__(self, "_module_id"),
-                {
-                    "op": "handle_release_finalizer",
-                    "id": object.__getattribute__(self, "_handle_id"),
-                },
-            ))
-            finalizer.detach()
-        for arg_finalizer in object.__getattribute__(self, "_arg_finalizers"):
-            if arg_finalizer.alive:
-                arg_finalizer()
+        if object.__getattribute__(self, "_closed"):
+            return False
+        op = "stream_cancel" if self._is_stream_proxy() else "handle_release_finalizer"
+        released = bool(_manifest_bridge_call(
+            object.__getattribute__(self, "_module_id"),
+            {
+                "op": op,
+                "id": object.__getattribute__(self, "_handle_id"),
+            },
+        ))
+        self._detach_after_remote_close()
         return released
 
     def _retain_arg_lease(self, lease):
@@ -1307,8 +1324,19 @@ class _ManifestStreamIterator:
     def __next__(self):
         item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
         if item.get("done") is True:
+            self._proxy._detach_after_remote_close()
             raise StopIteration
         return item.get("value")
+
+    def close(self):
+        return self._proxy.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
+        return False
 
 
 def set_task_timeout(ms):

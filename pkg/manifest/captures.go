@@ -1689,18 +1689,23 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   }) : null;
   var localIndex = 0;
   var remoteClosed = false;
-  var closeRemote = function() {
-    if (remoteClosed) return;
+  var markRemoteClosed = function() {
+    if (remoteClosed) return false;
     remoteClosed = true;
-    try {
-      if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-        omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
-      }
-    } catch (_e) {}
     if (stream) stream.__omnivm_closed__ = true;
     if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function' && stream) {
       globalThis.__omnivm_handle_finalizers.unregister(stream);
     }
+    return true;
+  };
+  var cancelRemote = function() {
+    if (remoteClosed) return false;
+    if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
+    omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
+    return markRemoteClosed();
+  };
+  var closeRemote = function() {
+    markRemoteClosed();
   };
   var nextValue = function() {
     if (localValues) {
@@ -1728,8 +1733,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     kind: value.kind,
     cancel: function(reason) {
       this.cancelled = reason || true;
-      closeRemote();
-      return true;
+      return cancelRemote();
     },
     toArray: function() {
       var out = [];
@@ -1782,13 +1786,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       return new streamModule.Readable(opts);
     },
     __omnivm_close: function() {
-      if (this.__omnivm_closed__ === true) return false;
-      var released = globalThis.__omnivm_release_handle_explicit(value.id);
-      this.__omnivm_closed__ = true;
-      if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
-        globalThis.__omnivm_handle_finalizers.unregister(this);
-      }
-      return released;
+      return cancelRemote();
     },
     [Symbol.iterator]: function() {
       var owner = this;
@@ -2511,30 +2509,34 @@ class OmniVMStreamProxy
     ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id)) unless id.nil?
   end
 
+  def __omnivm_mark_closed
+    return false if @__omnivm_closed == true
+    @__omnivm_closed = true
+    begin
+      ObjectSpace.undefine_finalizer(self)
+    rescue
+    end
+    true
+  end
+
   def each
     return enum_for(:each) unless block_given?
     loop do
       raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
       env = JSON.parse(raw)
       item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
-      break if item.nil? || item["done"] == true
+      if item.nil? || item["done"] == true
+        __omnivm_mark_closed
+        break
+      end
       yield __omnivm_stream_chunk_value(item["value"])
     end
   end
 
   def close
     return false if @__omnivm_closed == true
-    begin
-      OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
-      @__omnivm_closed = true
-      begin
-        ObjectSpace.undefine_finalizer(self)
-      rescue
-      end
-      true
-    rescue
-      false
-    end
+    OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
+    __omnivm_mark_closed
   end
 
   def omnivm_close

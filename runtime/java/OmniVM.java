@@ -952,7 +952,7 @@ public class OmniVM {
             return proxy.releaseExplicit();
         }
         if (target instanceof StreamProxy proxy) {
-            return proxy.releaseExplicit();
+            return proxy.cancel();
         }
         if (target instanceof AutoCloseable closeable) {
             try {
@@ -1924,6 +1924,14 @@ public class OmniVM {
             return Boolean.TRUE.equals(result);
         }
 
+        private boolean markReleased() {
+            if (!released.compareAndSet(false, true)) {
+                return false;
+            }
+            cleanable.clean();
+            return true;
+        }
+
         public boolean cancel() {
             Object id = value.get("id");
             if (id == null || released.get()) {
@@ -1980,10 +1988,12 @@ public class OmniVM {
                     Object result = bridgeManifestOp("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
                     if (!(result instanceof Map<?, ?> item)) {
                         done = true;
+                        markReleased();
                         return;
                     }
                     if (Boolean.TRUE.equals(item.get("done"))) {
                         done = true;
+                        markReleased();
                         return;
                     }
                     next = materializeStreamChunk(((Map<String, Object>) item).get("value"));

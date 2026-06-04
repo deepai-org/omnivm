@@ -735,6 +735,77 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "release failed"):
             proxy.close()
 
+    def test_manifest_stream_proxy_close_cancels_stream_once(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 45,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "stream_cancel":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_finalizer":
+                raise AssertionError("stream close should cancel, not release as finalizer")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        assert omnivm_mod.proxy_close(proxy) is True
+        assert omnivm_mod.proxy_close(proxy) is False
+        assert requests[-1] == {"op": "stream_cancel", "id": 45}
+        assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
+
+    def test_manifest_stream_iterator_detaches_on_eof(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        request = object()
+        requests = []
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 46,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                return envelope({"done": True})
+            if request_payload.get("op") in {"stream_cancel", "handle_release_finalizer"}:
+                raise AssertionError("exhausted stream should not need later cleanup")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows", args=(request,))
+
+        iterator = iter(proxy)
+        with self.assertRaises(StopIteration):
+            next(iterator)
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
+        assert proxy.close() is False
+
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

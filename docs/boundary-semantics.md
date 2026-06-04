@@ -298,8 +298,10 @@ Stream handles release automatically when `stream_next` reaches end-of-stream.
 Read errors from owner stream protocols are terminal for the stream lease: the
 owner is closed/released before the error crosses the boundary, and later use
 of the same stream handle reports the closed-stream lifecycle diagnostic.
-Targets may cancel abandoned streams; request/manifest scope cleanup and proxy
-finalizers remain fallback release paths.
+Targets may cancel abandoned streams; collision-safe stream close helpers route
+to `stream_cancel` so partial consumption closes the owner deterministically.
+Request/manifest scope cleanup and proxy finalizers remain fallback release
+paths.
 
 HTTP bodies, request/response streams, file handles, sockets, and
 generator-like library objects use this same lazy stream contract. They must
@@ -565,9 +567,10 @@ Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
 `proxy.omnivm_close`.
-The close helpers are idempotent. In runtimes with explicit finalizer
-unregistration, close also detaches the fallback GC cleanup hook after the
-release succeeds.
+The close helpers are idempotent. For ordinary handle proxies they release the
+proxy lease; for stream/channel proxies they cancel the lazy stream owner. In
+runtimes with explicit finalizer unregistration, close also detaches the
+fallback GC cleanup hook after the release or cancellation succeeds.
 Java manifest proxies provide the static helpers
 `OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
 `OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,
