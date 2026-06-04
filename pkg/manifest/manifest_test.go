@@ -6140,7 +6140,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "return symbolDisposeResult === undefined ? true : symbolDisposeResult") ||
 		!contains(code, "return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
-		!contains(code, "var result = close();\n          return result === undefined ? true : result") {
+		!contains(code, "var result = close.call(value);\n          return result === undefined ? true : result") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
 	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value && value.__omnivm_close") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
@@ -6232,6 +6232,9 @@ var falseResult = omnivm.proxyClose({close: function() { falseClosed++; return f
 if (falseResult !== false || falseClosed !== 1) throw new Error("false close result was not preserved");
 var textResult = omnivm.proxyClose({close: function() { return "closed"; }});
 if (textResult !== "closed") throw new Error("string close result was not preserved: " + textResult);
+var receiverTarget = {closed: false, close: function() { this.closed = true; return this === receiverTarget; }};
+var receiverResult = omnivm.proxyClose(receiverTarget);
+if (receiverResult !== true || receiverTarget.closed !== true) throw new Error("close receiver was not preserved");
 var undefinedResult = omnivm.proxyClose({close: function() {}});
 if (undefinedResult !== true) throw new Error("undefined close result should normalize to true");
 var getterCount = 0;
