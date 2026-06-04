@@ -57,6 +57,7 @@ static omni_buf_get_fn g_buf_get = nullptr;
 static omni_buf_set_fn g_buf_set = nullptr;
 static omni_buf_release_fn g_buf_release = nullptr;
 static omni_buf_free_fn g_buf_free = nullptr;
+static omni_buf_status_fn g_buf_status = nullptr;
 
 struct OmniExternalBufferLease {
     char* name;
@@ -1561,6 +1562,43 @@ static void OmnivmReleaseBufferCallback(const v8::FunctionCallbackInfo<v8::Value
     }
 }
 
+// omnivm.bufferStatus(name) -> object
+static void OmnivmBufferStatusCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    if (info.Length() < 1 || !info[0]->IsString()) {
+        isolate->ThrowException(v8::Exception::TypeError(
+            v8::String::NewFromUtf8Literal(isolate, "bufferStatus requires a string name")));
+        return;
+    }
+    if (!g_buf_status) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "buffer status bridge not initialized")));
+        return;
+    }
+
+    v8::String::Utf8Value name(isolate, info[0]);
+    char* raw = nullptr;
+    {
+        v8::Unlocker unlocker(isolate);
+        raw = g_buf_status(*name);
+    }
+    if (!raw) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "bufferStatus failed")));
+        return;
+    }
+    v8::Local<v8::String> json = v8::String::NewFromUtf8(isolate, raw).ToLocalChecked();
+    if (g_bridge_free) g_bridge_free(raw);
+    v8::Local<v8::Value> parsed;
+    if (!v8::JSON::Parse(context, json).ToLocal(&parsed)) {
+        isolate->ThrowException(v8::Exception::Error(
+            v8::String::NewFromUtf8Literal(isolate, "bufferStatus returned invalid JSON")));
+        return;
+    }
+    info.GetReturnValue().Set(parsed);
+}
+
 // Convert a JS value to omni_value_t
 static omni_value_t js_to_omni_value(v8::Isolate* isolate,
                                       v8::Local<v8::Context> context,
@@ -1825,6 +1863,12 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       globalThis.__omnivm_BufferOwner.prototype.close = function() {
         return this.release();
       };
+      globalThis.__omnivm_BufferOwner.prototype.status = function() {
+        if (typeof globalThis.omnivm.bufferStatus !== 'function') {
+          throw new Error("buffer status bridge not initialized");
+        }
+        return globalThis.omnivm.bufferStatus(this.name);
+      };
       if (typeof Symbol !== 'undefined' && Symbol.dispose) {
         globalThis.__omnivm_BufferOwner.prototype[Symbol.dispose] = function() {
           return this.release();
@@ -1926,6 +1970,10 @@ static void register_omnivm_bridge(v8::Isolate* isolate,
     omnivm_obj->Set(context,
         v8::String::NewFromUtf8Literal(isolate, "releaseBuffer"),
         v8::FunctionTemplate::New(isolate, OmnivmReleaseBufferCallback)
+            ->GetFunction(context).ToLocalChecked()).Check();
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "bufferStatus"),
+        v8::FunctionTemplate::New(isolate, OmnivmBufferStatusCallback)
             ->GetFunction(context).ToLocalChecked()).Check();
 
     global->Set(context,
@@ -2350,11 +2398,13 @@ void omnivm_v8_set_bridge_callback(omnivm_bridge_call_fn call_fn,
 void omnivm_v8_set_buf_callbacks(omni_buf_get_fn get_fn,
                                   omni_buf_set_fn set_fn,
                                   omni_buf_release_fn release_fn,
-                                  omni_buf_free_fn free_fn) {
+                                  omni_buf_free_fn free_fn,
+                                  omni_buf_status_fn status_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
     g_buf_free = free_fn;
+    g_buf_status = status_fn;
 }
 
 void omnivm_v8_set_typed_callback(omni_call_typed_fn fn) {

@@ -98,10 +98,12 @@ typedef int (*omni_buf_get_fn)(const char* name, omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
 typedef int (*omni_buf_free_fn)(const char* name);
+typedef char* (*omni_buf_status_fn)(const char* name);
 void omnivm_v8_set_buf_callbacks(omni_buf_get_fn get_fn,
                                   omni_buf_set_fn set_fn,
                                   omni_buf_release_fn release_fn,
-                                  omni_buf_free_fn free_fn);
+                                  omni_buf_free_fn free_fn,
+                                  omni_buf_status_fn status_fn);
 
 typedef struct {
     void* data;

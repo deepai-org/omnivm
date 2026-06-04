@@ -64,25 +64,25 @@ func (e *Engine) SetupBridge(callPtr, freePtr uintptr) {
 }
 
 // SetupBufCallbacks installs buffer bridge callbacks on runtimes that support them.
-func (e *Engine) SetupBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
+func (e *Engine) SetupBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr uintptr) {
 	if rt, ok := e.Runtimes["python"]; ok {
 		if pyRT, ok := rt.(*python.Runtime); ok {
-			pyRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr)
+			pyRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr)
 		}
 	}
 	if rt, ok := e.Runtimes["javascript"]; ok {
 		if jsRT, ok := rt.(*javascript.Runtime); ok {
-			jsRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr)
+			jsRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr)
 		}
 	}
 	if rt, ok := e.Runtimes["ruby"]; ok {
 		if rbRT, ok := rt.(*ruby.Runtime); ok {
-			rbRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr)
+			rbRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr)
 		}
 	}
 	if rt, ok := e.Runtimes["java"]; ok {
 		if jvmRT, ok := rt.(*jvm.Runtime); ok {
-			jvmRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr)
+			jvmRT.SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr)
 		}
 	}
 }

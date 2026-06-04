@@ -31,10 +31,12 @@ typedef int (*jvm_buf_get_fn)(const char* name, jvm_omni_buffer_t* out);
 typedef int (*jvm_buf_set_fn)(const char* name, jvm_omni_buffer_t buf);
 typedef void (*jvm_buf_release_fn)(const char* name);
 typedef int (*jvm_buf_free_fn)(const char* name);
+typedef char* (*jvm_buf_status_fn)(const char* name);
 static jvm_buf_get_fn g_buf_get = NULL;
 static jvm_buf_set_fn g_buf_set = NULL;
 static jvm_buf_release_fn g_buf_release = NULL;
 static jvm_buf_free_fn g_buf_free = NULL;
+static jvm_buf_status_fn g_buf_status = NULL;
 
 // Typed value bridge
 typedef struct {
@@ -317,6 +319,33 @@ static void JNICALL Java_omnivm_OmniVM_nativeReleaseBuffer(JNIEnv* env, jclass c
         }
     }
     (*env)->ReleaseStringUTFChars(env, j_name, name);
+}
+
+// JNI: OmniVM.nativeBufferStatus(name) -> JSON string
+static jstring JNICALL Java_omnivm_OmniVM_nativeBufferStatus(JNIEnv* env, jclass cls,
+                                                               jstring j_name) {
+    if (!g_buf_status) {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        if (exc) {
+            (*env)->ThrowNew(env, exc, "OmniVM.bufferStatus bridge not initialized");
+        }
+        return NULL;
+    }
+    const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
+    char* raw = g_buf_status(name);
+    (*env)->ReleaseStringUTFChars(env, j_name, name);
+    if (!raw) {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        if (exc) {
+            (*env)->ThrowNew(env, exc, "OmniVM.bufferStatus failed");
+        }
+        return NULL;
+    }
+    jstring out = (*env)->NewStringUTF(env, raw);
+    if (g_bridge_free) {
+        g_bridge_free(raw);
+    }
+    return out;
 }
 
 // Convert a Java Object to jvm_omni_value_t
@@ -1000,11 +1029,13 @@ static void omnivm_jvm_release_exported_buffer(void* raw) {
 static void omnivm_jvm_set_buf_callbacks(jvm_buf_get_fn get_fn,
                                           jvm_buf_set_fn set_fn,
                                           jvm_buf_release_fn release_fn,
-                                          jvm_buf_free_fn free_fn) {
+                                          jvm_buf_free_fn free_fn,
+                                          jvm_buf_status_fn status_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
     g_buf_free = free_fn;
+    g_buf_status = status_fn;
 }
 
 static void omnivm_jvm_set_typed_callback(jvm_call_typed_fn fn) {
@@ -1091,10 +1122,12 @@ static int omnivm_jvm_init(const char* classpath) {
              (void*)Java_omnivm_OmniVM_nativeSetBuffer},
             {"nativeReleaseBuffer", "(Ljava/lang/String;)V",
              (void*)Java_omnivm_OmniVM_nativeReleaseBuffer},
+            {"nativeBufferStatus", "(Ljava/lang/String;)Ljava/lang/String;",
+             (void*)Java_omnivm_OmniVM_nativeBufferStatus},
             {"nativeCallTyped", "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;",
              (void*)Java_omnivm_OmniVM_nativeCallTyped},
         };
-        (*env_ptr)->RegisterNatives(env_ptr, omnivm_class, methods, 6);
+        (*env_ptr)->RegisterNatives(env_ptr, omnivm_class, methods, 7);
         (*env_ptr)->ExceptionClear(env_ptr);
         (*env_ptr)->DeleteLocalRef(env_ptr, omnivm_class);
     } else {
@@ -1532,12 +1565,13 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr uintptr) {
 	C.omnivm_jvm_set_buf_callbacks(
 		C.jvm_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.jvm_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.jvm_buf_release_fn(unsafe.Pointer(releasePtr)),
 		C.jvm_buf_free_fn(unsafe.Pointer(freePtr)),
+		C.jvm_buf_status_fn(unsafe.Pointer(statusPtr)),
 	)
 }
 

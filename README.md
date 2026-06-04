@@ -340,7 +340,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.get_buffer(name)` | Return a borrowed shared buffer view, or `None` when the name is absent |
 | `omnivm.set_buffer(name, data, dtype=0)` | Publish bytes-like data into the shared buffer store |
 | `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |
-| `omnivm.buffer_owner(name[, data], dtype=0)` | Context object for named buffer ownership; publishes optional data on entry and releases the owner name on exit |
+| `omnivm.buffer_owner(name[, data], dtype=0)` | Context object for named buffer ownership; publishes optional data on entry, exposes `owner.status()`, and releases the owner name on exit |
 | `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`state`, `lease_state`, and `memory_space`, currently `host` for zero-copy buffers) |
 
 Guard failures such as `assert_owner_dispatch_supported()`,
@@ -533,7 +533,8 @@ also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
 `omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor those symbols
 through descriptor-safe lookup. Embedded JavaScript also provides
 `omnivm.bufferOwner(name[, data], dtype[, callback])` for scoped named-buffer
-ownership with idempotent release.
+ownership with idempotent release. Owners expose `status()`, and
+`omnivm.bufferStatus(name)` returns the same per-name lifecycle diagnostics.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
@@ -548,7 +549,8 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_close`; generated snippets also provide
 `OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)`. Embedded Ruby also
 provides `OmniVM.buffer_owner(name[, data], dtype: 0)` for scoped named-buffer
-ownership with idempotent release.
+ownership with idempotent release. Owners expose `status()`, and
+`OmniVM.buffer_status(name)` returns the same per-name lifecycle diagnostics.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
@@ -558,7 +560,9 @@ Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 get/set/call/length, iteration, membership, and proxy-release operations when a
 remote key collides with Java proxy methods or `Map` methods. Java also
 provides `OmniVM.bufferOwner(name[, data], dtype)` as an `AutoCloseable`
-named-buffer owner for try-with-resources cleanup.
+named-buffer owner for try-with-resources cleanup. `OmniVM.bufferStatus(name)`
+and `owner.status()` return JSON lifecycle diagnostics from the shared buffer
+store.
 
 ```bash
 # Run a single manifest

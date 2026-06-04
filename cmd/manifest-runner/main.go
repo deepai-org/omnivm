@@ -27,6 +27,7 @@ extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
 extern int OmniBufFree(char* name);
+extern char* OmniBufStatus(char* name);
 
 // Typed value bridge
 typedef struct {
@@ -47,6 +48,7 @@ static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
 static void* get_omni_buf_free_ptr()    { return (void*)OmniBufFree; }
+static void* get_omni_buf_status_ptr()  { return (void*)OmniBufStatus; }
 static void* get_omni_call_typed_ptr()  { return (void*)OmniCallTyped; }
 static long get_thread_id() { return syscall(SYS_gettid); }
 */
@@ -355,10 +357,11 @@ func main() {
 	bufSetPtr := uintptr(C.get_omni_buf_set_ptr())
 	bufReleasePtr := uintptr(C.get_omni_buf_release_ptr())
 	bufFreePtr := uintptr(C.get_omni_buf_free_ptr())
-	pyRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr)
-	jsRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr)
-	rbRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr)
-	jvmRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr)
+	bufStatusPtr := uintptr(C.get_omni_buf_status_ptr())
+	pyRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr, bufStatusPtr)
+	jsRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr, bufStatusPtr)
+	rbRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr, bufStatusPtr)
+	jvmRuntime.SetBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr, bufStatusPtr)
 
 	// Install typed call bridge
 	typedPtr := uintptr(C.get_omni_call_typed_ptr())

@@ -769,12 +769,15 @@ Python borrowed `memoryview` cleanup follows the same finalizer rule:
 `get_buffer()` views call `OmniBufRelease` quietly when collected, while
 `omnivm.release_buffer(name)` remains the user-initiated diagnostic path.
 `omnivm.buffer_owner(name[, data], dtype=0)` wraps that owner path in a context
-object: optional data is published on entry, `release_buffer(name)` runs on
-exit, and release failures keep the native-memory diagnostic while preserving
-any exception raised by the body.
+object: optional data is published on entry, `owner.status()` delegates to
+`buffer_status(name)`, `release_buffer(name)` runs on exit, and release failures
+keep the native-memory diagnostic while preserving any exception raised by the
+body.
 Embedded Ruby mirrors the scoped owner shape with
 `OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
 it returns an entered owner whose `release`/`close` method is idempotent.
+`owner.status()` and `OmniVM.buffer_status(name)` expose the same per-name
+lifecycle diagnostics as a Ruby hash.
 When block cleanup fails during a body exception, the body exception is
 preserved and the cleanup error is retained on `@omnivm_cleanup_errors`;
 `OmniVM.cleanup_errors(error)` returns a copy of that cleanup-error list.
@@ -782,6 +785,8 @@ Embedded JavaScript provides the same owner shape as
 `omnivm.bufferOwner(name[, data], dtype[, callback])`; without a callback it
 returns an entered owner with idempotent `release()`/`close()`, and with a
 callback it releases after the callback while returning the callback result.
+`owner.status()` and `omnivm.bufferStatus(name)` expose the same per-name
+lifecycle diagnostics as a JavaScript object.
 Native `Promise` results release after settlement without probing arbitrary
 then-like fields. If cleanup fails during a callback exception, the callback
 exception is preserved and cleanup errors are retained on
@@ -790,9 +795,11 @@ that cleanup-error list.
 Java mirrors the same owner boundary as an `AutoCloseable`:
 `OmniVM.bufferOwner(name)`, `OmniVM.bufferOwner(name, data)`, and
 `OmniVM.bufferOwner(name, data, dtype)` return an entered owner for
-try-with-resources cleanup. `release()` returns `true` only for the first owner
-release, `close()` delegates to `release()`, and release failures propagate
-through the same user-initiated `OmniVM.releaseBuffer(name)` diagnostic path.
+try-with-resources cleanup. `owner.status()` and `OmniVM.bufferStatus(name)`
+return JSON lifecycle diagnostics from the same shared store. `release()`
+returns `true` only for the first owner release, `close()` delegates to
+`release()`, and release failures propagate through the same user-initiated
+`OmniVM.releaseBuffer(name)` diagnostic path.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel
 backlog and the overflow spill map, while `deferred_release_overflow_names`

@@ -226,6 +226,14 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 	)
 }
 
+// SetBufCallbacks is a no-op in the lightweight local JVM shim. The Docker
+// runtime swaps in scripts/jvm_docker.go, which provides the real buffer bridge.
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr uintptr) {}
+
+// SetTypedCallback is a no-op in the lightweight local JVM shim. The Docker
+// runtime swaps in scripts/jvm_docker.go, which provides the real typed bridge.
+func (r *Runtime) SetTypedCallback(ptr uintptr) {}
+
 // InterruptFuncPtr returns nil in the lightweight local JVM shim. The Docker
 // runtime swaps in scripts/jvm_docker.go, which provides the real JNI hook.
 func (r *Runtime) InterruptFuncPtr() unsafe.Pointer {

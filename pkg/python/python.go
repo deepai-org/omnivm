@@ -41,20 +41,24 @@ typedef int (*omni_buf_get_fn)(const char* name, py_omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, py_omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
 typedef int (*omni_buf_free_fn)(const char* name);
+typedef char* (*omni_buf_status_fn)(const char* name);
 
 static omni_buf_get_fn g_buf_get = NULL;
 static omni_buf_set_fn g_buf_set = NULL;
 static omni_buf_release_fn g_buf_release = NULL;
 static omni_buf_free_fn g_buf_free = NULL;
+static omni_buf_status_fn g_buf_status = NULL;
 
 static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
                                          omni_buf_set_fn set_fn,
                                          omni_buf_release_fn release_fn,
-                                         omni_buf_free_fn free_fn) {
+                                         omni_buf_free_fn free_fn,
+                                         omni_buf_status_fn status_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
     g_buf_free = free_fn;
+    g_buf_status = status_fn;
 }
 
 static const char* omnivm_py_runtime_error_code =
@@ -3644,6 +3648,28 @@ static PyObject* py_omnivm_release_buffer(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+// py_omnivm_buffer_status(name) -> JSON string
+static PyObject* py_omnivm_buffer_status(PyObject* self, PyObject* args) {
+    const char* name;
+    if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
+
+    if (!g_buf_status) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm buffer status bridge not initialized");
+        return NULL;
+    }
+
+    char* raw = g_buf_status(name);
+    if (!raw) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm.buffer_status failed");
+        return NULL;
+    }
+    PyObject* out = PyUnicode_FromString(raw);
+    if (g_bridge_free) {
+        g_bridge_free(raw);
+    }
+    return out;
+}
+
 // Method table for the omnivm module
 // py_omnivm_call_typed(runtime, func_name, *args) -> value
 // Calls a function in another runtime using typed values (no JSON).
@@ -3713,6 +3739,7 @@ static PyMethodDef omnivm_methods[] = {
 	{"get_buffer", py_omnivm_get_buffer, METH_VARARGS, "Get a shared buffer: omnivm.get_buffer(name) -> buffer|None"},
     {"set_buffer", py_omnivm_set_buffer, METH_VARARGS, "Set a shared buffer: omnivm.set_buffer(name, data, dtype=0)"},
     {"release_buffer", py_omnivm_release_buffer, METH_VARARGS, "Release a shared buffer: omnivm.release_buffer(name)"},
+    {"buffer_status", py_omnivm_buffer_status, METH_VARARGS, "Return shared-buffer lifecycle diagnostics as JSON: omnivm.buffer_status(name)"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -4523,12 +4550,13 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr uintptr) {
 	C.omnivm_py_set_buf_callbacks(
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
 		C.omni_buf_free_fn(unsafe.Pointer(freePtr)),
+		C.omni_buf_status_fn(unsafe.Pointer(statusPtr)),
 	)
 }
 

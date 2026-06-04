@@ -120,6 +120,13 @@ public class OmniVM {
     }
 
     /**
+     * Return JSON lifecycle diagnostics for a named shared buffer.
+     */
+    public static String bufferStatus(String name) {
+        return nativeBufferStatus(name);
+    }
+
+    /**
      * Create an AutoCloseable owner for a named buffer that is already published.
      */
     public static BufferOwner bufferOwner(String name) {
@@ -163,6 +170,10 @@ public class OmniVM {
             return released;
         }
 
+        public String status() {
+            return bufferStatus(name);
+        }
+
         public BufferOwner enter() {
             if (entered) {
                 return this;
@@ -198,6 +209,7 @@ public class OmniVM {
     public static native int nativeGetBufferDtype(String name);
     public static native void nativeSetBuffer(String name, byte[] data, int dtype);
     public static native void nativeReleaseBuffer(String name);
+    public static native String nativeBufferStatus(String name);
     public static native Object nativeCallTyped(String runtime, String funcName, Object[] args);
 
     public static class RuntimeError extends RuntimeException {

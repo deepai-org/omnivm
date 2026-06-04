@@ -6703,6 +6703,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"bodyError.omnivmCleanupErrors",
 		"Object.defineProperty(omnivm, \"cleanupErrors\"",
 		"return Array.isArray(errors) ? errors.slice() : []",
+		"globalThis.__omnivm_BufferOwner.prototype.status = function()",
+		"return omnivm.bufferStatus(this.name)",
 		"return finishSuccess(result)",
 	} {
 		if !contains(code, want) {
@@ -6826,11 +6828,17 @@ globalThis.omnivm = {
   },
   releaseBuffer: function(name) {
     this.events.push(["release", name]);
+  },
+  bufferStatus: function(name) {
+    this.events.push(["status", name]);
+    return {name: name, lease_state: "owned"};
   }
 };
 ` + code + `
 var owner = omnivm.bufferOwner("payload", "abc", 7);
 if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7]])) throw new Error("set event mismatch: " + JSON.stringify(omnivm.events));
+var ownerStatus = owner.status();
+if (ownerStatus.name !== "payload" || ownerStatus.lease_state !== "owned") throw new Error("owner status mismatch: " + JSON.stringify(ownerStatus));
 if (owner.release() !== true) throw new Error("release did not return true");
 if (owner.release() !== false) throw new Error("second release was not idempotent");
 if (owner.released !== true) throw new Error("released flag mismatch");
@@ -9445,6 +9453,10 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"return false if @released",
 		"OmniVM.release_buffer(@name)",
 		"alias close release",
+		"def status",
+		"OmniVM.buffer_status(@name)",
+		"def self.buffer_status(name)",
+		"JSON.parse(buffer_status_json(name.to_s))",
 		"def self.cleanup_errors(error)",
 		"errors.is_a?(Array) ? errors.dup : []",
 		"result = yield owner",
@@ -9459,8 +9471,14 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_free(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_release(lease->name)") {
 		t.Fatalf("V8 bridge should use g_buf_free for releaseBuffer and g_buf_release for external buffer cleanup")
 	}
+	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_status(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], `"bufferStatus"`) {
+		t.Fatalf("V8 bridge should expose bufferStatus through the shared buffer status callback")
+	}
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
 		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
+	}
+	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_status(name)") || !contains(files["../../scripts/jvm_docker.go"], "nativeBufferStatus") {
+		t.Fatalf("JVM bridge should expose bufferStatus through the shared buffer status callback")
 	}
 	javaRuntime, err := os.ReadFile("../../runtime/java/OmniVM.java")
 	if err != nil {
@@ -9475,6 +9493,10 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"setBuffer(name, data, dtype)",
 		"if (released) {\n                return false;",
 		"releaseBuffer(name)",
+		"public static String bufferStatus(String name)",
+		"public String status()",
+		"return bufferStatus(name)",
+		"public static native String nativeBufferStatus(String name)",
 		"released = true",
 		"public void close() {\n            release();",
 		"if (target instanceof BufferOwner owner) {\n            return owner.release();",

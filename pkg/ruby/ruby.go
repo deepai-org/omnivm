@@ -39,11 +39,13 @@ typedef int (*omni_buf_get_fn)(const char* name, rb_omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, rb_omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
 typedef int (*omni_buf_free_fn)(const char* name);
+typedef char* (*omni_buf_status_fn)(const char* name);
 
 static omni_buf_get_fn g_buf_get = NULL;
 static omni_buf_set_fn g_buf_set = NULL;
 static omni_buf_release_fn g_buf_release = NULL;
 static omni_buf_free_fn g_buf_free = NULL;
+static omni_buf_status_fn g_buf_status = NULL;
 
 // Typed value bridge
 typedef struct {
@@ -154,11 +156,13 @@ static void rb_free_omni_value(rb_omni_value_t* val) {
 static void omnivm_ruby_set_buf_callbacks(omni_buf_get_fn get_fn,
                                            omni_buf_set_fn set_fn,
                                            omni_buf_release_fn release_fn,
-                                           omni_buf_free_fn free_fn) {
+                                           omni_buf_free_fn free_fn,
+                                           omni_buf_status_fn status_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
     g_buf_free = free_fn;
+    g_buf_status = status_fn;
 }
 
 static int ruby_initialized = 0;
@@ -1436,6 +1440,12 @@ static int omnivm_ruby_init(void) {
         "    def released?\n"
         "      @released == true\n"
         "    end\n"
+        "    def status\n"
+        "      OmniVM.buffer_status(@name)\n"
+        "    end\n"
+        "  end\n"
+        "  def self.buffer_status(name)\n"
+        "    JSON.parse(buffer_status_json(name.to_s))\n"
         "  end\n"
         "  def self.__record_cleanup_error(error, cleanup_error)\n"
         "    errors = error.instance_variable_get(:@omnivm_cleanup_errors)\n"
@@ -2206,6 +2216,25 @@ static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
     return Qnil;
 }
 
+// OmniVM.buffer_status_json(name) -> String
+static VALUE rb_omnivm_buffer_status_json(VALUE self, VALUE rb_name) {
+    if (!g_buf_status) {
+        rb_raise(rb_eRuntimeError, "omnivm buffer status bridge not initialized");
+        return Qnil;
+    }
+    const char* name = StringValueCStr(rb_name);
+    char* raw = g_buf_status(name);
+    if (!raw) {
+        rb_raise(rb_eRuntimeError, "OmniVM.buffer_status failed");
+        return Qnil;
+    }
+    VALUE out = rb_str_new_cstr(raw);
+    if (g_bridge_free) {
+        g_bridge_free(raw);
+    }
+    return out;
+}
+
 // Register OmniVM module with call() and buffer methods
 static void omnivm_ruby_register_bridge() {
     VALUE mod = rb_define_module("OmniVM");
@@ -2214,6 +2243,7 @@ static void omnivm_ruby_register_bridge() {
     rb_define_module_function(mod, "get_buffer", rb_omnivm_get_buffer, 1);
     rb_define_module_function(mod, "set_buffer", rb_omnivm_set_buffer, -1);
     rb_define_module_function(mod, "release_buffer", rb_omnivm_release_buffer, 1);
+    rb_define_module_function(mod, "buffer_status_json", rb_omnivm_buffer_status_json, 1);
 }
 
 static void omnivm_ruby_set_bridge_callback(omni_call_fn call_fn, omni_free_fn free_fn) {
@@ -2429,12 +2459,13 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr, statusPtr uintptr) {
 	C.omnivm_ruby_set_buf_callbacks(
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
 		C.omni_buf_free_fn(unsafe.Pointer(freePtr)),
+		C.omni_buf_status_fn(unsafe.Pointer(statusPtr)),
 	)
 }
 

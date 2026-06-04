@@ -235,11 +235,17 @@ module OmniVM
     def release_buffer(name)
       @events << [:release, name]
     end
+    def buffer_status_json(name)
+      @events << [:status, name]
+      JSON.generate({"name" => name, "lease_state" => "owned"})
+    end
   end
 end
 
 owner = OmniVM.buffer_owner(:payload, "abc", dtype: 7)
 raise "set event mismatch #{OmniVM.events.inspect}" unless OmniVM.events == [[:set, "payload", "abc", 7]]
+owner_status = owner.status
+raise "status mismatch #{owner_status.inspect}" unless owner_status["name"] == "payload" && owner_status["lease_state"] == "owned"
 raise "release did not return true" unless owner.release == true
 raise "second release was not idempotent" unless owner.release == false
 raise "released? mismatch" unless owner.released? == true

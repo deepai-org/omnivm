@@ -57,6 +57,8 @@ typedef struct {
 typedef int (*omni_buf_get_fn)(const char* name, omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
+typedef int (*omni_buf_free_fn)(const char* name);
+typedef char* (*omni_buf_status_fn)(const char* name);
 
 // ---- Arrow C Data Interface (bulk data plane) ----
 //

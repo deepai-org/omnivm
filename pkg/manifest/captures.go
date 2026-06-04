@@ -1659,6 +1659,12 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     globalThis.__omnivm_BufferOwner.prototype.close = function() {
       return this.release();
     };
+    globalThis.__omnivm_BufferOwner.prototype.status = function() {
+      if (typeof omnivm.bufferStatus !== 'function') {
+        throw new Error("buffer status bridge not initialized");
+      }
+      return omnivm.bufferStatus(this.name);
+    };
     if (typeof Symbol !== 'undefined' && Symbol.dispose) {
       globalThis.__omnivm_BufferOwner.prototype[Symbol.dispose] = function() {
         return this.release();
