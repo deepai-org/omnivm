@@ -1829,6 +1829,7 @@ def _buffer_status_summary(status):
     fields = []
     for key in (
         "state",
+        "lease_state",
         "live",
         "released",
         "active_borrows",

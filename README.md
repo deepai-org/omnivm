@@ -337,7 +337,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.get_buffer(name)` | Return a borrowed shared buffer view, or `None` when the name is absent |
 | `omnivm.set_buffer(name, data, dtype=0)` | Publish bytes-like data into the shared buffer store |
 | `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |
-| `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`live`, `released`, `released_detached`, or `missing`) |
+| `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`state` plus `lease_state`: `owned`, `borrowed`, `detached`, `released`, or `missing`) |
 
 Guard failures such as `assert_owner_dispatch_supported()`,
 `assert_owner_dispatch_target_supported()`, `assert_host_thread()`, and

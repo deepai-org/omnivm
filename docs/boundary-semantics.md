@@ -642,10 +642,10 @@ finalizer arrives, and those unnamed leases remain visible through
 Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
 use `ReleaseWithError()`.
-Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports
-`live` with dtype/format/ownership metadata, `released` after explicit release,
-`released_detached` while active borrowed views keep released memory alive, and
-`missing` for names that are not known to the store. Released buffer tombstones
+Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports a
+coarse `state` (`live`, `released`, `released_detached`, or `missing`) plus a
+direct `lease_state` (`owned`, `borrowed`, `detached`, `released`, or
+`missing`) with dtype/format/ownership metadata. Released buffer tombstones
 retain their dtype/format/read-only/ownership metadata until the bounded
 tombstone entry expires or the name is reused. Python
 `omnivm.release_buffer(name)` failures include the same status fields when the

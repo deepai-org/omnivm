@@ -476,7 +476,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := s.Status("payload")
-	if !status.Live || status.State != "live" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if !status.Live || status.State != "live" || status.LeaseState != "owned" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad live buffer status: %+v", status)
 	}
 
@@ -485,20 +485,20 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 4 {
+	if status.LeaseState != "borrowed" || status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 4 {
 		t.Fatalf("bad borrowed live status: %+v", status)
 	}
 	if err := s.Free("payload"); err != nil {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.State != "released_detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if status.State != "released_detached" || status.LeaseState != "detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad released detached status: %+v", status)
 	}
 
 	lease.Release()
 	status = s.Status("payload")
-	if status.State != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if status.State != "released" || status.LeaseState != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad released status after borrow release: %+v", status)
 	}
 	if _, err := s.Get("payload"); err == nil || !strings.Contains(err.Error(), "was released") {
@@ -508,8 +508,11 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 	if _, err := s.SetWithDtype("payload", []byte{9}, DtypeU8); err != nil {
 		t.Fatal(err)
 	}
-	if status = s.Status("payload"); status.State != "live" || status.Released {
+	if status = s.Status("payload"); status.State != "live" || status.LeaseState != "owned" || status.Released {
 		t.Fatalf("reused buffer name did not clear release status: %+v", status)
+	}
+	if status = s.Status("missing"); status.State != "missing" || status.LeaseState != "missing" || status.Live || status.Released {
+		t.Fatalf("bad missing buffer status: %+v", status)
 	}
 }
 

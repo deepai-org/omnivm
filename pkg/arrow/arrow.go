@@ -102,6 +102,7 @@ type Stats struct {
 type BufferStatus struct {
 	Name                string `json:"name"`
 	State               string `json:"state"`
+	LeaseState          string `json:"lease_state,omitempty"`
 	Live                bool   `json:"live"`
 	Released            bool   `json:"released"`
 	Len                 int64  `json:"len,omitempty"`
@@ -405,14 +406,15 @@ func (s *SharedStore) Free(name string) error {
 	refs := buf.refs
 	release := buf.release
 	releasedStatus := BufferStatus{
-		Name:      name,
-		State:     "released",
-		Released:  true,
-		Len:       int64(buf.Len),
-		Dtype:     buf.Dtype,
-		Format:    buf.Format,
-		ReadOnly:  buf.ReadOnly,
-		Ownership: nonEmptyString(buf.Ownership, "omnivm"),
+		Name:       name,
+		State:      "released",
+		LeaseState: "released",
+		Released:   true,
+		Len:        int64(buf.Len),
+		Dtype:      buf.Dtype,
+		Format:     buf.Format,
+		ReadOnly:   buf.ReadOnly,
+		Ownership:  nonEmptyString(buf.Ownership, "omnivm"),
 	}
 	buf.mu.Unlock()
 
@@ -441,16 +443,18 @@ func (s *SharedStore) Status(name string) BufferStatus {
 	if buf, ok := s.buffers[name]; ok {
 		buf.mu.Lock()
 		status := BufferStatus{
-			Name:      name,
-			State:     "live",
-			Live:      true,
-			Len:       int64(buf.Len),
-			Dtype:     buf.Dtype,
-			Format:    buf.Format,
-			ReadOnly:  buf.ReadOnly,
-			Ownership: nonEmptyString(buf.Ownership, "omnivm"),
+			Name:       name,
+			State:      "live",
+			LeaseState: "owned",
+			Live:       true,
+			Len:        int64(buf.Len),
+			Dtype:      buf.Dtype,
+			Format:     buf.Format,
+			ReadOnly:   buf.ReadOnly,
+			Ownership:  nonEmptyString(buf.Ownership, "omnivm"),
 		}
 		if buf.refs > 1 {
+			status.LeaseState = "borrowed"
 			status.ActiveBorrows = int64(buf.refs - 1)
 			status.ActiveBorrowedBytes = status.ActiveBorrows * int64(buf.Len)
 		}
@@ -458,11 +462,12 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		return status
 	}
 
-	status := BufferStatus{Name: name, State: "missing"}
+	status := BufferStatus{Name: name, State: "missing", LeaseState: "missing"}
 	if _, ok := s.released[name]; ok {
 		status = s.releasedMeta[name]
 		status.Name = name
 		status.State = "released"
+		status.LeaseState = nonEmptyString(status.LeaseState, "released")
 		status.Released = true
 	}
 	for buf := range s.detached {
@@ -481,6 +486,7 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			continue
 		}
 		status.State = "released_detached"
+		status.LeaseState = "detached"
 		status.Released = true
 		if status.Len == 0 {
 			status.Len = size
