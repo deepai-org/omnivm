@@ -5511,6 +5511,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, `if (remoteFirst === true)`) {
 		t.Fatalf("JS proxyGet should force remote-first lookup for descriptor/identity-name collisions, got %q", code)
 	}
+	if !contains(code, `if (typeof prop === 'string' && !isProxyBookkeepingProp(prop)`) ||
+		!contains(code, `if (bridge({op: "handle_contains", value: prop})) return bridge({op: "handle_get", key: prop});`) ||
+		!contains(code, `return Reflect.get(obj, prop, receiver);`) {
+		t.Fatalf("JS materializer should prefer remote fields before inherited identity properties such as constructor/toString/valueOf, got %q", code)
+	}
 	if !contains(code, `prop === globalThis.__omnivm_proxy_length_symbol`) {
 		t.Fatalf("JS materializer should expose collection length through a collision-free symbol, got %q", code)
 	}

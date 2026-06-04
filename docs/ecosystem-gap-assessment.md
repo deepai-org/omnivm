@@ -349,7 +349,10 @@ after JS/Ruby/Java mutations.
 
 Remaining targets are library objects where collision names carry special host
 semantics: additional framework model fields and proxy metadata beyond the
-common ORM shapes already covered.
+common ORM shapes already covered. JavaScript proxy field access also checks the
+remote owner before inherited identity properties such as `constructor`,
+`toString`, and `valueOf`, so real owner fields with those names do not silently
+fall back to `Object`/`Function` prototype behavior.
 Non-callable `then` data fields are covered so `Promise.resolve(proxy)` resolves
 to the proxy instead of treating the field as a thenable. Callable `then` fields are
 deliberately hidden from natural `.then` access so promise resolution cannot
