@@ -1361,7 +1361,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         }
       }
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-        if (!isIndexedDescriptor()) {
+        if (!(descriptor && descriptor.__omnivm_table__ === true)) {
           try {
             if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});
           } catch (_fieldLengthError) {}
@@ -1403,6 +1403,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
             } catch (_ignored) {}
           }
         }
+      }
+      if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        try {
+          if (bridge({op: "handle_contains", value: prop})) return bridge({op: "handle_get", key: prop});
+        } catch (_inheritedFieldError) {}
       }
       return Reflect.get(obj, prop, receiver);
     },

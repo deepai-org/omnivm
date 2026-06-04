@@ -2932,9 +2932,9 @@ func runtimeRefPropertyExpr(ref RuntimeRef, key string) (string, bool, error) {
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
 		if pythonHTTPMessageAttributeKey(key) {
-			return fmt.Sprintf("(lambda __o, __k: (getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))))(%s, %s)", pythonHTTPMessageProbeExpr("__o"), base, keyLit), true, nil
+			return fmt.Sprintf("(lambda __o, __k: (getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else (None if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else __o[__k]))))))(%s, %s)", pythonHTTPMessageProbeExpr("__o"), base, keyLit), true, nil
 		}
-		return fmt.Sprintf("(lambda __o, __k: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k]))))(%s, %s)", base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else (None if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else __o[__k])))))(%s, %s)", base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)) ? __o[__k] : (__o.respond_to?(__k) ? __o.public_send(__k) : __o[__k]); end)", base, keyLit), true, nil
 	case "java":
