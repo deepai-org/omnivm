@@ -116,15 +116,18 @@ func (e *Executor) genericStreamHandle(runtime string, value interface{}) (handl
 		Kind:    streamKindForValue(value),
 		ScopeID: e.currentHandleScope(),
 		Release: func(any) error {
+			var firstErr error
 			if err := closeGenericStreamValue(value); err != nil {
-				return err
+				firstErr = err
 			}
 			e.rememberReleasedStream(id, runtime, streamKindForValue(value))
 			e.forgetReleasedHandle(id, value)
 			if releaser, ok := value.(interface{ Release() error }); ok {
-				return releaser.Release()
+				if err := releaser.Release(); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
-			return nil
+			return firstErr
 		},
 	})
 	if err != nil {

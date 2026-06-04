@@ -40,6 +40,14 @@ func (r *closeTrackingReader) Close() error {
 	return nil
 }
 
+type closeErrorReader struct {
+	*strings.Reader
+}
+
+func (r *closeErrorReader) Close() error {
+	return errors.New("close failed")
+}
+
 type errorAfterChunkReader struct {
 	chunk  string
 	reads  int
@@ -4815,6 +4823,65 @@ func TestHandleCallStreamCancelClosesReader(t *testing.T) {
 	}
 }
 
+func TestHandleCallStreamCancelCloseErrorKeepsLifecycleTombstone(t *testing.T) {
+	e, _ := makeExecutor("javascript")
+	id, err := e.genericStreamHandle("go", &closeErrorReader{Reader: strings.NewReader("reader-body")})
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stream_cancel close error did not fail")
+	} else if !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("stream_cancel close error = %v, want close failure", err)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_next after close failure did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=reader", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_next after close failure missing %q: %s", want, got)
+			}
+		}
+	}
+}
+
+func TestRuntimeRefStreamCancelCloseErrorKeepsLifecycleTombstone(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "javascript", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+	ready := false
+	mocks["javascript"].pumpFn = func() { ready = true }
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "stream_close_ready"):
+			return pkg.Result{Value: ready}
+		case strings.Contains(code, "stream_close_error"):
+			return pkg.Result{Value: "cancel failed"}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("runtime ref stream_cancel close error did not fail")
+	} else if !strings.Contains(err.Error(), "cancel failed") {
+		t.Fatalf("runtime ref stream_cancel close error = %v, want cancel failure", err)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale runtime ref stream_next after close failure did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=javascript", "kind=stream", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale runtime ref stream_next after close failure missing %q: %s", want, got)
+			}
+		}
+	}
+}
+
 func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	cases := []struct {
 		ref  RuntimeRef
@@ -4855,6 +4922,41 @@ func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
 		if !contains(code, want) {
 			t.Fatalf("runtimeRefJSStreamCloseStepCode missing %q in %q", want, code)
 		}
+	}
+}
+
+func TestRuntimeRefJSStreamCancelWaitsForClosePromise(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "javascript", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+	ready := false
+	mocks["javascript"].pumpFn = func() { ready = true }
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "stream_close_ready"):
+			return pkg.Result{Value: ready}
+		case strings.Contains(code, "stream_close_error"):
+			return pkg.Result{Value: nil}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	result, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("HandleCall stream_cancel JS runtime ref: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Value != true {
+		t.Fatalf("stream_cancel JS runtime ref envelope = %#v, want true", env)
+	}
+	if mocks["javascript"].pumpCalls == 0 {
+		t.Fatal("stream_cancel did not pump while waiting for JS close")
+	}
+	if len(mocks["javascript"].execCalls) != 1 || !strings.Contains(mocks["javascript"].execCalls[0], "return __omnivm_close_step") {
+		t.Fatalf("JS close execute calls = %#v, want awaited close step", mocks["javascript"].execCalls)
 	}
 }
 

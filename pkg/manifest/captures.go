@@ -2993,12 +2993,10 @@ func (e *Executor) runtimeRefStreamHandle(ref RuntimeRef) (handles.ID, error) {
 		Kind:    "stream",
 		ScopeID: e.currentHandleScope(),
 		Release: func(any) error {
-			if err := e.closeRuntimeRefStream(id, ref); err != nil {
-				return err
-			}
+			err := e.closeRuntimeRefStream(id, ref)
 			e.rememberReleasedStream(id, ref.Runtime, "stream")
 			e.forgetReleasedHandle(id, ref)
-			return nil
+			return err
 		},
 	})
 	if err != nil {
