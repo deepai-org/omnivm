@@ -933,6 +933,53 @@ class TestCallWithMockLib(unittest.TestCase):
         assert {"op": "handle_adopt", "id": 7} in requests
         assert {"op": "handle_release_explicit", "id": 7} in requests
 
+    def test_manifest_proxy_method_keeps_returned_complex_arg_refs_until_proxy_close(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        request = object()
+        requests = []
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+
+        def descriptor(handle_id):
+            return {
+                "__omnivm_resource__": True,
+                "id": handle_id,
+                "runtime": "python",
+                "kind": "request",
+                "transfer": True,
+            }
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "root":
+                return envelope(descriptor(7))
+            if request_payload.get("op") == "handle_get" and request_payload.get("key") == "child":
+                return envelope({"__omnivm_callable__": True, "key": "child"})
+            if request_payload.get("op") == "handle_call" and request_payload.get("key") == "child":
+                return envelope(descriptor(8))
+            if request_payload.get("op") in {"handle_adopt", "handle_release_explicit"}:
+                return envelope(True, "bool")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        root = omnivm_mod.manifest_call("demo", "root")
+        child = root.child(request)
+
+        refs = getattr(builtins, "__omnivm_arg_refs", {})
+        assert request in refs.values()
+        child.close()
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
+        method_call = next(req for req in requests if req.get("op") == "handle_call")
+        assert method_call["args"][0]["var"].startswith("__omnivm_arg_refs['py_")
+        assert {"op": "handle_adopt", "id": 8} in requests
+        assert {"op": "handle_release_explicit", "id": 8} in requests
+        root.close()
+
     def test_manifest_call_wraps_complex_return_proxy(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

@@ -1318,7 +1318,12 @@ class ManifestProxy:
                     str(name): self._arg(value, retained_keys)
                     for name, value in kwargs.items()
                 }
-            return self._op(payload)
+            result = self._op(payload)
+            if retained_keys:
+                lease = _RetainedManifestArgLease(retained_keys)
+                if _attach_retained_arg_lease(result, lease) > 0:
+                    retained_keys = []
+            return result
         finally:
             _release_manifest_args(retained_keys)
 
