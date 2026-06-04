@@ -723,6 +723,11 @@ last displaced borrow is released.
 Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
 use `ReleaseWithError()`.
+Native buffer callback failures clear pointer/length/type/read-only outputs
+before returning an error code, so a stale pointer from an earlier successful
+borrow cannot be reused after a name is missing or released. Native buffer
+imports with negative lengths, overflowing lengths, or nil data for non-empty
+buffers are rejected before they can register a lease.
 Python borrowed `memoryview` cleanup follows the same finalizer rule:
 `get_buffer()` views call `OmniBufRelease` quietly when collected, while
 `omnivm.release_buffer(name)` remains the user-initiated diagnostic path.

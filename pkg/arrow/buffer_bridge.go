@@ -47,6 +47,10 @@ type BufferInfo struct {
 // BorrowCBuffer fills an omni_buffer_t from a named buffer and returns a lease
 // that must be released when the adapter is finished with the pointer.
 func (s *SharedStore) BorrowCBuffer(name string, out *C.omni_buffer_t) (*BorrowedBuffer, bool) {
+	clearCBuffer(out)
+	if out == nil {
+		return nil, false
+	}
 	lease, err := s.Borrow(name)
 	if err != nil {
 		return nil, false
@@ -247,6 +251,10 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 // New adapters should use BorrowCBuffer so the pointer has an explicit lease.
 // Returns true on success, false if buffer not found.
 func (s *SharedStore) ToCBuffer(name string, out *C.omni_buffer_t) bool {
+	clearCBuffer(out)
+	if out == nil {
+		return false
+	}
 	s.mu.RLock()
 	buf, ok := s.buffers[name]
 	s.mu.RUnlock()
@@ -276,6 +284,9 @@ func (s *SharedStore) ToCBuffer(name string, out *C.omni_buffer_t) bool {
 
 // FromCBuffer creates or replaces a named buffer from an omni_buffer_t.
 func (s *SharedStore) FromCBuffer(name string, in *C.omni_buffer_t) {
+	if in == nil || in.len < 0 || int64(int(in.len)) != int64(in.len) || (in.len > 0 && in.data == nil) {
+		return
+	}
 	size := int(in.len)
 	data := make([]byte, size)
 	if size > 0 && in.data != nil {
@@ -285,6 +296,17 @@ func (s *SharedStore) FromCBuffer(name string, in *C.omni_buffer_t) {
 		Dtype:    int32(in.dtype),
 		ReadOnly: in.read_only != 0,
 	})
+}
+
+func clearCBuffer(out *C.omni_buffer_t) {
+	if out == nil {
+		return
+	}
+	out.data = nil
+	out.len = 0
+	out.dtype = 0
+	out.owned = 0
+	out.read_only = 0
 }
 
 func validateBufferMetadata(name string, meta BufferMetadata) error {

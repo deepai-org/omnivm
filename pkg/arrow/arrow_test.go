@@ -930,12 +930,65 @@ func TestBufGetSet(t *testing.T) {
 
 func TestBufGetNotFound(t *testing.T) {
 	globalStore = NewSharedStore()
-	var dataOut unsafe.Pointer
-	var lenOut int64
-	var dtypeOut int32
-	rc := BufGet("nonexistent", &dataOut, &lenOut, &dtypeOut, nil)
+	data := []byte{1}
+	dataOut := unsafe.Pointer(&data[0])
+	lenOut := int64(99)
+	dtypeOut := int32(DtypeF64)
+	readOnlyOut := true
+	rc := BufGet("nonexistent", &dataOut, &lenOut, &dtypeOut, &readOnlyOut)
 	if rc != -1 {
 		t.Fatal("expected -1 for nonexistent buffer")
+	}
+	if dataOut != nil || lenOut != 0 || dtypeOut != 0 || readOnlyOut {
+		t.Fatalf("failed BufGet left stale outputs: data=%v len=%d dtype=%d readOnly=%v", dataOut, lenOut, dtypeOut, readOnlyOut)
+	}
+}
+
+func TestBufGetReleasedNameClearsOutputs(t *testing.T) {
+	store := NewSharedStore()
+	globalStore = store
+	data := []byte{1, 2, 3}
+	if _, err := store.SetWithDtype("released", data, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Free("released"); err != nil {
+		t.Fatal(err)
+	}
+
+	dataOut := unsafe.Pointer(&data[0])
+	lenOut := int64(len(data))
+	dtypeOut := int32(DtypeBytes)
+	readOnlyOut := true
+	rc := BufGet("released", &dataOut, &lenOut, &dtypeOut, &readOnlyOut)
+	if rc != -1 {
+		t.Fatalf("BufGet released name rc=%d, want -1", rc)
+	}
+	if dataOut != nil || lenOut != 0 || dtypeOut != 0 || readOnlyOut {
+		t.Fatalf("released BufGet left stale outputs: data=%v len=%d dtype=%d readOnly=%v", dataOut, lenOut, dtypeOut, readOnlyOut)
+	}
+}
+
+func TestBufGetRejectsNilRequiredOutputs(t *testing.T) {
+	globalStore = NewSharedStore()
+	if rc := BufGet("missing", nil, nil, nil, nil); rc != -1 {
+		t.Fatalf("BufGet nil outputs rc=%d, want -1", rc)
+	}
+}
+
+func TestBufSetRejectsInvalidNativeInputs(t *testing.T) {
+	store := NewSharedStore()
+	globalStore = store
+	if rc := BufSet("negative", nil, -1, DtypeBytes, false); rc != -1 {
+		t.Fatalf("BufSet negative length rc=%d, want -1", rc)
+	}
+	if rc := BufSet("nil-data", nil, 4, DtypeBytes, false); rc != -1 {
+		t.Fatalf("BufSet nil non-empty data rc=%d, want -1", rc)
+	}
+	if status := store.Status("negative"); status.State != "missing" {
+		t.Fatalf("invalid BufSet registered negative buffer: %+v", status)
+	}
+	if status := store.Status("nil-data"); status.State != "missing" {
+		t.Fatalf("invalid BufSet registered nil-data buffer: %+v", status)
 	}
 }
 
