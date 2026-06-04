@@ -16063,6 +16063,123 @@ def test_manifest_zod_schema_capture_uses_proxy_not_json():
         raise AssertionError(f"Zod schema method calls were not recorded as proxy calls: {handles}")
 
 
+def test_manifest_zod_parsed_collision_fields_stay_natural():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "javascript",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "(() => { "
+                    "const { z } = require('zod'); "
+                    "const schema = z.object({"
+                    "items: z.string(), "
+                    "keys: z.string(), "
+                    "count: z.number(), "
+                    "then: z.string(), "
+                    "length: z.number(), "
+                    "get: z.string(), "
+                    "close: z.string()"
+                    "}); "
+                    "globalThis.zod_collision_payload = schema.parse({"
+                    "items: 'field-items', "
+                    "keys: 'field-keys', "
+                    "count: 7, "
+                    "then: 'field-then', "
+                    "length: 12, "
+                    "get: 'field-get', "
+                    "close: 'field-close'"
+                    "});"
+                    "})();"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"zod_collision_payload": "zod_collision_payload"},
+                "code": (
+                    "assert zod_collision_payload.items == 'field-items', zod_collision_payload.items\n"
+                    "assert zod_collision_payload.keys == 'field-keys', zod_collision_payload.keys\n"
+                    "assert zod_collision_payload.count == 7, zod_collision_payload.count\n"
+                    "assert zod_collision_payload.then == 'field-then', zod_collision_payload.then\n"
+                    "assert zod_collision_payload.length == 12, zod_collision_payload.length\n"
+                    "assert zod_collision_payload.get == 'field-get', zod_collision_payload.get\n"
+                    "assert zod_collision_payload.close == 'field-close', zod_collision_payload.close\n"
+                    "zod_collision_payload.items = 'python-items'\n"
+                    "zod_collision_payload.then = 'python-then'\n"
+                    "zod_collision_payload.length = 13"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"zod_collision_payload": "zod_collision_payload"},
+                "code": (
+                    "raise \"bad Zod items #{zod_collision_payload.items}\" unless zod_collision_payload.items == 'python-items'; "
+                    "raise \"bad Zod then #{zod_collision_payload.then}\" unless zod_collision_payload.then == 'python-then'; "
+                    "raise \"bad Zod length #{zod_collision_payload.length}\" unless zod_collision_payload.length == 13; "
+                    "zod_collision_payload.keys = 'ruby-keys'; "
+                    "zod_collision_payload.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"zod_collision_payload": "zod_collision_payload"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"zod_collision_payload\"); "
+                    "if (!\"python-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"Zod Java items field lost: \" + payload.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(payload.get(\"keys\")))) throw new RuntimeException(\"Zod Java keys field lost: \" + payload.get(\"keys\")); "
+                    "if (!\"field-get\".equals(String.valueOf(payload.get(\"get\")))) throw new RuntimeException(\"Zod Java get field lost: \" + payload.get(\"get\")); "
+                    "if (!\"ruby-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"Zod Java close field lost: \" + payload.get(\"close\")); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"Zod count set failed\"); "
+                    "if (!payload.set(\"get\", \"java-get\")) throw new RuntimeException(\"Zod get set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const payload = globalThis.zod_collision_payload; "
+                    "if (payload.items !== 'python-items') throw new Error('Zod items field lost: ' + payload.items); "
+                    "if (payload.keys !== 'ruby-keys') throw new Error('Zod keys field lost: ' + payload.keys); "
+                    "if (payload.count !== 42) throw new Error('Zod count field lost: ' + payload.count); "
+                    "if (payload.then !== 'python-then') throw new Error('Zod then field lost: ' + payload.then); "
+                    "if (payload.length !== 13) throw new Error('Zod length field lost: ' + payload.length); "
+                    "if (payload.get !== 'java-get') throw new Error('Zod get field lost: ' + payload.get); "
+                    "if (payload.close !== 'ruby-close') throw new Error('Zod close field lost: ' + payload.close);"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"Zod parsed collision object did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Zod parsed collision object used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Zod parsed collision object crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"Zod parsed collision object crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) < before_accesses.get("property", 0) + 1:
+        raise AssertionError(f"Zod parsed collision object did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) < before_accesses.get("mutation", 0) + 1:
+        raise AssertionError(f"Zod parsed collision object did not record mutation access: before={before_handles}, after={handles}")
+
+
 def test_validation_error_fidelity_popular_libraries():
     cases = [
         (
@@ -25240,6 +25357,7 @@ def main():
         check("Manifest JS Map capture uses proxy not JSON", test_manifest_js_map_capture_uses_proxy_not_json)
         check("Manifest JS Set capture uses proxy not stream", test_manifest_js_set_capture_uses_proxy_not_stream)
         check("Manifest Zod schema capture uses proxy not JSON", test_manifest_zod_schema_capture_uses_proxy_not_json)
+        check("Manifest Zod parsed collision fields stay natural", test_manifest_zod_parsed_collision_fields_stay_natural)
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
