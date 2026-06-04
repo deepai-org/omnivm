@@ -23,6 +23,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * OmniVM - Cross-runtime bridge for Java.
@@ -2171,6 +2173,10 @@ public class OmniVM {
                 out.add(item);
             }
             return out;
+        }
+
+        public Stream<Object> stream() {
+            return StreamSupport.stream(spliterator(), false).onClose(this::close);
         }
 
         @Override
