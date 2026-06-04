@@ -6992,7 +6992,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "ParsedRuntimeError envelope = parseStructuredErrorEnvelope") ||
 		!contains(code, `parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime)`) ||
 		!contains(code, `parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback))`) ||
-		!contains(code, `parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"))`) ||
+		!contains(code, `parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"), parsed.runtime)`) ||
+		!contains(code, `parsed.causeChain = parseCauseChain(text, parsed.runtime)`) ||
 		!contains(code, "String wrappedBoundary = parsed.boundaryPath") ||
 		!contains(code, `wrappedBoundary = String.join(" > ", boundaryParts)`) ||
 		!contains(code, "envelope = parseStructuredErrorEnvelope(text, parsed.runtime, wrappedBoundary)") {
@@ -7020,12 +7021,16 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`Object rawDetails = jsonValue(envelope, "details_json", "detailsJson")`,
 		"private static Object detailsObjectValue(Map<?, ?> source)",
 		"private static List<String> stringListJsonValue",
-		"private static List<Map<String, Object>> causeChainJsonValue",
+		"private static List<Map<String, Object>> causeChainJsonValue(Object value, String fallbackRuntime)",
 		`private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey)`,
 		`entry.put("traceback", traceback)`,
 		`entry.put("stack_frames", stackFrames)`,
+		`String defaultRuntime = safeString(fallbackRuntime)`,
+		`String runtime = nonEmptyJsonString(cause.get("runtime"), defaultRuntime)`,
 		`String originRuntime = jsonString(jsonValue(cause, "origin_runtime", "originRuntime"))`,
 		`originRuntime = runtime`,
+		`entry.put("runtime", runtime)`,
+		`entry.put("origin_runtime", runtime)`,
 		`String boundaryPath = jsonString(jsonValue(cause, "boundary_path", "boundaryPath"))`,
 		`String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"))`,
 		`Object causeDetails = detailsObjectValue(cause)`,

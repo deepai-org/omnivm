@@ -305,7 +305,7 @@ public class OmniVM {
         parseMessageAndType(text, parsed);
         parsed.originRuntime = parsed.runtime;
         parsed.stackFrames = parseStackFrames(parsed.traceback);
-        parsed.causeChain = parseCauseChain(text);
+        parsed.causeChain = parseCauseChain(text, parsed.runtime);
         if (parsed.message.isEmpty()) {
             parsed.message = text;
         }
@@ -344,7 +344,7 @@ public class OmniVM {
         parsed.originalErrorHandle = emptyToNull(jsonString(jsonValue(envelope, "original_error_handle", "originalErrorHandle")));
         parsed.detailsJson = detailsJsonValue(envelope);
         parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback));
-        parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"));
+        parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"), parsed.runtime);
         return parsed;
     }
 
@@ -408,11 +408,12 @@ public class OmniVM {
         return out;
     }
 
-    private static List<Map<String, Object>> causeChainJsonValue(Object value) {
+    private static List<Map<String, Object>> causeChainJsonValue(Object value, String fallbackRuntime) {
         List<Map<String, Object>> out = new ArrayList<>();
         if (!(value instanceof Iterable<?> iterable)) {
             return out;
         }
+        String defaultRuntime = safeString(fallbackRuntime);
         for (Object item : iterable) {
             if (!(item instanceof Map<?, ?> cause)) {
                 continue;
@@ -428,7 +429,7 @@ public class OmniVM {
             if (!stackFrames.isEmpty()) {
                 entry.put("stack_frames", stackFrames);
             }
-            String runtime = jsonString(cause.get("runtime"));
+            String runtime = nonEmptyJsonString(cause.get("runtime"), defaultRuntime);
             if (!runtime.isEmpty()) {
                 entry.put("runtime", runtime);
             }
@@ -577,8 +578,9 @@ public class OmniVM {
             || isOriginalErrorHandleLine(line);
     }
 
-    private static List<Map<String, Object>> parseCauseChain(String text) {
+    private static List<Map<String, Object>> parseCauseChain(String text, String fallbackRuntime) {
         List<Map<String, Object>> causes = new ArrayList<>();
+        String runtime = safeString(fallbackRuntime);
         String[] lines = text.split("\\R");
         for (String rawLine : lines) {
             String line = rawLine.trim();
@@ -599,6 +601,10 @@ public class OmniVM {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("type", type);
             entry.put("message", message);
+            if (!runtime.isEmpty()) {
+                entry.put("runtime", runtime);
+                entry.put("origin_runtime", runtime);
+            }
             causes.add(Collections.unmodifiableMap(entry));
         }
         return causes;
