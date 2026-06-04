@@ -7477,11 +7477,16 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "java.lang.reflect.Modifier.isPublic(method.getModifiers())") ||
 		!contains(code, "Object result = invokeProxyMethod(method, target);") ||
 		!contains(code, "return !(result instanceof Boolean) || Boolean.TRUE.equals(result);") ||
-		!contains(code, "if (!Boolean.TRUE.equals(result)) {\n                return false;\n            }") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
 		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")
+	}
+	if !contains(code, "if (id == null || !released.compareAndSet(false, true))") ||
+		!contains(code, "released.set(false);\n                throw err;") ||
+		!contains(code, "if (!Boolean.TRUE.equals(result)) {\n                released.set(false);\n                return false;\n            }") ||
+		strings.Index(code, "if (id == null || !released.compareAndSet(false, true))") > strings.Index(code, `bridgeManifestOp("{\"op\":\"handle_release_explicit\"`) {
+		t.Fatalf("Java explicit close should claim released before owner calls and reset it only after failed calls")
 	}
 	if !contains(code, `catch (RuntimeException err)`) ||
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||

@@ -1666,14 +1666,18 @@ public class OmniVM {
 
         public boolean releaseExplicit() {
             Object id = value.get("id");
-            if (id == null || released.get()) {
+            if (id == null || !released.compareAndSet(false, true)) {
                 return false;
             }
-            Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            Object result;
+            try {
+                result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            } catch (RuntimeException | Error err) {
+                released.set(false);
+                throw err;
+            }
             if (!Boolean.TRUE.equals(result)) {
-                return false;
-            }
-            if (!released.compareAndSet(false, true)) {
+                released.set(false);
                 return false;
             }
             cleanable.clean();
@@ -2152,14 +2156,18 @@ public class OmniVM {
 
         public boolean releaseExplicit() {
             Object id = value.get("id");
-            if (id == null || released.get()) {
+            if (id == null || !released.compareAndSet(false, true)) {
                 return false;
             }
-            Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            Object result;
+            try {
+                result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            } catch (RuntimeException | Error err) {
+                released.set(false);
+                throw err;
+            }
             if (!Boolean.TRUE.equals(result)) {
-                return false;
-            }
-            if (!released.compareAndSet(false, true)) {
+                released.set(false);
                 return false;
             }
             if (cleanable != null) {
@@ -2183,14 +2191,18 @@ public class OmniVM {
                 return markReleased();
             }
             Object id = value.get("id");
-            if (id == null || released.get()) {
+            if (id == null || !released.compareAndSet(false, true)) {
                 return false;
             }
-            Object result = bridgeManifestOp("{\"op\":\"stream_cancel\",\"id\":" + jsonScalar(id) + "}");
+            Object result;
+            try {
+                result = bridgeManifestOp("{\"op\":\"stream_cancel\",\"id\":" + jsonScalar(id) + "}");
+            } catch (RuntimeException | Error err) {
+                released.set(false);
+                throw err;
+            }
             if (!Boolean.TRUE.equals(result)) {
-                return false;
-            }
-            if (!released.compareAndSet(false, true)) {
+                released.set(false);
                 return false;
             }
             cleanable.clean();
