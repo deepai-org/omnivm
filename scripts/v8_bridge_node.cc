@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -78,6 +80,158 @@ static std::string omnivm_v8_value_string(v8::Isolate* isolate,
     return (*utf8 && **utf8) ? std::string(*utf8) : "";
 }
 
+static std::string omnivm_v8_json_escape_string(const std::string& value) {
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(value.size() + 2);
+    out += '"';
+    for (unsigned char ch : value) {
+        switch (ch) {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\b':
+            out += "\\b";
+            break;
+        case '\f':
+            out += "\\f";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                out += "\\u00";
+                out += hex[(ch >> 4) & 0x0f];
+                out += hex[ch & 0x0f];
+            } else {
+                out += static_cast<char>(ch);
+            }
+        }
+    }
+    out += '"';
+    return out;
+}
+
+static bool omnivm_v8_json_fallback_stringify(v8::Isolate* isolate,
+                                              v8::Local<v8::Context> context,
+                                              v8::Local<v8::Value> value,
+                                              std::string& out,
+                                              std::vector<v8::Local<v8::Object>>& seen,
+                                              int depth) {
+    if (value.IsEmpty() || value->IsNull() || value->IsUndefined()) {
+        out += "null";
+        return true;
+    }
+    if (value->IsBoolean()) {
+        out += value->BooleanValue(isolate) ? "true" : "false";
+        return true;
+    }
+    if (value->IsNumber()) {
+        double number = value.As<v8::Number>()->Value();
+        if (!std::isfinite(number)) {
+            out += "null";
+            return true;
+        }
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.17g", number);
+        out += buf;
+        return true;
+    }
+    if (value->IsBigInt()) {
+        out += omnivm_v8_json_escape_string(omnivm_v8_value_string(isolate, context, value));
+        return true;
+    }
+    if (value->IsString()) {
+        out += omnivm_v8_json_escape_string(omnivm_v8_value_string(isolate, context, value));
+        return true;
+    }
+    if (value->IsSymbol() || value->IsFunction()) {
+        return false;
+    }
+    if (!value->IsObject()) {
+        out += "null";
+        return true;
+    }
+    if (depth >= 16) {
+        out += omnivm_v8_json_escape_string("[MaxDepth]");
+        return true;
+    }
+
+    v8::Local<v8::Object> object = value.As<v8::Object>();
+    for (v8::Local<v8::Object> prior : seen) {
+        if (prior->StrictEquals(object)) {
+            out += omnivm_v8_json_escape_string("[Circular]");
+            return true;
+        }
+    }
+    seen.push_back(object);
+
+    if (value->IsArray()) {
+        v8::Local<v8::Array> array = value.As<v8::Array>();
+        out += '[';
+        uint32_t length = array->Length();
+        for (uint32_t i = 0; i < length; ++i) {
+            if (i > 0) {
+                out += ',';
+            }
+            v8::Local<v8::Value> item;
+            std::string item_json;
+            if (!array->Get(context, i).ToLocal(&item) ||
+                !omnivm_v8_json_fallback_stringify(isolate, context, item, item_json, seen, depth + 1)) {
+                out += "null";
+            } else {
+                out += item_json;
+            }
+        }
+        out += ']';
+        seen.pop_back();
+        return true;
+    }
+
+    v8::Local<v8::Array> names;
+    if (!object->GetOwnPropertyNames(context).ToLocal(&names)) {
+        seen.pop_back();
+        return false;
+    }
+    out += '{';
+    bool first = true;
+    for (uint32_t i = 0; i < names->Length(); ++i) {
+        v8::Local<v8::Value> key_value;
+        if (!names->Get(context, i).ToLocal(&key_value) || key_value.IsEmpty()) {
+            continue;
+        }
+        v8::Local<v8::Value> item;
+        if (!object->Get(context, key_value).ToLocal(&item) || item.IsEmpty() ||
+            item->IsUndefined() || item->IsFunction() || item->IsSymbol()) {
+            continue;
+        }
+        std::string item_json;
+        if (!omnivm_v8_json_fallback_stringify(isolate, context, item, item_json, seen, depth + 1)) {
+            continue;
+        }
+        if (!first) {
+            out += ',';
+        }
+        first = false;
+        out += omnivm_v8_json_escape_string(omnivm_v8_value_string(isolate, context, key_value));
+        out += ':';
+        out += item_json;
+    }
+    out += '}';
+    seen.pop_back();
+    return true;
+}
+
 static std::string omnivm_v8_get_string_prop(v8::Isolate* isolate,
                                              v8::Local<v8::Context> context,
                                              v8::Local<v8::Object> object,
@@ -100,11 +254,22 @@ static std::string omnivm_v8_json_stringify(v8::Isolate* isolate,
         return "";
     }
     v8::Local<v8::String> json;
-    if (!v8::JSON::Stringify(context, value).ToLocal(&json) || json.IsEmpty()) {
-        return "";
+    {
+        v8::TryCatch try_catch(isolate);
+        if (v8::JSON::Stringify(context, value).ToLocal(&json) && !json.IsEmpty()) {
+            v8::String::Utf8Value text(isolate, json);
+            return (*text && **text) ? std::string(*text) : "";
+        }
+        if (try_catch.HasTerminated()) {
+            return "";
+        }
     }
-    v8::String::Utf8Value text(isolate, json);
-    return (*text && **text) ? std::string(*text) : "";
+    std::string fallback;
+    std::vector<v8::Local<v8::Object>> seen;
+    if (omnivm_v8_json_fallback_stringify(isolate, context, value, fallback, seen, 0)) {
+        return fallback;
+    }
+    return "";
 }
 
 static std::string omnivm_v8_json_stringify_prop(v8::Isolate* isolate,
