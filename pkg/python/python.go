@@ -343,6 +343,29 @@ static const char* omnivm_py_proxy_close_code_for_test(void) {
 }
 
 static const char* omnivm_py_pymode_status_helpers_code =
+"def affinity_status():\n"
+"    status_info = status()\n"
+"    thread_info = status_info.get('thread_affinity') if isinstance(status_info, dict) else {}\n"
+"    if not isinstance(thread_info, dict):\n"
+"        thread_info = {}\n"
+"    host_tid = thread_info.get('host_thread_id') or status_info.get('golden_thread_id') or 0\n"
+"    __threading = __import__('threading')\n"
+"    current_tid = __threading.get_native_id()\n"
+"    info = {'host_thread_id': host_tid, 'current_thread_id': current_tid, 'on_host_thread': current_tid == host_tid, 'thread_name': __threading.current_thread().name}\n"
+"    try:\n"
+"        __asyncio = __import__('asyncio')\n"
+"        loop = __asyncio.get_running_loop()\n"
+"    except __import__('builtins').RuntimeError:\n"
+"        info['asyncio'] = {'running': False, 'loop_id': None, 'closed': None}\n"
+"    else:\n"
+"        info['asyncio'] = {'running': True, 'loop_id': id(loop), 'closed': loop.is_closed()}\n"
+"    return info\n"
+"def assert_host_thread(label=''):\n"
+"    info = affinity_status()\n"
+"    if info.get('on_host_thread') is True:\n"
+"        return True\n"
+"    prefix = (str(label) + ': ') if label else ''\n"
+"    raise RuntimeError('%sthread affinity violation: expected OmniVM host thread %s, current thread %s; owner dispatch unsupported' % (prefix, info.get('host_thread_id'), info.get('current_thread_id')), boundary_path='thread_affinity', details={'affinity': info})\n"
 "def owner_dispatch_status():\n"
 "    status_info = status()\n"
 "    info = status_info.get('thread_affinity')\n"
@@ -394,7 +417,7 @@ static const char* omnivm_py_pymode_status_helpers_code =
 "    __all__\n"
 "except NameError:\n"
 "    __all__ = []\n"
-"for __omnivm_name in ('status', 'owner_dispatch_status', 'owner_dispatch_target_status', 'assert_owner_dispatch_supported', 'assert_owner_dispatch_target_supported', 'ruby_threading_status', 'assert_ruby_native_threads_supported'):\n"
+"for __omnivm_name in ('status', 'affinity_status', 'assert_host_thread', 'owner_dispatch_status', 'owner_dispatch_target_status', 'assert_owner_dispatch_supported', 'assert_owner_dispatch_target_supported', 'ruby_threading_status', 'assert_ruby_native_threads_supported'):\n"
 "    if __omnivm_name not in __all__:\n"
 "        __all__.append(__omnivm_name)\n";
 
