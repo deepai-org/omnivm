@@ -1451,6 +1451,18 @@ if (typeof omnivm !== 'undefined' && omnivm) {
           omnivmClose = value && value.__omnivm_close;
         } catch (_omnivmCloseLookupError) {}
         if (typeof omnivmClose === 'function') return omnivmClose.call(value);
+        if (typeof Symbol !== 'undefined') {
+          var symbolDispose = null;
+          try {
+            symbolDispose = Symbol.dispose && value && value[Symbol.dispose];
+          } catch (_symbolDisposeLookupError) {}
+          if (typeof symbolDispose === 'function') return symbolDispose.call(value);
+          var symbolAsyncDispose = null;
+          try {
+            symbolAsyncDispose = Symbol.asyncDispose && value && value[Symbol.asyncDispose];
+          } catch (_symbolAsyncDisposeLookupError) {}
+          if (typeof symbolAsyncDispose === 'function') return symbolAsyncDispose.call(value);
+        }
         var close = globalThis.__omnivm_actual_public_method(value, "close");
         if (close) {
           close();

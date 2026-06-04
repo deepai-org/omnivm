@@ -5778,6 +5778,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
 		!contains(code, "try {\n          omnivmClose = value && value.__omnivm_close;") ||
 		!contains(code, "return omnivmClose.call(value)") ||
+		!contains(code, "symbolDispose = Symbol.dispose && value && value[Symbol.dispose]") ||
+		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose && value && value[Symbol.asyncDispose]") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
