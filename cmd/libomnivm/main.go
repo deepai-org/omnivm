@@ -598,9 +598,27 @@ func OmniWatchdogCapabilities() *C.char {
 
 func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
 	return map[string]interface{}{
-		"mode":                      "diagnostic_only",
-		"host_thread_id":            hostThreadID,
-		"owner_dispatch_supported":  false,
+		"mode":                     "diagnostic_only",
+		"host_thread_id":           hostThreadID,
+		"owner_dispatch_supported": false,
+		"owner_dispatch_targets": map[string]interface{}{
+			"python_asyncio": map[string]interface{}{
+				"supported":  false,
+				"diagnostic": "affinity_status reports the running asyncio loop; callbacks are not migrated back to the owner loop",
+			},
+			"javascript_event_loop": map[string]interface{}{
+				"supported":  false,
+				"diagnostic": "JavaScript timers and promises are cooperatively pumped at host boundaries; callbacks are not routed to an owner event loop",
+			},
+			"java_executor": map[string]interface{}{
+				"supported":  false,
+				"diagnostic": "Java executors remain caller-managed; OmniVM does not resubmit callbacks to the originating Executor",
+			},
+			"ruby_fiber_thread": map[string]interface{}{
+				"supported":  false,
+				"diagnostic": "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported",
+			},
+		},
 		"python_assert_host_thread": true,
 		"python_asyncio_loop":       "observable_when_running",
 		"javascript_event_loop":     "cooperatively_pumped_at_host_boundaries",

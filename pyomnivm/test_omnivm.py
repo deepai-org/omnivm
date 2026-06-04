@@ -939,6 +939,10 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniStatus.return_value = (
             b'{"thread_affinity":{"mode":"diagnostic_only",'
             b'"host_thread_id":12345,"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"python_asyncio":{"supported":false},'
+            b'"javascript_event_loop":{"supported":false},'
+            b'"java_executor":{"supported":false},'
+            b'"ruby_fiber_thread":{"supported":false}},'
             b'"python_assert_host_thread":true}}'
         )
         info = omnivm_mod.owner_dispatch_status()
@@ -946,6 +950,10 @@ class TestCallWithMockLib(unittest.TestCase):
         assert info["host_thread_id"] == 12345
         assert info["owner_dispatch_supported"] is False
         assert info["python_assert_host_thread"] is True
+        assert info["owner_dispatch_targets"]["python_asyncio"]["supported"] is False
+        assert info["owner_dispatch_targets"]["javascript_event_loop"]["supported"] is False
+        assert info["owner_dispatch_targets"]["java_executor"]["supported"] is False
+        assert info["owner_dispatch_targets"]["ruby_fiber_thread"]["supported"] is False
 
     def test_owner_dispatch_status_requires_status_capability(self):
         self.mock_lib.OmniStatus.return_value = b'{"initialized":true}'

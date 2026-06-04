@@ -57,6 +57,22 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 	if status["owner_dispatch_supported"] != false {
 		t.Fatalf("owner dispatch should be reported unsupported: %+v", status)
 	}
+	targets, ok := status["owner_dispatch_targets"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("owner dispatch targets omitted: %+v", status)
+	}
+	for _, key := range []string{"python_asyncio", "javascript_event_loop", "java_executor", "ruby_fiber_thread"} {
+		target, ok := targets[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("owner dispatch target %q omitted: %+v", key, targets)
+		}
+		if target["supported"] != false {
+			t.Fatalf("owner dispatch target %q should report unsupported: %+v", key, target)
+		}
+		if target["diagnostic"] == "" {
+			t.Fatalf("owner dispatch target %q omitted diagnostic: %+v", key, target)
+		}
+	}
 	if status["python_assert_host_thread"] != true {
 		t.Fatalf("Python host-thread assertion capability omitted: %+v", status)
 	}
