@@ -7551,7 +7551,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`out.put("cause_chain", copyJsonValue(causeChain))`,
 		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
 		`parsed.detailsJson = detailsJsonValue(envelope)`,
-		"private static String detailsJsonValue(Map<String, Object> envelope)",
+		"private static String detailsJsonValue(Map<?, ?> envelope)",
 		`Object rawDetails = jsonValue(envelope, "details_json", "detailsJson")`,
 		"private static Object detailsObjectValue(Map<?, ?> source)",
 		"private static List<String> stringListJsonValue",
@@ -7571,6 +7571,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"))`,
 		`Object causeDetails = detailsObjectValue(cause)`,
 		`entry.put("details", causeDetails)`,
+		`String causeDetailsJson = detailsJsonValue(cause)`,
+		`entry.put("details_json", causeDetailsJson)`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)
@@ -7888,6 +7890,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"item['stack_frames'] = list(cause_stack_frames)",
 		"cause_details = details_field(cause)",
 		"item['details'] = cause_details",
+		"cause_details_json = details_json_field(cause)",
+		"item['details_json'] = cause_details_json",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError should preserve nested cause envelope fields, missing %q", want)
@@ -7933,6 +7937,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]`,
 		`cause_details = details_field.call(cause)`,
 		`item[:details] = cause_details unless cause_details.nil?`,
+		`cause_details_json = details_json_field.call(cause)`,
+		`item[:details_json] = cause_details_json unless cause_details_json.nil?`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError should preserve nested cause envelope fields, missing %q", want)

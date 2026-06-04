@@ -408,6 +408,9 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
             cause_details = details_field(cause)
             if cause_details is not None:
                 item["details"] = cause_details
+            cause_details_json = details_json_field(cause)
+            if cause_details_json is not None:
+                item["details_json"] = cause_details_json
             parsed_causes.append(item)
         cause_chain = parsed_causes
     return {

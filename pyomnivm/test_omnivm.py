@@ -179,6 +179,7 @@ class TestRuntimeError(unittest.TestCase):
                 "boundary_path": "call[javascript] > callback[java]",
                 "original_error_handle": "java-error-3",
                 "details": {"code": "E_INNER", "path": ["user", "age"]},
+                "details_json": '{"code":"E_INNER","path":["user","age"]}',
             }
         ]
         assert err.boundary_path == "call[javascript] > callback[python]"
@@ -231,6 +232,7 @@ class TestRuntimeError(unittest.TestCase):
                 "boundary_path": "call[javascript] > callback[java]",
                 "original_error_handle": "java-error-3",
                 "details": {"code": "E_INNER"},
+                "details_json": '{"code":"E_INNER"}',
             }
         ]
 
@@ -263,7 +265,9 @@ class TestRuntimeError(unittest.TestCase):
         assert err.details == {"code": "E_OUTER", "path": ["payload", "age"]}
         assert err.details_json == "{\"code\":\"E_OUTER\",\"path\":[\"payload\",\"age\"]}"
         assert err.cause_chain[0]["details"] == [{"code": "E_INNER"}]
+        assert err.cause_chain[0]["details_json"] == "[{\"code\":\"E_INNER\"}]"
         assert err.cause_chain[1]["details"] == "not json"
+        assert err.cause_chain[1]["details_json"] == "not json"
 
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
@@ -364,6 +368,7 @@ class TestRuntimeError(unittest.TestCase):
         assert err.details == [{"code": "too_small"}]
         assert err.details_json == '[{"code":"too_small"}]'
         assert err.cause_chain[0]["details"] == {"path": ["payload", "age"]}
+        assert err.cause_chain[0]["details_json"] == '{"path":["payload","age"]}'
 
     def test_cause_runtime_defaults_origin_runtime(self):
         err = omnivm_mod.RuntimeError(
@@ -507,6 +512,7 @@ class TestRuntimeError(unittest.TestCase):
                 "origin_runtime": "javascript",
                 "stack_frames": ["at cause (<anonymous>:2:4)"],
                 "details": {"items": [{"path": "cause.path"}]},
+                "details_json": '{"items":[{"path":"cause.path"}]}',
             }
         ]
         assert err.details == {"items": [{"path": "user.age"}]}
@@ -527,6 +533,7 @@ class TestRuntimeError(unittest.TestCase):
                 "origin_runtime": "javascript",
                 "stack_frames": ["at cause (<anonymous>:2:4)"],
                 "details": {"items": [{"path": "cause.path"}]},
+                "details_json": '{"items":[{"path":"cause.path"}]}',
             }
         ]
         assert err.details == {"items": [{"path": "user.age"}]}
@@ -631,6 +638,7 @@ class TestRuntimeError(unittest.TestCase):
                 "runtime": "python",
                 "origin_runtime": "ruby",
                 "details": {"field": "age"},
+                "details_json": '{"field":"age"}',
             }
         ]
 

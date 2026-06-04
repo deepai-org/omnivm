@@ -353,7 +353,7 @@ public class OmniVM {
         return parsed;
     }
 
-    private static String detailsJsonValue(Map<String, Object> envelope) {
+    private static String detailsJsonValue(Map<?, ?> envelope) {
         if (envelope.containsKey("details")) {
             return jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
         }
@@ -456,6 +456,10 @@ public class OmniVM {
             Object causeDetails = detailsObjectValue(cause);
             if (cause.containsKey("details") || causeDetails != null) {
                 entry.put("details", causeDetails);
+            }
+            String causeDetailsJson = detailsJsonValue(cause);
+            if (causeDetailsJson != null) {
+                entry.put("details_json", causeDetailsJson);
             }
             out.add(Collections.unmodifiableMap(entry));
         }

@@ -1556,6 +1556,8 @@ static int omnivm_ruby_init(void) {
         "      item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]\n"
         "      cause_details = details_field.call(cause)\n"
         "      item[:details] = cause_details unless cause_details.nil?\n"
+        "      cause_details_json = details_json_field.call(cause)\n"
+        "      item[:details_json] = cause_details_json unless cause_details_json.nil?\n"
         "      out << item\n"
         "    end\n"
         "    {runtime: runtime_name, origin_runtime: origin_runtime, type: err_type, message: detail, traceback: traceback, stack_frames: stack_frames, cause_chain: cause_chain, boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path), original_error_handle: text_field.call(field.call(\"original_error_handle\", \"originalErrorHandle\"), nil), details: details_field.call(envelope), details_json: details_json_field.call(envelope)}\n"
