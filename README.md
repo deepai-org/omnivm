@@ -312,6 +312,8 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.set_task_timeout(ms)` | Set direct-call watchdog timeout for supported runtimes (`0` disables) |
 | `omnivm.watchdog_capabilities()` | Return the runtime timeout/preemption support matrix |
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
+| `omnivm.affinity_status()` | Return current Python thread/asyncio-loop affinity diagnostics relative to the libomnivm host thread |
+| `omnivm.assert_host_thread(label="")` | Raise a structured `RuntimeError` if a lifecycle callback is running off the libomnivm host thread |
 | `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state, Ruby threading boundary, handle/boundary diagnostics) |
 | `omnivm.drain_worker()` | Release live process handles and retained manifest modules before worker drain/reload hooks |
 | `omnivm.drain_worker_hook(*args, **kwargs)` | App-server-compatible worker exit/reload hook that drains initialized workers and no-ops for workers that never loaded OmniVM |

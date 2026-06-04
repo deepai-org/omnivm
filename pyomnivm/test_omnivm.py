@@ -290,6 +290,14 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.host_thread_id()
 
+    def test_affinity_status_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.affinity_status()
+
+    def test_assert_host_thread_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.assert_host_thread()
+
     def test_watchdog_capabilities_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.watchdog_capabilities()
@@ -772,6 +780,29 @@ class TestCallWithMockLib(unittest.TestCase):
     def test_host_thread_id_returns_int(self):
         self.mock_lib.OmniHostThreadID.return_value = 12345
         assert omnivm_mod.host_thread_id() == 12345
+
+    @patch.object(omnivm_mod.threading, "get_native_id", return_value=12345)
+    def test_affinity_status_reports_host_thread(self, _):
+        self.mock_lib.OmniHostThreadID.return_value = 12345
+        info = omnivm_mod.affinity_status()
+        assert info["host_thread_id"] == 12345
+        assert info["current_thread_id"] == 12345
+        assert info["on_host_thread"] is True
+        assert info["thread_name"]
+        assert info["asyncio"]["running"] is False
+
+    @patch.object(omnivm_mod.threading, "get_native_id", return_value=12345)
+    def test_assert_host_thread_accepts_owner_thread(self, _):
+        self.mock_lib.OmniHostThreadID.return_value = 12345
+        assert omnivm_mod.assert_host_thread("startup") is True
+
+    @patch.object(omnivm_mod.threading, "get_native_id", return_value=99)
+    def test_assert_host_thread_reports_violation(self, _):
+        self.mock_lib.OmniHostThreadID.return_value = 12345
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.assert_host_thread("callback")
+        assert "callback: thread affinity violation" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "thread_affinity"
 
     def test_watchdog_capabilities_parses_matrix(self):
         self.mock_lib.OmniWatchdogCapabilities.return_value = (

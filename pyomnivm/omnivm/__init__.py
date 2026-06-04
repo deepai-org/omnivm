@@ -49,6 +49,8 @@ __all__ = [
     "ManifestProxy",
     "set_task_timeout",
     "host_thread_id",
+    "affinity_status",
+    "assert_host_thread",
     "watchdog_capabilities",
     "worker_tainted",
     "last_timeout_runtime",
@@ -1177,6 +1179,61 @@ def host_thread_id():
     if not hasattr(_lib, "OmniHostThreadID"):
         raise RuntimeError("libomnivm does not expose OmniHostThreadID")
     return int(_lib.OmniHostThreadID())
+
+
+def affinity_status():
+    """
+    Return current Python thread/loop affinity diagnostics.
+
+    The snapshot is intended for app-server startup checks and callback
+    diagnostics. It does not move work between threads; it makes the current
+    thread and active asyncio loop relationship explicit.
+    """
+    host_tid = host_thread_id()
+    current_tid = threading.get_native_id()
+    info = {
+        "host_thread_id": host_tid,
+        "current_thread_id": current_tid,
+        "on_host_thread": current_tid == host_tid,
+        "thread_name": threading.current_thread().name,
+    }
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except _builtins.RuntimeError:
+        info["asyncio"] = {
+            "running": False,
+            "loop_id": None,
+            "closed": None,
+        }
+    else:
+        info["asyncio"] = {
+            "running": True,
+            "loop_id": id(loop),
+            "closed": loop.is_closed(),
+        }
+    return info
+
+
+def assert_host_thread(label=""):
+    """
+    Raise RuntimeError if called from a non-host Python thread.
+
+    Use this in server lifecycle callbacks or framework integrations that must
+    run on the worker's owner thread. Foreign threads can still call OmniVM, but
+    this check gives integrations an explicit guard when affinity matters.
+    """
+    info = affinity_status()
+    if info["on_host_thread"]:
+        return True
+    prefix = f"{label}: " if label else ""
+    raise RuntimeError(
+        f"{prefix}thread affinity violation: current OS thread "
+        f"{info['current_thread_id']} is not libomnivm host thread "
+        f"{info['host_thread_id']}",
+        boundary_path="thread_affinity",
+    )
 
 
 def watchdog_capabilities():

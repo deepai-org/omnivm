@@ -508,6 +508,12 @@ arguments, drains initialized workers, and no-ops when a worker exits without
 ever loading OmniVM. `omnivm.install_worker_drain_hook()` registers the same
 hook with `atexit` as an idempotent process-exit fallback.
 
+`omnivm.affinity_status()` reports the current Python native thread id, the
+libomnivm host thread id, whether the call is on the host thread, and any
+currently running asyncio loop id. `omnivm.assert_host_thread(label)` raises a
+structured `RuntimeError` with boundary path `thread_affinity` when a framework
+integration or lifecycle callback is unexpectedly running on a foreign thread.
+
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
 proxies. When user code needs an unambiguous collection length, it can use

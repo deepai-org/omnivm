@@ -15803,6 +15803,66 @@ def test_status_observability():
     expect(omnivm.worker_taint_reason(), "")
 
 
+def test_python_affinity_status_observability():
+    import asyncio
+
+    info = omnivm.affinity_status()
+    if info.get("host_thread_id") != omnivm.host_thread_id():
+        raise AssertionError(f"affinity status host thread mismatch: {info}")
+    if info.get("current_thread_id") != threading.get_native_id():
+        raise AssertionError(f"affinity status current thread mismatch: {info}")
+    if info.get("on_host_thread") is not True:
+        raise AssertionError(f"main thread should report host affinity: {info}")
+    if info.get("asyncio", {}).get("running") is not False:
+        raise AssertionError(f"affinity status should not invent a running loop: {info}")
+    if omnivm.assert_host_thread("main") is not True:
+        raise AssertionError("assert_host_thread did not accept host thread")
+
+    async def check_running_loop():
+        loop_info = omnivm.affinity_status()
+        if loop_info.get("asyncio", {}).get("running") is not True:
+            raise AssertionError(f"affinity status did not report running asyncio loop: {loop_info}")
+        if not loop_info.get("asyncio", {}).get("loop_id"):
+            raise AssertionError(f"affinity status omitted running loop id: {loop_info}")
+
+    asyncio.run(check_running_loop())
+
+    results = {}
+
+    def worker():
+        try:
+            foreign = omnivm.affinity_status()
+            results["foreign"] = foreign
+            try:
+                omnivm.assert_host_thread("worker callback")
+            except omnivm.RuntimeError as exc:
+                results["error"] = exc.to_dict()
+            else:
+                results["error"] = None
+        except Exception as exc:
+            results["unexpected"] = repr(exc)
+
+    thread = threading.Thread(target=worker, name="omnivm-affinity-worker")
+    thread.start()
+    thread.join(timeout=10)
+    if thread.is_alive():
+        raise AssertionError("affinity worker thread hung")
+    if "unexpected" in results:
+        raise AssertionError(f"affinity worker failed unexpectedly: {results}")
+    foreign = results.get("foreign")
+    if not isinstance(foreign, dict):
+        raise AssertionError(f"affinity worker did not report status: {results}")
+    if foreign.get("on_host_thread") is not False:
+        raise AssertionError(f"foreign thread should report non-host affinity: {foreign}")
+    if foreign.get("host_thread_id") != info.get("host_thread_id"):
+        raise AssertionError(f"foreign thread host id changed: host={info}, foreign={foreign}")
+    error = results.get("error")
+    if not isinstance(error, dict) or error.get("boundary_path") != "thread_affinity":
+        raise AssertionError(f"foreign thread should get structured affinity diagnostic: {results}")
+    if "worker callback" not in error.get("message", ""):
+        raise AssertionError(f"affinity diagnostic lost callback label: {error}")
+
+
 def test_status_keeps_last_manifest_boundary_stats():
     manifest = {
         "version": 1,
@@ -29750,6 +29810,7 @@ def main():
         check("Python native typed RuntimeError fields cross runtime call", test_python_native_typed_runtime_error_fields_cross_runtime_call)
         check("Python-first host stays CPython", test_python_first_process_survives_plain_python)
         check("libomnivm status observability", test_status_observability)
+        check("libomnivm Python affinity status observability", test_python_affinity_status_observability)
         check("libomnivm retains last manifest boundary stats", test_status_keeps_last_manifest_boundary_stats)
         check("Manifest handle proxy property forwarding", test_manifest_handle_proxy_property_forwarding)
         check("Manifest RuntimeRef mapping keys beat methods", test_manifest_runtime_ref_mapping_keys_beat_methods)
