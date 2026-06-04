@@ -186,6 +186,16 @@ func TestBufferRefCounting(t *testing.T) {
 	}
 }
 
+func TestBufferReleaseClampsAtZero(t *testing.T) {
+	buf := &Buffer{refs: 1}
+	if refs := buf.Release(); refs != 0 {
+		t.Fatalf("first Release refs=%d, want 0", refs)
+	}
+	if refs := buf.Release(); refs != 0 {
+		t.Fatalf("second Release refs=%d, want idempotent 0", refs)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewSharedStore()
 
