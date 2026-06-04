@@ -224,6 +224,9 @@ func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if size < 0 {
+		return nil, fmt.Errorf("arrow: buffer %q has negative size %d", name, size)
+	}
 	if _, exists := s.buffers[name]; exists {
 		return nil, fmt.Errorf("arrow: buffer %q already exists", name)
 	}

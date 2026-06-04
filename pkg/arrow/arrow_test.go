@@ -76,6 +76,18 @@ func TestAllocateDuplicate(t *testing.T) {
 	}
 }
 
+func TestAllocateRejectsNegativeSize(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.Allocate("negative", -1); err == nil {
+		t.Fatal("expected error on negative allocation")
+	} else if !strings.Contains(err.Error(), `buffer "negative" has negative size -1`) {
+		t.Fatalf("negative allocation error = %v", err)
+	}
+	if status := s.Status("negative"); status.State != "missing" || status.Live {
+		t.Fatalf("negative allocation registered buffer: %+v", status)
+	}
+}
+
 func TestGet(t *testing.T) {
 	s := NewSharedStore()
 	s.Allocate("mydata", 512)
