@@ -93,6 +93,7 @@ class RuntimeError(_builtins.RuntimeError):
             boundary_path=boundary_path,
         )
         self.runtime = parsed["runtime"]
+        self.origin_runtime = parsed["runtime"]
         self.type = parsed["type"]
         self.message = parsed["message"]
         self.traceback = parsed["traceback"]
@@ -105,6 +106,7 @@ class RuntimeError(_builtins.RuntimeError):
         """Return a structured, JSON-serializable runtime error envelope."""
         return {
             "runtime": self.runtime,
+            "origin_runtime": self.origin_runtime,
             "type": self.type,
             "message": self.message,
             "traceback": self.traceback,

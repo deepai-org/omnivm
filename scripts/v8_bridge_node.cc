@@ -563,6 +563,8 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
     }
     v8::Local<v8::Object> error = error_value.As<v8::Object>();
     omnivm_v8_set_string_prop(isolate, context, error, "runtime", env.runtime);
+    omnivm_v8_set_string_prop(isolate, context, error, "originRuntime", env.runtime);
+    omnivm_v8_set_string_prop(isolate, context, error, "origin_runtime", env.runtime);
     omnivm_v8_set_string_prop(isolate, context, error, "type", env.type);
     omnivm_v8_set_string_prop(isolate, context, error, "traceback", env.traceback);
     omnivm_v8_set_string_prop(isolate, context, error, "boundaryPath", env.boundary_path);

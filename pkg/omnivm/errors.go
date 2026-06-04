@@ -11,6 +11,7 @@ import (
 // the exception type, message, and traceback across the bridge.
 type RuntimeError struct {
 	Runtime             string              // which runtime threw (e.g. "python", "javascript")
+	OriginRuntime       string              // alias for Runtime in structured error envelopes
 	Type                string              // exception type name (e.g. "SyntaxError", "DoesNotExist")
 	Message             string              // human-readable error message
 	Traceback           string              // full stack trace from the source runtime
@@ -116,6 +117,7 @@ func ParseError(runtime, s string) *RuntimeError {
 
 	return &RuntimeError{
 		Runtime:             sourceRuntime,
+		OriginRuntime:       sourceRuntime,
 		Type:                errType,
 		Message:             message,
 		Traceback:           traceback,

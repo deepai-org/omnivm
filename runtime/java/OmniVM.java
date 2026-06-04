@@ -148,6 +148,10 @@ public class OmniVM {
             return runtime;
         }
 
+        public String getOriginRuntime() {
+            return runtime;
+        }
+
         public String getType() {
             return type;
         }
@@ -175,6 +179,7 @@ public class OmniVM {
         public Map<String, Object> toMap() {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("runtime", runtime);
+            out.put("origin_runtime", runtime);
             out.put("type", type);
             out.put("message", getMessage());
             out.put("traceback", traceback);

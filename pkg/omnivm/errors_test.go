@@ -55,6 +55,9 @@ func TestParseError_Simple(t *testing.T) {
 	if re.Runtime != "python" {
 		t.Errorf("Runtime = %q, want python", re.Runtime)
 	}
+	if re.OriginRuntime != "python" {
+		t.Errorf("OriginRuntime = %q, want python", re.OriginRuntime)
+	}
 	if re.Type != "SyntaxError" {
 		t.Errorf("Type = %q, want SyntaxError", re.Type)
 	}

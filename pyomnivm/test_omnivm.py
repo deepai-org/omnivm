@@ -127,6 +127,7 @@ class TestRuntimeError(unittest.TestCase):
         )
         assert err.to_dict() == {
             "runtime": "javascript",
+            "origin_runtime": "javascript",
             "type": "Error",
             "message": "outer",
             "traceback": "    at <anonymous>:1:7\nCaused by: TypeError: inner",
