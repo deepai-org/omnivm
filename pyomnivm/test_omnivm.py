@@ -158,6 +158,23 @@ class TestRuntimeError(unittest.TestCase):
             "details": None,
         }
 
+    def test_to_dict_copies_mutable_envelope_values(self):
+        err = omnivm_mod.RuntimeError(
+            "javascript: Error: outer\n"
+            "    at <anonymous>:1:7\n"
+            "Caused by: TypeError: inner\n"
+            "Details: {\"items\":[{\"path\":\"user.age\"}]}",
+            runtime="javascript",
+        )
+        envelope = err.to_dict()
+        envelope["stack_frames"][0] = "changed"
+        envelope["cause_chain"][0]["message"] = "changed"
+        envelope["details"]["items"][0]["path"] = "changed"
+
+        assert err.stack_frames == ["at <anonymous>:1:7"]
+        assert err.cause_chain == [{"type": "TypeError", "message": "inner"}]
+        assert err.details == {"items": [{"path": "user.age"}]}
+
     def test_parses_go_wrapped_error_cause_chain(self):
         err = omnivm_mod.RuntimeError(
             "go: outer layer: inner layer\n"
