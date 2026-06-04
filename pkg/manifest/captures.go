@@ -1261,6 +1261,34 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       }
     });
   }
+  if (typeof omnivm.proxySet !== 'function') {
+    Object.defineProperty(omnivm, "proxySet", {
+      configurable: true,
+      value: function(value, key, nextValue) {
+        if (value && typeof value.__omnivm_set === 'function') return value.__omnivm_set(key, nextValue);
+        if (value == null) return false;
+        value[key] = nextValue;
+        return true;
+      }
+    });
+  }
+  if (typeof omnivm.proxyCall !== 'function') {
+    Object.defineProperty(omnivm, "proxyCall", {
+      configurable: true,
+      value: function(value, key, args) {
+        var callArgs = Array.isArray(args) ? args : [];
+        if (value && typeof value.__omnivm_call === 'function') return value.__omnivm_call(key, callArgs);
+        if (value == null) throw new TypeError("OmniVM cannot call a method on null or undefined");
+        if (key === null || key === undefined || key === "") {
+          if (typeof value !== 'function') throw new TypeError("OmniVM target is not callable");
+          return value.apply(undefined, callArgs);
+        }
+        var member = value[key];
+        if (typeof member !== 'function') throw new TypeError("OmniVM member is not callable: " + String(key));
+        return member.apply(value, callArgs);
+      }
+    });
+  }
   if (typeof omnivm.proxyLen !== 'function') {
     Object.defineProperty(omnivm, "proxyLen", {
       configurable: true,
@@ -1327,7 +1355,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return Object.prototype.hasOwnProperty.call(obj, prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
-    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_len" || prop === "toJSON";
+    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "toJSON";
   };
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
@@ -1388,9 +1416,37 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return defaultValue;
     }
   };
+  var bridgeSet = function(key, value) {
+    var textKey = String(key);
+    if (textKey === 'length' && isIndexedDescriptor()) {
+      var lengthValue = Number(value);
+      if (!Number.isInteger(lengthValue) || lengthValue < 0) {
+        throw new RangeError("OmniVM cannot set remote length" + remoteDescription() + ": length must be a non-negative integer");
+      }
+      try {
+        bridge({op: "handle_set", key: textKey, value: globalThis.__omnivm_encode_arg(lengthValue)});
+        return true;
+      } catch (_lengthSetError) {
+        throw lengthSetDiagnostic("source runtime rejected length write", _lengthSetError);
+      }
+    }
+    try {
+      bridge({op: "handle_set", key: textKey, value: globalThis.__omnivm_encode_arg(value)});
+      return true;
+    } catch (_setError) {
+      if (!globalThis.__omnivm_is_missing_bridge_error(_setError)) throw _setError;
+      return false;
+    }
+  };
+  var bridgeCall = function(key, args) {
+    var callArgs = Array.isArray(args) ? args : [];
+    return bridge({op: "handle_call", key: key == null ? "" : String(key), args: callArgs.map(globalThis.__omnivm_encode_arg)});
+  };
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
       if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
+      if (prop === "__omnivm_set") return function(key, value) { return bridgeSet(key, value); };
+      if (prop === "__omnivm_call") return function(key, args) { return bridgeCall(key, args); };
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
@@ -1476,30 +1532,15 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     },
     set: function(obj, prop, value, receiver) {
       if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-        if (prop === 'length' && isIndexedDescriptor()) {
-          var lengthValue = Number(value);
-          if (!Number.isInteger(lengthValue) || lengthValue < 0) {
-            throw new RangeError("OmniVM cannot set remote length" + remoteDescription() + ": length must be a non-negative integer");
-          }
-          try {
-            bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(lengthValue)});
-            return true;
-          } catch (_lengthSetError) {
-            throw lengthSetDiagnostic("source runtime rejected length write", _lengthSetError);
-          }
-        }
-        try {
-          bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(value)});
+        if (bridgeSet(prop, value)) {
           if (hasLocalProp(obj, prop)) Reflect.set(obj, prop, value, receiver);
           return true;
-        } catch (_e) {
-          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
         }
       }
       return Reflect.set(obj, prop, value, receiver);
     },
     apply: function(obj, thisArg, args) {
-      return bridge({op: "handle_call", key: "", args: Array.prototype.slice.call(args).map(globalThis.__omnivm_encode_arg)});
+      return bridgeCall("", Array.prototype.slice.call(args));
     },
     has: function(obj, prop) {
       if (typeof prop === 'string' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {

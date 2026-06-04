@@ -26175,16 +26175,21 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (py_payload.length !== 5) throw new Error('length key lost to collection length: ' + py_payload.length); "
                     "if (py_payload.get !== 'old-get') throw new Error('get key lost to method: ' + py_payload.get); "
                     "if (py_payload.close !== 'old-close') throw new Error('close key lost to proxy lifecycle method: ' + py_payload.close); "
-                    "if (omnivm.proxyGet(py_payload, 'get') !== 'old-get') throw new Error('proxyGet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
-                    "if (omnivm.proxyGet(py_payload, 'close') !== 'old-close') throw new Error('proxyGet lost close key: ' + omnivm.proxyGet(py_payload, 'close')); "
-                    "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
+                    "if (!omnivm.proxySet(py_payload, 'get', 'js-get')) throw new Error('proxySet rejected get key'); "
+                    "if (!omnivm.proxySet(py_payload, 'close', 'js-close')) throw new Error('proxySet rejected close key'); "
+                    "if (!omnivm.proxySet(py_payload, 'length', 11)) throw new Error('proxySet rejected length key'); "
+                    "if (omnivm.proxyGet(py_payload, 'get') !== 'js-get') throw new Error('proxySet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
+                    "if (omnivm.proxyGet(py_payload, 'close') !== 'js-close') throw new Error('proxySet lost close key: ' + omnivm.proxyGet(py_payload, 'close')); "
+                    "if (omnivm.proxyGet(py_payload, 'get') !== 'js-get') throw new Error('proxyGet lost get key: ' + omnivm.proxyGet(py_payload, 'get')); "
+                    "if (omnivm.proxyGet(py_payload, 'close') !== 'js-close') throw new Error('proxyGet lost close key: ' + omnivm.proxyGet(py_payload, 'close')); "
+                    "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
                     "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
                     "if (py_payload[omnivm.proxyLength] !== 7) throw new Error('proxyLength symbol lost mapping length: ' + py_payload[omnivm.proxyLength]); "
-                    "py_payload.length = 11; "
-                    "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
+                    "py_payload.length = 12; "
+                    "if (omnivm.proxyGet(py_payload, 'length') !== 12) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
                     "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
                     "if (py_payload[omnivm.proxyLength] !== 7) throw new Error('proxyLength symbol changed after value mutation: ' + py_payload[omnivm.proxyLength]); "
-                    "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
+                    "if (py_payload.length !== 12) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },
             {
@@ -26235,6 +26240,46 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
         raise AssertionError(f"collision-key mapping setters should not use JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("mutation", 0) < 6:
         raise AssertionError(f"collision-key mapping setters should record proxy mutations: {handles}")
+
+
+def test_manifest_js_proxy_meta_set_and_call_escape_hatches():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "code": (
+                    "(lambda cls: cls())(type('RemoteTool', (), {"
+                    "'__init__': lambda self: (setattr(self, 'close', 'field-close'), setattr(self, 'count', 0), None)[2], "
+                    "'accept': lambda self, value: (setattr(self, 'count', self.count + 1), 'accepted-' + str(value))[1]"
+                    "}))"
+                ),
+                "bind": "remote_tool",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"remote_tool": "remote_tool"},
+                "code": (
+                    "if (remote_tool.close !== 'field-close') throw new Error('natural close field lost: ' + remote_tool.close); "
+                    "if (omnivm.proxyCall(remote_tool, 'accept', ['js']) !== 'accepted-js') throw new Error('proxyCall did not invoke remote accept'); "
+                    "if (!omnivm.proxySet(remote_tool, 'close', 'field-updated')) throw new Error('proxySet rejected remote close field'); "
+                    "if (omnivm.proxyGet(remote_tool, 'close') !== 'field-updated') throw new Error('proxySet did not update close field: ' + omnivm.proxyGet(remote_tool, 'close')); "
+                    "let rejected = false; "
+                    "try { omnivm.proxyCall(remote_tool, 'close', []); } catch (err) { rejected = true; } "
+                    "if (!rejected) throw new Error('proxyCall should reject non-callable close data field');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "assert remote_tool.close == 'field-updated', remote_tool.close\nassert remote_tool.count == 1, remote_tool.count",
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
 
 
 def test_manifest_pydantic_model_collision_fields_stay_natural():
@@ -30009,6 +30054,7 @@ def main():
         check("Manifest Java function invoke fallback handles unsafe names", test_manifest_java_func_invoke_fallback_handles_unsafe_names)
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
+        check("Manifest JS proxy meta set and call escape hatches", test_manifest_js_proxy_meta_set_and_call_escape_hatches)
         check("Manifest Pydantic model collision fields stay natural", test_manifest_pydantic_model_collision_fields_stay_natural)
         check("Manifest Protobuf message collision fields stay natural", test_manifest_protobuf_message_collision_fields_stay_natural)
         check("Manifest attrs model collision fields stay natural", test_manifest_attrs_model_collision_fields_stay_natural)

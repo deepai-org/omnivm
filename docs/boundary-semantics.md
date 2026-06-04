@@ -516,10 +516,11 @@ integration or lifecycle callback is unexpectedly running on a foreign thread.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
-proxies. When user code needs an unambiguous collection length, it can use
-`omnivm.proxyLen(proxy)` or the collision-free symbol property
-`proxy[omnivm.proxyLength]`; data fields remain available through
-`omnivm.proxyGet(proxy, "length")`.
+proxies. When user code needs an unambiguous operation, it can use
+`omnivm.proxyGet(proxy, key)`, `omnivm.proxySet(proxy, key, value)`,
+`omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`, or the
+collision-free symbol property `proxy[omnivm.proxyLength]`; data fields remain
+available through `omnivm.proxyGet(proxy, "length")`.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:
