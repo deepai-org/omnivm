@@ -1,6 +1,7 @@
 package arrow
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -384,6 +385,53 @@ func TestFreeWithActiveBorrowTombstonesNameAndKeepsLeaseDiagnostics(t *testing.T
 	stats = s.Stats()
 	if stats.DetachedBuffers != 0 || stats.DetachedBytes != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
 		t.Fatalf("detached borrow stats did not clear: %+v", stats)
+	}
+}
+
+func TestBorrowedBufferReleaseWithErrorReportsLastOwnerReleaseFailure(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3, 4}
+	releaseErr := errors.New("producer release failed")
+	releases := 0
+	buf, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Format:    "C",
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return releaseErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Free("payload"); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 0 {
+		t.Fatalf("free with active borrow called release callback early: %d", releases)
+	}
+	if err := lease.ReleaseWithError(); !errors.Is(err, releaseErr) {
+		t.Fatalf("ReleaseWithError = %v, want release callback failure", err)
+	}
+	if releases != 1 {
+		t.Fatalf("release callback called %d times, want 1", releases)
+	}
+	if err := lease.ReleaseWithError(); err != nil {
+		t.Fatalf("second ReleaseWithError = %v, want nil", err)
+	}
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs != 0 {
+		t.Fatalf("released external buffer refs = %d, want 0", refs)
+	}
+	status := s.Status("payload")
+	if status.State != "released" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || status.Ownership != "producer" {
+		t.Fatalf("released external buffer status lost metadata: %+v", status)
 	}
 }
 

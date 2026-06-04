@@ -296,19 +296,27 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 
 // Release ends the zero-copy lease. It is safe to call more than once.
 func (b *BorrowedBuffer) Release() {
-	if b == nil || b.store == nil {
-		return
-	}
-	b.once.Do(func() {
-		b.store.releaseBorrow(b.name, b.Buffer)
-	})
+	_ = b.ReleaseWithError()
 }
 
-func (s *SharedStore) releaseBorrow(name string, buf *Buffer) {
+// ReleaseWithError ends the zero-copy lease and reports owner-side release
+// callback failures for explicit callers. It is safe to call more than once.
+func (b *BorrowedBuffer) ReleaseWithError() error {
+	if b == nil || b.store == nil {
+		return nil
+	}
+	var err error
+	b.once.Do(func() {
+		err = b.store.releaseBorrow(b.name, b.Buffer)
+	})
+	return err
+}
+
+func (s *SharedStore) releaseBorrow(name string, buf *Buffer) error {
 	s.mu.Lock()
 	release := s.releaseBufferLocked(name, buf)
 	s.mu.Unlock()
-	_ = callBufferRelease(release)
+	return callBufferRelease(release)
 }
 
 func (s *SharedStore) releaseNamedBorrow(name string) error {

@@ -629,6 +629,9 @@ borrowed views keep the backing memory alive until their own borrow release or
 finalizer arrives, and those unnamed leases remain visible through
 `active_borrows`, `active_borrowed_bytes`, `detached_buffers`, and
 `detached_bytes`.
+Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
+lease release; explicit callers that need producer release callback failures can
+use `ReleaseWithError()`.
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports
 `live` with dtype/format/ownership metadata, `released` after explicit release,
 `released_detached` while active borrowed views keep released memory alive, and
