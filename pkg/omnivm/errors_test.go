@@ -447,6 +447,71 @@ func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 	}
 }
 
+func TestParseError_StructuredJSONEnvelopeAcceptsCamelCase(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":             "javascript",
+		"originRuntime":       "python",
+		"type":                "AggregateError",
+		"message":             "outer",
+		"traceback":           "Error: outer\n    at parse (<anonymous>:1:2)",
+		"stackFrames":         []interface{}{"at parse (<anonymous>:1:2)"},
+		"boundaryPath":        "call[javascript] > callback[python]",
+		"originalErrorHandle": "js-error-7",
+		"causeChain": []interface{}{map[string]interface{}{
+			"runtime":             "java",
+			"originRuntime":       "ruby",
+			"type":                "java.lang.IllegalStateException",
+			"message":             "inner",
+			"traceback":           "java.lang.IllegalStateException: inner\n\tat Example.call(Example.java:7)",
+			"stackFrames":         []interface{}{"at Example.call(Example.java:7)"},
+			"boundaryPath":        "call[javascript] > callback[java]",
+			"originalErrorHandle": "java-error-3",
+			"details":             map[string]interface{}{"code": "E_JAVA"},
+		}},
+		"details": map[string]interface{}{"code": "E_JS"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "javascript" || re.OriginRuntime != "python" {
+		t.Fatalf("runtime/origin = %q/%q, want javascript/python", re.Runtime, re.OriginRuntime)
+	}
+	if re.BoundaryPath != "call[javascript] > callback[python]" || re.OriginalErrorHandle != "js-error-7" {
+		t.Fatalf("boundary/handle = %q/%q", re.BoundaryPath, re.OriginalErrorHandle)
+	}
+	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
+		t.Fatalf("StackFrames = %#v", re.StackFrames)
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	cause := re.CauseChain[0]
+	if cause.Runtime != "java" || cause.OriginRuntime != "ruby" {
+		t.Fatalf("cause runtime/origin = %q/%q, want java/ruby", cause.Runtime, cause.OriginRuntime)
+	}
+	if cause.BoundaryPath != "call[javascript] > callback[java]" || cause.OriginalErrorHandle != "java-error-3" {
+		t.Fatalf("cause boundary/handle = %q/%q", cause.BoundaryPath, cause.OriginalErrorHandle)
+	}
+	if !reflect.DeepEqual(cause.StackFrames, []string{"at Example.call(Example.java:7)"}) {
+		t.Fatalf("cause StackFrames = %#v", cause.StackFrames)
+	}
+	envelope := re.ToMap()
+	if envelope["origin_runtime"] != "python" || envelope["boundary_path"] != "call[javascript] > callback[python]" ||
+		envelope["original_error_handle"] != "js-error-7" {
+		t.Fatalf("normalized envelope metadata = %#v", envelope)
+	}
+	causes, ok := envelope["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 || causes[0]["origin_runtime"] != "ruby" ||
+		causes[0]["boundary_path"] != "call[javascript] > callback[java]" ||
+		causes[0]["original_error_handle"] != "java-error-3" {
+		t.Fatalf("normalized cause metadata = %#v", envelope["cause_chain"])
+	}
+}
+
 func TestParseError_WrappedStructuredJSONEnvelopePreservesFields(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":        "javascript",
