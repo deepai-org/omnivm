@@ -883,6 +883,9 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if err != nil {
 			return "", err
 		}
+		if _, err := e.handleEntry(id); err != nil {
+			return "", err
+		}
 		if err := e.ensureHandleTable().Retain(id); err != nil {
 			return "", err
 		}
@@ -893,6 +896,9 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 	case "handle_access":
 		id, err := bridgeHandleID(req.ID)
 		if err != nil {
+			return "", err
+		}
+		if _, err := e.handleEntry(id); err != nil {
 			return "", err
 		}
 		report, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: req.Kind})
@@ -917,6 +923,12 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		}
 		to, err := bridgeHandleID(req.To)
 		if err != nil {
+			return "", err
+		}
+		if _, err := e.handleEntry(from); err != nil {
+			return "", err
+		}
+		if _, err := e.handleEntry(to); err != nil {
 			return "", err
 		}
 		report, err := e.ensureHandleTable().RecordReference(from, to, req.Kind)

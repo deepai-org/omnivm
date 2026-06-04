@@ -7316,6 +7316,8 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 	}
 
 	calls := []string{
+		`{"op":"handle_adopt","id":%d}`,
+		`{"op":"handle_access","id":%d,"kind":"property"}`,
 		`{"op":"handle_get","id":%d,"key":"path"}`,
 		`{"op":"handle_index","id":%d,"value":"items"}`,
 		`{"op":"handle_len","id":%d}`,
@@ -7353,6 +7355,26 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 		}
 		if strings.Contains(got, "unknown source handle") {
 			t.Fatalf("closed resource handle_call with arg used generic handle-table diagnostic: %s", got)
+		}
+	}
+
+	referenceCalls := []string{
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"property"}`, ref.ID, argRef.ID),
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"property"}`, argRef.ID, ref.ID),
+	}
+	for _, call := range referenceCalls {
+		if _, err := e.HandleCall(call); err == nil {
+			t.Fatalf("closed resource reference call %s did not fail", call)
+		} else {
+			got := err.Error()
+			for _, want := range []string{"closed resource handle", "runtime=python", "kind=request", "owner-side lifecycle is closed"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("closed resource reference call %s diagnostic missing %q: %s", call, want, got)
+				}
+			}
+			if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
+				t.Fatalf("closed resource reference call %s used generic handle-table diagnostic: %s", call, got)
+			}
 		}
 	}
 }
