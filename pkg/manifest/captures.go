@@ -1261,7 +1261,7 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxyGet", {
       configurable: true,
       value: function(value, key, defaultValue) {
-        if (value && typeof value.__omnivm_get === 'function') return value.__omnivm_get(key, defaultValue);
+        if (value && typeof value.__omnivm_get === 'function') return value.__omnivm_get(key, defaultValue, true);
         if (value != null && Object.prototype.hasOwnProperty.call(Object(value), key)) return value[key];
         return defaultValue;
       }
@@ -1451,11 +1451,31 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     if (typeof value === "string" && /^(0|-?[1-9][0-9]*)$/.test(value)) return Number(value);
     return null;
   };
-  var bridgeGet = function(key, defaultValue) {
-    if (hasLocalProp(target, key)) return target[key];
+  var bridgeGet = function(key, defaultValue, remoteFirst) {
     var textKey = String(key);
-    if (hasLocalProp(target, textKey)) return target[textKey];
     var idx = numericIndex(key);
+    if (remoteFirst === true) {
+      if (isIndexedDescriptor() && idx !== null) {
+        try {
+          return bridge({op: "handle_index", value: idx});
+        } catch (_remoteIndexError) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_remoteIndexError)) throw _remoteIndexError;
+        }
+      }
+      try {
+        return bridge({op: "handle_get", key: textKey});
+      } catch (_remoteGetError) {
+        if (!globalThis.__omnivm_is_missing_bridge_error(_remoteGetError)) throw _remoteGetError;
+        try {
+          return bridge({op: "handle_index", value: key});
+        } catch (_remoteFallbackIndexError) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_remoteFallbackIndexError)) throw _remoteFallbackIndexError;
+          return defaultValue;
+        }
+      }
+    }
+    if (hasLocalProp(target, key)) return target[key];
+    if (hasLocalProp(target, textKey)) return target[textKey];
     if (isIndexedDescriptor() && idx !== null) {
       try {
         return bridge({op: "handle_index", value: idx});
@@ -1528,7 +1548,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   };
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
-      if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
+      if (prop === "__omnivm_get") return function(key, defaultValue, remoteFirst) { return bridgeGet(key, defaultValue, remoteFirst === true); };
       if (prop === "__omnivm_set") return function(key, value) { return bridgeSet(key, value); };
       if (prop === "__omnivm_call") return function(key, args) { return bridgeCall(key, args); };
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
