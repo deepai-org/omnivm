@@ -5769,6 +5769,147 @@ if not any(message.get("type") == "http.response.start" and message.get("status"
         raise AssertionError(f"FastAPI ASGI app request used JSON fallback: before={before_boundary}, after={after_boundary}")
 
 
+def test_manifest_fastapi_streaming_response_disconnect_cancels_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import asyncio
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+
+fastapi_stream_req = None
+fastapi_stream_events = []
+fastapi_stream_sent = []
+
+app = FastAPI()
+
+@app.get("/fastapi/stream-disconnect")
+async def endpoint(request: Request):
+    global fastapi_stream_req
+    fastapi_stream_req = request
+
+    async def body():
+        fastapi_stream_events.append("body-started")
+        try:
+            yield b"first"
+            fastapi_stream_events.append("before-second")
+            await asyncio.sleep(60)
+            fastapi_stream_events.append("second-yield-ok")
+            yield b"second"
+        except BaseException as exc:
+            fastapi_stream_events.append("body-closed:" + type(exc).__name__)
+            raise
+        finally:
+            fastapi_stream_events.append("body-cleanup")
+
+    return StreamingResponse(body(), status_code=200, headers={"X-FastAPI-Stream": "yes"})
+
+async def run_app():
+    first_body_sent = asyncio.Event()
+    receive_count = 0
+
+    async def receive():
+        nonlocal receive_count
+        receive_count += 1
+        if receive_count == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await first_body_sent.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        fastapi_stream_sent.append(message)
+        if message.get("type") == "http.response.body" and message.get("body"):
+            first_body_sent.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/fastapi/stream-disconnect",
+        "raw_path": b"/fastapi/stream-disconnect",
+        "query_string": b"mode=poly",
+        "headers": [(b"x-request-id", b"fastapi-stream-42"), (b"host", b"example.test")],
+        "scheme": "https",
+        "server": ("example.test", 443),
+        "client": ("127.0.0.1", 5000),
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=5)
+    return receive_count
+
+loop = asyncio.new_event_loop()
+try:
+    asyncio.set_event_loop(loop)
+    fastapi_stream_receive_count = loop.run_until_complete(run_app())
+finally:
+    asyncio.set_event_loop(None)
+    loop.close()
+
+if fastapi_stream_req is None:
+    raise AssertionError("FastAPI streaming request was never captured")
+if fastapi_stream_receive_count < 2:
+    raise AssertionError(f"FastAPI stream did not poll disconnect receive: {fastapi_stream_receive_count!r}")
+if "body-started" not in fastapi_stream_events:
+    raise AssertionError(f"FastAPI streaming body did not start: {fastapi_stream_events!r}")
+if "body-cleanup" not in fastapi_stream_events:
+    raise AssertionError(f"FastAPI streaming body did not clean up: {fastapi_stream_events!r}")
+if "second-yield-ok" in fastapi_stream_events:
+    raise AssertionError(f"FastAPI streaming body continued after disconnect: {fastapi_stream_events!r}")
+if not any(event.startswith("body-closed:") for event in fastapi_stream_events):
+    raise AssertionError(f"FastAPI streaming body did not observe cancellation: {fastapi_stream_events!r}")
+if not any(message.get("type") == "http.response.start" and message.get("status") == 200 for message in fastapi_stream_sent):
+    raise AssertionError(f"FastAPI stream response start missing: {fastapi_stream_sent!r}")
+if not any(message.get("type") == "http.response.body" and message.get("body") == b"first" for message in fastapi_stream_sent):
+    raise AssertionError(f"FastAPI first stream chunk missing: {fastapi_stream_sent!r}")
+'''
+    verify = r'''
+if fastapi_stream_req.method != "GET":
+    raise AssertionError(f"bad FastAPI stream method: {fastapi_stream_req.method!r}")
+if fastapi_stream_req.url.path != "/fastapi/stream-disconnect":
+    raise AssertionError(f"bad FastAPI stream path: {fastapi_stream_req.url.path!r}")
+if fastapi_stream_req.headers.get("x-request-id") != "fastapi-stream-42":
+    raise AssertionError(f"bad FastAPI stream header: {fastapi_stream_req.headers!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"fastapi_stream_req": "fastapi_stream_req"},
+                "code": (
+                    "if (fastapi_stream_req.method !== 'GET') throw new Error('bad FastAPI stream method: ' + fastapi_stream_req.method); "
+                    "if (fastapi_stream_req.url.path !== '/fastapi/stream-disconnect') throw new Error('bad FastAPI stream path: ' + fastapi_stream_req.url.path); "
+                    "if (fastapi_stream_req.headers.get('x-request-id') !== 'fastapi-stream-42') "
+                    "throw new Error('bad FastAPI stream header: ' + fastapi_stream_req.headers.get('x-request-id'));"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    after_boundary = after_status.get("boundary", {})
+    after_handles = after_status.get("handles", {})
+    if (
+        after_boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1
+        and after_boundary.get("resource_proxy_captures", 0) < 1
+    ):
+        raise AssertionError(f"FastAPI streaming request did not cross as live proxy: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"FastAPI streaming request crossed as a stream: before={before_boundary}, after={after_boundary}")
+    if after_boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"FastAPI streaming request used JSON fallback: before={before_boundary}, after={after_boundary}")
+    if after_handles.get("handle_accesses_by_kind", {}).get("property", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("property", 0):
+        raise AssertionError(f"FastAPI streaming request proxy did not record JS property access: before={before_handles}, after={after_handles}")
+    if after_handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"FastAPI streaming disconnect leaked handles: before={before_handles}, after={after_handles}")
+
+
 def test_manifest_starlette_request_disconnect_lifecycle_survives_capture():
     before_boundary = omnivm.status().get("boundary", {})
     setup = r'''
@@ -25676,6 +25817,7 @@ def main():
         check("Manifest Django async view request/response stay live", test_manifest_django_async_view_request_response_stay_live)
         check("Manifest FastAPI request capture uses proxy not stream", test_manifest_fastapi_request_capture_uses_proxy_not_stream)
         check("Manifest FastAPI ASGI app disconnect lifecycle survives capture", test_manifest_fastapi_asgi_app_disconnect_lifecycle_survives_capture)
+        check("Manifest FastAPI StreamingResponse disconnect cancels owner", test_manifest_fastapi_streaming_response_disconnect_cancels_owner)
         check("Manifest Starlette request disconnect lifecycle survives capture", test_manifest_starlette_request_disconnect_lifecycle_survives_capture)
         check("Manifest Starlette ASGI app disconnect lifecycle survives capture", test_manifest_starlette_asgi_app_disconnect_lifecycle_survives_capture)
         check("Manifest Uvicorn Starlette client abort cancels streaming response", test_manifest_uvicorn_starlette_client_abort_cancels_streaming_response)
