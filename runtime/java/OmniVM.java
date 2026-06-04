@@ -133,6 +133,7 @@ public class OmniVM {
         private final List<Map<String, String>> causeChain;
         private final String boundaryPath;
         private final String originalErrorHandle;
+        private final Object details;
         private final String detailsJson;
 
         private RuntimeError(ParsedRuntimeError parsed, Throwable cause) {
@@ -144,6 +145,7 @@ public class OmniVM {
             this.causeChain = Collections.unmodifiableList(parsed.causeChain);
             this.boundaryPath = parsed.boundaryPath;
             this.originalErrorHandle = parsed.originalErrorHandle;
+            this.details = copyJsonValue(parseDetailsJson(parsed.detailsJson));
             this.detailsJson = parsed.detailsJson;
         }
 
@@ -179,6 +181,10 @@ public class OmniVM {
             return originalErrorHandle;
         }
 
+        public Object getDetails() {
+            return copyJsonValue(details);
+        }
+
         public String getDetailsJson() {
             return detailsJson;
         }
@@ -190,16 +196,46 @@ public class OmniVM {
             out.put("type", type);
             out.put("message", getMessage());
             out.put("traceback", traceback);
-            out.put("stack_frames", stackFrames);
-            out.put("cause_chain", causeChain);
+            out.put("stack_frames", new ArrayList<>(stackFrames));
+            out.put("cause_chain", copyJsonValue(causeChain));
             out.put("boundary_path", boundaryPath);
             out.put("original_error_handle", originalErrorHandle);
+            out.put("details", copyJsonValue(details));
             out.put("details_json", detailsJson);
             return out;
         }
 
         static RuntimeError fromBridge(String bridgeMessage, String fallbackRuntime, String fallbackBoundary, Throwable cause) {
             return new RuntimeError(parseBridgeRuntimeError(bridgeMessage, fallbackRuntime, fallbackBoundary), cause);
+        }
+
+        private static Object parseDetailsJson(String detailsJson) {
+            if (detailsJson == null || detailsJson.isEmpty()) {
+                return null;
+            }
+            try {
+                return parseJson(detailsJson);
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        }
+
+        private static Object copyJsonValue(Object value) {
+            if (value instanceof Map<?, ?> map) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    out.put(String.valueOf(entry.getKey()), copyJsonValue(entry.getValue()));
+                }
+                return out;
+            }
+            if (value instanceof Iterable<?> iterable && !(value instanceof CharSequence)) {
+                List<Object> out = new ArrayList<>();
+                for (Object item : iterable) {
+                    out.add(copyJsonValue(item));
+                }
+                return out;
+            }
+            return value;
         }
     }
 

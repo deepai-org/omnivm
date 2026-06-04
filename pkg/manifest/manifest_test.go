@@ -5391,8 +5391,22 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "public String getOriginRuntime()") || !contains(code, `out.put("origin_runtime", runtime)`) {
 		t.Fatalf("Java runtime error envelope should expose origin_runtime alias")
 	}
-	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", stackFrames)`) {
+	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", new ArrayList<>(stackFrames))`) {
 		t.Fatalf("Java runtime error envelope should expose normalized stack frames")
+	}
+	for _, want := range []string{
+		"private final Object details;",
+		"this.details = copyJsonValue(parseDetailsJson(parsed.detailsJson));",
+		"public Object getDetails()",
+		`out.put("details", copyJsonValue(details))`,
+		`out.put("details_json", detailsJson)`,
+		"private static Object parseDetailsJson(String detailsJson)",
+		"private static Object copyJsonValue(Object value)",
+		`out.put("cause_chain", copyJsonValue(causeChain))`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)
+		}
 	}
 }
 
