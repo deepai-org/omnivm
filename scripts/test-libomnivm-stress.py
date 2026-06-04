@@ -26200,7 +26200,12 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "py_payload.keys = 'ruby-keys'; "
                     "py_payload.length = 9; "
                     "raise \"bad keys key #{py_payload.keys}\" unless py_payload.keys == 'ruby-keys'; "
-                    "raise \"bad length key #{py_payload.length}\" unless py_payload.length == 9"
+                    "raise \"bad length key #{py_payload.length}\" unless py_payload.length == 9; "
+                    "raise \"bad Ruby explicit length key #{py_payload.omnivm_get('length')}\" unless py_payload.omnivm_get('length') == 9; "
+                    "raise \"bad Ruby explicit proxy len #{py_payload.omnivm_len}\" unless py_payload.omnivm_len == 7; "
+                    "py_payload.omnivm_set('length', 10); "
+                    "raise \"bad Ruby explicit set length #{py_payload.omnivm_get('length')}\" unless py_payload.omnivm_get('length') == 10; "
+                    "raise \"Ruby proxy len changed after explicit set #{py_payload.omnivm_len}\" unless py_payload.omnivm_len == 7"
                 ),
             },
             {
@@ -26226,7 +26231,7 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "assert py_payload['count'] == 42, py_payload\n"
                     "assert py_payload['then'] == 'js-then', py_payload\n"
                     "assert py_payload['close'] == 'java-close', py_payload\n"
-                    "assert py_payload['length'] == 9, py_payload\n"
+                    "assert py_payload['length'] == 10, py_payload\n"
                     "assert callable(dict.items) and callable(dict.keys)"
                 ),
             },
@@ -26274,8 +26279,19 @@ def test_manifest_js_proxy_meta_set_and_call_escape_hatches():
             },
             {
                 "op": "exec",
+                "runtime": "ruby",
+                "captures": {"remote_tool": "remote_tool"},
+                "code": (
+                    "raise \"Ruby explicit get lost close #{remote_tool.omnivm_get('close')}\" unless remote_tool.omnivm_get('close') == 'field-updated'; "
+                    "raise \"Ruby explicit call failed\" unless remote_tool.omnivm_call('accept', 'ruby') == 'accepted-ruby'; "
+                    "remote_tool.omnivm_set('close', 'field-ruby'); "
+                    "raise \"Ruby explicit set lost close #{remote_tool.omnivm_get('close')}\" unless remote_tool.omnivm_get('close') == 'field-ruby'"
+                ),
+            },
+            {
+                "op": "exec",
                 "runtime": "python",
-                "code": "assert remote_tool.close == 'field-updated', remote_tool.close\nassert remote_tool.count == 1, remote_tool.count",
+                "code": "assert remote_tool.close == 'field-ruby', remote_tool.close\nassert remote_tool.count == 2, remote_tool.count",
             },
         ],
     }

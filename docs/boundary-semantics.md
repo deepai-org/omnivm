@@ -525,6 +525,9 @@ Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
 `omnivm.proxy_len(proxy)`.
+Ruby manifest proxies provide `proxy.omnivm_get(key)`,
+`proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
+`proxy.omnivm_len`.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:

@@ -2123,6 +2123,36 @@ class OmniVMHandleProxy
     raise KeyError, "key not found: #{key.inspect}"
   end
 
+  def omnivm_get(key)
+    raw = OmniVM.call("__manifest", JSON.generate({op: "handle_get", id: @value["id"], key: key.to_s}))
+    env = JSON.parse(raw)
+    env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
+  end
+
+  def omnivm_set(key, value)
+    raw = OmniVM.call("__manifest", JSON.generate({op: "handle_set", id: @value["id"], key: key.to_s, value: __omnivm_encode_arg(value)}))
+    env = JSON.parse(raw)
+    if env.is_a?(Hash) && env["__omnivm_result__"] == true
+      text_key = key.to_s
+      @value[text_key] = value if __omnivm_local_key?(text_key)
+      env["value"]
+    else
+      raw
+    end
+  end
+
+  def omnivm_call(key, *args)
+    raw = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: key.to_s, args: args.map { |arg| __omnivm_encode_arg(arg) }}))
+    env = JSON.parse(raw)
+    env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
+  end
+
+  def omnivm_len
+    raw = OmniVM.call("__manifest", JSON.generate({op: "handle_len", id: @value["id"]}))
+    env = JSON.parse(raw)
+    env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : raw
+  end
+
   def []=(key, value)
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_set", id: @value["id"], key: key.to_s, value: __omnivm_encode_arg(value)}))
     env = JSON.parse(raw)
