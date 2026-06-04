@@ -21,6 +21,7 @@ type RuntimeError struct {
 	BoundaryPath        string              // call/manifest boundary path, if available
 	OriginalErrorHandle string              // source-runtime handle marker, if one was reported
 	Details             interface{}
+	DetailsJSON         string // raw details_json payload, preserving invalid JSON when supplied
 }
 
 type RuntimeErrorCause struct {
@@ -33,6 +34,7 @@ type RuntimeErrorCause struct {
 	BoundaryPath        string
 	OriginalErrorHandle string
 	Details             interface{}
+	DetailsJSON         string
 }
 
 func (e *RuntimeError) Error() string {
@@ -97,11 +99,20 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		if cause.Details != nil {
 			item["details"] = copyJSONValue(cause.Details)
 		}
+		if cause.DetailsJSON != "" {
+			item["details_json"] = cause.DetailsJSON
+		} else if cause.Details != nil {
+			item["details_json"] = runtimeErrorDetailsJSON(cause.Details)
+		}
 		causes = append(causes, item)
 	}
 	origin := e.OriginRuntime
 	if origin == "" {
 		origin = e.Runtime
+	}
+	detailsJSON := e.DetailsJSON
+	if detailsJSON == "" && e.Details != nil {
+		detailsJSON = runtimeErrorDetailsJSON(e.Details)
 	}
 	return map[string]interface{}{
 		"runtime":               e.Runtime,
@@ -114,7 +125,19 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		"boundary_path":         e.BoundaryPath,
 		"original_error_handle": e.OriginalErrorHandle,
 		"details":               copyJSONValue(e.Details),
+		"details_json":          detailsJSON,
 	}
+}
+
+func runtimeErrorDetailsJSON(value interface{}) string {
+	if value == nil {
+		return ""
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
 }
 
 func copyJSONValue(value interface{}) interface{} {
@@ -318,6 +341,7 @@ func ParseError(runtime, s string) *RuntimeError {
 		BoundaryPath:        boundaryPath(boundaryParts, sourceRuntime),
 		OriginalErrorHandle: extractOriginalErrorHandle(body),
 		Details:             parseDetails(body),
+		DetailsJSON:         parseDetailsJSON(body),
 	}
 }
 
@@ -366,6 +390,7 @@ func parseStructuredErrorEnvelope(body, fallbackRuntime string) *RuntimeError {
 		BoundaryPath:        boundary,
 		OriginalErrorHandle: handle,
 		Details:             detailsEnvelopeValue(envelope),
+		DetailsJSON:         detailsJSONEnvelopeValue(envelope),
 	}
 }
 
@@ -445,6 +470,23 @@ func detailsEnvelopeValue(envelope map[string]interface{}) interface{} {
 	return details
 }
 
+func detailsJSONEnvelopeValue(envelope map[string]interface{}) string {
+	if details, ok := envelope["details"]; ok {
+		return runtimeErrorDetailsJSON(details)
+	}
+	for _, key := range []string{"details_json", "detailsJson"} {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		if text, ok := raw.(string); ok {
+			return text
+		}
+		return runtimeErrorDetailsJSON(raw)
+	}
+	return ""
+}
+
 func detailsEnvelopeValueOK(envelope map[string]interface{}) (interface{}, bool) {
 	if details, ok := envelope["details"]; ok {
 		return copyJSONValue(details), true
@@ -511,6 +553,7 @@ func causeChainEnvelopeValue(value interface{}, fallbackRuntime string) []Runtim
 		if details, ok := detailsEnvelopeValueOK(entry); ok {
 			cause.Details = details
 		}
+		cause.DetailsJSON = detailsJSONEnvelopeValue(entry)
 		out = append(out, cause)
 	}
 	return out
@@ -628,6 +671,24 @@ func parseDetails(text string) interface{} {
 		}
 	}
 	return nil
+}
+
+func parseDetailsJSON(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		label, raw, ok := splitDetailsMetadataLine(line)
+		if !ok {
+			continue
+		}
+		if label == "details_json" || label == "detailsjson" {
+			return raw
+		}
+		var details interface{}
+		if err := json.Unmarshal([]byte(raw), &details); err == nil {
+			return runtimeErrorDetailsJSON(details)
+		}
+	}
+	return ""
 }
 
 func splitDetailsMetadataLine(line string) (label, raw string, ok bool) {

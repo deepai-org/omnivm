@@ -69,10 +69,11 @@ func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
 		"message":               "outer",
 		"traceback":             "    at <anonymous>:1:7\nCaused by: TypeError: inner",
 		"stack_frames":          []string{"at <anonymous>:1:7"},
-		"cause_chain":           []map[string]interface{}{{"type": "TypeError", "message": "inner", "stack_frames": []string{"at cause:1:1"}, "runtime": "javascript", "origin_runtime": "javascript", "details": map[string]interface{}{"code": "E_INNER"}}},
+		"cause_chain":           []map[string]interface{}{{"type": "TypeError", "message": "inner", "stack_frames": []string{"at cause:1:1"}, "runtime": "javascript", "origin_runtime": "javascript", "details": map[string]interface{}{"code": "E_INNER"}, "details_json": "{\"code\":\"E_INNER\"}"}},
 		"boundary_path":         "call[javascript]",
 		"original_error_handle": "js-error-42",
 		"details":               map[string]interface{}{"code": "E_JS"},
+		"details_json":          "{\"code\":\"E_JS\"}",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ToMap = %#v, want %#v", got, want)
@@ -380,6 +381,9 @@ details_json: [{"path":["user","age"],"code":"too_small"}]`)
 	if !ok || first["code"] != "too_small" {
 		t.Fatalf("Details[0] = %#v, want parsed object", details[0])
 	}
+	if re.DetailsJSON != `[{"path":["user","age"],"code":"too_small"}]` {
+		t.Fatalf("DetailsJSON = %q, want raw details_json payload", re.DetailsJSON)
+	}
 	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
 		t.Fatalf("StackFrames = %#v, want details_json metadata omitted", re.StackFrames)
 	}
@@ -391,6 +395,9 @@ detailsJson: not json`)
 	}
 	if raw.Details != "not json" {
 		t.Fatalf("raw detailsJson = %#v, want raw string", raw.Details)
+	}
+	if raw.DetailsJSON != "not json" {
+		t.Fatalf("raw DetailsJSON = %q, want raw string", raw.DetailsJSON)
 	}
 }
 
@@ -490,11 +497,21 @@ func TestParseError_StructuredJSONEnvelopeParsesDetailsJSONFields(t *testing.T) 
 	if !ok || first["code"] != "too_small" {
 		t.Fatalf("Details[0] = %#v, want parsed object", details[0])
 	}
+	if re.DetailsJSON != `[{"path":["user","age"],"code":"too_small"}]` {
+		t.Fatalf("DetailsJSON = %q, want raw details_json payload", re.DetailsJSON)
+	}
 	if len(re.CauseChain) != 1 {
 		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
 	}
 	if re.CauseChain[0].Details != "not json" {
 		t.Fatalf("cause details = %#v, want raw detailsJson string", re.CauseChain[0].Details)
+	}
+	if re.CauseChain[0].DetailsJSON != "not json" {
+		t.Fatalf("cause DetailsJSON = %q, want raw detailsJson string", re.CauseChain[0].DetailsJSON)
+	}
+	causes, ok := re.ToMap()["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 || causes[0]["details_json"] != "not json" {
+		t.Fatalf("mapped cause details_json = %#v", re.ToMap()["cause_chain"])
 	}
 }
 
