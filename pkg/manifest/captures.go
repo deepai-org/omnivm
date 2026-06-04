@@ -1368,6 +1368,12 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         }
         return bridgeLen(Reflect.get(obj, prop, receiver));
       }
+      if (prop === 'name' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
+        try {
+          if (bridge({op: "handle_contains", value: "name"})) return bridge({op: "handle_get", key: "name"});
+        } catch (_fieldNameError) {}
+        return Reflect.get(obj, prop, receiver);
+      }
       if (hasLocalProp(obj, prop)) return Reflect.get(obj, prop, receiver);
       if (prop !== 'toJSON' && prop !== Symbol.toStringTag && prop !== Symbol.iterator) {
         var report = globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property");

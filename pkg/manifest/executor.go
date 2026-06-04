@@ -1095,7 +1095,7 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("foreach: undefined binding %q", op.Iterable.Name)
 		}
 		if ref, ok := val.(RuntimeRef); ok {
-			items, iterOK, err := e.runtimeRefIter(ref, "values")
+			items, iterOK, err := e.runtimeRefIter(0, ref, "values")
 			if err != nil {
 				return nil, fmt.Errorf("foreach: runtime ref iterable %q: %w", op.Iterable.Name, err)
 			}

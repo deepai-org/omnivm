@@ -2017,7 +2017,7 @@ func (e *Executor) handleIter(id handles.ID, mode string) ([]interface{}, bool, 
 		return nil, false, err
 	}
 	if ref, ok := runtimeRefFromHandleValue(entry.Value); ok {
-		return e.runtimeRefIter(ref, mode)
+		return e.runtimeRefIter(id, ref, mode)
 	}
 	return genericIter(entry.Value, mode)
 }
@@ -2437,10 +2437,39 @@ func (e *Executor) runtimeRefLen(ref RuntimeRef) (int, bool, error) {
 	return idx, ok, nil
 }
 
-func (e *Executor) runtimeRefIter(ref RuntimeRef, mode string) ([]interface{}, bool, error) {
+func (e *Executor) runtimeRefIter(parent handles.ID, ref RuntimeRef, mode string) ([]interface{}, bool, error) {
 	expr, ok, err := runtimeRefIterExpr(ref, mode)
 	if err != nil || !ok {
 		return nil, ok, err
+	}
+	if mode == "values" {
+		rt, ok := e.runtimes[ref.Runtime]
+		if !ok {
+			return nil, false, fmt.Errorf("source runtime %q not found", ref.Runtime)
+		}
+		listVar := e.nextRuntimeRefVar(parent, "iter")
+		if result := rt.Execute(runtimeAssign(ref.Runtime, listVar, expr)); result.Err != nil {
+			return nil, false, fmt.Errorf("runtime ref iter assign [%s]: %w (expr: %s)", ref.Runtime, result.Err, expr)
+		}
+		listRef := RuntimeRef{Runtime: ref.Runtime, VarName: listVar}
+		length, ok, err := e.runtimeRefLen(listRef)
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		items := make([]interface{}, 0, length)
+		for i := 0; i < length; i++ {
+			itemExpr, ok, err := runtimeRefIndexExpr(listRef, i)
+			if err != nil || !ok {
+				return nil, ok, err
+			}
+			itemVar := e.nextRuntimeRefVar(parent, "iter_item")
+			item, ok, err := e.runtimeRefEvalExpr(listRef, itemVar, itemExpr)
+			if err != nil || !ok {
+				return nil, ok, err
+			}
+			items = append(items, item)
+		}
+		return items, true, nil
 	}
 	value, err := e.runtimeRefEvalPrimitive(ref, expr)
 	if err != nil {

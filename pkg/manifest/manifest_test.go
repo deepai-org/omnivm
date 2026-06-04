@@ -4901,6 +4901,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});`) {
 		t.Fatalf("JS materializer should prefer remote length fields before collection length on non-indexed proxies, got %q", code)
 	}
+	if !contains(code, `if (bridge({op: "handle_contains", value: "name"})) return bridge({op: "handle_get", key: "name"});`) {
+		t.Fatalf("JS materializer should prefer remote name fields before Function.name on function-backed proxies, got %q", code)
+	}
 	if !contains(code, `if (prop === 'length' && isIndexedDescriptor())`) || !contains(code, `Number.isInteger(lengthValue)`) || !contains(code, `source runtime rejected length write`) || !contains(code, `runtime=`) {
 		t.Fatalf("JS materializer should diagnose unsupported length writes on indexed proxies, got %q", code)
 	}

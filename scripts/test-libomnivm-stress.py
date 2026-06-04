@@ -7222,6 +7222,187 @@ qs = Order.objects.order_by("id")
         raise AssertionError(f"Django QuerySet and rows did not stay behind live proxies: before={before_boundary}, after={boundary}")
 
 
+def test_manifest_django_queryset_iterator_is_lazy_and_cancellable():
+    before = omnivm.status()
+    setup = r'''
+import os
+import tempfile
+import uuid
+from django.conf import settings
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-django-iterator-" + uuid.uuid4().hex + ".sqlite3")
+db_config = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": db_path}}
+if not settings.configured:
+    settings.configure(
+        DEFAULT_CHARSET="utf-8",
+        SECRET_KEY="poly",
+        INSTALLED_APPS=[],
+        DATABASES=db_config,
+        USE_TZ=True,
+    )
+else:
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.DATABASES = db_config
+    settings.INSTALLED_APPS = []
+
+import django
+from django.apps import apps
+if not apps.ready:
+    django.setup()
+
+from django.db import connection, models
+
+suffix = uuid.uuid4().hex[:10]
+table_name = "omnivm_iterator_order_" + suffix
+Meta = type("Meta", (), {"app_label": "omnivm_stress", "db_table": table_name})
+IteratorOrder = type(
+    "OmniVMIteratorOrder" + suffix,
+    (models.Model,),
+    {
+        "__module__": "__main__",
+        "name": models.CharField(max_length=64),
+        "items": models.CharField(max_length=64),
+        "keys": models.CharField(max_length=64),
+        "count": models.IntegerField(),
+        "then": models.CharField(max_length=64),
+        "length": models.IntegerField(),
+        "close": models.CharField(max_length=64),
+        "Meta": Meta,
+    },
+)
+with connection.schema_editor() as schema:
+    schema.create_model(IteratorOrder)
+
+IteratorOrder.objects.bulk_create([
+    IteratorOrder(name="ada", items="field-items", keys="field-keys", count=1, then="field-then", length=2, close="field-close"),
+    IteratorOrder(name="grace", items="field-items-2", keys="field-keys-2", count=2, then="field-then-2", length=3, close="field-close-2"),
+    IteratorOrder(name="linus", items="field-items-3", keys="field-keys-3", count=3, then="field-then-3", length=4, close="field-close-3"),
+])
+
+class TrackingQuerySetIterator:
+    def __init__(self, label):
+        self.label = label
+        self.iterator = IteratorOrder.objects.order_by("id").iterator(chunk_size=2)
+        self.rows_pulled = 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.iterator)
+        self.rows_pulled += 1
+        return row
+
+    def close(self):
+        self.closed = True
+        closer = getattr(self.iterator, "close", None)
+        if closer is not None:
+            closer()
+
+django_iterator_py = TrackingQuerySetIterator("python")
+django_iterator_ruby = TrackingQuerySetIterator("ruby")
+django_iterator_java = TrackingQuerySetIterator("java")
+'''
+    verify = r'''
+for name, iterator in [
+    ("python", django_iterator_py),
+    ("ruby", django_iterator_ruby),
+    ("java", django_iterator_java),
+]:
+    if iterator.rows_pulled != 1:
+        raise AssertionError(f"{name} Django QuerySet.iterator pulled {iterator.rows_pulled} rows instead of one")
+    if not iterator.closed:
+        raise AssertionError(f"{name} Django QuerySet.iterator owner was not closed by stream cancellation")
+if IteratorOrder.objects.count() != 3:
+    raise AssertionError(f"Django QuerySet.iterator source table changed: {IteratorOrder.objects.count()}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {"op": "eval", "runtime": "python", "bind": "django_iterator_py", "code": "django_iterator_py"},
+            {"op": "eval", "runtime": "python", "bind": "django_iterator_ruby", "code": "django_iterator_ruby"},
+            {"op": "eval", "runtime": "python", "bind": "django_iterator_java", "code": "django_iterator_java"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"django_iterator_py": "django_iterator_py"},
+                "code": (
+                    "if (!django_iterator_py || typeof django_iterator_py[Symbol.iterator] !== 'function') throw new Error('Django QuerySet.iterator did not expose JS iterator'); "
+                    "const it = django_iterator_py[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('Django QuerySet.iterator was empty'); "
+                    "const row = first.value; "
+                    "if (row.name !== 'ada') throw new Error('bad Django iterator JS name: ' + row.name); "
+                    "if (row.items !== 'field-items' || row.keys !== 'field-keys' || String(row.count) !== '1' || row.then !== 'field-then' || String(row.length) !== '2' || row.close !== 'field-close') "
+                    "throw new Error('Django iterator JS collision fields lost'); "
+                    "if (django_iterator_py.cancel('client-stop') !== true) throw new Error('Django iterator JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"django_iterator_ruby": "django_iterator_ruby"},
+                "code": (
+                    "row = django_iterator_ruby.first; "
+                    "raise 'Django QuerySet.iterator was empty' if row.nil?; "
+                    "raise \"bad Django iterator Ruby name #{row.name}\" unless row.name == 'ada'; "
+                    "raise 'Django iterator Ruby collision fields lost' unless row.items == 'field-items' && row.keys == 'field-keys' && row.count.to_s == '1' && row.then == 'field-then' && row.length.to_s == '2' && row.close == 'field-close'; "
+                    "django_iterator_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"django_iterator_java": "django_iterator_java"},
+                "code": (
+                    "Object rawStream = omnivm.OmniVM.getCapture(\"django_iterator_java\"); "
+                    "if (!(rawStream instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"Django QuerySet.iterator should cross as stream proxy: \" + rawStream); "
+                    "omnivm.OmniVM.StreamProxy stream = (omnivm.OmniVM.StreamProxy) rawStream; "
+                    "java.util.Iterator<Object> it = stream.iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"Django QuerySet.iterator was empty\"); "
+                    "Object rawRow = it.next(); "
+                    "if (!(rawRow instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"Django QuerySet.iterator row should cross as HandleProxy: \" + rawRow); "
+                    "omnivm.OmniVM.HandleProxy row = (omnivm.OmniVM.HandleProxy) rawRow; "
+                    "if (!\"ada\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Django iterator Java name: \" + row.get(\"name\")); "
+                    "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"Django iterator Java items lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"Django iterator Java keys lost\"); "
+                    "if (!\"1\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"Django iterator Java count lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"Django iterator Java then lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"Django iterator Java length lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"Django iterator Java close lost\"); "
+                    "if (!stream.cancel()) throw new RuntimeException(\"Django iterator Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    before_boundary = before.get("boundary", {})
+    handles = after_status.get("handles", {})
+    before_handles = before.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"Django QuerySet.iterator did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 3 and resource_capture_delta < 3:
+        raise AssertionError(f"Django QuerySet.iterator rows did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django QuerySet.iterator used JSON fallback: before={before_boundary}, after={boundary}")
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
+        raise AssertionError(f"Django QuerySet.iterator streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_django_model_collision_fields_stay_natural():
     before = omnivm.status()
     setup = r'''
@@ -28684,6 +28865,7 @@ def main():
         check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
+        check("Manifest Django QuerySet iterator is lazy and cancellable", test_manifest_django_queryset_iterator_is_lazy_and_cancellable)
         check("Manifest Django model collision fields stay natural", test_manifest_django_model_collision_fields_stay_natural)
         check("Manifest SQLAlchemy ORM collision fields stay natural", test_manifest_sqlalchemy_orm_collision_fields_stay_natural)
         check("Manifest SQLAlchemy Row collision fields stay natural", test_manifest_sqlalchemy_row_collision_fields_stay_natural)
