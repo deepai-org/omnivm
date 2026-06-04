@@ -26126,10 +26126,10 @@ def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
                 "runtime": "javascript",
                 "captures": {"java_future_cancel": "java_future_cancel"},
                 "code": (
-                    "if (java_future_cancel.isDone()) throw new Error('future should start pending'); "
+                    "if (java_future_cancel.isDone) throw new Error('future should start pending'); "
                     "if (java_future_cancel.cancel(true) !== true) throw new Error('future cancel returned false'); "
-                    "if (!java_future_cancel.isCancelled()) throw new Error('future did not report cancelled in JS'); "
-                    "if (!java_future_cancel.isDone()) throw new Error('cancelled future did not report done in JS');"
+                    "if (!java_future_cancel.isCancelled) throw new Error('future did not report cancelled in JS'); "
+                    "if (!java_future_cancel.isDone) throw new Error('cancelled future did not report done in JS');"
                 ),
             },
             {
@@ -26187,11 +26187,11 @@ def test_manifest_java_scheduled_future_cancel_status_crosses_runtimes():
                 "runtime": "javascript",
                 "captures": {"java_scheduled_future_cancel": "java_scheduled_future_cancel"},
                 "code": (
-                    "if (java_scheduled_future_cancel.isDone()) throw new Error('ScheduledFuture should start pending'); "
-                    "if (java_scheduled_future_cancel.isCancelled()) throw new Error('ScheduledFuture should not start cancelled'); "
+                    "if (java_scheduled_future_cancel.isDone) throw new Error('ScheduledFuture should start pending'); "
+                    "if (java_scheduled_future_cancel.isCancelled) throw new Error('ScheduledFuture should not start cancelled'); "
                     "if (java_scheduled_future_cancel.cancel(true) !== true) throw new Error('ScheduledFuture cancel returned false'); "
-                    "if (!java_scheduled_future_cancel.isCancelled()) throw new Error('ScheduledFuture did not report cancelled in JS'); "
-                    "if (!java_scheduled_future_cancel.isDone()) throw new Error('ScheduledFuture did not report done in JS after cancel');"
+                    "if (!java_scheduled_future_cancel.isCancelled) throw new Error('ScheduledFuture did not report cancelled in JS'); "
+                    "if (!java_scheduled_future_cancel.isDone) throw new Error('ScheduledFuture did not report done in JS after cancel');"
                 ),
             },
             {
@@ -26271,11 +26271,11 @@ def test_manifest_java_executor_service_future_cancel_interrupts_owner():
                 "runtime": "javascript",
                 "captures": {"java_executor_future_cancel": "java_executor_future_cancel"},
                 "code": (
-                    "if (java_executor_future_cancel.isDone()) throw new Error('ExecutorService Future should start pending'); "
-                    "if (java_executor_future_cancel.isCancelled()) throw new Error('ExecutorService Future should not start cancelled'); "
+                    "if (java_executor_future_cancel.isDone) throw new Error('ExecutorService Future should start pending'); "
+                    "if (java_executor_future_cancel.isCancelled) throw new Error('ExecutorService Future should not start cancelled'); "
                     "if (java_executor_future_cancel.cancel(true) !== true) throw new Error('ExecutorService Future cancel returned false'); "
-                    "if (!java_executor_future_cancel.isCancelled()) throw new Error('ExecutorService Future did not report cancelled in JS'); "
-                    "if (!java_executor_future_cancel.isDone()) throw new Error('ExecutorService Future did not report done in JS after cancel');"
+                    "if (!java_executor_future_cancel.isCancelled) throw new Error('ExecutorService Future did not report cancelled in JS'); "
+                    "if (!java_executor_future_cancel.isDone) throw new Error('ExecutorService Future did not report done in JS after cancel');"
                 ),
             },
             {
@@ -26349,16 +26349,16 @@ def test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_
                     "future_task_status": "future_task_status",
                 },
                 "code": (
-                    "if (reactor_disposable_status.isDisposed()) throw new Error('Reactor Disposable should start active'); "
+                    "if (reactor_disposable_status.isDisposed) throw new Error('Reactor Disposable should start active'); "
                     "reactor_disposable_status.dispose(); "
-                    "if (!reactor_disposable_status.isDisposed()) throw new Error('Reactor Disposable did not report disposed in JS'); "
-                    "if (rxjava_disposable_status.isDisposed()) throw new Error('RxJava Disposable should start active'); "
+                    "if (!reactor_disposable_status.isDisposed) throw new Error('Reactor Disposable did not report disposed in JS'); "
+                    "if (rxjava_disposable_status.isDisposed) throw new Error('RxJava Disposable should start active'); "
                     "rxjava_disposable_status.dispose(); "
-                    "if (!rxjava_disposable_status.isDisposed()) throw new Error('RxJava Disposable did not report disposed in JS'); "
-                    "if (future_task_status.isDone()) throw new Error('FutureTask should start pending'); "
+                    "if (!rxjava_disposable_status.isDisposed) throw new Error('RxJava Disposable did not report disposed in JS'); "
+                    "if (future_task_status.isDone) throw new Error('FutureTask should start pending'); "
                     "if (future_task_status.cancel(true) !== true) throw new Error('FutureTask cancel returned false'); "
-                    "if (!future_task_status.isCancelled()) throw new Error('FutureTask did not report cancelled in JS'); "
-                    "if (!future_task_status.isDone()) throw new Error('FutureTask did not report done in JS after cancel');"
+                    "if (!future_task_status.isCancelled) throw new Error('FutureTask did not report cancelled in JS'); "
+                    "if (!future_task_status.isDone) throw new Error('FutureTask did not report done in JS after cancel');"
                 ),
             },
             {
@@ -26421,16 +26421,16 @@ def test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_c
                     "py_future_task_status": "py_future_task_status",
                 },
                 "code": (
-                    "assert py_reactor_disposable_status.isDisposed() is False\n"
+                    "assert py_reactor_disposable_status.isDisposed is False\n"
                     "py_reactor_disposable_status.dispose()\n"
-                    "assert py_reactor_disposable_status.isDisposed() is True\n"
-                    "assert py_rxjava_disposable_status.isDisposed() is False\n"
+                    "assert py_reactor_disposable_status.isDisposed is True\n"
+                    "assert py_rxjava_disposable_status.isDisposed is False\n"
                     "py_rxjava_disposable_status.dispose()\n"
-                    "assert py_rxjava_disposable_status.isDisposed() is True\n"
-                    "assert py_future_task_status.isDone() is False\n"
+                    "assert py_rxjava_disposable_status.isDisposed is True\n"
+                    "assert py_future_task_status.isDone is False\n"
                     "assert py_future_task_status.cancel(True) is True\n"
-                    "assert py_future_task_status.isCancelled() is True\n"
-                    "assert py_future_task_status.isDone() is True"
+                    "assert py_future_task_status.isCancelled is True\n"
+                    "assert py_future_task_status.isDone is True"
                 ),
             },
             {
@@ -26457,7 +26457,7 @@ def test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_c
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 3:
+    if boundary.get("resource_proxy_captures", 0) < 3:
         raise AssertionError(f"Python reactive/future cancellation handles did not cross as live proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Python reactive/future cancellation handles used JSON fallback: before={before_boundary}, after={boundary}")
@@ -26465,6 +26465,82 @@ def test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_c
     before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
     if call_count < before_call_count + 9:
         raise AssertionError(f"Python reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+
+
+def test_manifest_ruby_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "omnivm.OmniVM.setCaptureObject(\"ruby_reactor_disposable_status\", reactor.core.publisher.Flux.never().subscribe()); "
+                    "omnivm.OmniVM.setCaptureObject(\"ruby_rxjava_disposable_status\", io.reactivex.rxjava3.core.Flowable.never().subscribe()); "
+                    "omnivm.OmniVM.setCaptureObject(\"ruby_future_task_status\", new java.util.concurrent.FutureTask<String>(() -> \"done\"));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {
+                    "ruby_reactor_disposable_status": "ruby_reactor_disposable_status",
+                    "ruby_rxjava_disposable_status": "ruby_rxjava_disposable_status",
+                    "ruby_future_task_status": "ruby_future_task_status",
+                },
+                "code": (
+                    "raise 'Reactor Disposable should start active' if ruby_reactor_disposable_status.isDisposed\n"
+                    "reactor_dispose = ruby_reactor_disposable_status.dispose\n"
+                    "raise \"Reactor Disposable dispose should stay callable #{reactor_dispose.inspect}\" unless reactor_dispose.respond_to?(:call)\n"
+                    "reactor_dispose.call\n"
+                    "raise 'Reactor Disposable did not report disposed in Ruby' unless ruby_reactor_disposable_status.isDisposed == true\n"
+                    "raise 'RxJava Disposable should start active' if ruby_rxjava_disposable_status.isDisposed\n"
+                    "rxjava_dispose = ruby_rxjava_disposable_status.dispose\n"
+                    "raise \"RxJava Disposable dispose should stay callable #{rxjava_dispose.inspect}\" unless rxjava_dispose.respond_to?(:call)\n"
+                    "rxjava_dispose.call\n"
+                    "raise 'RxJava Disposable did not report disposed in Ruby' unless ruby_rxjava_disposable_status.isDisposed == true\n"
+                    "raise 'FutureTask should start pending' if ruby_future_task_status.isDone\n"
+                    "raise 'FutureTask cancel returned false' unless ruby_future_task_status.cancel(true) == true\n"
+                    "raise 'FutureTask did not report cancelled in Ruby' unless ruby_future_task_status.isCancelled == true\n"
+                    "raise 'FutureTask did not report done in Ruby after cancel' unless ruby_future_task_status.isDone == true"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "Object reactorRaw = omnivm.OmniVM.getCapture(\"ruby_reactor_disposable_status\"); "
+                    "if (!(reactorRaw instanceof reactor.core.Disposable)) throw new RuntimeException(\"Ruby Reactor Disposable capture lost native type: \" + reactorRaw); "
+                    "if (!((reactor.core.Disposable) reactorRaw).isDisposed()) throw new RuntimeException(\"Ruby Reactor Disposable did not stay disposed in Java\"); "
+                    "Object rxRaw = omnivm.OmniVM.getCapture(\"ruby_rxjava_disposable_status\"); "
+                    "if (!(rxRaw instanceof io.reactivex.rxjava3.disposables.Disposable)) throw new RuntimeException(\"Ruby RxJava Disposable capture lost native type: \" + rxRaw); "
+                    "if (!((io.reactivex.rxjava3.disposables.Disposable) rxRaw).isDisposed()) throw new RuntimeException(\"Ruby RxJava Disposable did not stay disposed in Java\"); "
+                    "Object futureRaw = omnivm.OmniVM.getCapture(\"ruby_future_task_status\"); "
+                    "if (!(futureRaw instanceof java.util.concurrent.FutureTask)) throw new RuntimeException(\"Ruby FutureTask capture lost native type: \" + futureRaw); "
+                    "java.util.concurrent.FutureTask<?> future = (java.util.concurrent.FutureTask<?>) futureRaw; "
+                    "if (!future.isCancelled()) throw new RuntimeException(\"Ruby FutureTask did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(\"Ruby FutureTask did not stay done in Java\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 3:
+        raise AssertionError(f"Ruby reactive/future cancellation handles did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Ruby reactive/future cancellation handles used JSON fallback: before={before_boundary}, after={boundary}")
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 9:
+        raise AssertionError(f"Ruby reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
 
 
 def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
@@ -26486,13 +26562,13 @@ def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
                 "runtime": "javascript",
                 "captures": {"kotlin_job_status": "kotlin_job_status"},
                 "code": (
-                    "if (!kotlin_job_status.isActive()) throw new Error('Kotlin Job should start active'); "
-                    "if (kotlin_job_status.isCancelled()) throw new Error('Kotlin Job should not start cancelled'); "
-                    "if (kotlin_job_status.isCompleted()) throw new Error('Kotlin Job should not start completed'); "
+                    "if (!kotlin_job_status.isActive) throw new Error('Kotlin Job should start active'); "
+                    "if (kotlin_job_status.isCancelled) throw new Error('Kotlin Job should not start cancelled'); "
+                    "if (kotlin_job_status.isCompleted) throw new Error('Kotlin Job should not start completed'); "
                     "kotlin_job_status.cancel(null); "
-                    "if (kotlin_job_status.isActive()) throw new Error('Kotlin Job stayed active after JS cancel'); "
-                    "if (!kotlin_job_status.isCancelled()) throw new Error('Kotlin Job did not report cancelled in JS'); "
-                    "if (!kotlin_job_status.isCompleted()) throw new Error('Kotlin Job did not report completed in JS after cancel');"
+                    "if (kotlin_job_status.isActive) throw new Error('Kotlin Job stayed active after JS cancel'); "
+                    "if (!kotlin_job_status.isCancelled) throw new Error('Kotlin Job did not report cancelled in JS'); "
+                    "if (!kotlin_job_status.isCompleted) throw new Error('Kotlin Job did not report completed in JS after cancel');"
                 ),
             },
             {
@@ -27984,6 +28060,7 @@ def main():
         check("Manifest Java ExecutorService Future cancellation interrupts owner", test_manifest_java_executor_service_future_cancel_interrupts_owner)
         check("Manifest Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Python Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
+        check("Manifest Ruby Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_ruby_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
