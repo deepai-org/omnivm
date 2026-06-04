@@ -1527,6 +1527,9 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	if !strings.Contains(valueJSON, `"__omnivm_table__":true`) || strings.Contains(valueJSON, `"Value"`) {
 		t.Fatalf("table value should marshal as a proxy descriptor, got %s", valueJSON)
 	}
+	if _, err := e.HandleCall(`{"op":"handle_retain","id":` + strconv.FormatUint(uint64(ref.ID), 10) + `}`); err != nil {
+		t.Fatalf("retain table proxy handle before owner release: %v", err)
+	}
 	if _, err := e.executeOp(&Op{
 		OpType: "table",
 		Action: "release",

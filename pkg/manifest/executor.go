@@ -1808,7 +1808,7 @@ func (e *Executor) opTable(op *Op) (interface{}, error) {
 				return nil, fmt.Errorf("table release cleanup: %w", err)
 			}
 		}
-		if err := e.ensureHandleTable().Release(ref.ID); err != nil {
+		if err := e.ensureHandleTable().ReleaseAllRefs(ref.ID); err != nil {
 			return nil, fmt.Errorf("table release handle: %w", err)
 		}
 		return ref, nil
