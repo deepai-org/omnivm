@@ -385,6 +385,18 @@ func (o *BufferOwner) Released() bool {
 	return o.released
 }
 
+// Status returns the current lifecycle diagnostic for the owned buffer name.
+func (o *BufferOwner) Status() BufferStatus {
+	if o == nil {
+		return BufferStatus{State: "missing", LeaseState: "missing"}
+	}
+	store := o.store
+	if store == nil {
+		store = GlobalStore()
+	}
+	return store.Status(o.name)
+}
+
 // Release releases the public name once. It returns true only when this call
 // performed the successful release; later calls return false,nil.
 func (o *BufferOwner) Release() (bool, error) {

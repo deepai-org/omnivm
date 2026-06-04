@@ -957,9 +957,9 @@ func TestBufferOwnerSetReleaseAndCloseAreIdempotent(t *testing.T) {
 	if owner.Released() {
 		t.Fatal("owner reported released before Release")
 	}
-	status := s.Status("payload")
+	status := owner.Status()
 	if status.State != "live" || !status.Live || status.Dtype != DtypeBytes || status.Format != "C" {
-		t.Fatalf("SetOwnedBuffer did not publish expected buffer: %+v", status)
+		t.Fatalf("owner Status did not report published buffer: %+v", status)
 	}
 
 	released, err := owner.Release()
@@ -972,9 +972,9 @@ func TestBufferOwnerSetReleaseAndCloseAreIdempotent(t *testing.T) {
 	if !owner.Released() {
 		t.Fatal("owner did not report released after Release")
 	}
-	status = s.Status("payload")
+	status = owner.Status()
 	if status.State != "released" || status.LeaseState != "released" {
-		t.Fatalf("owner Release did not tombstone buffer: %+v", status)
+		t.Fatalf("owner Status did not report released tombstone: %+v", status)
 	}
 	released, err = owner.Release()
 	if err != nil || released {
@@ -1006,6 +1006,10 @@ func TestBufferOwnerReleaseFailureDoesNotMarkReleased(t *testing.T) {
 	}
 	if owner.Released() {
 		t.Fatal("owner marked released after failed release")
+	}
+	status := owner.Status()
+	if status.State != "released" || status.ReleaseError != "producer release failed" {
+		t.Fatalf("owner Status after failed release = %+v, want released tombstone with producer failure", status)
 	}
 	released, err = owner.Release()
 	if err == nil || released {
