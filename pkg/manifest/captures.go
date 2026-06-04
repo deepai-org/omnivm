@@ -1466,12 +1466,18 @@ if (typeof omnivm !== 'undefined' && omnivm) {
           try {
             symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null;
           } catch (_symbolDisposeLookupError) {}
-          if (typeof symbolDispose === 'function') return symbolDispose.call(value);
+          if (typeof symbolDispose === 'function') {
+            var symbolDisposeResult = symbolDispose.call(value);
+            return symbolDisposeResult === undefined ? true : symbolDisposeResult;
+          }
           var symbolAsyncDispose = null;
           try {
             symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null;
           } catch (_symbolAsyncDisposeLookupError) {}
-          if (typeof symbolAsyncDispose === 'function') return symbolAsyncDispose.call(value);
+          if (typeof symbolAsyncDispose === 'function') {
+            var symbolAsyncDisposeResult = symbolAsyncDispose.call(value);
+            return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult;
+          }
         }
         var close = globalThis.__omnivm_actual_public_method(value, "close");
         if (close) {

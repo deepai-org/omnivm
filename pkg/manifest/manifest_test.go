@@ -5820,6 +5820,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "return omnivmClose.call(value)") ||
 		!contains(code, "symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null") ||
 		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null") ||
+		!contains(code, "return symbolDisposeResult === undefined ? true : symbolDisposeResult") ||
+		!contains(code, "return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, "var result = close();\n          return result === undefined ? true : result") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
@@ -5913,6 +5915,13 @@ if (undefinedResult !== true) throw new Error("undefined close result should nor
 var promise = Promise.resolve("async-closed");
 var promiseResult = omnivm.proxyClose({close: function() { return promise; }});
 if (promiseResult !== promise) throw new Error("promise close result was not preserved");
+var symbolDisposeResult = omnivm.proxyClose({[Symbol.dispose]: function() {}});
+if (symbolDisposeResult !== true) throw new Error("undefined Symbol.dispose result should normalize to true");
+var symbolDisposeFalse = omnivm.proxyClose({[Symbol.dispose]: function() { return false; }});
+if (symbolDisposeFalse !== false) throw new Error("false Symbol.dispose result was not preserved");
+var symbolAsyncDisposePromise = Promise.resolve("async-symbol-closed");
+var symbolAsyncDisposeResult = omnivm.proxyClose({[Symbol.asyncDispose]: function() { return symbolAsyncDisposePromise; }});
+if (symbolAsyncDisposeResult !== symbolAsyncDisposePromise) throw new Error("Symbol.asyncDispose promise result was not preserved");
 `
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
