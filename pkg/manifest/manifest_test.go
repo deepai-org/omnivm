@@ -6747,10 +6747,15 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`origin_runtime = text_field.call(field.call(\"origin_runtime\", \"originRuntime\"), runtime_name)`,
 		`err_type = text_field.call(field.call(\"type\", \"type\"))`,
 		`detail = text_field.call(field.call(\"message\", \"message\"))`,
+		`details_field = ->(source) do`,
+		`raw_details = read_field.call(source, \"details_json\", \"detailsJson\")`,
+		`return JSON.parse(raw_details)`,
+		`return raw_details`,
 		`stack_frames = field.call(\"stack_frames\", \"stackFrames\")`,
 		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
 		`boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path)`,
+		`details: details_field.call(envelope)`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError should accept JS camelCase envelope fields, missing %q", want)
@@ -6761,7 +6766,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`cause_stack_frames = read_field.call(cause, \"stack_frames\", \"stackFrames\")`,
 		"item[:stack_frames] = cause_stack_frames.dup",
 		`item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]`,
-		`item[:details] = __copy_json_value(cause_details) unless cause_details.nil?`,
+		`cause_details = details_field.call(cause)`,
+		`item[:details] = cause_details unless cause_details.nil?`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError should preserve nested cause envelope fields, missing %q", want)
