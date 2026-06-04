@@ -5709,7 +5709,10 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def _mark_closed(self):") ||
 		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
-		!contains(code, "self._cache.append(globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)]))") ||
+		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
+		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](item.get(\"value\"))") ||
+		!contains(code, "self._cache.append(materialized)") ||
+		!contains(code, "try:\n                    self.close()\n                except Exception:\n                    self._mark_closed()\n                raise") ||
 		!contains(code, "def __iter__(self):\n        def __omnivm_iter():") ||
 		!contains(code, "finally:\n                if not self._closed:") ||
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
@@ -5783,6 +5786,56 @@ if len(cancels) != 1 or cancels[0].get("id") != 88:
 	}
 }
 
+func TestPythonRemoteStreamCancelsOnChunkMaterializationError(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            return json.dumps({"__omnivm_result__": True, "value": {"done": False, "value": {"bad": True}}})
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __OmniVMStreamProxy({"__omnivm_stream__": True, "id": 89, "runtime": "python", "kind": "stream"})
+def bad_materializer(_value):
+    raise RuntimeError("chunk boom")
+globals()["__omnivm_materialize_capture"] = bad_materializer
+try:
+    next(stream)
+except RuntimeError as exc:
+    if "chunk boom" not in str(exc):
+        raise
+else:
+    raise RuntimeError("chunk materialization error was not raised")
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed")
+if stream.close() is not False:
+    raise RuntimeError("close was not idempotent")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 89:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream materialization-error cancellation check failed: %v\n%s", err, out)
+	}
+}
+
 func TestWrapJavaScriptCaptures(t *testing.T) {
 	code := wrapJavaScriptCaptures("console.log(x)", map[string]string{"x": "42"})
 	if !contains(code, "(function(") {
@@ -5829,7 +5882,9 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
-		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
+		!contains(code, "var cancelRemoteQuiet = function()") ||
+		!contains(code, "if (cancelRemote() !== true) markRemoteClosed();") ||
+		!contains(code, "catch (_e) {\n      cancelRemoteQuiet();\n      throw _e;\n    }") ||
 		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||
@@ -6119,6 +6174,58 @@ if (unregistered !== 1) throw new Error("closed remote stream was unregistered m
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node remote stream early-break lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSRemoteStreamCancelsOnChunkMaterializationError(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: true, value: {done: false, value: {bad: true}}});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 89, runtime: "javascript", kind: "stream"});
+globalThis.__omnivm_stream_chunk_value = function(_value) {
+  throw new Error("chunk boom");
+};
+try {
+  stream[Symbol.iterator]().next();
+} catch (err) {
+  if (!String(err && err.message).includes("chunk boom")) throw err;
+}
+if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed after materialization error");
+if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+if (unregistered !== 1) throw new Error("stream finalizer was not unregistered after materialization error: " + unregistered);
+var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+if (cancels.length !== 1 || cancels[0].id !== 89) throw new Error("stream cancel requests mismatch: " + JSON.stringify(cancels));
+if (stream.cancel() !== false) throw new Error("closed remote stream cancel should be idempotent false");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node remote stream materialization-error lifecycle check failed: %v\n%s", err, out)
 	}
 }
 

@@ -309,6 +309,9 @@ Generated stream proxies also mark themselves closed when a pull raises, detach
 their fallback finalizer, and rethrow the original error.
 Targets may cancel abandoned streams; collision-safe stream close helpers route
 to `stream_cancel` so partial consumption closes the owner deterministically.
+If a stream chunk is received but fails while being materialized into a guest
+proxy value, generated Python and JavaScript stream proxies also cancel the
+owner stream before rethrowing the materialization error.
 Python retained manifest stream iterators also attach a quiet iterator-finalizer
 cancel path, so a normal `for` loop that breaks early uses `stream_cancel`
 instead of falling back to the handle finalizer release queue.

@@ -1074,7 +1074,15 @@ class __OmniVMStreamProxy:
             if len(self._cache) >= len(self._local_values):
                 self._mark_closed()
                 return False
-            self._cache.append(globals()["__omnivm_materialize_capture"](self._local_values[len(self._cache)]))
+            try:
+                materialized = globals()["__omnivm_materialize_capture"](self._local_values[len(self._cache)])
+            except Exception:
+                try:
+                    self.close()
+                except Exception:
+                    self._mark_closed()
+                raise
+            self._cache.append(materialized)
             return True
         try:
             item = self._next_envelope()
@@ -1084,7 +1092,15 @@ class __OmniVMStreamProxy:
         if item.get("done") is True:
             self._mark_closed()
             return False
-        self._cache.append(globals()["__omnivm_materialize_capture"](item.get("value")))
+        try:
+            materialized = globals()["__omnivm_materialize_capture"](item.get("value"))
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                self._mark_closed()
+            raise
+        self._cache.append(materialized)
         return True
 
     def _materialize_all(self):
@@ -1912,6 +1928,13 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var closeRemote = function() {
     markRemoteClosed();
   };
+  var cancelRemoteQuiet = function() {
+    try {
+      if (cancelRemote() !== true) markRemoteClosed();
+    } catch (_cancelErr) {
+      markRemoteClosed();
+    }
+  };
   var nextValue = function() {
     if (localValues) {
       if (remoteClosed) return {done: true};
@@ -1936,7 +1959,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
       }
     } catch (_e) {
-      closeRemote();
+      cancelRemoteQuiet();
       throw _e;
     }
     closeRemote();
