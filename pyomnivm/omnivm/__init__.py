@@ -791,11 +791,11 @@ def unload_manifest_modules():
 
 def drain_worker():
     """
-    Release retained OmniVM state before recycling a server worker.
+    Release live OmniVM process state before recycling a server worker.
 
     Call this from worker-drain/reload hooks when live proxies, retained
     manifest modules, streams, or resource handles might still exist. The
-    operation is process-wide because retained handles share one process handle
+    operation is process-wide because live handles share one process handle
     table.
     """
     if _lib is None:

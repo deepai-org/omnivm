@@ -423,8 +423,8 @@ func (t *Table) ReleaseScope(scope ScopeID) error {
 }
 
 // ReleaseAll releases every live handle, including escaped handles. It is used
-// during runtime shutdown when no proxy can safely dereference process-local
-// ids afterward.
+// during runtime shutdown or explicit worker drain/reload cleanup when no proxy
+// can safely dereference process-local ids afterward.
 func (t *Table) ReleaseAll() error {
 	var ids []ID
 	t.mu.Lock()

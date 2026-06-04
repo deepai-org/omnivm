@@ -129,7 +129,7 @@ func TestDrainFinalizerReleasesSkipsActiveManifest(t *testing.T) {
 	}
 }
 
-func TestUnloadManifestModulesForWorkerDrainReleasesHandles(t *testing.T) {
+func TestWorkerDrainReleasesAllProcessHandles(t *testing.T) {
 	prevEng := eng
 	prevManifest := manifestExecutor
 	prevModules := manifestModules
@@ -155,19 +155,36 @@ func TestUnloadManifestModulesForWorkerDrainReleasesHandles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register handle: %v", err)
 	}
+	retained, err := eng.Handles.Register("retained", handles.RegisterOptions{
+		Runtime: "javascript",
+		Kind:    "proxy",
+		Release: func(value any) error {
+			releases++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register retained handle: %v", err)
+	}
+	if err := eng.Handles.Retain(retained); err != nil {
+		t.Fatalf("retain handle: %v", err)
+	}
+	if err := eng.Handles.Escape(retained); err != nil {
+		t.Fatalf("escape handle: %v", err)
+	}
 
 	if err := unloadManifestModulesForWorkerDrain(); err != nil {
 		t.Fatalf("unload manifest modules: %v", err)
 	}
 
-	if releases != 1 {
-		t.Fatalf("handle releases = %d, want 1", releases)
+	if releases != 2 {
+		t.Fatalf("handle releases = %d, want 2", releases)
 	}
 	if manifestExecutor != nil || len(manifestModules) != 0 {
 		t.Fatalf("manifest modules not cleared: active=%v modules=%d", manifestExecutor, len(manifestModules))
 	}
 	stats := eng.Handles.Stats(time.Now())
-	if stats.Live != 0 || stats.ScopeReleases != 1 {
+	if stats.Live != 0 || stats.ScopeReleases != 2 {
 		t.Fatalf("bad handle stats after manifest unload: %+v", stats)
 	}
 }
