@@ -399,6 +399,22 @@ class TestRuntimeError(unittest.TestCase):
         envelope["details"]["thread_affinity"]["owner_dispatch_supported"] = True
         assert err.details == {"thread_affinity": {"owner_dispatch_supported": False}}
 
+    def test_details_override_copies_tuple_payloads_as_json_lists(self):
+        details = ({"items": [{"path": "payload.age"}]},)
+        err = omnivm_mod.RuntimeError(
+            "validation failed",
+            runtime="python",
+            boundary_path="call[python]",
+            details=details,
+        )
+        assert err.details == [{"items": [{"path": "payload.age"}]}]
+
+        details[0]["items"][0]["path"] = "changed"
+        envelope = err.to_dict()
+        envelope["details"][0]["items"][0]["path"] = "also-changed"
+
+        assert err.details == [{"items": [{"path": "payload.age"}]}]
+
     def test_to_dict_copies_mutable_envelope_values(self):
         err = omnivm_mod.RuntimeError(
             json.dumps(
