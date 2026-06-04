@@ -152,6 +152,7 @@ type Executor struct {
 	resources         map[handles.ID]*ResourceRef
 	releasedResources map[handles.ID]*ResourceRef
 	tables            map[handles.ID]*TableRef
+	releasedTables    map[handles.ID]*TableRef
 	bridgeHandles     map[bridgeIdentity]handles.ID
 	jobs              map[int]*JobHandle
 	nextJobID         int
@@ -186,6 +187,7 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		resources:         make(map[handles.ID]*ResourceRef),
 		releasedResources: make(map[handles.ID]*ResourceRef),
 		tables:            make(map[handles.ID]*TableRef),
+		releasedTables:    make(map[handles.ID]*TableRef),
 		bridgeHandles:     make(map[bridgeIdentity]handles.ID),
 		jobs:              make(map[int]*JobHandle),
 	}
@@ -2176,6 +2178,7 @@ func (e *Executor) forgetReleasedHandle(id handles.ID, value interface{}) {
 		return
 	}
 	e.rememberReleasedResource(id, value)
+	e.rememberReleasedTable(id, value)
 	delete(e.resources, id)
 	delete(e.tables, id)
 	e.forgetBridgeHandle(id, value)
@@ -2216,6 +2219,27 @@ func (e *Executor) rememberReleasedResource(id handles.ID, value interface{}) {
 	e.releasedResources[id] = &tombstone
 }
 
+func (e *Executor) rememberReleasedTable(id handles.ID, value interface{}) {
+	if e.releasedTables == nil {
+		e.releasedTables = make(map[handles.ID]*TableRef)
+	}
+	var ref *TableRef
+	switch v := value.(type) {
+	case *TableRef:
+		ref = v
+	case TableRef:
+		ref = &v
+	}
+	if ref == nil {
+		return
+	}
+	tombstone := *ref
+	tombstone.ID = id
+	tombstone.Released = true
+	tombstone.Value = nil
+	e.releasedTables[id] = &tombstone
+}
+
 func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
 	entry, ok := e.ensureHandleTable().Get(id)
 	if ok {
@@ -2223,6 +2247,9 @@ func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
 	}
 	if ref := e.releasedResources[id]; ref != nil {
 		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed resource handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Kind, "resource"))
+	}
+	if ref := e.releasedTables[id]; ref != nil {
+		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed table handle %d (runtime=%s format=%s): owner-side lifecycle is released", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Format, "table"))
 	}
 	return handles.Entry{}, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
 }

@@ -1523,6 +1523,21 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	if stats.Live != 0 || stats.ExplicitReleases != 1 {
 		t.Fatalf("table release should release handle explicitly, stats=%+v", stats)
 	}
+	for _, call := range []string{
+		`{"op":"handle_len","id":%d}`,
+		`{"op":"handle_index","id":%d,"value":0}`,
+	} {
+		_, err := e.HandleCall(fmt.Sprintf(call, ref.ID))
+		if err == nil {
+			t.Fatalf("released table call %s did not fail", call)
+		}
+		got := err.Error()
+		for _, want := range []string{"closed table handle", "runtime=python", "format=arrow_c_data", "owner-side lifecycle is released"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("released table call %s diagnostic missing %q: %s", call, want, got)
+			}
+		}
+	}
 	if !containsExecCall(mocks["python"].execCalls, "release_log.append('orders_view')") {
 		t.Fatalf("release hook was not executed; calls=%q", mocks["python"].execCalls)
 	}
