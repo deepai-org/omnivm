@@ -5367,6 +5367,47 @@ func TestRuntimeRefPythonAsyncStreamCancelWaitsForCloseTask(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonAsyncStreamCancelErrorKeepsLifecycleTombstone(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "python", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+	ready := false
+	mocks["python"].pumpFn = func() { ready = true }
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__aiter__"):
+			return pkg.Result{Value: true}
+		case strings.Contains(code, "stream_close_ready"):
+			if ready {
+				return pkg.Result{Value: "True"}
+			}
+			return pkg.Result{Value: "False"}
+		case strings.Contains(code, "stream_close_error"):
+			return pkg.Result{Value: "aclose failed"}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("Python async runtime ref stream_cancel close error did not fail")
+	} else if !strings.Contains(err.Error(), "aclose failed") {
+		t.Fatalf("Python async runtime ref stream_cancel close error = %v, want aclose failure", err)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale Python async runtime ref stream_next after close failure did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=python", "kind=stream", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale Python async runtime ref stream_next after close failure missing %q: %s", want, got)
+			}
+		}
+	}
+}
+
 func TestRuntimeRefJSStreamCancelWaitsForClosePromise(t *testing.T) {
 	e, mocks := makeExecutor("javascript")
 	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "javascript", VarName: "rows"})
