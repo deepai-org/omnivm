@@ -5716,7 +5716,8 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") ||
-		!contains(code, "stream[Symbol.dispose] = function() {\n      return cancelRemote();\n    };") {
+		!contains(code, "stream[Symbol.dispose] = function() {\n      return cancelRemote();\n    };") ||
+		!contains(code, "stream[Symbol.asyncDispose] = function() {\n      return cancelRemote();\n    };") {
 		t.Fatalf("JS stream proxy close/error handling should return the manifest release result and mark remote streams closed through explicit paths, got %q", code)
 	}
 }
@@ -5789,8 +5790,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON"`) {
 		t.Fatalf("JS proxy bookkeeping should protect the explicit close helper from remote fallback operations, got %q", code)
 	}
-	if !contains(code, "Symbol.dispose && prop === Symbol.dispose") {
-		t.Fatalf("JS materializer should expose Symbol.dispose as a collision-free lifecycle close hook, got %q", code)
+	if !contains(code, "Symbol.dispose && prop === Symbol.dispose") ||
+		!contains(code, "Symbol.asyncDispose && prop === Symbol.asyncDispose") {
+		t.Fatalf("JS materializer should expose disposal symbols as collision-free lifecycle close hooks, got %q", code)
 	}
 	if !contains(code, `return value.__omnivm_get(key, defaultValue, true);`) ||
 		!contains(code, `return function(key, defaultValue, remoteFirst) { return bridgeGet(key, defaultValue, remoteFirst === true); };`) ||

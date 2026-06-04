@@ -1676,6 +1676,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (prop === "__omnivm_contains") return function(key) { return bridgeContains(key); };
       if (prop === "__omnivm_close") return releaseProxyLease;
       if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return releaseProxyLease;
+      if (typeof Symbol !== 'undefined' && Symbol.asyncDispose && prop === Symbol.asyncDispose) return releaseProxyLease;
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
@@ -1960,6 +1961,11 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   };
   if (typeof Symbol !== 'undefined' && Symbol.dispose) {
     stream[Symbol.dispose] = function() {
+      return cancelRemote();
+    };
+  }
+  if (typeof Symbol !== 'undefined' && Symbol.asyncDispose) {
+    stream[Symbol.asyncDispose] = function() {
       return cancelRemote();
     };
   }
