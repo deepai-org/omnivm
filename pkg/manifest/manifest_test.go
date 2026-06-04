@@ -5134,6 +5134,26 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonAsyncStreamCloseUsesOwnerLoopContract(t *testing.T) {
+	code, ok := runtimeRefStreamCloseCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state")
+	if !ok {
+		t.Fatal("runtimeRefStreamCloseCode(python) unsupported")
+	}
+	for _, want := range []string{
+		"__omnivm_loop.is_running()",
+		"__aio.run_coroutine_threadsafe(__omnivm_await_on_owner_loop(__omnivm_result), __omnivm_loop).result()",
+		"OmniVM cannot synchronously await Python async stream close on its running owner asyncio loop; owner dispatch unsupported",
+		"__omnivm_result_close()",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefStreamCloseCode(python) missing %q in %q", want, code)
+		}
+	}
+	if contains(code, "__omnivm_close_loop = __aio.new_event_loop()") {
+		t.Fatalf("runtimeRefStreamCloseCode(python) creates a second loop for running owner loop: %q", code)
+	}
+}
+
 func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
 	code, ok := runtimeRefJSStreamCloseStepCode(RuntimeRef{Runtime: "javascript", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
 	if !ok {

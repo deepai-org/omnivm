@@ -3525,11 +3525,16 @@ def __omnivm_maybe_await_close(__omnivm_result):
             __omnivm_loop = __aio.new_event_loop()
             __aio.set_event_loop(__omnivm_loop)
     if __omnivm_loop.is_running():
-        __omnivm_close_loop = __aio.new_event_loop()
-        try:
-            __omnivm_close_loop.run_until_complete(__omnivm_result)
-        finally:
-            __omnivm_close_loop.close()
+        import threading as __omnivm_threading
+        __omnivm_loop_thread = getattr(__omnivm_loop, '_thread_id', None)
+        if __omnivm_loop_thread is not None and __omnivm_loop_thread != __omnivm_threading.get_ident():
+            async def __omnivm_await_on_owner_loop(__omnivm_awaitable):
+                return await __omnivm_awaitable
+            return __aio.run_coroutine_threadsafe(__omnivm_await_on_owner_loop(__omnivm_result), __omnivm_loop).result()
+        __omnivm_result_close = getattr(__omnivm_result, 'close', None)
+        if callable(__omnivm_result_close):
+            __omnivm_result_close()
+        raise RuntimeError('OmniVM cannot synchronously await Python async stream close on its running owner asyncio loop; owner dispatch unsupported')
     else:
         __omnivm_loop.run_until_complete(__omnivm_result)
 def __omnivm_close_one(__omnivm_target):
