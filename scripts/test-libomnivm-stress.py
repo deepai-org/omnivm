@@ -10535,6 +10535,173 @@ def test_manifest_prisma_cursor_pager_is_lazy_and_cancellable():
         stop_postgres()
 
 
+def test_manifest_prisma_transaction_rollback_crosses_runtimes():
+    pg, stop_postgres = start_postgres_fixture()
+    try:
+        pg_url = f"postgresql://{pg['user']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
+        setup = r'''
+(() => {
+  const pgUrl = __PG_URL__;
+  const clientDir = process.env.OMNIVM_PRISMA_CLIENT_DIR || '/omnivm/prisma/generated/client';
+
+  const {PrismaClient} = require(clientDir);
+  const {PrismaPg} = require('@prisma/adapter-pg');
+  const adapter = new PrismaPg({connectionString: pgUrl});
+  const client = new PrismaClient({adapter});
+  globalThis.prismaTxClient = client;
+  globalThis.prismaTxRows = [];
+  globalThis.prismaTxError = null;
+
+  globalThis.runPrismaRollback = async function() {
+    await client.$connect();
+    await client.$executeRawUnsafe('DROP TABLE IF EXISTS "Order"');
+    await client.$executeRawUnsafe('CREATE TABLE "Order" ("id" SERIAL PRIMARY KEY, "name" TEXT NOT NULL, "items" TEXT NOT NULL, "keys" TEXT NOT NULL, "count" INTEGER NOT NULL, "then" TEXT NOT NULL, "length" INTEGER NOT NULL, "close" TEXT NOT NULL)');
+    await client.order.create({
+      data: {
+        name: 'baseline',
+        items: 'base-items',
+        keys: 'base-keys',
+        count: 3,
+        then: 'base-then',
+        length: 8,
+        close: 'base-close',
+      },
+    });
+
+    let rollbackSeen = false;
+    try {
+      await client.$transaction(async (tx) => {
+        await tx.order.create({
+          data: {
+            name: 'rolled-back',
+            items: 'field-items',
+            keys: 'field-keys',
+            count: 7,
+            then: 'field-then',
+            length: 12,
+            close: 'field-close',
+          },
+        });
+        omnivm.call('python', "raise RuntimeError('prisma rollback')");
+      });
+    } catch (err) {
+      globalThis.prismaTxError = {
+        runtime: err && err.runtime,
+        type: err && err.type,
+        message: String((err && err.message) || err),
+        boundaryPath: err && err.boundaryPath,
+      };
+      rollbackSeen = globalThis.prismaTxError.runtime === 'python'
+        && globalThis.prismaTxError.type === 'RuntimeError'
+        && globalThis.prismaTxError.message.includes('prisma rollback')
+        && globalThis.prismaTxError.boundaryPath === 'call[python]';
+    }
+    if (!rollbackSeen) {
+      throw new Error('Prisma transaction did not surface Python rollback error: ' + JSON.stringify(globalThis.prismaTxError));
+    }
+
+    const rows = await client.order.findMany({orderBy: {id: 'asc'}});
+    globalThis.prismaTxRows = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      items: row.items,
+      keys: row.keys,
+      count: row.count,
+      then: row.then,
+      length: row.length,
+      close: row.close,
+    }));
+    if (globalThis.prismaTxRows.length !== 1) {
+      throw new Error('Prisma rollback left extra rows: ' + JSON.stringify(globalThis.prismaTxRows));
+    }
+    const row = globalThis.prismaTxRows[0];
+    if (row.name !== 'baseline' || row.items !== 'base-items' || row.keys !== 'base-keys'
+        || String(row.count) !== '3' || row.then !== 'base-then'
+        || String(row.length) !== '8' || row.close !== 'base-close') {
+      throw new Error('Prisma rollback corrupted baseline collision fields: ' + JSON.stringify(row));
+    }
+  };
+})();
+'''.replace("__PG_URL__", json.dumps(pg_url))
+        manifest = {
+            "version": 1,
+            "defaultRuntime": "python",
+            "ops": [
+                {"op": "exec", "runtime": "javascript", "code": setup},
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "async": True,
+                    "code": "await globalThis.runPrismaRollback();",
+                },
+                {"op": "eval", "runtime": "javascript", "bind": "prisma_tx_rows", "code": "globalThis.prismaTxRows"},
+                {
+                    "op": "exec",
+                    "runtime": "python",
+                    "captures": {"prisma_tx_rows": "prisma_tx_rows"},
+                    "code": (
+                        "assert len(prisma_tx_rows) == 1, prisma_tx_rows\n"
+                        "row = prisma_tx_rows[0]\n"
+                        "assert row['name'] == 'baseline', row\n"
+                        "assert row['items'] == 'base-items', row\n"
+                        "assert row['keys'] == 'base-keys', row\n"
+                        "assert str(row['count']) == '3', row\n"
+                        "assert row['then'] == 'base-then', row\n"
+                        "assert str(row['length']) == '8', row\n"
+                        "assert row['close'] == 'base-close', row"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"prisma_tx_rows": "prisma_tx_rows"},
+                    "code": (
+                        "raise \"Prisma rollback row count #{prisma_tx_rows.length}\" unless prisma_tx_rows.length == 1; "
+                        "row = prisma_tx_rows[0]; "
+                        "raise \"bad Prisma rollback Ruby name #{row['name']}\" unless row['name'] == 'baseline'; "
+                        "raise 'Prisma rollback Ruby items field lost' unless row['items'] == 'base-items'; "
+                        "raise 'Prisma rollback Ruby keys field lost' unless row['keys'] == 'base-keys'; "
+                        "raise 'Prisma rollback Ruby count field lost' unless row['count'].to_s == '3'; "
+                        "raise 'Prisma rollback Ruby then field lost' unless row['then'] == 'base-then'; "
+                        "raise 'Prisma rollback Ruby length field lost' unless row['length'].to_s == '8'; "
+                        "raise 'Prisma rollback Ruby close field lost' unless row['close'] == 'base-close'"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"prisma_tx_rows": "prisma_tx_rows"},
+                    "code": (
+                        "Object rowsRaw = omnivm.OmniVM.getCapture(\"prisma_tx_rows\"); "
+                        "java.util.function.Function<Integer, Object> rowAt = (idx) -> { "
+                        "    if (rowsRaw instanceof java.util.List<?>) return ((java.util.List<?>) rowsRaw).get(idx); "
+                        "    if (rowsRaw instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> rowsMap = (java.util.Map<?, ?>) rowsRaw; return rowsMap.containsKey(idx) ? rowsMap.get(idx) : rowsMap.get(String.valueOf(idx)); } "
+                        "    throw new RuntimeException(\"unexpected Prisma rollback rows shape: \" + rowsRaw); "
+                        "}; "
+                        "Object rowObj = rowAt.apply(0); "
+                        "java.util.Map<?, ?> row = (java.util.Map<?, ?>) rowObj; "
+                        "if (!\"baseline\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Prisma rollback Java name: \" + row); "
+                        "if (!\"base-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"Prisma rollback Java items field lost\"); "
+                        "if (!\"base-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"Prisma rollback Java keys field lost\"); "
+                        "if (!\"3\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"Prisma rollback Java count field lost\"); "
+                        "if (!\"base-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"Prisma rollback Java then field lost\"); "
+                        "if (!\"8\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"Prisma rollback Java length field lost\"); "
+                        "if (!\"base-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"Prisma rollback Java close field lost\");"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "javascript",
+                    "async": True,
+                    "code": "await globalThis.prismaTxClient.$disconnect();",
+                },
+            ],
+        }
+        run_manifest_dict(manifest)
+    finally:
+        stop_postgres()
+
+
 def test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback():
     pg, stop_postgres = start_postgres_fixture()
     try:
@@ -28538,6 +28705,7 @@ def main():
         check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
+        check("Manifest Prisma transaction rollback crosses runtimes", test_manifest_prisma_transaction_rollback_crosses_runtimes)
         check("Manifest PostgreSQL psycopg and asyncpg lifecycle", test_manifest_postgres_psycopg_asyncpg_lifecycle_and_rollback)
         check("Manifest asyncpg connection lifecycle proxy stays live", test_manifest_asyncpg_connection_lifecycle_proxy_stays_live)
         check("Manifest psycopg server-side cursor early cancel closes owner", test_manifest_psycopg_server_side_cursor_early_cancel_closes_owner)
