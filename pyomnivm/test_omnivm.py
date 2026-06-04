@@ -1614,6 +1614,54 @@ class TestCallWithMockLib(unittest.TestCase):
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert proxy.close() is False
 
+    def test_manifest_call_wraps_embedded_local_stream_values(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "runtime": "python",
+                    "kind": "stream",
+                    "values": [
+                        "row-1",
+                        {"nested": {"__omnivm_stream__": True, "values": ["inner"]}},
+                    ],
+                })
+            if request_payload.get("op") in {"handle_retain", "handle_adopt", "stream_next", "stream_cancel", "handle_release_finalizer"}:
+                raise AssertionError("embedded local stream should not call manifest lifecycle ops")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        stream = omnivm_mod.manifest_call("demo", "rows")
+        assert not isinstance(stream, dict)
+        values = list(stream)
+        assert values[0] == "row-1"
+        assert list(values[1]["nested"]) == ["inner"]
+        assert omnivm_mod.proxy_close(stream) is False
+        assert requests == [{"func": "rows", "args": []}]
+
+    def test_embedded_local_stream_closes_on_early_break(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        def consume_one():
+            for item in stream:
+                assert item == "row-1"
+                break
+
+        consume_one()
+        assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
     def test_manifest_stream_iterator_cancels_on_early_break(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

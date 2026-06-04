@@ -1261,6 +1261,8 @@ def _decode_manifest_result_unwrapped(result):
 
 def _wrap_manifest_value(module_id, value):
     if isinstance(value, dict):
+        if _is_local_stream_descriptor(value):
+            return _LocalManifestStreamProxy(module_id, value)
         if _is_manifest_proxy_descriptor(value) and module_id is not None:
             return ManifestProxy(module_id, value)
         return {key: _wrap_manifest_value(module_id, item) for key, item in value.items()}
@@ -1277,6 +1279,13 @@ def _is_manifest_proxy_descriptor(value):
         or value.get("__omnivm_channel__") is True
         or value.get("__omnivm_job__") is True
     ) and value.get("id") is not None
+
+
+def _is_local_stream_descriptor(value):
+    return (
+        value.get("__omnivm_stream__") is True
+        or value.get("__omnivm_channel__") is True
+    ) and isinstance(value.get("values"), list) and value.get("id") is None
 
 
 def _manifest_proxy_release(module_id, handle_id):
@@ -1461,6 +1470,42 @@ class _ManifestProxyMethod:
 
     def __repr__(self):
         return f"<omnivm.ManifestProxyMethod {self._key}>"
+
+
+class _LocalManifestStreamProxy:
+    """One-shot stream wrapper for manifest values embedded in an envelope."""
+
+    def __init__(self, module_id, descriptor):
+        self._module_id = module_id
+        self._values = list(descriptor.get("values") or [])
+        self._cursor = 0
+        self._closed = False
+
+    def close(self):
+        if self._closed:
+            return False
+        self._closed = True
+        self._cursor = len(self._values)
+        return True
+
+    def __iter__(self):
+        try:
+            while not self._closed and self._cursor < len(self._values):
+                item = self._values[self._cursor]
+                self._cursor += 1
+                yield _wrap_manifest_value(self._module_id, item)
+            if not self._closed:
+                self.close()
+        finally:
+            if not self._closed:
+                self.close()
+
+    def __len__(self):
+        remaining = len(self._values) - self._cursor
+        return remaining if remaining > 0 and not self._closed else 0
+
+    def __repr__(self):
+        return f"<omnivm.LocalManifestStream remaining={len(self)}>"
 
 
 def proxy_get(value, key):
