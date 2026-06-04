@@ -24,6 +24,7 @@ Usage:
     result = omnivm.call("ruby", "[1,2,3].map{|x| x*x}.to_s")
 """
 
+import atexit
 import ctypes
 import ctypes.util
 import json
@@ -41,6 +42,8 @@ __all__ = [
     "run_manifest",
     "load_manifest_module",
     "drain_worker",
+    "drain_worker_hook",
+    "install_worker_drain_hook",
     "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
@@ -241,6 +244,7 @@ def _parse_runtime_error_details(text):
 # runtime before fork(). Each worker loads it independently post-fork.
 _lib = None
 _lock = threading.Lock()
+_worker_drain_hook_installed = False
 _manifest_arg_refs_lock = threading.Lock()
 
 # Thread-local metrics
@@ -807,6 +811,35 @@ def drain_worker():
     else:
         raise RuntimeError("libomnivm does not expose OmniDrainWorker")
     return _check_result(result, boundary_path="drain_worker")
+
+
+def drain_worker_hook(*_args, **_kwargs):
+    """
+    App-server hook compatible wrapper for drain_worker().
+
+    Gunicorn and similar servers pass server/worker objects to lifecycle hooks;
+    this function accepts and ignores those arguments so configs can assign it
+    directly. If OmniVM was never initialized in this worker, it is a no-op.
+    Once libomnivm is loaded, real drain failures still raise RuntimeError.
+    """
+    if _lib is None:
+        return None
+    return drain_worker()
+
+
+def install_worker_drain_hook():
+    """
+    Register drain_worker_hook() with atexit and return the hook.
+
+    This is a small safety net for app-server reload/exit paths. Prefer an
+    explicit server hook when the server exposes one; the atexit registration
+    covers ordinary worker process exit and is idempotent per process.
+    """
+    global _worker_drain_hook_installed
+    if not _worker_drain_hook_installed:
+        atexit.register(drain_worker_hook)
+        _worker_drain_hook_installed = True
+    return drain_worker_hook
 
 
 def manifest_call(module_id, func, args=()):
@@ -1395,7 +1428,9 @@ def shutdown():
     """
     global _lib
     if _lib is not None:
-        _lib.OmniShutdown()
+        lib = _lib
+        _lib = None
+        lib.OmniShutdown()
 
 
 def last_call_duration_ns():

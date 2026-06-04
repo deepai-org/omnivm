@@ -502,6 +502,12 @@ boundary as structured data. The current mode is `single_vm_thread`; native Ruby
 threads are intentionally unsupported in process, and native-threaded app
 servers such as Puma should run out of process or be guarded by a startup check.
 
+For CPython-hosted app servers, `omnivm.drain_worker_hook(*args, **kwargs)` is
+the lifecycle-hook form of `omnivm.drain_worker()`. It accepts server callback
+arguments, drains initialized workers, and no-ops when a worker exits without
+ever loading OmniVM. `omnivm.install_worker_drain_hook()` registers the same
+hook with `atexit` as an idempotent process-exit fallback.
+
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
 proxies. When user code needs an unambiguous collection length, it can use

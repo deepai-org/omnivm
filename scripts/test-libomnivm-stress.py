@@ -29083,6 +29083,116 @@ finally:
         )
 
 
+def test_prefork_worker_reload_hook_drains_escaped_live_handles():
+    code = r"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, '/build/pyomnivm')
+import omnivm
+
+manifest = {
+    "version": 1,
+    "defaultRuntime": "python",
+    "ops": [
+        {
+            "op": "func_def",
+            "name": "echo_value",
+            "params": [{"name": "value"}],
+            "body": [
+                {"op": "return", "value": {"kind": "ref", "name": "value"}},
+            ],
+        },
+    ],
+}
+
+fd, manifest_path = tempfile.mkstemp(suffix=".manifest.json")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    pids = []
+    for worker_id in range(2):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                omnivm.init_runtimes(["javascript"])
+                module_id = f"reload-hook-{worker_id}"
+                omnivm.load_manifest_module(module_id, manifest_path)
+
+                class RequestLike:
+                    def __init__(self):
+                        self.path = "/reload/hook"
+                        self.status = "open"
+                        self.items = ["alpha", "beta"]
+
+                request = RequestLike()
+                leaked_request = omnivm.manifest_call(module_id, "echo_value", args=(request,))
+                if leaked_request.path != "/reload/hook" or leaked_request.status != "open":
+                    raise AssertionError(f"bad hook request proxy fields: {leaked_request!r}")
+                if not omnivm._escape_handle(leaked_request.__omnivm_handle_id__):
+                    raise AssertionError("failed to mark hook request handle escaped")
+
+                status_before = omnivm.status()
+                if status_before["handles"]["live"] < 1:
+                    raise AssertionError(f"hook path did not leave a live handle: {status_before}")
+                if status_before["boundary"].get("resource_proxy_captures", 0) < 1:
+                    raise AssertionError(f"hook path did not capture app object as resource proxy: {status_before}")
+
+                result = omnivm.drain_worker_hook(object(), object())
+                if result != "OK":
+                    raise AssertionError(f"worker drain hook returned unexpected result: {result!r}")
+                status_after = omnivm.status()
+                if status_after["handles"]["live"] != 0:
+                    raise AssertionError(f"worker drain hook leaked escaped live handles before={status_before} after={status_after}")
+
+                failed = False
+                try:
+                    omnivm.manifest_call(module_id, "echo_value", args=(request,))
+                except omnivm.RuntimeError as exc:
+                    failed = "manifest module not loaded" in str(exc)
+                if not failed:
+                    raise AssertionError("manifest module remained callable after worker drain hook")
+
+                leaked_request.close()
+                omnivm.shutdown()
+                os._exit(0)
+            except Exception as exc:
+                print(exc, file=sys.stderr)
+                os._exit(1)
+        pids.append(pid)
+
+    failures = []
+    for pid in pids:
+        _, status = os.waitpid(pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        if rc != 0:
+            failures.append((pid, rc))
+    if failures:
+        print(failures, file=sys.stderr)
+        raise SystemExit(1)
+finally:
+    try:
+        os.unlink(manifest_path)
+    except FileNotFoundError:
+        pass
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"prefork worker reload hook drain exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
 def test_prefork_worker_reload_releases_failed_manifest_call_args():
     code = r"""
 import builtins
@@ -29760,6 +29870,7 @@ def main():
     check("WSGI prefork worker lifecycle harness", test_wsgi_prefork_worker_lifecycle_harness)
     check("Prefork worker reload unloads manifest handles", test_prefork_worker_reload_unloads_manifest_handles)
     check("Prefork worker reload drains retained resource and stream handles", test_prefork_worker_reload_drains_retained_resource_and_stream_handles)
+    check("Prefork worker reload hook drains escaped live handles", test_prefork_worker_reload_hook_drains_escaped_live_handles)
     check("Prefork worker reload releases failed manifest call args", test_prefork_worker_reload_releases_failed_manifest_call_args)
     if (NAME_FILTERS or CATEGORY_FILTERS) and SELECTED == 0:
         print("\nResults: 0 selected, no tests matched filters")

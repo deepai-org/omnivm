@@ -186,10 +186,7 @@ def post_fork(server, worker):
 def worker_exit(server, worker):
     """Optional: release live OmniVM handles before an app-server worker exits."""
     import omnivm
-    try:
-        omnivm.drain_worker()
-    except RuntimeError:
-        pass
+    omnivm.drain_worker_hook(server, worker)
 
 # middleware.py
 from omnivm import call
@@ -317,6 +314,8 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
 | `omnivm.status()` | Return worker status JSON as a Python dict (`pid`, loaded runtimes, timeout counters, taint state, Ruby threading boundary, handle/boundary diagnostics) |
 | `omnivm.drain_worker()` | Release live process handles and retained manifest modules before worker drain/reload hooks |
+| `omnivm.drain_worker_hook(*args, **kwargs)` | App-server-compatible worker exit/reload hook that drains initialized workers and no-ops for workers that never loaded OmniVM |
+| `omnivm.install_worker_drain_hook()` | Register `drain_worker_hook()` with `atexit` as an idempotent process-exit fallback |
 | `omnivm.worker_tainted()` | Return whether this worker should be recycled after a non-recoverable timeout |
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |

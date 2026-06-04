@@ -267,6 +267,7 @@ class TestNotInitialized(unittest.TestCase):
     def setUp(self):
         # Ensure _lib is None
         omnivm_mod._lib = None
+        omnivm_mod._worker_drain_hook_installed = False
 
     def test_call_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
@@ -308,6 +309,15 @@ class TestNotInitialized(unittest.TestCase):
     def test_status_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.status()
+
+    def test_drain_worker_hook_noops(self):
+        assert omnivm_mod.drain_worker_hook(object(), worker=object()) is None
+
+    @patch.object(omnivm_mod.atexit, "register")
+    def test_install_worker_drain_hook_registers_once(self, register):
+        assert omnivm_mod.install_worker_drain_hook() is omnivm_mod.drain_worker_hook
+        assert omnivm_mod.install_worker_drain_hook() is omnivm_mod.drain_worker_hook
+        register.assert_called_once_with(omnivm_mod.drain_worker_hook)
 
 
 class TestLoadLib(unittest.TestCase):
@@ -390,9 +400,11 @@ class TestCallWithMockLib(unittest.TestCase):
     def setUp(self):
         self.mock_lib = MagicMock()
         omnivm_mod._lib = self.mock_lib
+        omnivm_mod._worker_drain_hook_installed = False
 
     def tearDown(self):
         omnivm_mod._lib = None
+        omnivm_mod._worker_drain_hook_installed = False
 
     def test_call_encodes_args(self):
         self.mock_lib.OmniCallHost.return_value = b"OK:result"
@@ -478,6 +490,12 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.drain_worker()
         assert "busy" in str(ctx.exception)
         assert ctx.exception.boundary_path == "drain_worker"
+
+    def test_drain_worker_hook_accepts_app_server_args(self):
+        self.mock_lib.OmniDrainWorker.return_value = b"OK"
+        result = omnivm_mod.drain_worker_hook(object(), object(), reason="reload")
+        assert result == "OK"
+        self.mock_lib.OmniDrainWorker.assert_called_once_with()
 
     def test_manifest_call_decodes_return_envelope(self):
         self.mock_lib.OmniManifestCall.return_value = (
@@ -800,7 +818,7 @@ class TestShutdown(unittest.TestCase):
         omnivm_mod._lib = mock_lib
         omnivm_mod.shutdown()
         mock_lib.OmniShutdown.assert_called_once()
-        omnivm_mod._lib = None
+        assert omnivm_mod._lib is None
 
     def test_shutdown_noop_when_not_loaded(self):
         omnivm_mod._lib = None

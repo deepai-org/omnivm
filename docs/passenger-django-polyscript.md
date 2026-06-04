@@ -72,9 +72,11 @@ Set `POLYSCRIPT_COMPILER` to the installed Garbage compiler command and `POLYSCR
 - `force_max_concurrent_requests_per_process: 1` maps cleanly to the current WSGI model. Runtime state is worker-local.
 - `max_requests` recycling is still useful. It bounds memory growth from Django, native libraries, and embedded runtimes in the same way it bounds regular Python extension state.
 - SIGTERM and ALB draining stay Passenger-owned. Workers can usually let process
-  exit reclaim embedded runtime state; call `omnivm.drain_worker()` from an
-  explicit worker-drain hook when the server keeps the process alive after
-  draining requests.
+  exit reclaim embedded runtime state; call `omnivm.drain_worker_hook(server,
+  worker)` from an explicit worker-drain hook when the server keeps the process
+  alive after draining requests. `omnivm.install_worker_drain_hook()` adds an
+  idempotent `atexit` fallback for worker process exits and no-ops in workers
+  that never initialized OmniVM.
 - The Hypercorn/ASGI sidecar can use the same principle: run it with `python3-polyscript -m hypercorn ...`. Imported `.poly` modules initialize OmniVM only inside the serving process.
 
 ## Coverage
