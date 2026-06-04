@@ -1797,17 +1797,27 @@ def release_buffer(name):
     if hasattr(_lib, "OmniBufFree"):
         rc = _lib.OmniBufFree(encoded_name)
         if rc != 0:
-            detail = _buffer_status_summary(name)
+            status_details = _buffer_status_details(name)
+            detail = _buffer_status_summary(status_details)
             suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"omnivm.release_buffer failed for {name!r}{suffix}")
+            raise RuntimeError(
+                f"omnivm.release_buffer failed for {name!r}{suffix}",
+                boundary_path="native_memory",
+                details={"buffer": status_details} if status_details is not None else None,
+            )
         return
     _lib.OmniBufRelease(encoded_name)
 
 
-def _buffer_status_summary(name):
+def _buffer_status_details(name):
     try:
-        status = buffer_status(name)
+        return buffer_status(name)
     except Exception:
+        return None
+
+
+def _buffer_status_summary(status):
+    if status is None:
         return ""
     if not isinstance(status, dict):
         return ""

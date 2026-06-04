@@ -1151,6 +1151,9 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "state='released_detached'" in str(ctx.exception)
         assert "active_borrows=2" in str(ctx.exception)
         assert "detached_buffers=1" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "native_memory"
+        assert ctx.exception.details["buffer"]["state"] == "released_detached"
+        assert ctx.exception.details["buffer"]["active_borrows"] == 2
         self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
 
     def test_buffer_status_returns_lifecycle_diagnostics(self):
