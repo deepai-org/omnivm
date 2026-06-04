@@ -77,6 +77,15 @@ type BorrowedBuffer struct {
 	releaseErr   error
 }
 
+// BufferOwner owns a named buffer reference and releases it through the same
+// user-initiated diagnostic path as SharedStore.Free.
+type BufferOwner struct {
+	store    *SharedStore
+	name     string
+	mu       sync.Mutex
+	released bool
+}
+
 // Stats is a process-level snapshot for bulk data diagnostics.
 type Stats struct {
 	LiveBuffers         int            `json:"live_buffers"`
@@ -222,6 +231,17 @@ func nonEmptyString(value, fallback string) string {
 	return fallback
 }
 
+// OwnBuffer returns an owner for an existing named buffer in the global store.
+func OwnBuffer(name string) *BufferOwner {
+	return GlobalStore().OwnBuffer(name)
+}
+
+// SetOwnedBuffer publishes data in the global store and returns an owner for
+// the public name.
+func SetOwnedBuffer(name string, data []byte, meta BufferMetadata) (*BufferOwner, error) {
+	return GlobalStore().SetOwnedBuffer(name, data, meta)
+}
+
 // Allocate creates a new named buffer of the given size.
 func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 	s.mu.Lock()
@@ -332,6 +352,66 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 	s.gets++
 	s.zeroCopyBorrows++
 	return lease, nil
+}
+
+// OwnBuffer returns an owner for an existing named buffer.
+func (s *SharedStore) OwnBuffer(name string) *BufferOwner {
+	return &BufferOwner{store: s, name: name}
+}
+
+// SetOwnedBuffer publishes data and returns an owner for the public name.
+func (s *SharedStore) SetOwnedBuffer(name string, data []byte, meta BufferMetadata) (*BufferOwner, error) {
+	if _, err := s.SetWithMetadata(name, data, meta); err != nil {
+		return nil, err
+	}
+	return s.OwnBuffer(name), nil
+}
+
+// Name returns the public buffer name owned by this owner.
+func (o *BufferOwner) Name() string {
+	if o == nil {
+		return ""
+	}
+	return o.name
+}
+
+// Released reports whether this owner has successfully released its name.
+func (o *BufferOwner) Released() bool {
+	if o == nil {
+		return true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.released
+}
+
+// Release releases the public name once. It returns true only when this call
+// performed the successful release; later calls return false,nil.
+func (o *BufferOwner) Release() (bool, error) {
+	if o == nil {
+		return false, nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.released {
+		return false, nil
+	}
+	store := o.store
+	if store == nil {
+		store = GlobalStore()
+	}
+	if err := store.Free(o.name); err != nil {
+		return false, err
+	}
+	o.released = true
+	return true, nil
+}
+
+// Close releases the owner name and makes BufferOwner usable with defer-style
+// cleanup.
+func (o *BufferOwner) Close() error {
+	_, err := o.Release()
+	return err
 }
 
 // Release ends the zero-copy lease. It is safe to call more than once.

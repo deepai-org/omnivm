@@ -751,7 +751,11 @@ external/Arrow memory; the old producer release callback runs only after the
 last displaced borrow is released.
 Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
-use `ReleaseWithError()`.
+use `ReleaseWithError()`. Go code that owns the public name can use
+`arrow.OwnBuffer(name)` for an existing name or
+`arrow.SetOwnedBuffer(name, data, metadata)` for publish-and-own. The returned
+`BufferOwner` releases through `SharedStore.Free`, reports producer release
+failures, and returns `false,nil` on later idempotent releases.
 Native buffer callback failures clear pointer/length/type/read-only outputs
 before returning an error code, so a stale pointer from an earlier successful
 borrow cannot be reused after a name is missing or released. Native buffer
