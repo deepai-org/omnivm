@@ -7679,6 +7679,8 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		"omnivm_v8_parse_runtime_error_envelope_text",
 		"omnivm_v8_parse_runtime_error_envelope_object",
 		"omnivm_v8_details_json_prop_fallback",
+		"omnivm_v8_json_clone_value",
+		`value = omnivm_v8_json_clone_value(isolate, context, value)`,
 		`"toJSON"`,
 		`"origin_runtime"`,
 		`"stack_frames"`,

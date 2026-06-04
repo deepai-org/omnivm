@@ -845,6 +845,26 @@ static void omnivm_v8_set_string_array_prop(v8::Isolate* isolate,
     ).ToChecked();
 }
 
+static v8::Local<v8::Value> omnivm_v8_json_clone_value(v8::Isolate* isolate,
+                                                       v8::Local<v8::Context> context,
+                                                       v8::Local<v8::Value> value) {
+    if (value.IsEmpty()) {
+        return v8::Null(isolate);
+    }
+    if (!value->IsObject()) {
+        return value;
+    }
+    v8::Local<v8::String> json;
+    if (!v8::JSON::Stringify(context, value).ToLocal(&json) || json.IsEmpty()) {
+        return value;
+    }
+    v8::Local<v8::Value> parsed;
+    if (!v8::JSON::Parse(context, json).ToLocal(&parsed) || parsed.IsEmpty()) {
+        return value;
+    }
+    return parsed;
+}
+
 static void omnivm_v8_copy_prop(v8::Isolate* isolate,
                                 v8::Local<v8::Context> context,
                                 v8::Local<v8::Object> source,
@@ -858,6 +878,7 @@ static void omnivm_v8_copy_prop(v8::Isolate* isolate,
         ).ToLocal(&value)) {
         value = v8::Null(isolate);
     }
+    value = omnivm_v8_json_clone_value(isolate, context, value);
     target->Set(
         context,
         v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
@@ -885,6 +906,7 @@ static void omnivm_v8_copy_prop_fallback(v8::Isolate* isolate,
             value = v8::Null(isolate);
         }
     }
+    value = omnivm_v8_json_clone_value(isolate, context, value);
     target->Set(
         context,
         v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
