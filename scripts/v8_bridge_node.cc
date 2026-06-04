@@ -695,17 +695,7 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
             v8::String::NewFromUtf8(isolate, env.details_json.c_str()).ToLocalChecked();
         v8::Local<v8::Value> parsed;
         if (v8::JSON::Parse(context, details_text).ToLocal(&parsed) && !parsed.IsEmpty()) {
-            if (parsed->IsArray()) {
-                v8::Local<v8::Object> wrapped = v8::Object::New(isolate);
-                wrapped->Set(
-                    context,
-                    v8::String::NewFromUtf8Literal(isolate, "errors"),
-                    parsed
-                ).ToChecked();
-                details = wrapped;
-            } else {
-                details = parsed;
-            }
+            details = parsed;
         }
     }
     error->Set(

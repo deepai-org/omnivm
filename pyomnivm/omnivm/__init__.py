@@ -263,11 +263,7 @@ def _parse_runtime_error_details(text):
             value = json.loads(stripped[len("Details: ") :])
         except Exception:
             return None
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, list):
-            return {"errors": value}
-        return {"value": value}
+        return value
     return None
 
 

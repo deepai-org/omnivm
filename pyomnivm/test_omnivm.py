@@ -97,6 +97,21 @@ class TestRuntimeError(unittest.TestCase):
         assert "[parameters:" in err.traceback
         assert err.details == {"errors": [{"loc": ["age"], "type": "greater_than"}]}
 
+    def test_details_preserves_non_object_json(self):
+        array_err = omnivm_mod.RuntimeError(
+            "javascript: AggregateError: invalid\n"
+            "Details: [{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]",
+            runtime="javascript",
+        )
+        assert array_err.details == [{"path": ["user", "age"], "code": "too_small"}]
+
+        scalar_err = omnivm_mod.RuntimeError(
+            "go: ValidationError: invalid\n"
+            "Details: \"too_small\"",
+            runtime="go",
+        )
+        assert scalar_err.details == "too_small"
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"
