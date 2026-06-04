@@ -5901,6 +5901,29 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing.T) {
+	data, err := os.ReadFile("../../pkg/ruby/ruby.go")
+	if err != nil {
+		t.Fatalf("read Ruby runtime source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"alias __omnivm_native_new new",
+		"alias __omnivm_native_start start",
+		"alias __omnivm_native_fork fork",
+		"alias new __omnivm_unsupported_new",
+		"alias start __omnivm_unsupported_new",
+		"alias fork __omnivm_unsupported_new",
+		"Thread.new diagnostic",
+		"Thread.start diagnostic",
+		"Thread.fork diagnostic",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("embedded Ruby should diagnose unsupported native thread creation through all aliases, missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{
