@@ -446,8 +446,9 @@ boundary preserves the source runtime, type, message, traceback, stack frames, a
 instead of reducing the error to the rethrowing runtime's local exception class.
 Go API callers can use `errors.As` to recover `*omnivm.RuntimeError` with the
 same runtime/origin-runtime, type, message, traceback, stack-frames, cause-chain, boundary-path, and
-original-error-handle/details fields, including runtime-prefixed errors that do
-not use the transport `ERR:` marker.
+original-error-handle/details fields, or call `ToMap()` for the same
+JSON-serializable envelope shape exposed by Python, Ruby, and Java callers,
+including runtime-prefixed errors that do not use the transport `ERR:` marker.
 
 The target error envelope should preserve:
 

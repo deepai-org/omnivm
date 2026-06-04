@@ -49,6 +49,47 @@ func (e *RuntimeError) Error() string {
 	return b.String()
 }
 
+// ToMap returns the normalized, JSON-serializable runtime error envelope.
+func (e *RuntimeError) ToMap() map[string]interface{} {
+	if e == nil {
+		return nil
+	}
+	causes := make([]map[string]string, 0, len(e.CauseChain))
+	for _, cause := range e.CauseChain {
+		causes = append(causes, map[string]string{
+			"type":    cause.Type,
+			"message": cause.Message,
+		})
+	}
+	origin := e.OriginRuntime
+	if origin == "" {
+		origin = e.Runtime
+	}
+	return map[string]interface{}{
+		"runtime":               e.Runtime,
+		"origin_runtime":        origin,
+		"type":                  e.Type,
+		"message":               e.Message,
+		"traceback":             e.Traceback,
+		"stack_frames":          append([]string(nil), e.StackFrames...),
+		"cause_chain":           causes,
+		"boundary_path":         e.BoundaryPath,
+		"original_error_handle": e.OriginalErrorHandle,
+		"details":               copyDetails(e.Details),
+	}
+}
+
+func copyDetails(details map[string]interface{}) map[string]interface{} {
+	if details == nil {
+		return nil
+	}
+	copied := make(map[string]interface{}, len(details))
+	for key, value := range details {
+		copied[key] = value
+	}
+	return copied
+}
+
 // ParseError parses a bridge error into a structured RuntimeError.
 // It accepts the transport "ERR:" prefix, runtime prefixes such as "python: ",
 // and manifest boundary prefixes. Plain values still return nil.

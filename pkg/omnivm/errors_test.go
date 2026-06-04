@@ -2,6 +2,7 @@ package omnivm
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -44,6 +45,59 @@ func TestRuntimeError_Is(t *testing.T) {
 	var re *RuntimeError
 	if !errors.As(e, &re) {
 		t.Error("errors.As should match *RuntimeError")
+	}
+}
+
+func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
+	e := &RuntimeError{
+		Runtime:             "javascript",
+		Type:                "Error",
+		Message:             "outer",
+		Traceback:           "    at <anonymous>:1:7\nCaused by: TypeError: inner",
+		StackFrames:         []string{"at <anonymous>:1:7"},
+		CauseChain:          []RuntimeErrorCause{{Type: "TypeError", Message: "inner"}},
+		BoundaryPath:        "call[javascript]",
+		OriginalErrorHandle: "js-error-42",
+		Details:             map[string]interface{}{"code": "E_JS"},
+	}
+	got := e.ToMap()
+	want := map[string]interface{}{
+		"runtime":               "javascript",
+		"origin_runtime":        "javascript",
+		"type":                  "Error",
+		"message":               "outer",
+		"traceback":             "    at <anonymous>:1:7\nCaused by: TypeError: inner",
+		"stack_frames":          []string{"at <anonymous>:1:7"},
+		"cause_chain":           []map[string]string{{"type": "TypeError", "message": "inner"}},
+		"boundary_path":         "call[javascript]",
+		"original_error_handle": "js-error-42",
+		"details":               map[string]interface{}{"code": "E_JS"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ToMap = %#v, want %#v", got, want)
+	}
+}
+
+func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
+	e := &RuntimeError{
+		Runtime:     "python",
+		StackFrames: []string{"File \"<string>\", line 1"},
+		CauseChain:  []RuntimeErrorCause{{Type: "ValueError", Message: "bad"}},
+		Details:     map[string]interface{}{"code": "E_PY"},
+	}
+	envelope := e.ToMap()
+	envelope["stack_frames"].([]string)[0] = "changed"
+	envelope["cause_chain"].([]map[string]string)[0]["message"] = "changed"
+	envelope["details"].(map[string]interface{})["code"] = "changed"
+
+	if e.StackFrames[0] != "File \"<string>\", line 1" {
+		t.Fatalf("ToMap exposed StackFrames backing storage: %#v", e.StackFrames)
+	}
+	if e.CauseChain[0].Message != "bad" {
+		t.Fatalf("ToMap exposed CauseChain backing storage: %#v", e.CauseChain)
+	}
+	if e.Details["code"] != "E_PY" {
+		t.Fatalf("ToMap exposed Details backing storage: %#v", e.Details)
 	}
 }
 
