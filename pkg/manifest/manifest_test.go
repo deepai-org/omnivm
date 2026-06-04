@@ -6280,10 +6280,15 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 	for _, want := range []string{
 		`field = ->(preferred, fallback) { envelope.key?(preferred) ? envelope[preferred] : envelope[fallback] }`,
-		`origin_runtime = field.call(\"origin_runtime\", \"originRuntime\") || runtime_name`,
+		`text_field = ->(value, fallback = \"\") { value.nil? ? fallback : value.to_s }`,
+		`runtime_name = text_field.call(envelope[\"runtime\"], runtime)`,
+		`origin_runtime = text_field.call(field.call(\"origin_runtime\", \"originRuntime\"), runtime_name)`,
+		`err_type = text_field.call(envelope[\"type\"])`,
+		`detail = text_field.call(envelope[\"message\"])`,
 		`stack_frames = field.call(\"stack_frames\", \"stackFrames\")`,
 		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
+		`boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path)`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError should accept JS camelCase envelope fields, missing %q", want)
