@@ -2423,6 +2423,218 @@ static void omnivm_py_append_text(char** out, size_t* len, const char* text) {
     *len += add;
 }
 
+static int omnivm_py_dict_set_attr(PyObject* dict, PyObject* obj, const char* key) {
+    PyObject* value = PyObject_GetAttrString(obj, key);
+    if (!value) {
+        PyErr_Clear();
+        return 0;
+    }
+    if (value == Py_None) {
+        Py_DECREF(value);
+        return 0;
+    }
+    int ok = PyDict_SetItemString(dict, key, value) == 0;
+    Py_DECREF(value);
+    if (!ok) PyErr_Clear();
+    return ok;
+}
+
+static int omnivm_py_dict_set_attr_text(PyObject* dict, PyObject* obj, const char* key) {
+    PyObject* value = PyObject_GetAttrString(obj, key);
+    if (!value) {
+        PyErr_Clear();
+        return 0;
+    }
+    if (value == Py_None) {
+        Py_DECREF(value);
+        return 0;
+    }
+    PyObject* text = PyObject_Str(value);
+    Py_DECREF(value);
+    if (!text) {
+        PyErr_Clear();
+        return 0;
+    }
+    int ok = PyDict_SetItemString(dict, key, text) == 0;
+    Py_DECREF(text);
+    if (!ok) PyErr_Clear();
+    return ok;
+}
+
+static int omnivm_py_dict_set_attr_list(PyObject* dict, PyObject* obj, const char* key) {
+    PyObject* value = PyObject_GetAttrString(obj, key);
+    if (!value) {
+        PyErr_Clear();
+        return 0;
+    }
+    if (value == Py_None) {
+        Py_DECREF(value);
+        return 0;
+    }
+    PyObject* list = PySequence_List(value);
+    Py_DECREF(value);
+    if (!list) {
+        PyErr_Clear();
+        return 0;
+    }
+    int ok = PyDict_SetItemString(dict, key, list) == 0;
+    Py_DECREF(list);
+    if (!ok) PyErr_Clear();
+    return ok;
+}
+
+static PyObject* omnivm_py_json_loads(PyObject* value) {
+    if (!value) return NULL;
+    PyObject* text = PyObject_Str(value);
+    if (!text) {
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* json_module = PyImport_ImportModule("json");
+    if (!json_module) {
+        Py_DECREF(text);
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* loads = PyObject_GetAttrString(json_module, "loads");
+    Py_DECREF(json_module);
+    if (!loads) {
+        Py_DECREF(text);
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* parsed = PyObject_CallFunctionObjArgs(loads, text, NULL);
+    Py_DECREF(loads);
+    Py_DECREF(text);
+    if (!parsed) {
+        PyErr_Clear();
+        return NULL;
+    }
+    return parsed;
+}
+
+static PyObject* omnivm_py_details_from_json_messages(PyObject* value) {
+    PyObject* messages = PyObject_GetAttrString(value, "messages");
+    if (!messages) {
+        PyErr_Clear();
+        return NULL;
+    }
+    if (messages == Py_None) {
+        Py_DECREF(messages);
+        return NULL;
+    }
+    PyObject* seq = PySequence_Fast(messages, "messages");
+    Py_DECREF(messages);
+    if (!seq) {
+        PyErr_Clear();
+        return NULL;
+    }
+    Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+    if (n < 1) {
+        Py_DECREF(seq);
+        return NULL;
+    }
+    PyObject* parsed_values = PyList_New(0);
+    if (!parsed_values) {
+        Py_DECREF(seq);
+        PyErr_Clear();
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        PyObject* item = PySequence_Fast_GET_ITEM(seq, i);
+        PyObject* parsed = omnivm_py_json_loads(item);
+        if (!parsed || !PyMapping_Check(parsed)) {
+            Py_XDECREF(parsed);
+            Py_DECREF(parsed_values);
+            Py_DECREF(seq);
+            return NULL;
+        }
+        if (PyList_Append(parsed_values, parsed) != 0) {
+            Py_DECREF(parsed);
+            Py_DECREF(parsed_values);
+            Py_DECREF(seq);
+            PyErr_Clear();
+            return NULL;
+        }
+        Py_DECREF(parsed);
+    }
+    Py_DECREF(seq);
+
+    PyObject* fields = NULL;
+    if (PyList_GET_SIZE(parsed_values) == 1) {
+        fields = PyList_GetItem(parsed_values, 0);
+        Py_INCREF(fields);
+    } else {
+        fields = parsed_values;
+        Py_INCREF(fields);
+    }
+    Py_DECREF(parsed_values);
+
+    PyObject* details = PyDict_New();
+    if (!details) {
+        Py_DECREF(fields);
+        PyErr_Clear();
+        return NULL;
+    }
+    if (PyDict_SetItemString(details, "fields", fields) != 0) {
+        Py_DECREF(fields);
+        Py_DECREF(details);
+        PyErr_Clear();
+        return NULL;
+    }
+    Py_DECREF(fields);
+    return details;
+}
+
+static PyObject* omnivm_py_details_from_jsonschema_error(PyObject* value) {
+    if (!PyObject_HasAttrString(value, "validator") || !PyObject_HasAttrString(value, "schema_path")) {
+        return NULL;
+    }
+    PyObject* details = PyDict_New();
+    if (!details) {
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* message = PyObject_Str(value);
+    if (message) {
+        PyDict_SetItemString(details, "message", message);
+        Py_DECREF(message);
+    } else {
+        PyErr_Clear();
+    }
+    omnivm_py_dict_set_attr(details, value, "validator");
+    omnivm_py_dict_set_attr(details, value, "validator_value");
+    omnivm_py_dict_set_attr_list(details, value, "path");
+    omnivm_py_dict_set_attr_list(details, value, "schema_path");
+    omnivm_py_dict_set_attr(details, value, "instance");
+    if (PyDict_Size(details) == 0) {
+        Py_DECREF(details);
+        return NULL;
+    }
+    return details;
+}
+
+static PyObject* omnivm_py_details_from_db_error(PyObject* value) {
+    if (!PyObject_HasAttrString(value, "statement") && !PyObject_HasAttrString(value, "orig")) {
+        return NULL;
+    }
+    PyObject* details = PyDict_New();
+    if (!details) {
+        PyErr_Clear();
+        return NULL;
+    }
+    omnivm_py_dict_set_attr(details, value, "statement");
+    omnivm_py_dict_set_attr(details, value, "params");
+    omnivm_py_dict_set_attr_text(details, value, "orig");
+    omnivm_py_dict_set_attr(details, value, "code");
+    omnivm_py_dict_set_attr(details, value, "ismulti");
+    if (PyDict_Size(details) == 0) {
+        Py_DECREF(details);
+        return NULL;
+    }
+    return details;
+}
+
 static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     if (!value) return NULL;
 
@@ -2437,6 +2649,15 @@ static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     if (details) return details;
 
     details = omnivm_py_call_noarg_method(value, "normalized_messages");
+    if (details) return details;
+
+    details = omnivm_py_details_from_jsonschema_error(value);
+    if (details) return details;
+
+    details = omnivm_py_details_from_db_error(value);
+    if (details) return details;
+
+    details = omnivm_py_details_from_json_messages(value);
     if (details) return details;
 
     static const char* attrs[] = {"messages", "message_dict", "error_dict", NULL};

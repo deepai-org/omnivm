@@ -17940,7 +17940,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "User().load({'age': 0})"
             ),
             ["ValidationError", "age", "greater than or equal to 1", "name", "Missing data"],
-            {"runtime": "python", "type": "ValidationError", "message": "age"},
+            {
+                "runtime": "python",
+                "type": "ValidationError",
+                "message": "age",
+                "details_key": "age",
+                "details_terms": ["greater than or equal to 1", "name", "Missing data"],
+            },
         ),
         (
             "jsonschema",
@@ -17952,7 +17958,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "raise next(err for err in errors if err.validator == 'minimum')"
             ),
             ["ValidationError", "0 is less than the minimum of 1", "minimum", "age"],
-            {"runtime": "python", "type": "ValidationError", "message": "0 is less than the minimum of 1"},
+            {
+                "runtime": "python",
+                "type": "ValidationError",
+                "message": "0 is less than the minimum of 1",
+                "details_key": "validator",
+                "details_terms": ["minimum", "age", "schema_path", "validator_value"],
+            },
         ),
         (
             "django forms",
@@ -17969,7 +17981,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "raise ValidationError(form.errors.as_json())"
             ),
             ["ValidationError", "age", "min_value", "name", "required"],
-            {"runtime": "python", "type": "ValidationError", "message": "age"},
+            {
+                "runtime": "python",
+                "type": "ValidationError",
+                "message": "age",
+                "details_key": "fields",
+                "details_terms": ["age", "min_value", "name", "required"],
+            },
         ),
         (
             "sqlalchemy",
@@ -17985,7 +18003,13 @@ def test_validation_error_fidelity_popular_libraries():
                 "    conn.execute(users.insert().values(name='ada'))"
             ),
             ["IntegrityError", "UNIQUE constraint failed", "users.name", "INSERT INTO users"],
-            {"runtime": "python", "type": "IntegrityError", "message": "UNIQUE constraint failed"},
+            {
+                "runtime": "python",
+                "type": "IntegrityError",
+                "message": "UNIQUE constraint failed",
+                "details_key": "statement",
+                "details_terms": ["INSERT INTO users", "params", "ada", "orig", "UNIQUE constraint failed"],
+            },
         ),
         (
             "java cause chain",
@@ -18083,7 +18107,8 @@ def test_javascript_native_sqlalchemy_error_fields_cross_runtime_call():
       traceback: err.traceback,
       boundaryPath: err.boundaryPath,
       causeChain: err.causeChain,
-      originalErrorHandle: err.originalErrorHandle
+      originalErrorHandle: err.originalErrorHandle,
+      details: err.details
     }});
   }}
   return JSON.stringify({{missing: true}});
@@ -18109,6 +18134,13 @@ def test_javascript_native_sqlalchemy_error_fields_cross_runtime_call():
         raise AssertionError(f"JS SQLAlchemy boundary path lost: {envelope}")
     if envelope.get("originalErrorHandle") is not None:
         raise AssertionError(f"JS SQLAlchemy error should not invent original handle: {envelope}")
+    details = envelope.get("details")
+    if not isinstance(details, dict) or "statement" not in details:
+        raise AssertionError(f"JS SQLAlchemy structured details lost: {envelope}")
+    details_text = json.dumps(details, sort_keys=True)
+    for part in ("INSERT INTO users", "params", "ada", "orig", "UNIQUE constraint failed"):
+        if part not in details_text:
+            raise AssertionError(f"JS SQLAlchemy structured detail {part!r} lost: {envelope}")
 
 
 def test_javascript_native_django_form_error_fields_cross_runtime_call():
@@ -18138,7 +18170,8 @@ def test_javascript_native_django_form_error_fields_cross_runtime_call():
       traceback: err.traceback,
       boundaryPath: err.boundaryPath,
       causeChain: err.causeChain,
-      originalErrorHandle: err.originalErrorHandle
+      originalErrorHandle: err.originalErrorHandle,
+      details: err.details
     }});
   }}
   return JSON.stringify({{missing: true}});
@@ -18164,6 +18197,13 @@ def test_javascript_native_django_form_error_fields_cross_runtime_call():
         raise AssertionError(f"JS Django form boundary path lost: {envelope}")
     if envelope.get("originalErrorHandle") is not None:
         raise AssertionError(f"JS Django form error should not invent original handle: {envelope}")
+    details = envelope.get("details")
+    if not isinstance(details, dict) or "fields" not in details:
+        raise AssertionError(f"JS Django form structured details lost: {envelope}")
+    details_text = json.dumps(details, sort_keys=True)
+    for part in ("age", "min_value", "name", "required"):
+        if part not in details_text:
+            raise AssertionError(f"JS Django form structured detail {part!r} lost: {envelope}")
 
 
 def test_javascript_native_activerecord_error_fields_cross_runtime_call():
