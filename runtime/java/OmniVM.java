@@ -2125,7 +2125,14 @@ public class OmniVM {
                     }
                     loaded = true;
                     Object id = value.get("id");
-                    Object result = bridgeManifestOp("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
+                    Object result;
+                    try {
+                        result = bridgeManifestOp("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
+                    } catch (RuntimeException err) {
+                        done = true;
+                        markReleased();
+                        throw err;
+                    }
                     if (!(result instanceof Map<?, ?> item)) {
                         done = true;
                         markReleased();

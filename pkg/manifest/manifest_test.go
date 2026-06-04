@@ -5826,6 +5826,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
 		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")
 	}
+	if !contains(code, `catch (RuntimeException err)`) ||
+		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
+		!contains(code, "markReleased();") ||
+		!contains(code, "throw err;") {
+		t.Fatalf("Java stream proxy should mark itself released after terminal owner stream errors")
+	}
 	if !contains(code, "private final String originRuntime;") ||
 		!contains(code, "public String getOriginRuntime()") ||
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
