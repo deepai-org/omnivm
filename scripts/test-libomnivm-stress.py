@@ -15811,6 +15811,115 @@ def test_manifest_runtime_ref_mapping_keys_beat_methods():
         raise AssertionError(f"method-colliding mapping keys should cross as generic proxies: {boundary}")
 
 
+def test_manifest_python_lazy_object_unsafe_contains_does_not_shadow_attributes():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": r'''
+class UnsafeContainsLazyResult:
+    def __init__(self):
+        self.label = "lazy-result"
+        self.rows = ["first", "second"]
+        self.contains_calls = 0
+        self.set_calls = []
+
+    def __contains__(self, key):
+        self.contains_calls += 1
+        raise TypeError("lazy result membership requires owner-side row objects")
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.rows[key]
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        self.set_calls.append((key, value))
+        raise KeyError(key)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def items(self):
+        return "method-items"
+
+    def close(self):
+        return "closed"
+
+lazy_contains_result = UnsafeContainsLazyResult()
+''',
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"lazy": "lazy_contains_result"},
+                "code": (
+                    "if (lazy.label !== 'lazy-result') throw new Error('attribute lookup failed: ' + lazy.label); "
+                    "if (lazy.items() !== 'method-items') throw new Error('method lookup failed: ' + lazy.items()); "
+                    "if (lazy.close() !== 'closed') throw new Error('close method lookup failed: ' + lazy.close()); "
+                    "if (!('0' in lazy)) throw new Error('numeric index contains failed'); "
+                    "if ('missing' in lazy) throw new Error('missing key should not be contained'); "
+                    "lazy.label = 'from-js';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"lazy": "lazy_contains_result"},
+                "code": (
+                    "raise \"bad label #{lazy.label}\" unless lazy.label == 'from-js'; "
+                    "raise \"bad items method #{lazy.items.inspect}\" unless lazy.items.respond_to?(:call) && lazy.items.call == 'method-items'; "
+                    "raise 'missing should not be contained' if lazy.key?('missing'); "
+                    "lazy.label = 'from-ruby'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"lazy": "lazy_contains_result"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy lazy = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"lazy\"); "
+                    "if (!\"from-ruby\".equals(lazy.get(\"label\"))) throw new RuntimeException(\"bad Java label: \" + lazy.get(\"label\")); "
+                    "if (!lazy.containsKey(\"0\")) throw new RuntimeException(\"numeric index contains failed in Java\"); "
+                    "if (lazy.containsKey(\"missing\")) throw new RuntimeException(\"missing key should not be contained in Java\"); "
+                    "if (!lazy.set(\"label\", \"from-java\")) throw new RuntimeException(\"Java label set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert lazy_contains_result.label == 'from-java', lazy_contains_result.label\n"
+                    "assert lazy_contains_result.contains_calls == 0, lazy_contains_result.contains_calls\n"
+                    "assert lazy_contains_result.set_calls == [], lazy_contains_result.set_calls"
+                ),
+            },
+        ],
+    }
+    before = omnivm.status()
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after = omnivm.status()
+    boundary = after.get("boundary", {})
+    if boundary.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"unsafe-contains lazy object did not cross as a live proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"unsafe-contains lazy object used JSON fallback: {boundary}")
+    handles = after.get("handles", {})
+    before_handles = before.get("handles", {})
+    if handles.get("handle_accesses_by_kind", {}).get("contains", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("contains", 0):
+        raise AssertionError(f"unsafe-contains fixture did not exercise proxy contains: before={before_handles}, after={handles}")
+
+
 def test_manifest_func_return_materializes_proxy_descriptor():
     manifest = {
         "version": 1,
@@ -29289,6 +29398,7 @@ def main():
         check("libomnivm retains last manifest boundary stats", test_status_keeps_last_manifest_boundary_stats)
         check("Manifest handle proxy property forwarding", test_manifest_handle_proxy_property_forwarding)
         check("Manifest RuntimeRef mapping keys beat methods", test_manifest_runtime_ref_mapping_keys_beat_methods)
+        check("Manifest Python lazy object unsafe contains does not shadow attributes", test_manifest_python_lazy_object_unsafe_contains_does_not_shadow_attributes)
         check("Manifest function returns materialized proxy descriptor", test_manifest_func_return_materializes_proxy_descriptor)
         check("Manifest function returns local complex literal as proxy", test_manifest_func_return_local_complex_literal_as_proxy)
         check("Manifest proxy materializer reuses handle identity", test_manifest_proxy_materializer_reuses_handle_identity)
