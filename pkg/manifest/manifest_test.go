@@ -2346,6 +2346,85 @@ func TestGoHandleProxyQueuesFinalizerRelease(t *testing.T) {
 	}
 }
 
+func TestGoHandleProxyCloseReleasesProxyRetain(t *testing.T) {
+	e, _ := makeExecutor("python", "go")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/scoped"}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	proxy := e.normalizeGoArg(ref).(*GoHandleProxy)
+	before := e.handleTable.Stats(time.Now())
+	if before.Live != 1 || before.StrongRefs != 2 || before.RetainedRefs != 1 {
+		t.Fatalf("Go proxy retain stats = %+v, want one live handle with one proxy retain", before)
+	}
+
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("Go handle proxy Close: %v", err)
+	}
+	if ref.Closed {
+		t.Fatal("Go handle proxy Close consumed the scope owner reference")
+	}
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("second Go handle proxy Close: %v", err)
+	}
+	proxy.ReleaseFromFinalizer()
+	after := e.handleTable.Stats(time.Now())
+	if after.Live != 1 || after.StrongRefs != 1 || after.RetainedRefs != 0 || after.ExplicitReleases != before.ExplicitReleases {
+		t.Fatalf("Go proxy close stats = before=%+v after=%+v, want proxy retain released without owner close", before, after)
+	}
+	if after.FinalizerQueued != before.FinalizerQueued || after.FinalizerQueueLen != before.FinalizerQueueLen {
+		t.Fatalf("Go proxy close left finalizer cleanup active: before=%+v after=%+v", before, after)
+	}
+	if value := proxy.Get("path"); value != nil {
+		t.Fatalf("closed Go proxy Get(path) = %#v, want nil", value)
+	}
+	afterClosedAccess := e.handleTable.Stats(time.Now())
+	if afterClosedAccess.HandleAccesses != after.HandleAccesses {
+		t.Fatalf("closed Go proxy recorded access: before=%+v after=%+v", after, afterClosedAccess)
+	}
+}
+
+func TestGoHandleProxyCloseClosesLastOwnedHandle(t *testing.T) {
+	e, _ := makeExecutor("python", "go")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	proxy := e.normalizeGoArg(ref).(*GoHandleProxy)
+	if err := e.ensureHandleTable().Release(ref.ID); err != nil {
+		t.Fatalf("release scope owner ref: %v", err)
+	}
+	if ref.Closed {
+		t.Fatal("scope owner release closed resource while proxy retain was still live")
+	}
+
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("Go handle proxy Close: %v", err)
+	}
+	if !ref.Closed {
+		t.Fatal("Go handle proxy Close did not close last owned resource")
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go proxy last-owner close stats = %+v, want closed explicit release without finalizer queue", stats)
+	}
+}
+
 func TestNormalizeGoArgMaterializesTableProxy(t *testing.T) {
 	e, _ := makeExecutor("go")
 	ref, ok, err := e.autoBulkTableRefForCapture([]uint16{258, 772, 1286})

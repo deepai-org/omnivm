@@ -27,6 +27,7 @@ type GoHandleProxy struct {
 	material      func(interface{}) interface{}
 	boundary      func(handles.ID, interface{}) interface{}
 	onMaterialize func()
+	closed        bool
 }
 
 // GoProxyItem is a single key/value pair returned by GoHandleProxy.Items.
@@ -89,6 +90,9 @@ func (p *GoHandleProxy) ResourceKind() string {
 
 // Get reads the target object's generic property surface.
 func (p *GoHandleProxy) Get(key string) interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	if value, ok := p.localValue(key); ok {
 		return value
 	}
@@ -111,6 +115,9 @@ func (p *GoHandleProxy) Get(key string) interface{} {
 // Index reads through the target object's native indexing protocol when
 // descriptor fields do not satisfy the access locally.
 func (p *GoHandleProxy) Index(key interface{}) interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	if keyStr, ok := key.(string); ok {
 		if value, ok := p.localValue(keyStr); ok {
 			return value
@@ -140,6 +147,9 @@ func (p *GoHandleProxy) Index(key interface{}) interface{} {
 
 // Values returns a batched snapshot of the target object's iterable values.
 func (p *GoHandleProxy) Values() []interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
 		payload := p.localPayload()
@@ -168,6 +178,9 @@ func (p *GoHandleProxy) Values() []interface{} {
 
 // Keys returns a batched snapshot of the target object's iterable keys.
 func (p *GoHandleProxy) Keys() []interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
 		payload := p.localPayload()
@@ -197,6 +210,9 @@ func (p *GoHandleProxy) Keys() []interface{} {
 // Items returns a batched snapshot of the target object's iterable key/value
 // pairs. Sequence-like targets report numeric indexes as keys.
 func (p *GoHandleProxy) Items() []GoProxyItem {
+	if p == nil || p.closed {
+		return nil
+	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
 		payload := p.localPayload()
@@ -233,6 +249,9 @@ func (p *GoHandleProxy) Items() []GoProxyItem {
 // Contains reports whether the target object's generic membership protocol
 // contains key.
 func (p *GoHandleProxy) Contains(key interface{}) bool {
+	if p == nil || p.closed {
+		return false
+	}
 	if p.contains == nil || p.id == 0 {
 		p.record("property")
 		if keyStr, ok := key.(string); ok {
@@ -253,6 +272,9 @@ func (p *GoHandleProxy) Contains(key interface{}) bool {
 
 // Len reports the target object's generic collection length when available.
 func (p *GoHandleProxy) Len() int {
+	if p == nil || p.closed {
+		return 0
+	}
 	if p.len == nil || p.id == 0 {
 		p.record("property")
 		return len(p.localPayload())
@@ -267,6 +289,9 @@ func (p *GoHandleProxy) Len() int {
 
 // Set mutates the target object's generic property surface.
 func (p *GoHandleProxy) Set(key string, value interface{}) bool {
+	if p == nil || p.closed {
+		return false
+	}
 	p.record("mutation")
 	if p.set == nil || p.id == 0 {
 		return false
@@ -277,6 +302,9 @@ func (p *GoHandleProxy) Set(key string, value interface{}) bool {
 
 // Call invokes a callable property or method on the target object.
 func (p *GoHandleProxy) Call(key string, args ...interface{}) interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	p.record("call")
 	if p.call == nil || p.id == 0 {
 		return nil
@@ -290,6 +318,9 @@ func (p *GoHandleProxy) Call(key string, args ...interface{}) interface{} {
 
 // AsMap returns a shallow copy of the descriptor and records iteration.
 func (p *GoHandleProxy) AsMap() map[string]interface{} {
+	if p == nil || p.closed {
+		return nil
+	}
 	if p.iter != nil && p.id != 0 {
 		items, ok, err := p.iter(p.id, "items")
 		if err == nil && ok {
@@ -314,7 +345,7 @@ func (p *GoHandleProxy) AsMap() map[string]interface{} {
 }
 
 func (p *GoHandleProxy) localValue(key string) (interface{}, bool) {
-	if p == nil || p.isInternalDescriptorKey(key) {
+	if p == nil || p.closed || p.isInternalDescriptorKey(key) {
 		return nil, false
 	}
 	value, ok := p.payload[key]
@@ -327,7 +358,7 @@ func (p *GoHandleProxy) hasLocalValue(key string) bool {
 }
 
 func (p *GoHandleProxy) localPayload() map[string]interface{} {
-	if p == nil || len(p.payload) == 0 {
+	if p == nil || p.closed || len(p.payload) == 0 {
 		return nil
 	}
 	out := make(map[string]interface{}, len(p.payload))
@@ -364,14 +395,28 @@ func stringifyGoProxyKey(key interface{}) string {
 // ReleaseFromFinalizer queues a guest-proxy finalizer release on the handle
 // table. Release callbacks are drained later from host-owned safe points.
 func (p *GoHandleProxy) ReleaseFromFinalizer() {
-	if p.table == nil || p.id == 0 {
+	if p == nil || p.closed || p.table == nil || p.id == 0 {
 		return
 	}
 	p.table.QueueReleaseFromFinalizer(p.id)
 }
 
-func (p *GoHandleProxy) record(kind string) (handles.AccessReport, bool) {
+// Close releases the Go proxy's retained handle reference immediately and
+// detaches its finalizer. It is safe to call more than once.
+func (p *GoHandleProxy) Close() error {
+	if p == nil || p.closed {
+		return nil
+	}
+	p.closed = true
+	runtime.SetFinalizer(p, nil)
 	if p.table == nil || p.id == 0 {
+		return nil
+	}
+	return p.table.Release(p.id)
+}
+
+func (p *GoHandleProxy) record(kind string) (handles.AccessReport, bool) {
+	if p == nil || p.closed || p.table == nil || p.id == 0 {
 		return handles.AccessReport{}, false
 	}
 	report, err := p.table.RecordAccess(p.id, handles.AccessOptions{Kind: kind, Now: time.Now()})
