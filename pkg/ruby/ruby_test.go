@@ -78,6 +78,53 @@ func TestRubyExecuteError(t *testing.T) {
 	}
 }
 
+func TestRubyRuntimeErrorStructuredEnvelope(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+payload = {
+  runtime: "javascript",
+  origin_runtime: "python",
+  type: "ValueError",
+  message: "bad value",
+  traceback: "at parse (<anonymous>:1:2)",
+  stack_frames: ["at parse (<anonymous>:1:2)"],
+  cause_chain: [{type: "TypeError", message: "inner"}],
+  boundary_path: "call[javascript] > callback[python]",
+  original_error_handle: "py-error-7",
+  details: [{path: ["user", "age"], code: "too_small"}]
+}
+err = OmniVM::RuntimeError.new("ERR:" + JSON.generate(payload), runtime: "javascript", boundary_path: "call[javascript]")
+raise "runtime #{err.runtime.inspect}" unless err.runtime == "javascript"
+raise "origin #{err.origin_runtime.inspect}" unless err.origin_runtime == "python"
+raise "type #{err.type.inspect}" unless err.type == "ValueError"
+raise "message #{err.message.inspect}" unless err.message == "bad value"
+raise "stack #{err.stack_frames.inspect}" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
+raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == [{type: "TypeError", message: "inner"}]
+raise "boundary #{err.boundary_path.inspect}" unless err.boundary_path == "call[javascript] > callback[python]"
+raise "handle #{err.original_error_handle.inspect}" unless err.original_error_handle == "py-error-7"
+raise "details #{err.details.inspect}" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+copy = err.to_h
+copy[:stack_frames][0] = "changed"
+copy[:cause_chain][0][:message] = "changed"
+copy[:details][0]["code"] = "changed"
+raise "stack leaked" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
+raise "cause leaked" unless err.cause_chain == [{type: "TypeError", message: "inner"}]
+raise "details leaked" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
 func TestRubyExecuteMultiline(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {
