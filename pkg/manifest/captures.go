@@ -1168,6 +1168,21 @@ class __OmniVMStreamProxy:
     def _omnivm_close(self):
         return self.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, exc, _tb):
+        if _exc_type is None:
+            self.close()
+            return False
+        try:
+            self.close()
+        except BaseException as close_exc:
+            add_note = getattr(exc, "add_note", None)
+            if callable(add_note):
+                add_note(f"OmniVM stream close failed during exception cleanup: {close_exc}")
+        return False
+
 def __omnivm_materialize_capture(value):
     if isinstance(value, dict) and (
         value.get("__omnivm_stream__") is True

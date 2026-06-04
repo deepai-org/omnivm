@@ -6026,7 +6026,10 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
 		!contains(code, "if released:\n            self._mark_closed()\n        return released") ||
-		!contains(code, "def _omnivm_close(self):\n        return self.close()") {
+		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
+		!contains(code, "def __enter__(self):\n        return self") ||
+		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
+		!contains(code, "add_note(f\"OmniVM stream close failed during exception cleanup: {close_exc}\")") {
 		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)
 	}
 	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
@@ -6329,6 +6332,51 @@ if len(cancels) != 1 or cancels[0].get("id") != 89:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream materialization-error cancellation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonRemoteStreamContextPreservesBodyExceptionWhenCloseFails(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_cancel":
+            raise RuntimeError("cancel failed")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 90, "runtime": "python", "kind": "stream"})
+try:
+    with stream:
+        raise ValueError("body failed")
+except ValueError as exc:
+    if "body failed" not in str(exc):
+        raise
+    notes = getattr(exc, "__notes__", [])
+    if not any("cancel failed" in note for note in notes):
+        raise RuntimeError("close failure note missing: " + repr(notes))
+else:
+    raise RuntimeError("body exception was not preserved")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 90:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream context close-failure check failed: %v\n%s", err, out)
 	}
 }
 
