@@ -127,6 +127,27 @@ class TestRuntimeError(unittest.TestCase):
         assert err.message == "bad"
         assert err.boundary_path == "call[javascript]"
 
+    def test_runtime_error_accepts_javascript_name_stack_aliases(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "name": "TypeError",
+                    "message": "bad",
+                    "stack": "TypeError: bad\n    at <anonymous>:1:7",
+                }
+            ),
+            runtime="go",
+            boundary_path="call[go]",
+        )
+
+        assert err.runtime == "javascript"
+        assert err.type == "TypeError"
+        assert err.message == "bad"
+        assert err.traceback == "TypeError: bad\n    at <anonymous>:1:7"
+        assert err.stack_frames == ["TypeError: bad", "at <anonymous>:1:7"]
+        assert err.boundary_path == "call[go]"
+
     def test_traceback_parser_ignores_metadata_lines(self):
         err = omnivm_mod.RuntimeError(
             "python: Traceback (most recent call last):\n"

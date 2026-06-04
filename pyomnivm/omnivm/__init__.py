@@ -359,9 +359,9 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return raw_details if isinstance(raw_details, str) else _runtime_error_details_json(raw_details)
     runtime_name = text_field(envelope.get("runtime"), runtime)
     origin_runtime = text_field(field("origin_runtime", "originRuntime"), runtime_name)
-    err_type = text_field(envelope.get("type"))
+    err_type = text_field(field("type", "name"))
     message = text_field(envelope.get("message"))
-    traceback = text_field(envelope.get("traceback"))
+    traceback = text_field(field("traceback", "stack"))
     if not any((runtime_name, err_type, message, traceback)):
         return None
     stack_frames = field("stack_frames", "stackFrames")
