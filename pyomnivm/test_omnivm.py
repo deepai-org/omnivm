@@ -90,6 +90,17 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_runtime_error_accepts_transport_error_marker(self):
+        err = omnivm_mod.RuntimeError(
+            'ERR:{"runtime":"javascript","type":"TypeError","message":"bad"}',
+            runtime="go",
+            boundary_path="call[javascript]",
+        )
+        assert err.runtime == "javascript"
+        assert err.type == "TypeError"
+        assert err.message == "bad"
+        assert err.boundary_path == "call[javascript]"
+
     def test_traceback_parser_ignores_metadata_lines(self):
         err = omnivm_mod.RuntimeError(
             "python: Traceback (most recent call last):\n"

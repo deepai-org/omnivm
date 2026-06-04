@@ -153,6 +153,8 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
 
     source_runtime = runtime
     body = text
+    if body.startswith("ERR:"):
+        body = body[4:]
     boundary_parts = []
     for marker, label in (
         ("execute manifest: ", "execute manifest"),
