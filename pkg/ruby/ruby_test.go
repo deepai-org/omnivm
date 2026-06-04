@@ -78,6 +78,38 @@ func TestRubyExecuteError(t *testing.T) {
 	}
 }
 
+func TestRubySizedQueueNonBlockingPush(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+q = Thread::SizedQueue.new(1)
+q.push(:first)
+begin
+  q.push(:second, true)
+  raise "missing nonblocking full diagnostic"
+rescue ThreadError => e
+  raise "bad nonblocking diagnostic: #{e.message}" unless e.message == "queue full"
+end
+begin
+  q.push(:second)
+  raise "missing blocking full diagnostic"
+rescue ThreadError => e
+  raise "bad blocking diagnostic: #{e.message}" unless e.message.include?("OmniVM embedded Ruby")
+end
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
 func TestRubyRuntimeErrorStructuredEnvelope(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

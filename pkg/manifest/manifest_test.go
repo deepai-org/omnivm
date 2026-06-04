@@ -8322,6 +8322,9 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		"Thread.new diagnostic",
 		"Thread.start diagnostic",
 		"Thread.fork diagnostic",
+		"def push(value, non_block = false)",
+		"raise ThreadError, 'queue full' if non_block",
+		"Ruby SizedQueue#push would block in OmniVM embedded Ruby",
 	} {
 		if !contains(code, want) {
 			t.Fatalf("embedded Ruby should diagnose unsupported native thread creation through all aliases, missing %q", want)
