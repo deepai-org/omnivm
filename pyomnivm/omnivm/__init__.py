@@ -276,14 +276,19 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
     if not isinstance(cause_chain, list):
         cause_chain = []
     else:
-        cause_chain = [
-            {
+        parsed_causes = []
+        for cause in cause_chain:
+            if not isinstance(cause, dict):
+                continue
+            item = {
                 "type": str(cause.get("type") or ""),
                 "message": str(cause.get("message") or ""),
             }
-            for cause in cause_chain
-            if isinstance(cause, dict)
-        ]
+            for key in ("runtime", "origin_runtime", "boundary_path", "original_error_handle"):
+                if cause.get(key):
+                    item[key] = str(cause.get(key))
+            parsed_causes.append(item)
+        cause_chain = parsed_causes
     return {
         "runtime": runtime_name,
         "origin_runtime": origin_runtime,

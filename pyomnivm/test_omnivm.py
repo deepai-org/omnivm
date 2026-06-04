@@ -122,7 +122,16 @@ class TestRuntimeError(unittest.TestCase):
                     "message": "invalid",
                     "traceback": "fallback frame",
                     "stack_frames": ["at parse (<anonymous>:1:2)"],
-                    "cause_chain": [{"type": "TypeError", "message": "inner"}],
+                    "cause_chain": [
+                        {
+                            "runtime": "java",
+                            "origin_runtime": "ruby",
+                            "type": "TypeError",
+                            "message": "inner",
+                            "boundary_path": "call[javascript] > callback[java]",
+                            "original_error_handle": "java-error-3",
+                        }
+                    ],
                     "boundary_path": "call[javascript] > callback[python]",
                     "original_error_handle": "js-error-7",
                     "details": [{"path": ["user", "age"]}],
@@ -135,7 +144,16 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == "AggregateError"
         assert err.message == "invalid"
         assert err.stack_frames == ["at parse (<anonymous>:1:2)"]
-        assert err.cause_chain == [{"type": "TypeError", "message": "inner"}]
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "java",
+                "origin_runtime": "ruby",
+                "boundary_path": "call[javascript] > callback[java]",
+                "original_error_handle": "java-error-3",
+            }
+        ]
         assert err.boundary_path == "call[javascript] > callback[python]"
         assert err.original_error_handle == "js-error-7"
         assert err.details == [{"path": ["user", "age"]}]

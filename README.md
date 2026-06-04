@@ -287,7 +287,9 @@ except omnivm.RuntimeError as exc:
 `origin_runtime`, `type`, `message`, `traceback`, `stack_frames`, `cause_chain`,
 `boundary_path`, `original_error_handle`, and `details`. The handle is only populated when
 the source runtime reports one; callers should treat it as optional diagnostic
-metadata. Native JavaScript `Error` objects created by OmniVM expose the same
+metadata. Structured cause entries preserve their own optional `runtime`,
+`origin_runtime`, `boundary_path`, and `original_error_handle` fields when a
+source envelope provides them. Native JavaScript `Error` objects created by OmniVM expose the same
 envelope through `toJSON()`, so `JSON.stringify(error)` emits matching
 snake_case fields.
 

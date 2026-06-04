@@ -24,8 +24,12 @@ type RuntimeError struct {
 }
 
 type RuntimeErrorCause struct {
-	Type    string
-	Message string
+	Runtime             string
+	OriginRuntime       string
+	Type                string
+	Message             string
+	BoundaryPath        string
+	OriginalErrorHandle string
 }
 
 func (e *RuntimeError) Error() string {
@@ -57,10 +61,23 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 	}
 	causes := make([]map[string]string, 0, len(e.CauseChain))
 	for _, cause := range e.CauseChain {
-		causes = append(causes, map[string]string{
+		item := map[string]string{
 			"type":    cause.Type,
 			"message": cause.Message,
-		})
+		}
+		if cause.Runtime != "" {
+			item["runtime"] = cause.Runtime
+		}
+		if cause.OriginRuntime != "" {
+			item["origin_runtime"] = cause.OriginRuntime
+		}
+		if cause.BoundaryPath != "" {
+			item["boundary_path"] = cause.BoundaryPath
+		}
+		if cause.OriginalErrorHandle != "" {
+			item["original_error_handle"] = cause.OriginalErrorHandle
+		}
+		causes = append(causes, item)
 	}
 	origin := e.OriginRuntime
 	if origin == "" {
@@ -360,11 +377,23 @@ func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
 			continue
 		}
 		cause := RuntimeErrorCause{}
+		if runtimeName, ok := entry["runtime"].(string); ok {
+			cause.Runtime = normalizeRuntime(runtimeName)
+		}
+		if originRuntime, ok := entry["origin_runtime"].(string); ok {
+			cause.OriginRuntime = normalizeRuntime(originRuntime)
+		}
 		if causeType, ok := entry["type"].(string); ok {
 			cause.Type = causeType
 		}
 		if message, ok := entry["message"].(string); ok {
 			cause.Message = message
+		}
+		if boundaryPath, ok := entry["boundary_path"].(string); ok {
+			cause.BoundaryPath = boundaryPath
+		}
+		if handle, ok := entry["original_error_handle"].(string); ok {
+			cause.OriginalErrorHandle = handle
 		}
 		out = append(out, cause)
 	}

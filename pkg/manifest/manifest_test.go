@@ -5893,9 +5893,15 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/python/python.go"], "self.details = _copy_json_value(details) if details is not None else parsed['details']") {
 		t.Fatalf("embedded Python RuntimeError should accept copied structured details overrides")
 	}
+	if !contains(files["../../pkg/python/python.go"], "for key in ('runtime', 'origin_runtime', 'boundary_path', 'original_error_handle')") {
+		t.Fatalf("embedded Python RuntimeError should preserve structured cause metadata")
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? boundary_path : boundary_parts.join") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
+	}
+	if !contains(files["../../pkg/ruby/ruby.go"], `[\"runtime\", \"origin_runtime\", \"boundary_path\", \"original_error_handle\"].each`) {
+		t.Fatalf("embedded Ruby RuntimeError should preserve structured cause metadata")
 	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "def as_json(*_args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||

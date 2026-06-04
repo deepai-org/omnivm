@@ -371,6 +371,52 @@ func TestParseError_StructuredJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":        "javascript",
+		"origin_runtime": "python",
+		"type":           "AggregateError",
+		"message":        "outer",
+		"cause_chain": []interface{}{map[string]interface{}{
+			"runtime":               "java",
+			"origin_runtime":        "ruby",
+			"type":                  "java.lang.IllegalStateException",
+			"message":               "inner",
+			"boundary_path":         "call[javascript] > callback[java]",
+			"original_error_handle": "java-error-3",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	cause := re.CauseChain[0]
+	if cause.Runtime != "java" || cause.OriginRuntime != "ruby" {
+		t.Fatalf("cause runtime/origin = %q/%q, want java/ruby", cause.Runtime, cause.OriginRuntime)
+	}
+	if cause.Type != "java.lang.IllegalStateException" || cause.Message != "inner" {
+		t.Fatalf("cause type/message = %q/%q, want java.lang.IllegalStateException/inner", cause.Type, cause.Message)
+	}
+	if cause.BoundaryPath != "call[javascript] > callback[java]" || cause.OriginalErrorHandle != "java-error-3" {
+		t.Fatalf("cause boundary/handle = %q/%q", cause.BoundaryPath, cause.OriginalErrorHandle)
+	}
+	causes, ok := re.ToMap()["cause_chain"].([]map[string]string)
+	if !ok || len(causes) != 1 {
+		t.Fatalf("mapped cause_chain = %#v, want one mapped cause", re.ToMap()["cause_chain"])
+	}
+	if causes[0]["runtime"] != "java" || causes[0]["origin_runtime"] != "ruby" ||
+		causes[0]["boundary_path"] != "call[javascript] > callback[java]" ||
+		causes[0]["original_error_handle"] != "java-error-3" {
+		t.Fatalf("mapped cause metadata = %#v", causes[0])
+	}
+}
+
 func TestParseError_WrappedStructuredJSONEnvelopePreservesFields(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":        "javascript",
