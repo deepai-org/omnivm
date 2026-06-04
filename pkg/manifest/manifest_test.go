@@ -7207,6 +7207,105 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 }
 
+func TestJavaProxyCloseRuntimePreservesLocalCloseResult(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/ProxyCloseCheck.java"
+	check := `package omnivm;
+
+public final class ProxyCloseCheck {
+    public static final class FalseClose {
+        public int calls = 0;
+        public Boolean close() {
+            calls++;
+            return Boolean.FALSE;
+        }
+    }
+
+    public static final class TextClose {
+        public String close() {
+            return "closed";
+        }
+    }
+
+    public static final class VoidClose implements AutoCloseable {
+        public int calls = 0;
+        @Override
+        public void close() {
+            calls++;
+        }
+    }
+
+    public static final class PrivateClose {
+        private boolean closed = false;
+        private Boolean close() {
+            closed = true;
+            return Boolean.TRUE;
+        }
+    }
+
+    public static final class NoClose {
+    }
+
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        FalseClose falseClose = new FalseClose();
+        require(!OmniVM.proxyClose(falseClose), "false close result was not preserved");
+        require(falseClose.calls == 1, "false close call count mismatch");
+
+        require(OmniVM.proxyClose(new TextClose()), "truthy non-boolean close result should normalize true");
+
+        VoidClose voidClose = new VoidClose();
+        require(OmniVM.proxyClose(voidClose), "AutoCloseable close should normalize true");
+        require(voidClose.calls == 1, "AutoCloseable close call count mismatch");
+
+        PrivateClose privateClose = new PrivateClose();
+        require(!OmniVM.proxyClose(privateClose), "private close should not be invoked as a lifecycle hook");
+        require(!privateClose.closed, "private close was invoked");
+
+        require(!OmniVM.proxyClose(new NoClose()), "object without close should return false");
+        require(!OmniVM.proxyClose(null), "null close should return false");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java proxy close check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java proxy close check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyCloseCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java proxy close check: %v\n%s", err, out)
+	}
+}
+
 func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{
