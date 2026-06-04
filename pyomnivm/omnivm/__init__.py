@@ -125,6 +125,10 @@ class RuntimeError(_builtins.RuntimeError):
         """Alias for to_dict(), matching common Python error-envelope APIs."""
         return self.to_dict()
 
+    def to_json(self):
+        """Return the structured runtime error envelope as compact JSON."""
+        return json.dumps(self.to_dict(), separators=(",", ":"))
+
 
 def _copy_json_value(value):
     if isinstance(value, dict):

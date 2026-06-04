@@ -225,6 +225,37 @@ class TestRuntimeError(unittest.TestCase):
         envelope["details"]["field"] = "changed"
         assert err.details == {"field": "age"}
 
+    def test_to_json_returns_structured_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "origin_runtime": "python",
+                    "type": "AggregateError",
+                    "message": "invalid",
+                    "traceback": "    at <anonymous>:1:7",
+                    "stack_frames": ["at <anonymous>:1:7"],
+                    "cause_chain": [
+                        {
+                            "type": "TypeError",
+                            "message": "inner",
+                            "details": {"path": ["payload", "age"]},
+                        }
+                    ],
+                    "boundary_path": "call[javascript] > callback[python]",
+                    "details": [{"code": "too_small"}],
+                }
+            ),
+            runtime="javascript",
+        )
+
+        envelope = json.loads(err.to_json())
+        assert envelope == err.to_dict()
+        envelope["details"][0]["code"] = "changed"
+        envelope["cause_chain"][0]["details"]["path"][1] = "changed"
+        assert err.details == [{"code": "too_small"}]
+        assert err.cause_chain[0]["details"] == {"path": ["payload", "age"]}
+
     def test_details_override_supplies_structured_guard_context(self):
         details = {"thread_affinity": {"owner_dispatch_supported": False}}
         err = omnivm_mod.RuntimeError(

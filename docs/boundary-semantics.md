@@ -110,6 +110,12 @@ The automatic classifier is:
 | channels | `stream` | OmniVM manifest scope | consumption-dependent | See channel rules below. |
 | iterators/generators | `stream` or `ref` | defining runtime | consumption-dependent | Must declare whether crossing drains or proxies. |
 
+Runtime error helpers expose that structured envelope directly: Python
+`RuntimeError.to_dict()`/`as_dict()`/`to_json()`, Ruby
+`RuntimeError#to_h`/`#to_json`, Java `RuntimeError#toMap`, and JavaScript
+`toJSON()` all return copied data so callers can log or forward errors without
+mutating the live exception object.
+
 ## Automatic Boundary Selection
 
 Compiler lowering and runtime adapters must keep boundary mechanics out of
