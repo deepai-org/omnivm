@@ -19848,6 +19848,134 @@ py_undici_agent_upload_body = PythonUndiciAgentUploadBody()
         raise AssertionError(f"undici Agent upload abort leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_undici_custom_dispatcher_upload_error_releases_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+class PythonUndiciDispatcherUploadBody:
+    def __init__(self):
+        self.iterations = 0
+        self.pulls = 0
+        self.closed = False
+
+    def __iter__(self):
+        self.iterations += 1
+        return self
+
+    def __next__(self):
+        self.pulls += 1
+        if self.pulls > 1000:
+            raise StopIteration
+        return (b"dispatcher-upload-%04d-" % self.pulls) + (b"x" * 65536)
+
+    def close(self):
+        self.closed = True
+
+py_undici_dispatcher_upload_body = PythonUndiciDispatcherUploadBody()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"py_undici_dispatcher_upload_body": "py_undici_dispatcher_upload_body"},
+                "code": "globalThis.pyUndiciDispatcherUploadBody = py_undici_dispatcher_upload_body;",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "const { Dispatcher, request: undiciRequest } = require('undici');\n"
+                    "globalThis.undiciDispatcherUploadState = {dispatches: 0, chunks: 0, bytes: 0, errors: []};\n"
+                    "class OmniVMTestDispatcher extends Dispatcher {\n"
+                    "  dispatch(opts, handler) {\n"
+                    "    const state = globalThis.undiciDispatcherUploadState;\n"
+                    "    state.dispatches += 1;\n"
+                    "    state.method = opts.method;\n"
+                    "    state.path = opts.path;\n"
+                    "    const controller = {\n"
+                    "      aborted: false,\n"
+                    "      paused: false,\n"
+                    "      abort(reason) {\n"
+                    "        this.aborted = true;\n"
+                    "        state.abortMessage = reason && reason.message;\n"
+                    "      },\n"
+                    "      pause() { this.paused = true; },\n"
+                    "      resume() { this.paused = false; }\n"
+                    "    };\n"
+                    "    handler.onRequestStart(controller, {kind: 'custom-dispatcher'});\n"
+                    "    Promise.resolve().then(async () => {\n"
+                    "      try {\n"
+                    "        for await (const chunk of opts.body) {\n"
+                    "          state.chunks += 1;\n"
+                    "          state.bytes += Buffer.from(chunk).length;\n"
+                    "          break;\n"
+                    "        }\n"
+                    "        handler.onResponseError(controller, new Error('dispatcher-stop'));\n"
+                    "      } catch (err) {\n"
+                    "        state.errors.push(err && (err.stack || err.message || String(err)));\n"
+                    "        handler.onResponseError(controller, err);\n"
+                    "      }\n"
+                    "    });\n"
+                    "    return true;\n"
+                    "  }\n"
+                    "  close(callback) { if (callback) callback(); }\n"
+                    "  destroy(err, callback) { if (callback) callback(err); }\n"
+                    "}\n"
+                    "let rejected = false;\n"
+                    "try {\n"
+                    "  await undiciRequest('http://example.test/upload', {\n"
+                    "    method: 'POST',\n"
+                    "    body: globalThis.pyUndiciDispatcherUploadBody,\n"
+                    "    dispatcher: new OmniVMTestDispatcher()\n"
+                    "  });\n"
+                    "} catch (err) {\n"
+                    "  rejected = true;\n"
+                    "  globalThis.undiciDispatcherUploadState.rejectName = err && err.name;\n"
+                    "  globalThis.undiciDispatcherUploadState.rejectMessage = err && err.message;\n"
+                    "}\n"
+                    "const state = globalThis.undiciDispatcherUploadState;\n"
+                    "if (!rejected) throw new Error('undici custom Dispatcher upload error did not reject');\n"
+                    "if (state.dispatches !== 1) throw new Error('undici custom Dispatcher saw bad dispatch count: ' + JSON.stringify(state));\n"
+                    "if (state.method !== 'POST' || state.path !== '/upload') throw new Error('undici custom Dispatcher saw bad request opts: ' + JSON.stringify(state));\n"
+                    "if (state.chunks !== 1 || state.bytes <= 0) throw new Error('undici custom Dispatcher did not consume one body chunk: ' + JSON.stringify(state));\n"
+                    "if (state.rejectMessage !== 'dispatcher-stop') throw new Error('undici custom Dispatcher saw wrong rejection: ' + JSON.stringify(state));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert py_undici_dispatcher_upload_body.iterations == 1, py_undici_dispatcher_upload_body.iterations\n"
+                    "assert py_undici_dispatcher_upload_body.pulls == 1, py_undici_dispatcher_upload_body.pulls\n"
+                    "assert py_undici_dispatcher_upload_body.closed, 'undici custom Dispatcher upload error did not close Python owner'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captured = boundary.get("stream_proxy_captures", 0) >= before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1
+    stream_accessed = handles.get("handle_accesses_by_kind", {}).get("stream", 0) >= before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1
+    if not (stream_captured or stream_accessed):
+        raise AssertionError(
+            f"undici custom Dispatcher upload body did not cross as a stream-like owner: "
+            f"before_boundary={before_status.get('boundary', {})}, after_boundary={boundary}, "
+            f"before_handles={before_handles}, after_handles={handles}"
+        )
+    if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
+        raise AssertionError(f"undici custom Dispatcher upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"undici custom Dispatcher upload error leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_nested_proxy_reference_edges_observable():
     manifest = {
         "version": 1,
@@ -23531,6 +23659,7 @@ def main():
         check("Manifest undici Client upload abort releases Python owner", test_manifest_undici_client_upload_abort_releases_python_owner)
         check("Manifest undici Pool upload abort releases Python owner", test_manifest_undici_pool_upload_abort_releases_python_owner)
         check("Manifest undici Agent upload abort releases Python owner", test_manifest_undici_agent_upload_abort_releases_python_owner)
+        check("Manifest undici custom Dispatcher upload error releases Python owner", test_manifest_undici_custom_dispatcher_upload_error_releases_python_owner)
         check("Manifest nested proxy reference edges observable", test_manifest_nested_proxy_reference_edges_observable)
         check("Manifest proxy mutation cycles observable", test_manifest_proxy_mutation_cycles_observable)
         check("Manifest cross-runtime proxy cycles remain bounded", test_manifest_cross_runtime_proxy_cycles_remain_bounded)
