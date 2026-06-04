@@ -316,6 +316,38 @@ class TestRuntimeError(unittest.TestCase):
         assert err.cause_chain[1]["details"] == "not json"
         assert err.cause_chain[1]["details_json"] == "not json"
 
+    def test_runtime_error_accepts_javascript_cause_name_stack_aliases(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "name": "AggregateError",
+                    "message": "outer",
+                    "causeChain": [
+                        {
+                            "runtime": "javascript",
+                            "name": "TypeError",
+                            "message": "inner",
+                            "stack": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                        }
+                    ],
+                }
+            ),
+            runtime="go",
+        )
+
+        assert err.type == "AggregateError"
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "traceback": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                "stack_frames": ["TypeError: inner", "at cause (<anonymous>:2:4)"],
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
+            }
+        ]
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"

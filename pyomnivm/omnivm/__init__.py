@@ -377,10 +377,12 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
             if not isinstance(cause, dict):
                 continue
             item = {
-                "type": str(cause.get("type") or ""),
+                "type": str(cause.get("type") or cause.get("name") or ""),
                 "message": str(cause.get("message") or ""),
             }
             cause_traceback = cause.get("traceback")
+            if cause_traceback is None:
+                cause_traceback = cause.get("stack")
             if isinstance(cause_traceback, str):
                 item["traceback"] = cause_traceback
             cause_stack_frames = cause.get("stack_frames")
