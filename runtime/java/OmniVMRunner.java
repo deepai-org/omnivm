@@ -703,10 +703,64 @@ public class OmniVMRunner {
         addThrowableDetail(details, "original_message", throwable, "getOriginalMessage");
         addThrowableDetail(details, "original_message", throwable, "originalMessage");
         addThrowableDetail(details, "to_map", throwable, "toMap");
+        Throwable cause = throwable.getCause();
+        if (cause != null) {
+            details.put("cause", throwableSummary(cause, 0));
+        }
+        Throwable[] suppressed = throwable.getSuppressed();
+        if (suppressed.length > 0) {
+            List<Object> items = new ArrayList<>();
+            int limit = Math.min(suppressed.length, 64);
+            for (int i = 0; i < limit; i++) {
+                items.add(throwableSummary(suppressed[i], 0));
+            }
+            details.put("suppressed", items);
+            if (suppressed.length > limit) {
+                details.put("suppressed_truncated", true);
+            }
+        }
         if (details.isEmpty()) {
             return "";
         }
         return jsonValue(details);
+    }
+
+    private static Map<String, Object> throwableSummary(Throwable throwable, int depth) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("type", throwable.getClass().getName());
+        out.put("message", String.valueOf(throwable.getMessage()));
+        StackTraceElement[] stack = throwable.getStackTrace();
+        if (stack.length > 0) {
+            List<Object> frames = new ArrayList<>();
+            int limit = Math.min(stack.length, 32);
+            for (int i = 0; i < limit; i++) {
+                frames.add(String.valueOf(stack[i]));
+            }
+            if (stack.length > limit) {
+                frames.add("...");
+            }
+            out.put("stack_frames", frames);
+        }
+        if (depth >= 4) {
+            return out;
+        }
+        Throwable cause = throwable.getCause();
+        if (cause != null && cause != throwable) {
+            out.put("cause", throwableSummary(cause, depth + 1));
+        }
+        Throwable[] suppressed = throwable.getSuppressed();
+        if (suppressed.length > 0) {
+            List<Object> items = new ArrayList<>();
+            int limit = Math.min(suppressed.length, 64);
+            for (int i = 0; i < limit; i++) {
+                items.add(throwableSummary(suppressed[i], depth + 1));
+            }
+            out.put("suppressed", items);
+            if (suppressed.length > limit) {
+                out.put("suppressed_truncated", true);
+            }
+        }
+        return out;
     }
 
     private static void addThrowableDetail(Map<String, Object> details, String key, Throwable throwable, String methodName) {

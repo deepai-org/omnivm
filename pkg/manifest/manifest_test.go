@@ -7578,6 +7578,28 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)
 		}
 	}
+
+	runnerData, err := os.ReadFile("../../runtime/java/OmniVMRunner.java")
+	if err != nil {
+		t.Fatalf("read Java runner helper: %v", err)
+	}
+	runnerCode := string(runnerData)
+	for _, want := range []string{
+		"Throwable cause = throwable.getCause();",
+		`details.put("cause", throwableSummary(cause, 0));`,
+		"Throwable[] suppressed = throwable.getSuppressed();",
+		`details.put("suppressed", items);`,
+		`details.put("suppressed_truncated", true);`,
+		"private static Map<String, Object> throwableSummary(Throwable throwable, int depth)",
+		`out.put("type", throwable.getClass().getName());`,
+		`out.put("message", String.valueOf(throwable.getMessage()));`,
+		`out.put("stack_frames", frames);`,
+		"if (depth >= 4)",
+	} {
+		if !contains(runnerCode, want) {
+			t.Fatalf("Java runner throwable details should preserve cause/suppressed cleanup failures, missing %q", want)
+		}
+	}
 }
 
 func TestJavaProxyCloseRuntimePreservesLocalCloseResult(t *testing.T) {
@@ -7792,6 +7814,57 @@ public final class RuntimeErrorCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RuntimeErrorCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java runtime error check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaRunnerThrowableDetailsPreserveSuppressedExceptions(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/JavaThrowableDetailsCheck.java"
+	check := `package omnivm;
+
+import java.io.IOException;
+import java.lang.reflect.Method;
+
+public final class JavaThrowableDetailsCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        RuntimeException root = new RuntimeException("outer");
+        root.initCause(new IOException("disk"));
+        root.addSuppressed(new IllegalStateException("closing"));
+
+        Method format = OmniVMRunner.class.getDeclaredMethod("formatThrowable", Throwable.class);
+        format.setAccessible(true);
+        String text = String.valueOf(format.invoke(null, root));
+
+        require(text.contains("Details: "), "formatted throwable omitted details: " + text);
+        require(text.contains("\"cause\":{\"type\":\"java.io.IOException\",\"message\":\"disk\""), "cause details missing: " + text);
+        require(text.contains("\"suppressed\":[{\"type\":\"java.lang.IllegalStateException\",\"message\":\"closing\""), "suppressed details missing: " + text);
+        require(text.contains("\"stack_frames\":["), "stack frames missing: " + text);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java throwable details check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, "../../runtime/java/OmniVM.java", "../../runtime/java/OmniVMRunner.java", checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java throwable details check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.JavaThrowableDetailsCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java throwable details check: %v\n%s", err, out)
 	}
 }
 
