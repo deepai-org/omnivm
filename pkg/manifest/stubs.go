@@ -3509,11 +3509,11 @@ func runtimeRefIterExpr(ref RuntimeRef, mode string) (string, bool, error) {
 	case "python":
 		switch mode {
 		case "items":
-			return fmt.Sprintf("(list(%s.items()) if hasattr(%s, 'items') else list(enumerate(%s)))", base, base, base), true, nil
+			return fmt.Sprintf("(lambda __o: (list(__o.items()) if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else (list(enumerate(__o)) if hasattr(__o, '__iter__') and not isinstance(__o, (str, bytes, bytearray)) else [])))(%s)", base), true, nil
 		case "keys":
-			return fmt.Sprintf("(list(%s.keys()) if hasattr(%s, 'keys') else list(range(len(%s))))", base, base, base), true, nil
+			return fmt.Sprintf("(lambda __o: (list(__o.keys()) if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else (list(range(len(__o))) if hasattr(__o, '__len__') and not isinstance(__o, (str, bytes, bytearray)) else [])))(%s)", base), true, nil
 		default:
-			return fmt.Sprintf("(list(%s.values()) if hasattr(%s, 'values') else list(%s))", base, base, base), true, nil
+			return fmt.Sprintf("(lambda __o: (list(__o.values()) if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else (list(__o) if hasattr(__o, '__iter__') and not isinstance(__o, (str, bytes, bytearray)) else [])))(%s)", base), true, nil
 		}
 	case "ruby":
 		switch mode {

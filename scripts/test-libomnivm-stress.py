@@ -7191,6 +7191,159 @@ def test_manifest_sqlalchemy_model_capture_uses_proxy_not_json():
         raise AssertionError(f"SQLAlchemy model should not claim bulk Arrow transfer: {after}")
 
 
+def test_manifest_sqlalchemy_orm_collision_fields_stay_natural():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import sqlalchemy as sa
+from sqlalchemy.orm import Session, declarative_base
+
+sa_orm_engine = sa.create_engine("sqlite:///:memory:", future=True)
+Base = declarative_base()
+
+class CollisionOrder(Base):
+    __tablename__ = "collision_orders"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    name = sa.Column(sa.String)
+    items = sa.Column(sa.String)
+    keys = sa.Column(sa.String)
+    count = sa.Column(sa.Integer)
+    then = sa.Column(sa.String)
+    length = sa.Column(sa.Integer)
+    get = sa.Column(sa.String)
+    close = sa.Column(sa.String)
+
+    def summary(self):
+        return f"{self.name}:{self.items}:{self.count}"
+
+Base.metadata.create_all(sa_orm_engine)
+sa_orm_session = Session(sa_orm_engine)
+sa_orm_collision = CollisionOrder(
+    name="ada",
+    items="field-items",
+    keys="field-keys",
+    count=7,
+    then="field-then",
+    length=12,
+    get="field-get",
+    close="field-close",
+)
+sa_orm_session.add(sa_orm_collision)
+sa_orm_session.commit()
+sa_orm_session.refresh(sa_orm_collision)
+'''
+    verify = r'''
+assert sa_orm_collision.items == "js-items", sa_orm_collision.items
+assert sa_orm_collision.keys == "ruby-keys", sa_orm_collision.keys
+assert sa_orm_collision.count == 42, sa_orm_collision.count
+assert sa_orm_collision.then == "js-then", sa_orm_collision.then
+assert sa_orm_collision.length == 13, sa_orm_collision.length
+assert sa_orm_collision.get == "java-get", sa_orm_collision.get
+assert sa_orm_collision.close == "ruby-close", sa_orm_collision.close
+assert sa_orm_collision.summary() == "ada:js-items:42", sa_orm_collision.summary()
+sa_orm_session.flush()
+stored = sa_orm_session.execute(sa.select(CollisionOrder).where(CollisionOrder.id == sa_orm_collision.id)).scalar_one()
+assert stored.items == "js-items", stored.items
+assert stored.keys == "ruby-keys", stored.keys
+assert stored.count == 42, stored.count
+assert stored.then == "js-then", stored.then
+assert stored.length == 13, stored.length
+assert stored.get == "java-get", stored.get
+assert stored.close == "ruby-close", stored.close
+sa_orm_session.close()
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"row": "sa_orm_collision"},
+                "code": (
+                    "if (row.name !== 'ada') throw new Error('bad SQLAlchemy ORM name: ' + row.name); "
+                    "if (row.items !== 'field-items') throw new Error('SQLAlchemy ORM items field lost: ' + row.items); "
+                    "if (row.keys !== 'field-keys') throw new Error('SQLAlchemy ORM keys field lost: ' + row.keys); "
+                    "if (String(row.count) !== '7') throw new Error('SQLAlchemy ORM count field lost: ' + row.count); "
+                    "if (row.then !== 'field-then') throw new Error('SQLAlchemy ORM then field lost: ' + row.then); "
+                    "if (String(row.length) !== '12') throw new Error('SQLAlchemy ORM length field lost: ' + row.length); "
+                    "if (row.get !== 'field-get') throw new Error('SQLAlchemy ORM get field lost: ' + row.get); "
+                    "if (row.close !== 'field-close') throw new Error('SQLAlchemy ORM close field lost: ' + row.close); "
+                    "if (row.summary() !== 'ada:field-items:7') throw new Error('SQLAlchemy ORM method lost: ' + row.summary()); "
+                    "if (omnivm.proxyGet(row, 'length') !== 12) throw new Error('SQLAlchemy ORM explicit length get failed'); "
+                    "row.items = 'js-items'; "
+                    "row.then = 'js-then'; "
+                    "row.length = 13;"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"row": "sa_orm_collision"},
+                "code": (
+                    "raise \"bad SQLAlchemy ORM items #{row.items}\" unless row.items == 'js-items'; "
+                    "raise \"bad SQLAlchemy ORM keys #{row.keys}\" unless row.keys == 'field-keys'; "
+                    "raise \"bad SQLAlchemy ORM count #{row.count}\" unless row.count.to_s == '7'; "
+                    "raise \"bad SQLAlchemy ORM then #{row.then}\" unless row.then == 'js-then'; "
+                    "raise \"bad SQLAlchemy ORM length #{row.length}\" unless row.length.to_s == '13'; "
+                    "raise \"bad SQLAlchemy ORM get #{row.get}\" unless row.get == 'field-get'; "
+                    "raise \"bad SQLAlchemy ORM close #{row.close}\" unless row.close == 'field-close'; "
+                    "raise \"bad SQLAlchemy ORM summary #{row.summary.call}\" unless row.summary.call == 'ada:js-items:7'; "
+                    "row.keys = 'ruby-keys'; "
+                    "row.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"row": "sa_orm_collision"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"row\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"SQLAlchemy ORM row should cross as HandleProxy: \" + raw); "
+                    "omnivm.OmniVM.HandleProxy row = (omnivm.OmniVM.HandleProxy) raw; "
+                    "if (!\"js-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"SQLAlchemy ORM Java items field lost: \" + row.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"SQLAlchemy ORM Java keys field lost: \" + row.get(\"keys\")); "
+                    "if (!\"7\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"SQLAlchemy ORM Java count field lost: \" + row.get(\"count\")); "
+                    "if (!\"js-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"SQLAlchemy ORM Java then field lost: \" + row.get(\"then\")); "
+                    "if (!\"13\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"SQLAlchemy ORM Java length field lost: \" + row.get(\"length\")); "
+                    "if (!\"field-get\".equals(String.valueOf(row.get(\"get\")))) throw new RuntimeException(\"SQLAlchemy ORM Java get field lost: \" + row.get(\"get\")); "
+                    "if (!\"ruby-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"SQLAlchemy ORM Java close field lost: \" + row.get(\"close\")); "
+                    "if (!\"ada:js-items:7\".equals(String.valueOf(row.call(\"summary\")))) throw new RuntimeException(\"SQLAlchemy ORM Java summary method lost: \" + row.call(\"summary\")); "
+                    "if (!row.set(\"count\", 42)) throw new RuntimeException(\"SQLAlchemy ORM count set failed\"); "
+                    "if (!row.set(\"get\", \"java-get\")) throw new RuntimeException(\"SQLAlchemy ORM get set failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"SQLAlchemy ORM collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model did not record mutation access: before={before_handles}, after={handles}")
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"SQLAlchemy ORM collision model did not record method call access: before={before_handles}, after={handles}")
+
+
 def test_manifest_sqlalchemy_result_session_lifecycle_and_rollback():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -24135,6 +24288,7 @@ def main():
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django model collision fields stay natural", test_manifest_django_model_collision_fields_stay_natural)
+        check("Manifest SQLAlchemy ORM collision fields stay natural", test_manifest_sqlalchemy_orm_collision_fields_stay_natural)
         check("Manifest Django request body after close requires DTO", test_manifest_django_request_body_after_close_requires_materialized_dto)
         check("Manifest Django streaming response capture uses proxy not body stream", test_manifest_django_streaming_response_capture_uses_proxy_not_body_stream)
         check("Manifest Django async StreamingHttpResponse body is lazy and cancellable", test_manifest_django_async_streaming_response_body_is_lazy_and_cancellable)

@@ -7486,6 +7486,22 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 		t.Fatalf("python call lookup should inspect Pydantic fields before same-named methods, got %q", pythonCall)
 	}
 
+	pythonItemsIter, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr python items: ok=%v err=%v", ok, err)
+	}
+	if strings.Contains(pythonItemsIter, ".items()) if hasattr") || !strings.Contains(pythonItemsIter, "collections.abc") || !strings.Contains(pythonItemsIter, "Mapping") {
+		t.Fatalf("python item iteration should require real Mapping before calling items(), got %q", pythonItemsIter)
+	}
+
+	pythonKeysIter, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "keys")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr python keys: ok=%v err=%v", ok, err)
+	}
+	if strings.Contains(pythonKeysIter, ".keys()) if hasattr") || !strings.Contains(pythonKeysIter, "collections.abc") || !strings.Contains(pythonKeysIter, "Mapping") {
+		t.Fatalf("python key iteration should require real Mapping before calling keys(), got %q", pythonKeysIter)
+	}
+
 	rubyCall, ok, err := runtimeRefCallExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "count", []interface{}{})
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefCallExpr ruby: ok=%v err=%v", ok, err)
