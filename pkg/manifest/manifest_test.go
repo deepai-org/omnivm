@@ -7636,6 +7636,45 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPythonRegistersCoreProxyCloseHelper(t *testing.T) {
+	data, err := os.ReadFile("../../pkg/python/python.go")
+	if err != nil {
+		t.Fatalf("read Python runtime source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"static const char* omnivm_py_proxy_close_code",
+		"def __omnivm_actual_public_method(value, name):",
+		"__omnivm_inspect.getattr_static(value, name)",
+		"isinstance(raw, (staticmethod, classmethod))",
+		"method = raw.__get__(value, type(value))",
+		"__omnivm_inspect.ismemberdescriptor(raw)",
+		"if not callable(raw):",
+		"instance_dict = object.__getattribute__(value, '__dict__')",
+		"instance_dict.get(name) is raw",
+		"__omnivm_inspect.isfunction(raw)",
+		"__omnivm_inspect.ismethoddescriptor(raw)",
+		"def proxy_close(value):",
+		"def omnivm_close(value):",
+		"close = __omnivm_actual_public_method(value, '_omnivm_close')",
+		"close = __omnivm_actual_public_method(value, 'close')",
+		"return True if result is None else result",
+		"static void omnivm_py_install_proxy_close_helpers(PyObject* module)",
+		"omnivm_py_install_proxy_close_helpers(module)",
+		"omnivm_py_install_proxy_close_helpers(mod)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("embedded Python omnivm module should expose collision-safe close helpers, missing %q", want)
+		}
+	}
+	if contains(code, `getattr(value, "close", None)`) ||
+		contains(code, `getattr(value, "_omnivm_close", None)`) ||
+		contains(code, `getattr(value, name, None)`) ||
+		contains(code, `getattr(value, name)`) {
+		t.Fatalf("embedded Python close helpers should not invoke dynamic close attribute lookup")
+	}
+}
+
 func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing.T) {
 	data, err := os.ReadFile("../../pkg/ruby/ruby.go")
 	if err != nil {

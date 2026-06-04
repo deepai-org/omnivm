@@ -277,6 +277,67 @@ static const char* omnivm_py_runtime_error_code_for_test(void) {
     return omnivm_py_runtime_error_code;
 }
 
+static const char* omnivm_py_proxy_close_code =
+"import inspect as __omnivm_inspect\n"
+"def __omnivm_actual_public_method(value, name):\n"
+"    if value is None:\n"
+"        return None\n"
+"    try:\n"
+"        raw = __omnivm_inspect.getattr_static(value, name)\n"
+"    except Exception:\n"
+"        return None\n"
+"    if isinstance(raw, (staticmethod, classmethod)):\n"
+"        try:\n"
+"            method = raw.__get__(value, type(value))\n"
+"        except Exception:\n"
+"            return None\n"
+"        return method if callable(method) else None\n"
+"    if __omnivm_inspect.ismemberdescriptor(raw):\n"
+"        try:\n"
+"            method = raw.__get__(value, type(value))\n"
+"        except Exception:\n"
+"            return None\n"
+"        return method if callable(method) else None\n"
+"    if not callable(raw):\n"
+"        return None\n"
+"    try:\n"
+"        instance_dict = object.__getattribute__(value, '__dict__')\n"
+"    except Exception:\n"
+"        instance_dict = None\n"
+"    if isinstance(instance_dict, dict) and instance_dict.get(name) is raw:\n"
+"        return raw\n"
+"    if hasattr(raw, '__get__') and (__omnivm_inspect.isfunction(raw) or __omnivm_inspect.ismethoddescriptor(raw) or __omnivm_inspect.isbuiltin(raw)):\n"
+"        try:\n"
+"            method = raw.__get__(value, type(value))\n"
+"        except Exception:\n"
+"            return None\n"
+"        return method if callable(method) else None\n"
+"    if not hasattr(raw, '__get__'):\n"
+"        return raw\n"
+"    return None\n"
+"def proxy_close(value):\n"
+"    close = __omnivm_actual_public_method(value, '_omnivm_close')\n"
+"    if callable(close):\n"
+"        return close()\n"
+"    close = __omnivm_actual_public_method(value, 'close')\n"
+"    if callable(close):\n"
+"        result = close()\n"
+"        return True if result is None else result\n"
+"    return False\n"
+"def omnivm_close(value):\n"
+"    return proxy_close(value)\n"
+"try:\n"
+"    __all__\n"
+"except NameError:\n"
+"    __all__ = []\n"
+"for __omnivm_name in ('proxy_close', 'omnivm_close'):\n"
+"    if __omnivm_name not in __all__:\n"
+"        __all__.append(__omnivm_name)\n";
+
+static const char* omnivm_py_proxy_close_code_for_test(void) {
+    return omnivm_py_proxy_close_code;
+}
+
 static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
     PyObject* mod = PyImport_ImportModule("omnivm");
     PyObject* cls = mod ? PyObject_GetAttrString(mod, "RuntimeError") : NULL;
@@ -3418,6 +3479,16 @@ static struct PyModuleDef omnivm_module_def = {
     omnivm_methods
 };
 
+static void omnivm_py_install_proxy_close_helpers(PyObject* module) {
+    PyObject* dict = module ? PyModule_GetDict(module) : NULL;
+    PyObject* result = dict ? PyRun_String(omnivm_py_proxy_close_code, Py_file_input, dict, dict) : NULL;
+    if (result) {
+        Py_DECREF(result);
+    } else {
+        PyErr_Clear();
+    }
+}
+
 // Register the omnivm module
 static void omnivm_py_register_bridge() {
     if (PyType_Ready(&py_omnivm_buffer_view_type) < 0) {
@@ -3426,6 +3497,7 @@ static void omnivm_py_register_bridge() {
     }
     PyObject* module = PyModule_Create(&omnivm_module_def);
     if (module) {
+        omnivm_py_install_proxy_close_helpers(module);
         PyObject* sys_modules = PySys_GetObject("modules");
         if (sys_modules) {
             PyDict_SetItemString(sys_modules, "omnivm", module);
@@ -3719,6 +3791,7 @@ PyMODINIT_FUNC PyInit_omnivm(void) {
         }
     }
 
+    omnivm_py_install_proxy_close_helpers(mod);
     return mod;
 }
 */
