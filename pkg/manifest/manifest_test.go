@@ -40,6 +40,25 @@ func (r *closeTrackingReader) Close() error {
 	return nil
 }
 
+type errorAfterChunkReader struct {
+	chunk  string
+	reads  int
+	closed bool
+}
+
+func (r *errorAfterChunkReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == 1 {
+		return copy(p, r.chunk), nil
+	}
+	return 0, errors.New("owner read failed")
+}
+
+func (r *errorAfterChunkReader) Close() error {
+	r.closed = true
+	return nil
+}
+
 type goHTTPMessageReaderShape struct {
 	Method  string
 	Path    string
@@ -4522,6 +4541,62 @@ func TestHandleCallStreamReaderClosesAtEOF(t *testing.T) {
 	}
 	if !reader.closed {
 		t.Fatal("reader was not closed when stream reached EOF")
+	}
+}
+
+func TestHandleCallStreamReaderErrorReleasesOwner(t *testing.T) {
+	e, _ := makeExecutor("javascript")
+	reader := &errorAfterChunkReader{chunk: "first"}
+	id, err := e.genericStreamHandle("go", reader)
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+
+	result, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("HandleCall stream_next reader chunk: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	item, ok := env.Value.(map[string]interface{})
+	if !ok || item["done"] == true {
+		t.Fatalf("reader first stream_next envelope = %#v, want chunk", env)
+	}
+	chunk, ok := item["value"].(map[string]interface{})
+	if !ok || chunk["__omnivm_table__"] != true {
+		t.Fatalf("reader first stream_next chunk = %#v, want table", item["value"])
+	}
+	chunkID, err := bridgeHandleID(chunk["id"])
+	if err != nil {
+		t.Fatalf("reader chunk table id: %v", err)
+	}
+	if err := e.ensureHandleTable().ReleaseAllRefs(chunkID); err != nil {
+		t.Fatalf("release reader chunk table: %v", err)
+	}
+	beforeError := e.handleTable.Stats(time.Now())
+	if reader.closed {
+		t.Fatal("reader closed before read error")
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stream_next reader error did not fail")
+	} else if !strings.Contains(err.Error(), "owner read failed") {
+		t.Fatalf("stream_next reader error = %v, want owner read failure", err)
+	}
+	if !reader.closed {
+		t.Fatal("reader was not closed after read error")
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != beforeError.ExplicitReleases+1 {
+		t.Fatalf("reader error should release stream handle once: before=%+v after=%+v", beforeError, stats)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_next after reader error did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=reader", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_next after reader error missing %q: %s", want, got)
+			}
+		}
 	}
 }
 

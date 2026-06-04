@@ -289,6 +289,9 @@ and pulls with `stream_next`. This is a proxy contract, not an implicit JSON
 array contract.
 
 Stream handles release automatically when `stream_next` reaches end-of-stream.
+Read errors from owner stream protocols are terminal for the stream lease: the
+owner is closed/released before the error crosses the boundary, and later use
+of the same stream handle reports the closed-stream lifecycle diagnostic.
 Targets may cancel abandoned streams; request/manifest scope cleanup and proxy
 finalizers remain fallback release paths.
 
@@ -305,9 +308,9 @@ non-collection sync iterables, async iterables, or `getReader` streams, Java
 `InputStream`, `ReadableByteChannel`, `Reader`, `BaseStream`,
 `Flow.Publisher`, or non-collection `Iterable` values, and Go `io.Reader`
 values. The bridge pulls bounded chunks with `stream_next` and releases the
-stream handle at EOF.
+stream handle at EOF or owner read error.
 Closeable stream sources are closed through their host
-protocol on EOF, cancellation, or scope/finalizer release: Python and Ruby
+protocol on EOF, read error, cancellation, or scope/finalizer release: Python and Ruby
 `close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can
 become Arrow/shared-buffer table descriptors without a user-visible helper.

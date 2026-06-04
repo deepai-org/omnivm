@@ -27,7 +27,8 @@ JS stream proxy `toNodeReadable()` adapter, Ruby `each`, Java `Iterable`,
 `BaseStream`, `Flow.Publisher`, `InputStream`, `Reader`, and
 `ReadableByteChannel`, plus OkHttp
 response body streams. These tests assert stream proxy captures, no JSON
-fallback, recorded stream accesses, and release on EOF or cancellation.
+fallback, recorded stream accesses, and release on EOF, cancellation, or owner
+read error.
 
 The database-backed evidence is now concrete for common relational stacks:
 Django `QuerySet`, chunked `QuerySet.iterator()` streams that cancel after a
