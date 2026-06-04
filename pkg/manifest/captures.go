@@ -1467,7 +1467,7 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       value: function(value) {
         var omnivmClose = null;
         try {
-          omnivmClose = value && value.__omnivm_close;
+          omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close");
         } catch (_omnivmCloseLookupError) {}
         if (typeof omnivmClose === 'function') return omnivmClose.call(value);
         if (typeof Symbol !== 'undefined') {
@@ -1808,6 +1808,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return Reflect.has(obj, prop);
     },
     getOwnPropertyDescriptor: function(obj, prop) {
+      if (prop === "__omnivm_close") return {value: releaseProxyLease, enumerable: false, configurable: true};
+      if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
+      if (typeof Symbol !== 'undefined' && Symbol.asyncDispose && prop === Symbol.asyncDispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
       var local = Object.getOwnPropertyDescriptor(obj, prop);
       if (local) return local;
       if (typeof prop === 'string' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
