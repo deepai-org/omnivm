@@ -58,6 +58,7 @@ __all__ = [
     "proxy_items",
     "proxy_contains",
     "proxy_close",
+    "omnivm_close",
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
@@ -1548,6 +1549,11 @@ def proxy_close(value):
         result = close()
         return True if result is None else result
     return False
+
+
+def omnivm_close(value):
+    """Alias for proxy_close(), matching generated Python manifest snippets."""
+    return proxy_close(value)
 
 
 def _manifest_stream_iterator_release(proxy):

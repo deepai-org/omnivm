@@ -636,14 +636,15 @@ Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`, and `omnivm.proxy_close(proxy)`.
+`omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
+`omnivm.omnivm_close(proxy)`.
 Local Python protocol attributes such as `__class__` and `__repr__` stay local
 so introspection and debugging remain ordinary; owner fields with those names
 remain available through `omnivm.proxy_get(proxy, "__class__")` and the same
 helper family.
-Generated Python manifest capture code also injects `omnivm_close(value)` so
-guest Python snippets can explicitly release a handle proxy or cancel a stream
-proxy even when the owner object has a real `close` field or method.
+Generated Python manifest capture code injects the same `omnivm_close(value)`
+helper so guest Python snippets can explicitly release a handle proxy or cancel
+a stream proxy even when the owner object has a real `close` field or method.
 Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,

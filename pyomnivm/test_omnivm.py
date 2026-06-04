@@ -1255,6 +1255,17 @@ class TestCallWithMockLib(unittest.TestCase):
 
         assert omnivm_mod.proxy_close(BothClosers()) == "omnivm-closed"
 
+    def test_omnivm_close_alias_matches_proxy_close(self):
+        class BothClosers:
+            def _omnivm_close(self):
+                return "omnivm-closed"
+
+            def close(self):
+                return "public-close"
+
+        assert "omnivm_close" in omnivm_mod.__all__
+        assert omnivm_mod.omnivm_close(BothClosers()) == "omnivm-closed"
+
     def test_proxy_close_preserves_static_class_and_instance_methods(self):
         class StaticCloser:
             @staticmethod
