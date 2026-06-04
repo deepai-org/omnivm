@@ -7596,6 +7596,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "return proxy.releaseExplicit();") ||
 		!contains(code, "return proxy.cancel();") ||
 		!contains(code, `"op\":\"handle_release_explicit\"`) ||
+		!contains(code, "if (cleanable != null) {\n                cleanable.clean();\n            }\n            return true;") ||
 		!contains(code, "public boolean releaseExplicit()") ||
 		!contains(code, "public void close()") ||
 		!contains(code, "java.lang.reflect.Modifier.isPublic(method.getModifiers())") ||
@@ -7954,6 +7955,64 @@ public final class FlowPublisherBackpressureCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.FlowPublisherBackpressureCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java Flow.Publisher backpressure check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaLocalStreamProxyCloseIsIdempotent(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/LocalStreamProxyCloseCheck.java"
+	check := `package omnivm;
+
+public final class LocalStreamProxyCloseCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.setCapture("rows", "{\"__omnivm_stream__\":true,\"values\":[\"a\",\"b\"]}");
+        Object rows = OmniVM.getCapture("rows");
+        require(rows instanceof OmniVM.StreamProxy, "capture did not materialize a stream proxy");
+        OmniVM.StreamProxy stream = (OmniVM.StreamProxy) rows;
+        stream.close();
+        stream.close();
+        require(!stream.iterator().hasNext(), "closed local stream still had items");
+        require(!OmniVM.proxyClose(stream), "proxyClose after local stream close should be idempotent false");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java local stream close check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java local stream close check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.LocalStreamProxyCloseCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java local stream close check: %v\n%s", err, out)
 	}
 }
 

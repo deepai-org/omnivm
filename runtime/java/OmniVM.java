@@ -1684,7 +1684,9 @@ public class OmniVM {
                 released.set(false);
                 return false;
             }
-            cleanable.clean();
+            if (cleanable != null) {
+                cleanable.clean();
+            }
             return true;
         }
 
