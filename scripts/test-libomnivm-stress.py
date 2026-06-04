@@ -20876,6 +20876,96 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
         raise AssertionError(f"Node Web ReadableStream leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_node_classic_readable_early_cancel_releases_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "(() => {"
+                    "const {Readable} = require('node:stream');"
+                    "globalThis.nodeClassicReadableState = {"
+                    "  destroyed: false,"
+                    "  closed: false,"
+                    "  reads: 0,"
+                    "  chunks: [],"
+                    "  destroyError: null"
+                    "};"
+                    "class OmniVMClassicReadable extends Readable {"
+                    "  constructor() {"
+                    "    super({objectMode: true, highWaterMark: 1});"
+                    "    this._chunks = ['first', 'second', 'third'];"
+                    "  }"
+                    "  _read() {"
+                    "    const state = globalThis.nodeClassicReadableState;"
+                    "    state.reads += 1;"
+                    "    if (this._chunks.length === 0) { this.push(null); return; }"
+                    "    const chunk = this._chunks.shift();"
+                    "    state.chunks.push(chunk);"
+                    "    this.push(chunk);"
+                    "  }"
+                    "  _destroy(err, cb) {"
+                    "    const state = globalThis.nodeClassicReadableState;"
+                    "    state.destroyed = true;"
+                    "    state.destroyError = err && err.message ? err.message : (err ? String(err) : null);"
+                    "    cb(err);"
+                    "  }"
+                    "}"
+                    "globalThis.nodeClassicReadable = new OmniVMClassicReadable();"
+                    "globalThis.nodeClassicReadable.on('close', () => { globalThis.nodeClassicReadableState.closed = true; });"
+                    "})();"
+                ),
+            },
+            {"op": "eval", "runtime": "javascript", "bind": "node_classic_stream", "code": "globalThis.nodeClassicReadable"},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "first = next(node_classic_stream)\n"
+                    "assert first == 'first', first\n"
+                    "node_classic_stream.close()\n"
+                    "del node_classic_stream\n"
+                    "import gc\n"
+                    "gc.collect(); gc.collect()"
+                ),
+                "captures": {"node_classic_stream": "node_classic_stream"},
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "await new Promise(resolve => setImmediate(resolve));"
+                    "const state = globalThis.nodeClassicReadableState; "
+                    "if (!state.destroyed) throw new Error('Node classic Readable iterator return did not destroy owner'); "
+                    "if (!state.closed) throw new Error('Node classic Readable did not emit close after cancel'); "
+                    "if (state.chunks[0] !== 'first') throw new Error('bad first classic Readable chunk: ' + JSON.stringify(state)); "
+                    "if (state.chunks.length > 2) throw new Error('Node classic Readable read too far after early cancel: ' + JSON.stringify(state)); "
+                    "if (!globalThis.nodeClassicReadable.destroyed) throw new Error('Node classic Readable destroyed flag was not set');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Node classic Readable did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Node classic Readable used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Node classic Readable did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Node classic Readable leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -25994,6 +26084,7 @@ def main():
         check("Manifest JS ReadableStream body capture is lazy stream", test_manifest_js_readable_stream_body_capture_as_lazy_stream)
         check("Manifest JS ReadableStream early cancel releases owner", test_manifest_js_readable_stream_early_cancel_releases_owner)
         check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
+        check("Manifest Node classic Readable early cancel releases owner", test_manifest_node_classic_readable_early_cancel_releases_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
