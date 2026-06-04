@@ -65,18 +65,27 @@ func newGoHandleProxy(id handles.ID, table *handles.Table, kind string, payload 
 
 // ID returns the opaque OmniVM handle id.
 func (p *GoHandleProxy) ID() handles.ID {
+	if p == nil {
+		return 0
+	}
 	p.record("property")
 	return p.id
 }
 
 // Kind returns the descriptor kind, such as resource, table, or job.
 func (p *GoHandleProxy) Kind() string {
+	if p == nil {
+		return ""
+	}
 	p.record("property")
 	return p.kind
 }
 
 // Runtime returns the runtime that owns this handle, when the descriptor has one.
 func (p *GoHandleProxy) Runtime() string {
+	if p == nil {
+		return ""
+	}
 	p.record("property")
 	value, _ := p.payload["runtime"].(string)
 	return value
@@ -84,6 +93,9 @@ func (p *GoHandleProxy) Runtime() string {
 
 // ResourceKind returns the host-side resource kind, when the descriptor has one.
 func (p *GoHandleProxy) ResourceKind() string {
+	if p == nil {
+		return ""
+	}
 	p.record("property")
 	value, _ := p.payload["kind"].(string)
 	return value

@@ -2513,6 +2513,23 @@ func TestGoHandleProxyKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	}
 }
 
+func TestGoHandleProxyMetadataAccessorsAreNilSafe(t *testing.T) {
+	var proxy *GoHandleProxy
+
+	if proxy.ID() != 0 {
+		t.Fatalf("nil GoHandleProxy.ID() = %d, want 0", proxy.ID())
+	}
+	if proxy.Kind() != "" {
+		t.Fatalf("nil GoHandleProxy.Kind() = %q, want empty", proxy.Kind())
+	}
+	if proxy.Runtime() != "" {
+		t.Fatalf("nil GoHandleProxy.Runtime() = %q, want empty", proxy.Runtime())
+	}
+	if proxy.ResourceKind() != "" {
+		t.Fatalf("nil GoHandleProxy.ResourceKind() = %q, want empty", proxy.ResourceKind())
+	}
+}
+
 func TestGoHandleProxyMaterializesReturnedStreamDescriptor(t *testing.T) {
 	e, _ := makeExecutor("go")
 	ch := make(chan interface{}, 2)
