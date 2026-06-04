@@ -275,6 +275,10 @@ func TestBorrowZeroCopyLease(t *testing.T) {
 	if refs != 2 {
 		t.Fatalf("expected borrowed refs=2, got %d", refs)
 	}
+	stats := s.Stats()
+	if stats.ActiveBorrows != 1 {
+		t.Fatalf("expected active borrow count=1, got %+v", stats)
+	}
 
 	lease.Release()
 	lease.Release()
@@ -285,8 +289,8 @@ func TestBorrowZeroCopyLease(t *testing.T) {
 		t.Fatalf("expected released refs=1, got %d", refs)
 	}
 
-	stats := s.Stats()
-	if stats.ZeroCopyBorrows != 1 || stats.Gets != 1 || stats.Releases != 1 {
+	stats = s.Stats()
+	if stats.ZeroCopyBorrows != 1 || stats.ActiveBorrows != 0 || stats.Gets != 1 || stats.Releases != 1 {
 		t.Fatalf("bad borrow stats: %+v", stats)
 	}
 }

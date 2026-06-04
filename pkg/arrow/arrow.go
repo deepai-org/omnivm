@@ -83,6 +83,7 @@ type Stats struct {
 	CopiedBytes       int64          `json:"copied_bytes"`
 	ZeroCopyBorrows   int64          `json:"zero_copy_borrows"`
 	ZeroCopyImports   int64          `json:"zero_copy_imports"`
+	ActiveBorrows     int64          `json:"active_borrows"`
 	DeferredDrops     int64          `json:"deferred_release_drops"`
 	DeferredQueueLen  int            `json:"deferred_release_queue_len"`
 	DeferredOverflow  int            `json:"deferred_release_overflow_names"`
@@ -357,9 +358,13 @@ func (s *SharedStore) Stats() Stats {
 		size := int64(buf.Len)
 		dtype := buf.Dtype
 		format := buf.Format
+		refs := buf.refs
 		buf.mu.Unlock()
 
 		stats.LiveBytes += size
+		if refs > 1 {
+			stats.ActiveBorrows += int64(refs - 1)
+		}
 		stats.BuffersByDtype[strconv.FormatInt(int64(dtype), 10)]++
 		if format != "" {
 			stats.BuffersByFormat[format]++
