@@ -2240,6 +2240,17 @@ func TestNormalizeGoArgMaterializesLocalStreamValues(t *testing.T) {
 	if value, ok := stream.Recv(); ok || value != nil {
 		t.Fatalf("local stream after Close = (%#v, %v), want nil,false", value, ok)
 	}
+	cleanup, ok := e.normalizeGoArg(map[string]interface{}{
+		"__omnivm_stream__": true,
+		"values":           []interface{}{"cleanup"},
+	}).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg cleanup local stream = %T, want *GoStreamProxy", e.normalizeGoArg(map[string]interface{}{"__omnivm_stream__": true, "values": []interface{}{}}))
+	}
+	cleanup.ReleaseFromFinalizer()
+	if value, ok := cleanup.Recv(); ok || value != nil {
+		t.Fatalf("local stream after finalizer cleanup = (%#v, %v), want nil,false", value, ok)
+	}
 	stats := e.ensureHandleTable().Stats(time.Now())
 	if stats.Live != 0 || stats.ExplicitReleases != 0 || stats.FinalizerQueued != 0 {
 		t.Fatalf("local stream should not touch handle table: %+v", stats)

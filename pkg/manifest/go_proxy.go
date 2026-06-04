@@ -732,7 +732,14 @@ func (p *GoStreamProxy) Close() error {
 }
 
 func (p *GoStreamProxy) ReleaseFromFinalizer() {
-	if p == nil || p.closed || p.table == nil || p.id == 0 {
+	if p == nil || p.closed {
+		return
+	}
+	if p.localValues != nil {
+		p.closed = true
+		return
+	}
+	if p.table == nil || p.id == 0 {
 		return
 	}
 	p.table.QueueReleaseFromFinalizer(p.id)
