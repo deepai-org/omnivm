@@ -450,7 +450,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 
 	lease.Release()
 	status = s.Status("payload")
-	if status.State != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 {
+	if status.State != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad released status after borrow release: %+v", status)
 	}
 	if _, err := s.Get("payload"); err == nil || !strings.Contains(err.Error(), "was released") {

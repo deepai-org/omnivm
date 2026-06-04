@@ -121,6 +121,7 @@ type SharedStore struct {
 	namedBorrows  map[string][]*Buffer
 	detached      map[*Buffer]struct{}
 	released      map[string]struct{}
+	releasedMeta  map[string]BufferStatus
 	releasedOrder []string
 
 	allocations     int64
@@ -142,13 +143,18 @@ func NewSharedStore() *SharedStore {
 		namedBorrows: make(map[string][]*Buffer),
 		detached:     make(map[*Buffer]struct{}),
 		released:     make(map[string]struct{}),
+		releasedMeta: make(map[string]BufferStatus),
 	}
 }
 
-func (s *SharedStore) markReleasedLocked(name string) {
+func (s *SharedStore) markReleasedLocked(name string, status BufferStatus) {
 	if name == "" {
 		return
 	}
+	status.Name = name
+	status.State = "released"
+	status.Released = true
+	s.releasedMeta[name] = status
 	if _, ok := s.released[name]; ok {
 		return
 	}
@@ -158,14 +164,17 @@ func (s *SharedStore) markReleasedLocked(name string) {
 		oldest := s.releasedOrder[0]
 		s.releasedOrder = s.releasedOrder[1:]
 		delete(s.released, oldest)
+		delete(s.releasedMeta, oldest)
 	}
 }
 
 func (s *SharedStore) forgetReleasedLocked(name string) {
 	if _, ok := s.released[name]; !ok {
+		delete(s.releasedMeta, name)
 		return
 	}
 	delete(s.released, name)
+	delete(s.releasedMeta, name)
 	for i, releasedName := range s.releasedOrder {
 		if releasedName == name {
 			copy(s.releasedOrder[i:], s.releasedOrder[i+1:])
@@ -368,12 +377,22 @@ func (s *SharedStore) Free(name string) error {
 	buf.refs--
 	refs := buf.refs
 	release := buf.release
+	releasedStatus := BufferStatus{
+		Name:      name,
+		State:     "released",
+		Released:  true,
+		Len:       int64(buf.Len),
+		Dtype:     buf.Dtype,
+		Format:    buf.Format,
+		ReadOnly:  buf.ReadOnly,
+		Ownership: nonEmptyString(buf.Ownership, "omnivm"),
+	}
 	buf.mu.Unlock()
 
 	if current, ok := s.buffers[name]; ok && current == buf {
 		delete(s.buffers, name)
 	}
-	s.markReleasedLocked(name)
+	s.markReleasedLocked(name, releasedStatus)
 	if refs <= 0 {
 		delete(s.detached, buf)
 	} else {
@@ -414,6 +433,8 @@ func (s *SharedStore) Status(name string) BufferStatus {
 
 	status := BufferStatus{Name: name, State: "missing"}
 	if _, ok := s.released[name]; ok {
+		status = s.releasedMeta[name]
+		status.Name = name
 		status.State = "released"
 		status.Released = true
 	}
