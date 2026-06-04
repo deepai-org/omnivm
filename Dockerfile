@@ -120,6 +120,7 @@ RUN cd /usr/local/lib && npm install \
       react \
       react-dom \
       undici \
+      busboy \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \
@@ -354,6 +355,7 @@ RUN cd /usr/local/lib && npm install \
       react \
       react-dom \
       undici \
+      busboy \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \

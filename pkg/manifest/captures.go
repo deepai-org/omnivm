@@ -1533,6 +1533,51 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       for (var item of this) out.push(item);
       return out;
     },
+    toNodeReadable: function(options) {
+      if (typeof require !== 'function') {
+        throw new Error("Node.js Readable streams are unavailable in this JavaScript runtime");
+      }
+      var streamModule = require('node:stream');
+      if (!streamModule || typeof streamModule.Readable !== 'function') {
+        throw new Error("Node.js Readable streams are unavailable in this JavaScript runtime");
+      }
+      var source = this;
+      var iterator = source[Symbol.asyncIterator]();
+      var closed = false;
+      var closeIterator = function(reason) {
+        if (closed) return Promise.resolve();
+        closed = true;
+        if (iterator && typeof iterator.return === 'function') {
+          return Promise.resolve(iterator.return(reason)).then(function() {});
+        }
+        if (source && typeof source.cancel === 'function') {
+          return Promise.resolve(source.cancel(reason)).then(function() {});
+        }
+        return Promise.resolve();
+      };
+      var opts = Object.assign({}, options || {});
+      opts.read = function() {
+        var target = this;
+        Promise.resolve(iterator.next()).then(function(item) {
+          if (item && item.done) {
+            closed = true;
+            target.push(null);
+            return;
+          }
+          target.push(item ? item.value : undefined);
+        }, function(err) {
+          target.destroy(err);
+        });
+      };
+      opts.destroy = function(err, cb) {
+        closeIterator(err).then(function() {
+          cb(err);
+        }, function(closeErr) {
+          cb(err || closeErr);
+        });
+      };
+      return new streamModule.Readable(opts);
+    },
     [Symbol.iterator]: function() {
       var owner = this;
       return {

@@ -21061,6 +21061,136 @@ def test_manifest_node_classic_pipeline_abort_cancels_python_owner():
         raise AssertionError(f"Node classic pipeline leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_busboy_upload_abort_cancels_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "class BusboyUploadBody:\n"
+                    "    def __init__(self):\n"
+                    "        boundary = b'----omnivm-boundary'\n"
+                    "        self.chunks = [\n"
+                    "            b'--' + boundary + b'\\r\\n',\n"
+                    "            b'Content-Disposition: form-data; name=\"file\"; filename=\"upload.txt\"\\r\\n',\n"
+                    "            b'Content-Type: text/plain\\r\\n\\r\\n',\n"
+                    "            b'first-',\n"
+                    "        ] + [f'tail-{i}-'.encode('ascii') for i in range(12)] + [b'\\r\\n--' + boundary + b'--\\r\\n']\n"
+                    "        self.index = 0\n"
+                    "        self.pulls = 0\n"
+                    "        self.closed = False\n"
+                    "    def __iter__(self):\n"
+                    "        return self\n"
+                    "    def __next__(self):\n"
+                    "        self.pulls += 1\n"
+                    "        if self.index >= len(self.chunks):\n"
+                    "            raise StopIteration\n"
+                    "        chunk = self.chunks[self.index]\n"
+                    "        self.index += 1\n"
+                    "        return chunk\n"
+                    "    def close(self):\n"
+                    "        self.closed = True\n"
+                    "busboy_upload_body = BusboyUploadBody()\n"
+                ),
+            },
+            {"op": "eval", "runtime": "python", "bind": "busboy_upload_body", "code": "busboy_upload_body"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "(async () => {\n"
+                    "  const Busboy = require('busboy');\n"
+                    "  globalThis.busboyAbortState = {\n"
+                    "    fileName: null,\n"
+                    "    chunks: [],\n"
+                    "    requestClosed: false,\n"
+                    "    parserClosed: false,\n"
+                    "    fileClosed: false,\n"
+                    "    sourceCancelled: false,\n"
+                    "    requestError: null,\n"
+                    "    parserError: null,\n"
+                    "    aborted: false\n"
+                    "  };\n"
+                    "  if (typeof busboy_upload_body.toNodeReadable !== 'function') {\n"
+                    "    throw new Error('OmniVM stream proxy did not expose toNodeReadable');\n"
+                    "  }\n"
+                    "  const originalCancel = busboy_upload_body.cancel.bind(busboy_upload_body);\n"
+                    "  busboy_upload_body.cancel = reason => {\n"
+                    "      globalThis.busboyAbortState.sourceCancelled = true;\n"
+                    "      return originalCancel(reason);\n"
+                    "  };\n"
+                    "  const req = busboy_upload_body.toNodeReadable({objectMode: false, highWaterMark: 1});\n"
+                    "  req.headers = {'content-type': 'multipart/form-data; boundary=----omnivm-boundary'};\n"
+                    "  const parser = Busboy({headers: req.headers});\n"
+                    "  await new Promise((resolve, reject) => {\n"
+                    "    const done = () => { clearTimeout(timer); setImmediate(resolve); };\n"
+                    "    const timer = setTimeout(() => reject(new Error('busboy abort timeout: ' + JSON.stringify(globalThis.busboyAbortState))), 5000);\n"
+                    "    req.on('error', err => { globalThis.busboyAbortState.requestError = err && err.message ? err.message : String(err); });\n"
+                    "    req.on('close', () => { globalThis.busboyAbortState.requestClosed = true; done(); });\n"
+                    "    parser.on('error', err => { globalThis.busboyAbortState.parserError = err && err.message ? err.message : String(err); });\n"
+                    "    parser.on('close', () => { globalThis.busboyAbortState.parserClosed = true; done(); });\n"
+                    "    parser.on('file', (name, file, info) => {\n"
+                    "      globalThis.busboyAbortState.fileName = info && info.filename ? info.filename : null;\n"
+                    "      file.on('data', chunk => {\n"
+                    "        globalThis.busboyAbortState.chunks.push(Buffer.from(chunk).toString('utf8'));\n"
+                    "        if (!globalThis.busboyAbortState.aborted) {\n"
+                    "          globalThis.busboyAbortState.aborted = true;\n"
+                    "          req.destroy(new Error('client-abort'));\n"
+                    "        }\n"
+                    "      });\n"
+                    "      file.on('close', () => { globalThis.busboyAbortState.fileClosed = true; });\n"
+                    "    });\n"
+                    "    req.pipe(parser);\n"
+                    "  });\n"
+                    "  for (let i = 0; i < 20 && !globalThis.busboyAbortState.sourceCancelled; i++) {\n"
+                    "    await new Promise(resolve => setImmediate(resolve));\n"
+                    "  }\n"
+                    "  const state = globalThis.busboyAbortState;\n"
+                    "  if (state.fileName !== 'upload.txt') throw new Error('Busboy did not parse file metadata: ' + JSON.stringify(state));\n"
+                    "  if (!state.aborted) throw new Error('Busboy fixture did not abort after file data: ' + JSON.stringify(state));\n"
+                    "  if (!state.requestClosed) throw new Error('Busboy request stream did not close after abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.sourceCancelled) throw new Error('Busboy abort did not return the upload source iterator: ' + JSON.stringify(state));\n"
+                    "  if (state.requestError !== 'client-abort') throw new Error('Busboy request error was not preserved: ' + JSON.stringify(state));\n"
+                    "  if (state.chunks.join('').indexOf('first-') < 0) throw new Error('Busboy did not deliver first file bytes: ' + JSON.stringify(state));\n"
+                    "})()\n"
+                ),
+                "captures": {"busboy_upload_body": "busboy_upload_body"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not busboy_upload_body.closed:\n"
+                    "    raise AssertionError('Busboy upload abort did not close Python owner')\n"
+                    "if busboy_upload_body.index <= 3:\n"
+                    "    raise AssertionError(f'Busboy did not consume file data before abort: {busboy_upload_body.__dict__!r}')\n"
+                    "if busboy_upload_body.index >= len(busboy_upload_body.chunks):\n"
+                    "    raise AssertionError(f'Busboy drained entire upload after abort: {busboy_upload_body.__dict__!r}')\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Busboy upload source did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Busboy upload source used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Busboy upload did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Busboy upload leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -26181,6 +26311,7 @@ def main():
         check("Manifest Node Web ReadableStream early cancel releases owner", test_manifest_node_web_readable_stream_early_cancel_releases_owner)
         check("Manifest Node classic Readable early cancel releases owner", test_manifest_node_classic_readable_early_cancel_releases_owner)
         check("Manifest Node classic pipeline abort cancels Python owner", test_manifest_node_classic_pipeline_abort_cancels_python_owner)
+        check("Manifest Busboy upload abort cancels Python owner", test_manifest_busboy_upload_abort_cancels_python_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
