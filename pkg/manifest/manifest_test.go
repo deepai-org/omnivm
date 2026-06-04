@@ -5726,7 +5726,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "public String getOriginRuntime()") ||
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
 		!contains(code, "ParsedRuntimeError envelope = parseStructuredErrorEnvelope") ||
-		!contains(code, `parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime)`) {
+		!contains(code, `parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime)`) ||
+		!contains(code, "String wrappedBoundary = parsed.boundaryPath") ||
+		!contains(code, "envelope = parseStructuredErrorEnvelope(text, parsed.runtime, wrappedBoundary)") {
 		t.Fatalf("Java runtime error envelope should preserve structured origin_runtime")
 	}
 	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", new ArrayList<>(stackFrames))`) {

@@ -278,12 +278,26 @@ public class OmniVM {
         text = stripRuntimeRefAssignPrefix(text, parsed);
         text = stripRuntimePrefixes(text, parsed);
 
+        String wrappedBoundary = parsed.boundaryPath;
         if (!boundaryParts.isEmpty()) {
-            parsed.boundaryPath = String.join(" -> ", boundaryParts);
+            wrappedBoundary = String.join(" -> ", boundaryParts);
         } else if (!parsed.runtime.isEmpty() && !parsed.runtime.equals(safeString(fallbackRuntime))) {
-            parsed.boundaryPath = "call[" + parsed.runtime + "]";
+            wrappedBoundary = "call[" + parsed.runtime + "]";
+        } else if (wrappedBoundary.isEmpty() && !parsed.runtime.isEmpty()) {
+            wrappedBoundary = "call[" + parsed.runtime + "]";
+        }
+
+        envelope = parseStructuredErrorEnvelope(text, parsed.runtime, wrappedBoundary);
+        if (envelope != null) {
+            return envelope;
+        }
+
+        if (!boundaryParts.isEmpty()) {
+            parsed.boundaryPath = wrappedBoundary;
+        } else if (!parsed.runtime.isEmpty() && !parsed.runtime.equals(safeString(fallbackRuntime))) {
+            parsed.boundaryPath = wrappedBoundary;
         } else if (parsed.boundaryPath.isEmpty() && !parsed.runtime.isEmpty()) {
-            parsed.boundaryPath = "call[" + parsed.runtime + "]";
+            parsed.boundaryPath = wrappedBoundary;
         }
 
         parseMessageAndType(text, parsed);
