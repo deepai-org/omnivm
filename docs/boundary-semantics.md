@@ -561,6 +561,9 @@ kind. `omnivm.owner_dispatch_target_status(target)` returns one target block,
 and `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
 target-specific fail-fast guard. `omnivm.assert_owner_dispatch_supported(label)`
 remains the fail-fast form for integrations that require universal dispatch.
+These guard failures attach the relevant status block to
+`RuntimeError.details`, and `omnivm.assert_host_thread(label)` attaches the
+current affinity snapshot there as `details["affinity"]`.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
@@ -639,7 +642,8 @@ Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports
 retain their dtype/format/read-only/ownership metadata until the bounded
 tombstone entry expires or the name is reused. Python
 `omnivm.release_buffer(name)` failures include the same status fields when the
-loaded library exposes `OmniBufStatus`.
+loaded library exposes `OmniBufStatus`, both in the message and as
+`RuntimeError.details["buffer"]`.
 Named borrow queue counters expose runtime buffer views that can only release
 by public buffer name. A `max_named_borrow_queue` greater than one means more
 than one active view shares that release name, so finalizer-order issues are

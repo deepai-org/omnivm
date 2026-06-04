@@ -337,6 +337,12 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |
 | `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`live`, `released`, `released_detached`, or `missing`) |
 
+Guard failures such as `assert_owner_dispatch_supported()`,
+`assert_owner_dispatch_target_supported()`, `assert_host_thread()`, and
+`assert_ruby_native_threads_supported()` attach the relevant status block to
+`RuntimeError.details` so startup code can log or branch on structured fields
+without parsing the message.
+
 ### Lazy Initialization
 
 Only the runtime you need is loaded. Running a Go file skips all embedded runtimes entirely (~60ms). Running a Python script only initializes CPython — no JVM, no Ruby, no V8 startup penalty.
