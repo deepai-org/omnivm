@@ -103,65 +103,101 @@ func (p *GoHandleProxy) ResourceKind() string {
 
 // Get reads the target object's generic property surface.
 func (p *GoHandleProxy) Get(key string) interface{} {
-	if p == nil || p.closed {
-		return nil
+	value, _ := p.GetWithError(key)
+	return value
+}
+
+// GetWithError reads the target object's generic property surface and reports
+// owner-side lifecycle or bridge errors instead of collapsing them to nil.
+func (p *GoHandleProxy) GetWithError(key string) (interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("get")
 	}
 	if value, ok := p.localValue(key); ok {
-		return value
+		return value, nil
 	}
 	if report, ok := p.record("property"); ok && report.Chatty {
 		p.materializeChatty()
 		if value, ok := p.localValue(key); ok {
-			return value
+			return value, nil
 		}
 	}
 	if p.get == nil || p.id == 0 {
-		return nil
+		return nil, nil
 	}
 	value, ok, err := p.get(p.id, key)
-	if err != nil || !ok {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return p.materialize(value)
+	if !ok {
+		return nil, nil
+	}
+	return p.materialize(value), nil
 }
 
 // Index reads through the target object's native indexing protocol when
 // descriptor fields do not satisfy the access locally.
 func (p *GoHandleProxy) Index(key interface{}) interface{} {
-	if p == nil || p.closed {
-		return nil
+	value, _ := p.IndexWithError(key)
+	return value
+}
+
+// IndexWithError reads through the target object's native indexing protocol
+// and reports owner-side lifecycle or bridge errors.
+func (p *GoHandleProxy) IndexWithError(key interface{}) (interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("index")
 	}
 	if keyStr, ok := key.(string); ok {
 		if value, ok := p.localValue(keyStr); ok {
-			return value
+			return value, nil
 		}
 	}
 	if report, ok := p.record("index"); ok && report.Chatty {
 		p.materializeChatty()
 		if keyStr, ok := key.(string); ok {
 			if value, ok := p.localValue(keyStr); ok {
-				return value
+				return value, nil
 			}
 		}
 		textKey := stringifyGoProxyKey(key)
 		if value, ok := p.localValue(textKey); ok {
-			return value
+			return value, nil
 		}
 	}
 	if p.index == nil || p.id == 0 {
-		return nil
+		return nil, nil
 	}
 	value, ok, err := p.index(p.id, key)
-	if err != nil || !ok {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return p.materialize(value)
+	if !ok {
+		return nil, nil
+	}
+	return p.materialize(value), nil
 }
 
 // Values returns a batched snapshot of the target object's iterable values.
 func (p *GoHandleProxy) Values() []interface{} {
-	if p == nil || p.closed {
-		return nil
+	values, _ := p.ValuesWithError()
+	return values
+}
+
+// ValuesWithError returns a batched snapshot of iterable values and reports
+// owner-side lifecycle or bridge errors.
+func (p *GoHandleProxy) ValuesWithError() ([]interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("iterate")
 	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
@@ -170,29 +206,42 @@ func (p *GoHandleProxy) Values() []interface{} {
 		for _, value := range payload {
 			out = append(out, value)
 		}
-		return out
+		return out, nil
 	}
 	values, ok, err := p.iter(p.id, "values")
-	if err != nil || !ok {
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		p.record("iterate")
 		payload := p.localPayload()
 		out := make([]interface{}, 0, len(payload))
 		for _, value := range payload {
 			out = append(out, value)
 		}
-		return out
+		return out, nil
 	}
 	out := make([]interface{}, 0, len(values))
 	for _, value := range values {
 		out = append(out, p.materialize(value))
 	}
-	return out
+	return out, nil
 }
 
 // Keys returns a batched snapshot of the target object's iterable keys.
 func (p *GoHandleProxy) Keys() []interface{} {
-	if p == nil || p.closed {
-		return nil
+	keys, _ := p.KeysWithError()
+	return keys
+}
+
+// KeysWithError returns a batched snapshot of iterable keys and reports
+// owner-side lifecycle or bridge errors.
+func (p *GoHandleProxy) KeysWithError() ([]interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("iterate")
 	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
@@ -201,30 +250,43 @@ func (p *GoHandleProxy) Keys() []interface{} {
 		for key := range payload {
 			out = append(out, key)
 		}
-		return out
+		return out, nil
 	}
 	keys, ok, err := p.iter(p.id, "keys")
-	if err != nil || !ok {
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		p.record("iterate")
 		payload := p.localPayload()
 		out := make([]interface{}, 0, len(payload))
 		for key := range payload {
 			out = append(out, key)
 		}
-		return out
+		return out, nil
 	}
 	out := make([]interface{}, 0, len(keys))
 	for _, key := range keys {
 		out = append(out, p.materialize(key))
 	}
-	return out
+	return out, nil
 }
 
 // Items returns a batched snapshot of the target object's iterable key/value
 // pairs. Sequence-like targets report numeric indexes as keys.
 func (p *GoHandleProxy) Items() []GoProxyItem {
-	if p == nil || p.closed {
-		return nil
+	items, _ := p.ItemsWithError()
+	return items
+}
+
+// ItemsWithError returns a batched snapshot of iterable key/value pairs and
+// reports owner-side lifecycle or bridge errors.
+func (p *GoHandleProxy) ItemsWithError() ([]GoProxyItem, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("iterate")
 	}
 	if p.iter == nil || p.id == 0 {
 		p.record("iterate")
@@ -233,17 +295,20 @@ func (p *GoHandleProxy) Items() []GoProxyItem {
 		for key, value := range payload {
 			out = append(out, GoProxyItem{Key: key, Value: p.materialize(value)})
 		}
-		return out
+		return out, nil
 	}
 	items, ok, err := p.iter(p.id, "items")
-	if err != nil || !ok {
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		p.record("iterate")
 		payload := p.localPayload()
 		out := make([]GoProxyItem, 0, len(payload))
 		for key, value := range payload {
 			out = append(out, GoProxyItem{Key: key, Value: p.materialize(value)})
 		}
-		return out
+		return out, nil
 	}
 	out := make([]GoProxyItem, 0, len(items))
 	for _, item := range items {
@@ -256,87 +321,149 @@ func (p *GoHandleProxy) Items() []GoProxyItem {
 			Value: p.materialize(pair[1]),
 		})
 	}
-	return out
+	return out, nil
 }
 
 // Contains reports whether the target object's generic membership protocol
 // contains key.
 func (p *GoHandleProxy) Contains(key interface{}) bool {
-	if p == nil || p.closed {
-		return false
+	found, _ := p.ContainsWithError(key)
+	return found
+}
+
+// ContainsWithError reports membership and owner-side lifecycle or bridge
+// errors.
+func (p *GoHandleProxy) ContainsWithError(key interface{}) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	if p.closed {
+		return false, p.closedOperationError("contains")
 	}
 	if p.contains == nil || p.id == 0 {
 		p.record("property")
 		if keyStr, ok := key.(string); ok {
-			return p.hasLocalValue(keyStr)
+			return p.hasLocalValue(keyStr), nil
 		}
-		return false
+		return false, nil
 	}
 	ok, found, err := p.contains(p.id, key)
-	if err != nil || !ok {
+	if err != nil {
+		return false, err
+	}
+	if !ok {
 		p.record("property")
 		if keyStr, ok := key.(string); ok {
-			return p.hasLocalValue(keyStr)
+			return p.hasLocalValue(keyStr), nil
 		}
-		return false
+		return false, nil
 	}
-	return found
+	return found, nil
 }
 
 // Len reports the target object's generic collection length when available.
 func (p *GoHandleProxy) Len() int {
-	if p == nil || p.closed {
-		return 0
+	value, _ := p.LenWithError()
+	return value
+}
+
+// LenWithError reports the target object's collection length and owner-side
+// lifecycle or bridge errors.
+func (p *GoHandleProxy) LenWithError() (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if p.closed {
+		return 0, p.closedOperationError("len")
 	}
 	if p.len == nil || p.id == 0 {
 		p.record("property")
-		return len(p.localPayload())
+		return len(p.localPayload()), nil
 	}
 	value, ok, err := p.len(p.id)
-	if err != nil || !ok {
-		p.record("property")
-		return len(p.localPayload())
+	if err != nil {
+		return 0, err
 	}
-	return value
+	if !ok {
+		p.record("property")
+		return len(p.localPayload()), nil
+	}
+	return value, nil
 }
 
 // Set mutates the target object's generic property surface.
 func (p *GoHandleProxy) Set(key string, value interface{}) bool {
-	if p == nil || p.closed {
-		return false
+	ok, _ := p.SetWithError(key, value)
+	return ok
+}
+
+// SetWithError mutates the target object's generic property surface and reports
+// owner-side lifecycle or bridge errors.
+func (p *GoHandleProxy) SetWithError(key string, value interface{}) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	if p.closed {
+		return false, p.closedOperationError("set")
 	}
 	p.record("mutation")
 	if p.set == nil || p.id == 0 {
-		return false
+		return false, nil
 	}
 	ok, err := p.set(p.id, key, value)
-	return err == nil && ok
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 // Call invokes a callable property or method on the target object.
 func (p *GoHandleProxy) Call(key string, args ...interface{}) interface{} {
-	if p == nil || p.closed {
-		return nil
+	value, _ := p.CallWithError(key, args...)
+	return value
+}
+
+// CallWithError invokes a callable property or method and reports owner-side
+// lifecycle or bridge errors.
+func (p *GoHandleProxy) CallWithError(key string, args ...interface{}) (interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("call")
 	}
 	p.record("call")
 	if p.call == nil || p.id == 0 {
-		return nil
+		return nil, nil
 	}
 	value, err := p.call(p.id, key, args)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return p.materialize(value)
+	return p.materialize(value), nil
 }
 
 // AsMap returns a shallow copy of the descriptor and records iteration.
 func (p *GoHandleProxy) AsMap() map[string]interface{} {
-	if p == nil || p.closed {
-		return nil
+	value, _ := p.AsMapWithError()
+	return value
+}
+
+// AsMapWithError returns a shallow map snapshot and reports owner-side
+// lifecycle or bridge errors.
+func (p *GoHandleProxy) AsMapWithError() (map[string]interface{}, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if p.closed {
+		return nil, p.closedOperationError("iterate")
 	}
 	if p.iter != nil && p.id != 0 {
 		items, ok, err := p.iter(p.id, "items")
-		if err == nil && ok {
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			out := make(map[string]interface{}, len(items))
 			for _, item := range items {
 				pair, ok := item.([]interface{})
@@ -345,7 +472,7 @@ func (p *GoHandleProxy) AsMap() map[string]interface{} {
 				}
 				out[stringifyGoProxyKey(pair[0])] = p.materialize(pair[1])
 			}
-			return out
+			return out, nil
 		}
 	}
 	p.record("iterate")
@@ -354,7 +481,7 @@ func (p *GoHandleProxy) AsMap() map[string]interface{} {
 	for key, value := range payload {
 		out[key] = p.materialize(value)
 	}
-	return out
+	return out, nil
 }
 
 func (p *GoHandleProxy) localValue(key string) (interface{}, bool) {
@@ -394,6 +521,16 @@ func (p *GoHandleProxy) isInternalDescriptorKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func (p *GoHandleProxy) closedOperationError(op string) error {
+	if p == nil {
+		return nil
+	}
+	if p.id != 0 {
+		return fmt.Errorf("omnivm: Go handle proxy %s on closed %s handle #%d", op, p.kind, p.id)
+	}
+	return fmt.Errorf("omnivm: Go handle proxy %s on closed %s handle", op, p.kind)
 }
 
 func stringifyGoProxyKey(key interface{}) string {

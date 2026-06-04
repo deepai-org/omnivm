@@ -2712,6 +2712,81 @@ func TestGoHandleProxyCloseErrorRemainsObservable(t *testing.T) {
 	}
 }
 
+func TestGoHandleProxyWithErrorMethodsReportOwnerFailures(t *testing.T) {
+	ownerErr := errors.New("owner lifecycle failed")
+	proxy := newGoHandleProxy(
+		7,
+		nil,
+		"resource",
+		map[string]interface{}{"runtime": "python", "kind": "request"},
+		func(handles.ID, string) (interface{}, bool, error) {
+			return nil, false, ownerErr
+		},
+		func(handles.ID, interface{}) (interface{}, bool, error) {
+			return nil, false, ownerErr
+		},
+		func(handles.ID, string, interface{}) (bool, error) {
+			return false, ownerErr
+		},
+		func(handles.ID) (int, bool, error) {
+			return 0, false, ownerErr
+		},
+		func(handles.ID, string) ([]interface{}, bool, error) {
+			return nil, false, ownerErr
+		},
+		func(handles.ID, interface{}) (bool, bool, error) {
+			return false, false, ownerErr
+		},
+		func(handles.ID, string, []interface{}) (interface{}, error) {
+			return nil, ownerErr
+		},
+		nil,
+		nil,
+		nil,
+	)
+
+	if value, err := proxy.GetWithError("path"); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("GetWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.IndexWithError("path"); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("IndexWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.ValuesWithError(); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("ValuesWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.KeysWithError(); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("KeysWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.ItemsWithError(); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("ItemsWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.ContainsWithError("path"); !errors.Is(err, ownerErr) || value {
+		t.Fatalf("ContainsWithError = (%v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.LenWithError(); !errors.Is(err, ownerErr) || value != 0 {
+		t.Fatalf("LenWithError = (%d, %v), want owner error", value, err)
+	}
+	if value, err := proxy.SetWithError("path", "/cart"); !errors.Is(err, ownerErr) || value {
+		t.Fatalf("SetWithError = (%v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.CallWithError("close"); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("CallWithError = (%#v, %v), want owner error", value, err)
+	}
+	if value, err := proxy.AsMapWithError(); !errors.Is(err, ownerErr) || value != nil {
+		t.Fatalf("AsMapWithError = (%#v, %v), want owner error", value, err)
+	}
+
+	if proxy.Get("path") != nil || proxy.Index("path") != nil || proxy.Values() != nil || proxy.Keys() != nil || proxy.Items() != nil ||
+		proxy.Contains("path") || proxy.Len() != 0 || proxy.Set("path", "/cart") || proxy.Call("close") != nil || proxy.AsMap() != nil {
+		t.Fatal("legacy Go proxy helpers should preserve nil/false fallback behavior")
+	}
+
+	proxy.closed = true
+	if _, err := proxy.GetWithError("path"); err == nil || !strings.Contains(err.Error(), "closed resource handle #7") {
+		t.Fatalf("closed GetWithError diagnostic = %v", err)
+	}
+}
+
 func TestNormalizeGoArgMaterializesTableProxy(t *testing.T) {
 	e, _ := makeExecutor("go")
 	ref, ok, err := e.autoBulkTableRefForCapture([]uint16{258, 772, 1286})

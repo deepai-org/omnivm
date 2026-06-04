@@ -339,13 +339,17 @@ stream handle at EOF or owner read error.
 Closeable stream sources are closed through their host
 protocol on EOF, read error, cancellation, or scope/finalizer release: Python and Ruby
 `close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
-Go stream proxies expose `Next()` and `ValuesWithError()` when callers need the
+Go handle proxies expose `GetWithError`, `IndexWithError`,
+`ValuesWithError`, `KeysWithError`, `ItemsWithError`, `ContainsWithError`,
+`LenWithError`, `SetWithError`, `CallWithError`, and `AsMapWithError` for
+callers that need owner-side lifecycle diagnostics. The older no-error helpers
+remain nil/false/zero compatibility wrappers for missing-field style code. Go
+stream proxies expose `Next()` and `ValuesWithError()` when callers need the
 terminal owner error; the older `Recv()` and `Values()` helpers remain
 EOF-shaped compatibility wrappers. The first explicit `Close()` on a Go stream
-proxy whose owner was already closed by another path reports the same
-owner-side lifecycle diagnostic as `stream_cancel`; failed or stale user
-`Close()` calls keep reporting an error until an owner release or cancellation
-succeeds.
+proxy whose owner was already closed by another path reports the same owner-side
+lifecycle diagnostic as `stream_cancel`; failed or stale user `Close()` calls
+keep reporting an error until an owner release or cancellation succeeds.
 Java `StreamProxy` marks itself released before rethrowing terminal owner stream
 errors, so later `cancel()` or Cleaner cleanup stays idempotent. If a Java
 stream iterator receives a chunk but fails to materialize the chunk proxy, it
