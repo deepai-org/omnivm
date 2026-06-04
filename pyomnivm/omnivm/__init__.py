@@ -61,6 +61,7 @@ __all__ = [
     "proxy_contains",
     "proxy_close",
     "omnivm_close",
+    "cleanup_errors",
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
@@ -1421,9 +1422,11 @@ class ManifestProxy:
         try:
             self.close()
         except BaseException as close_exc:
-            add_note = getattr(exc, "add_note", None)
-            if callable(add_note):
-                add_note(f"OmniVM proxy close failed during exception cleanup: {close_exc}")
+            _record_cleanup_error(
+                exc,
+                close_exc,
+                f"OmniVM proxy close failed during exception cleanup: {close_exc}",
+            )
         return False
 
     def __repr__(self):
@@ -1732,6 +1735,31 @@ def omnivm_close(value):
     return proxy_close(value)
 
 
+def _record_cleanup_error(error, cleanup_error, note):
+    try:
+        errors = getattr(error, "omnivm_cleanup_errors", None)
+        if not isinstance(errors, list):
+            errors = []
+        errors.append(cleanup_error)
+        setattr(error, "omnivm_cleanup_errors", errors)
+    except BaseException:
+        pass
+    add_note = getattr(error, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+
+
+def cleanup_errors(error):
+    """
+    Return cleanup exceptions recorded while preserving a body exception.
+
+    Context managers keep the original application exception as primary and
+    record failed close/release attempts here for structured inspection.
+    """
+    errors = getattr(error, "omnivm_cleanup_errors", None)
+    return list(errors) if isinstance(errors, list) else []
+
+
 def _manifest_stream_iterator_release(proxy):
     try:
         proxy.close()
@@ -1772,9 +1800,11 @@ class _ManifestStreamIterator:
             try:
                 self.close()
             except BaseException as close_exc:
-                add_note = getattr(err, "add_note", None)
-                if callable(add_note):
-                    add_note(f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}")
+                _record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
+                )
             raise
 
     def close(self):
@@ -1795,9 +1825,11 @@ class _ManifestStreamIterator:
         try:
             self.close()
         except BaseException as close_exc:
-            add_note = getattr(exc, "add_note", None)
-            if callable(add_note):
-                add_note(f"OmniVM stream close failed during exception cleanup: {close_exc}")
+            _record_cleanup_error(
+                exc,
+                close_exc,
+                f"OmniVM stream close failed during exception cleanup: {close_exc}",
+            )
         return False
 
 
@@ -2241,9 +2273,11 @@ class BufferOwner:
         try:
             self.release()
         except BaseException as release_exc:
-            add_note = getattr(exc, "add_note", None)
-            if callable(add_note):
-                add_note(f"OmniVM buffer release failed during exception cleanup: {release_exc}")
+            _record_cleanup_error(
+                exc,
+                release_exc,
+                f"OmniVM buffer release failed during exception cleanup: {release_exc}",
+            )
         return False
 
     def release(self):

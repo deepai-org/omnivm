@@ -1699,6 +1699,11 @@ class TestCallWithMockLib(unittest.TestCase):
                 raise ValueError("body failed")
         notes = getattr(ctx.exception, "__notes__", [])
         assert any("release failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "release failed"
+        cleanup.clear()
+        assert str(omnivm_mod.cleanup_errors(ctx.exception)[0]) == "release failed"
 
     def test_manifest_stream_proxy_close_cancels_stream_once(self):
         def envelope(value, kind="json"):
@@ -1998,6 +2003,11 @@ class TestCallWithMockLib(unittest.TestCase):
                 raise ValueError("body failed")
         notes = getattr(ctx.exception, "__notes__", [])
         assert any("cancel failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "cancel failed"
+        cleanup.clear()
+        assert str(omnivm_mod.cleanup_errors(ctx.exception)[0]) == "cancel failed"
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):
@@ -2260,6 +2270,11 @@ class TestCallWithMockLib(unittest.TestCase):
 
         notes = getattr(ctx.exception, "__notes__", [])
         assert any("buffer release failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert cleanup[0].boundary_path == "native_memory"
+        cleanup.clear()
+        assert omnivm_mod.cleanup_errors(ctx.exception)[0].boundary_path == "native_memory"
 
     def test_buffer_status_returns_lifecycle_diagnostics(self):
         self.mock_lib.OmniBufStatus.return_value = (
