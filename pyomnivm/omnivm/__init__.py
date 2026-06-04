@@ -2225,11 +2225,12 @@ def _record_handle_reference(from_id, to_id, kind="reference"):
 
 
 def _drop_handle_reference(from_id, to_id):
-    if _lib is None:
-        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
-    if not hasattr(_lib, "OmniHandleDropReference"):
-        raise RuntimeError("libomnivm does not expose OmniHandleDropReference")
-    _lib.OmniHandleDropReference(int(from_id), int(to_id))
+    try:
+        if _lib is None or not hasattr(_lib, "OmniHandleDropReference"):
+            return False
+        return _lib.OmniHandleDropReference(int(from_id), int(to_id)) == 0
+    except BaseException:
+        return False
 
 
 def _drain_finalizer_releases(max_releases=0):

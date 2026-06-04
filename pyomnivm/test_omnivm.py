@@ -2105,7 +2105,24 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniHandleRecordReference.assert_called_once_with(123, 456, b"proxy")
 
     def test_drop_handle_reference_calls_lib(self):
-        omnivm_mod._drop_handle_reference(123, 456)
+        self.mock_lib.OmniHandleDropReference.return_value = 0
+        assert omnivm_mod._drop_handle_reference(123, 456) is True
+        self.mock_lib.OmniHandleDropReference.assert_called_once_with(123, 456)
+
+    def test_drop_handle_reference_stays_quiet_without_runtime(self):
+        omnivm_mod._lib = None
+        assert omnivm_mod._drop_handle_reference(123, 456) is False
+
+    def test_drop_handle_reference_stays_quiet_without_capability(self):
+        class OldLib:
+            pass
+
+        omnivm_mod._lib = OldLib()
+        assert omnivm_mod._drop_handle_reference(123, 456) is False
+
+    def test_drop_handle_reference_stays_quiet_on_failure(self):
+        self.mock_lib.OmniHandleDropReference.side_effect = RuntimeError("drop failed")
+        assert omnivm_mod._drop_handle_reference(123, 456) is False
         self.mock_lib.OmniHandleDropReference.assert_called_once_with(123, 456)
 
     def test_drain_finalizer_releases_calls_lib(self):
