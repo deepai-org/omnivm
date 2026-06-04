@@ -4878,6 +4878,29 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 			t.Fatalf("stale stream_cancel used generic handle-table diagnostic: %s", got)
 		}
 	}
+	if _, err := e.HandleCall(`{"op":"handle_release_explicit","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("closed stream handle_release_explicit did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("closed stream handle_release_explicit diagnostic missing %q: %s", want, got)
+			}
+		}
+	}
+	beforeCleanup := e.handleTable.Stats(time.Now())
+	result, err = e.HandleCall(`{"op":"handle_release_finalizer","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("closed stream handle_release_finalizer should remain idempotent: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("closed stream handle_release_finalizer envelope = %#v, want false", env)
+	}
+	afterCleanup := e.handleTable.Stats(time.Now())
+	if afterCleanup.FinalizerQueued != beforeCleanup.FinalizerQueued || afterCleanup.FinalizerQueueLen != beforeCleanup.FinalizerQueueLen || afterCleanup.FinalizerReleases != beforeCleanup.FinalizerReleases {
+		t.Fatalf("closed stream finalizer cleanup changed finalizer stats: before=%+v after=%+v", beforeCleanup, afterCleanup)
+	}
 	for _, call := range []string{
 		`{"op":"handle_retain","id":%d}`,
 		`{"op":"handle_adopt","id":%d}`,
@@ -4910,6 +4933,19 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 		}
 		if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
 			t.Fatalf("closed stream reference call %s used generic handle-table diagnostic: %s", call, got)
+		}
+	}
+	for _, call := range []string{
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, id, parentID),
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, parentID, id),
+	} {
+		result, err := e.HandleCall(call)
+		if err != nil {
+			t.Fatalf("closed stream handle_drop_reference cleanup %s should remain idempotent: %v", call, err)
+		}
+		env := decodeResultEnvelopeForTest(t, result)
+		if env.Kind != "bool" || env.Value != true {
+			t.Fatalf("closed stream handle_drop_reference envelope = %#v, want true", env)
 		}
 	}
 	if len(ch.ch) != 1 {
