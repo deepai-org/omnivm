@@ -518,6 +518,12 @@ threads, access recording for chatty proxy detection, and reference/drop-edge
 events for cross-runtime cycle observability. These hooks are adapter plumbing,
 not `.poly` language APIs.
 
+Request-scoped host calls that are cancelled before they start executing on the
+golden thread must be rejected without running the queued guest-runtime task.
+Once guest code has started, it remains on the golden thread until it returns or
+a runtime-specific interrupt/timeout hook stops it; cancellation must not move
+running runtime work onto a foreign owner loop or cleanup thread.
+
 `omnivm.status()["ruby_threading"]` exposes the embedded Ruby deployment
 boundary as structured data. The current mode is `single_vm_thread`; native Ruby
 threads are intentionally unsupported in process, and native-threaded app

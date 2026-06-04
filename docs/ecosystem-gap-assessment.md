@@ -298,11 +298,14 @@ stack against a local HTTP server. Lower-level undici `request()`,
 exercise the same foreign-owned body stream path without going through Fetch,
 so async-iterator cancellation releases the owner. A custom undici `Dispatcher`
 body-consumption error now proves dispatcher-side failures release the same
-foreign-owned upload stream. Additional Puma/native-threaded Ruby server aborts,
-worker reloads, transaction rollback, and broader library-specific stream
-cancellation status should all produce observable cleanup. The next fixture
-should assert handle counts before/after an aborted request or worker reload and
-should expose cancellation status rather than hiding it in logs.
+foreign-owned upload stream. Request-scoped Go host calls also skip queued
+guest-runtime tasks when their context is cancelled before golden-thread
+execution starts; once guest code starts, it remains governed by the existing
+runtime interrupt/timeout path. Additional Puma/native-threaded Ruby server
+aborts, worker reloads, transaction rollback, and broader library-specific
+stream cancellation status should all produce observable cleanup. The next
+fixture should assert handle counts before/after an aborted request or worker
+reload and should expose cancellation status rather than hiding it in logs.
 
 ### Method And Key Collisions
 

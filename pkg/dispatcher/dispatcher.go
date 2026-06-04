@@ -22,6 +22,7 @@ type AsyncResult struct {
 // task is an internal envelope for work items sent to the Golden Thread.
 type task struct {
 	fn     func() error
+	ctx    context.Context
 	done   chan error
 	reject func(error)
 }
@@ -252,33 +253,38 @@ func (d *Dispatcher) RunOnMainFast(fn func() error) error {
 // RunAsyncFast dispatches fn to the high-priority channel and returns
 // a channel that will receive the result.
 func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncResult {
-	ch := make(chan AsyncResult, 1)
-	t := task{
-		fn: func() error {
-			val, err := fn()
-			ch <- AsyncResult{Value: val, Err: err}
-			return err
-		},
-		done: make(chan error, 1),
-		reject: func(err error) {
-			ch <- AsyncResult{Err: err}
-		},
-	}
-	select {
-	case d.fastChan <- t:
-	case <-d.stopped:
-		ch <- AsyncResult{Err: ErrShutdown}
-		return ch
-	}
-	d.wakeup()
-	return ch
+	return d.RunAsyncFastContext(context.Background(), fn)
+}
+
+// RunAsyncFastContext dispatches fn to the high-priority channel unless ctx is
+// cancelled before the task starts. Once fn starts, it runs to completion.
+func (d *Dispatcher) RunAsyncFastContext(ctx context.Context, fn func() (interface{}, error)) <-chan AsyncResult {
+	return d.runAsync(ctx, fn, true)
 }
 
 // RunAsync dispatches fn to the Golden Thread and returns a channel that
 // will receive the result when the function completes.
 func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult {
+	return d.RunAsyncContext(context.Background(), fn)
+}
+
+// RunAsyncContext dispatches fn to the Golden Thread unless ctx is cancelled
+// before the task starts. Once fn starts, it runs to completion.
+func (d *Dispatcher) RunAsyncContext(ctx context.Context, fn func() (interface{}, error)) <-chan AsyncResult {
+	return d.runAsync(ctx, fn, false)
+}
+
+func (d *Dispatcher) runAsync(ctx context.Context, fn func() (interface{}, error), fast bool) <-chan AsyncResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ch := make(chan AsyncResult, 1)
+	if err := ctx.Err(); err != nil {
+		ch <- AsyncResult{Err: err}
+		return ch
+	}
 	t := task{
+		ctx: ctx,
 		fn: func() error {
 			val, err := fn()
 			ch <- AsyncResult{Value: val, Err: err}
@@ -289,10 +295,17 @@ func (d *Dispatcher) RunAsync(fn func() (interface{}, error)) <-chan AsyncResult
 			ch <- AsyncResult{Err: err}
 		},
 	}
+	queue := d.taskChan
+	if fast {
+		queue = d.fastChan
+	}
 	select {
-	case d.taskChan <- t:
+	case queue <- t:
 	case <-d.stopped:
 		ch <- AsyncResult{Err: ErrShutdown}
+		return ch
+	case <-ctx.Done():
+		ch <- AsyncResult{Err: ctx.Err()}
 		return ch
 	}
 	d.wakeup()
@@ -316,6 +329,15 @@ func (d *Dispatcher) wakeup() {
 
 // executeTask runs a single task with panic recovery and watchdog monitoring.
 func (d *Dispatcher) executeTask(t task) {
+	if t.ctx != nil {
+		select {
+		case <-t.ctx.Done():
+			d.rejectTask(t, t.ctx.Err())
+			return
+		default:
+		}
+	}
+
 	done := make(chan struct{})
 
 	if d.OnTaskStart != nil {

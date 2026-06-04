@@ -510,6 +510,9 @@ func TestCallWithContext_Cancelled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
+	if evals := py.getEvalCalls(); len(evals) != 0 {
+		t.Fatalf("cancelled call executed unexpectedly: %v", evals)
+	}
 }
 
 func TestCallWithContext_Deadline(t *testing.T) {

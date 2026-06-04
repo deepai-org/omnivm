@@ -328,6 +328,80 @@ func TestDispatcherRunAsyncFast(t *testing.T) {
 	}
 }
 
+func TestDispatcherRunAsyncContextCancelledBeforeStartSkipsTask(t *testing.T) {
+	d := New()
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	go d.Run(runCtx)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	blocker := d.RunAsync(func() (interface{}, error) {
+		close(started)
+		<-release
+		return nil, nil
+	})
+	<-started
+
+	taskCtx, cancelTask := context.WithCancel(context.Background())
+	var executed atomic.Bool
+	resultCh := d.RunAsyncContext(taskCtx, func() (interface{}, error) {
+		executed.Store(true)
+		return "unexpected", nil
+	})
+	cancelTask()
+	close(release)
+
+	if result := <-blocker; result.Err != nil {
+		t.Fatalf("blocker result error = %v", result.Err)
+	}
+	result := <-resultCh
+	if result.Err != context.Canceled {
+		t.Fatalf("cancelled async result error = %v, want context.Canceled", result.Err)
+	}
+	if executed.Load() {
+		t.Fatal("cancelled async task executed")
+	}
+}
+
+func TestDispatcherRunAsyncFastContextCancelledBeforeStartSkipsTask(t *testing.T) {
+	d := New()
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	go d.Run(runCtx)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	blocker := d.RunAsync(func() (interface{}, error) {
+		close(started)
+		<-release
+		return nil, nil
+	})
+	<-started
+
+	taskCtx, cancelTask := context.WithCancel(context.Background())
+	var executed atomic.Bool
+	resultCh := d.RunAsyncFastContext(taskCtx, func() (interface{}, error) {
+		executed.Store(true)
+		return "unexpected", nil
+	})
+	cancelTask()
+	close(release)
+
+	if result := <-blocker; result.Err != nil {
+		t.Fatalf("blocker result error = %v", result.Err)
+	}
+	result := <-resultCh
+	if result.Err != context.Canceled {
+		t.Fatalf("cancelled fast async result error = %v, want context.Canceled", result.Err)
+	}
+	if executed.Load() {
+		t.Fatal("cancelled fast async task executed")
+	}
+}
+
 func TestDispatcherShutdownDrainsQueuedAsyncResults(t *testing.T) {
 	d := New()
 	ctx, cancel := context.WithCancel(context.Background())

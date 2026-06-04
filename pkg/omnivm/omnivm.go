@@ -147,8 +147,9 @@ func (vm *VM) Call(runtime, code string) (string, error) {
 }
 
 // CallWithContext evaluates code with a request-scoped context.
-// If ctx is cancelled before the call completes, returns ctx.Err().
-// Note: the Golden Thread task still runs to completion (cgo cannot be interrupted).
+// If ctx is cancelled before the task starts on the Golden Thread, the task is
+// skipped and ctx.Err() is returned. Once started, the runtime task still runs
+// to completion unless the runtime interrupt hook can stop it.
 func (vm *VM) CallWithContext(ctx context.Context, runtime, code string) (string, error) {
 	return vm.callInternal(ctx, runtime, code, "", false)
 }
@@ -228,9 +229,9 @@ func (vm *VM) callInternal(ctx context.Context, runtime, code, requestID string,
 
 	var ch <-chan dispatcher.AsyncResult
 	if fast {
-		ch = vm.disp.RunAsyncFast(dispatchFn)
+		ch = vm.disp.RunAsyncFastContext(ctx, dispatchFn)
 	} else {
-		ch = vm.disp.RunAsync(dispatchFn)
+		ch = vm.disp.RunAsyncContext(ctx, dispatchFn)
 	}
 
 	select {
@@ -298,7 +299,7 @@ func (vm *VM) CallBatchWithContext(ctx context.Context, runtime string, items []
 	enqueueTime := time.Now()
 	rt := vm.runtimes[runtime]
 
-	ch := vm.disp.RunAsync(func() (interface{}, error) {
+	ch := vm.disp.RunAsyncContext(ctx, func() (interface{}, error) {
 		vm.setActiveRuntime(rt)
 		defer vm.clearActiveRuntime()
 
