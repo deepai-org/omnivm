@@ -90,6 +90,9 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 			"labels":     map[string]string{"field": "age"},
 			"frames":     []string{"handler"},
 			"typedCause": []map[string]string{{"type": "TypeError", "message": "inner"}},
+			"nested":     map[string][]string{"loc": {"user", "age"}},
+			"objects":    []map[string]interface{}{{"path": []string{"user", "age"}}},
+			"mixed":      map[string][]interface{}{"items": {map[string]interface{}{"code": "too_small"}}},
 		},
 	}
 	envelope := e.ToMap()
@@ -101,6 +104,9 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	details["labels"].(map[string]string)["field"] = "changed"
 	details["frames"].([]string)[0] = "changed"
 	details["typedCause"].([]map[string]string)[0]["message"] = "changed"
+	details["nested"].(map[string][]string)["loc"][0] = "changed"
+	details["objects"].([]map[string]interface{})[0]["path"].([]string)[0] = "changed"
+	details["mixed"].(map[string][]interface{})["items"][0].(map[string]interface{})["code"] = "changed"
 
 	if e.StackFrames[0] != "File \"<string>\", line 1" {
 		t.Fatalf("ToMap exposed StackFrames backing storage: %#v", e.StackFrames)
@@ -123,6 +129,15 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	}
 	if originalDetails["typedCause"].([]map[string]string)[0]["message"] != "inner" {
 		t.Fatalf("ToMap exposed typed Details map slice backing storage: %#v", e.Details)
+	}
+	if originalDetails["nested"].(map[string][]string)["loc"][0] != "user" {
+		t.Fatalf("ToMap exposed nested typed Details map backing storage: %#v", e.Details)
+	}
+	if originalDetails["objects"].([]map[string]interface{})[0]["path"].([]string)[0] != "user" {
+		t.Fatalf("ToMap exposed nested typed Details object slice backing storage: %#v", e.Details)
+	}
+	if originalDetails["mixed"].(map[string][]interface{})["items"][0].(map[string]interface{})["code"] != "too_small" {
+		t.Fatalf("ToMap exposed nested mixed Details backing storage: %#v", e.Details)
 	}
 }
 

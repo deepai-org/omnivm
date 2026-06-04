@@ -3,6 +3,7 @@ package omnivm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -118,8 +119,74 @@ func copyJSONValue(value interface{}) interface{} {
 		}
 		return copied
 	default:
-		return typed
+		return copyJSONValueReflect(typed)
 	}
+}
+
+func copyJSONValueReflect(value interface{}) interface{} {
+	copied, ok := copyJSONReflectValue(reflect.ValueOf(value))
+	if !ok {
+		return value
+	}
+	return copied.Interface()
+}
+
+func copyJSONReflectValue(value reflect.Value) (reflect.Value, bool) {
+	if !value.IsValid() {
+		return value, false
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type()), true
+		}
+		copied, ok := copyJSONReflectValue(value.Elem())
+		if !ok {
+			return value, false
+		}
+		return copied, true
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type()), true
+		}
+		copied := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			copied.SetMapIndex(iter.Key(), copyJSONAssignableValue(iter.Value(), value.Type().Elem()))
+		}
+		return copied, true
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type()), true
+		}
+		copied := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			copied.Index(i).Set(copyJSONAssignableValue(value.Index(i), value.Type().Elem()))
+		}
+		return copied, true
+	case reflect.Array:
+		copied := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			copied.Index(i).Set(copyJSONAssignableValue(value.Index(i), value.Type().Elem()))
+		}
+		return copied, true
+	default:
+		return value, false
+	}
+}
+
+func copyJSONAssignableValue(value reflect.Value, target reflect.Type) reflect.Value {
+	copied, ok := copyJSONReflectValue(value)
+	if !ok {
+		copied = value
+	}
+	if copied.Type().AssignableTo(target) {
+		return copied
+	}
+	if copied.Type().ConvertibleTo(target) {
+		return copied.Convert(target)
+	}
+	return value
 }
 
 // ParseError parses a bridge error into a structured RuntimeError.
