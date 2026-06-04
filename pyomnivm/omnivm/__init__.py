@@ -1202,7 +1202,8 @@ class ManifestProxy:
                 "id": object.__getattribute__(self, "_handle_id"),
             },
         ))
-        self._detach_after_remote_close()
+        if released:
+            self._detach_after_remote_close()
         return released
 
     def _retain_arg_lease(self, lease):

@@ -5526,6 +5526,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def omnivm_close(value):") ||
 		!contains(code, `getattr(value, "_omnivm_close", None)`) ||
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
+		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
 		!contains(code, "finalizer.detach()") {
 		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
@@ -5552,7 +5553,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if self._closed:\n            return False") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
-		!contains(code, "self._mark_closed()\n        return released") {
+		!contains(code, "if released:\n            self._mark_closed()\n        return released") {
 		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)
 	}
 	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
@@ -5608,7 +5609,7 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	if !contains(code, "var cancelRemote = function()") ||
 		!contains(code, "var markRemoteClosed = function()") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
-		!contains(code, "markRemoteClosed();\n    return released;") ||
+		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") {
 		t.Fatalf("JS stream proxy close/error handling should return the manifest release result and mark remote streams closed through explicit paths, got %q", code)
@@ -5708,6 +5709,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, "__omnivm_release_handle_explicit") ||
 		!contains(code, `op: "handle_release_explicit"`) ||
 		!contains(code, "globalThis.__omnivm_release_handle_explicit(handleId)") ||
+		!contains(code, "if (released === true)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.unregister(target)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.register(stream, value.id, stream)") {
@@ -5833,6 +5835,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "@__omnivm_closed = false") ||
 		!contains(code, `JSON.generate({op: "handle_release_explicit", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
+		!contains(code, "if released\n      @__omnivm_closed = true") ||
 		!contains(code, "ObjectSpace.undefine_finalizer(self)") ||
 		!contains(code, "return false if @__omnivm_closed == true") ||
 		!contains(code, "released\n  end") {
@@ -5843,6 +5846,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "rescue\n        __omnivm_mark_closed\n        raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
+		!contains(code, "__omnivm_mark_closed if released") ||
 		!contains(code, "def omnivm_close\n    close\n  end") {
 		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and mark pull errors closed, got %q", code)
 	}
@@ -5918,6 +5922,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "return proxy.cancel();") ||
 		!contains(code, `"op\":\"handle_release_explicit\"`) ||
 		!contains(code, "public boolean releaseExplicit()") ||
+		!contains(code, "if (!Boolean.TRUE.equals(result)) {\n                return false;\n            }") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {

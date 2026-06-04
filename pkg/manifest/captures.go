@@ -816,8 +816,10 @@ class __OmniVMHandleProxy:
         if object.__getattribute__(self, "_closed"):
             return False
         result = self._bridge({"op": "handle_release_explicit"})
-        self._mark_closed()
-        return bool(result)
+        released = bool(result)
+        if released:
+            self._mark_closed()
+        return released
 
     def close(self):
         return self._omnivm_close()
@@ -1073,7 +1075,8 @@ class __OmniVMStreamProxy:
         raw = caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
         env = __j.loads(raw)
         released = isinstance(env, dict) and env.get("__omnivm_result__") is True and env.get("value") is True
-        self._mark_closed()
+        if released:
+            self._mark_closed()
         return released
 
 def __omnivm_materialize_capture(value):
@@ -1592,9 +1595,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     var handleId = globalThis.__omnivm_proxy_handle_id(target);
     if (handleId == null || target.__omnivm_closed__ === true) return false;
     var released = globalThis.__omnivm_release_handle_explicit(handleId);
-    target.__omnivm_closed__ = true;
-    if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
-      globalThis.__omnivm_handle_finalizers.unregister(target);
+    if (released === true) {
+      target.__omnivm_closed__ = true;
+      if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
+        globalThis.__omnivm_handle_finalizers.unregister(target);
+      }
     }
     return released;
   };
@@ -1776,7 +1781,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
     var env = JSON.parse(raw);
     var released = !!(env && env.__omnivm_result__ === true && env.value === true);
-    markRemoteClosed();
+    if (released === true) markRemoteClosed();
     return released;
   };
   var closeRemote = function() {
@@ -2379,10 +2384,12 @@ class OmniVMHandleProxy
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_release_explicit", id: @value["id"]}))
     env = JSON.parse(raw)
     released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
-    @__omnivm_closed = true
-    begin
-      ObjectSpace.undefine_finalizer(self)
-    rescue
+    if released
+      @__omnivm_closed = true
+      begin
+        ObjectSpace.undefine_finalizer(self)
+      rescue
+      end
     end
     released
   end
@@ -2663,7 +2670,7 @@ class OmniVMStreamProxy
     raw = OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
     env = JSON.parse(raw)
     released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
-    __omnivm_mark_closed
+    __omnivm_mark_closed if released
     released
   end
 

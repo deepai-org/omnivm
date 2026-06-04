@@ -930,6 +930,38 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "release failed"):
             proxy.close()
 
+    def test_manifest_proxy_close_false_result_remains_retryable(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        releases = 0
+
+        def manifest_call(_module_id, payload):
+            nonlocal releases
+            request = json.loads(payload.decode("utf-8"))
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 49,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_explicit":
+                releases += 1
+                return envelope(releases >= 2, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        assert proxy.close() is False
+        assert proxy.close() is True
+        assert proxy.close() is False
+        assert releases == 2
+
     def test_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

@@ -617,7 +617,10 @@ present; the `omnivm_*` helpers remain the explicit escape hatch.
 The close helpers are idempotent. For ordinary handle proxies they release the
 proxy lease; for stream/channel proxies they cancel the lazy stream owner. In
 runtimes with explicit finalizer unregistration, close also detaches the
-fallback GC cleanup hook after the release or cancellation succeeds.
+fallback GC cleanup hook after the release or cancellation succeeds. A
+user-initiated close/cancel that returns a false release envelope but no error
+does not mark the local proxy closed; callers may retry, and only a true owner
+acknowledgement makes later close calls return the local idempotent `false`.
 Java manifest proxies provide the static helpers
 `OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
 `OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,

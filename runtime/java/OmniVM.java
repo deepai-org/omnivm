@@ -1611,11 +1611,14 @@ public class OmniVM {
                 return false;
             }
             Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            if (!Boolean.TRUE.equals(result)) {
+                return false;
+            }
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
             cleanable.clean();
-            return Boolean.TRUE.equals(result);
+            return true;
         }
 
         @Override
@@ -2079,11 +2082,14 @@ public class OmniVM {
                 return false;
             }
             Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
+            if (!Boolean.TRUE.equals(result)) {
+                return false;
+            }
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
             cleanable.clean();
-            return Boolean.TRUE.equals(result);
+            return true;
         }
 
         private boolean markReleased() {
@@ -2100,11 +2106,14 @@ public class OmniVM {
                 return false;
             }
             Object result = bridgeManifestOp("{\"op\":\"stream_cancel\",\"id\":" + jsonScalar(id) + "}");
+            if (!Boolean.TRUE.equals(result)) {
+                return false;
+            }
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
             cleanable.clean();
-            return Boolean.TRUE.equals(result);
+            return true;
         }
 
         public List<Object> toList() {
