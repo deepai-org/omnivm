@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -82,6 +83,27 @@ func TestPythonExecuteError(t *testing.T) {
 	result := r.Execute("raise ValueError('test error')")
 	if result.Err == nil {
 		t.Fatal("expected error from invalid code")
+	}
+}
+
+func TestPythonRuntimeErrorPreludeStructuredEnvelopeSource(t *testing.T) {
+	for _, want := range []string{
+		"self.origin_runtime = parsed['origin_runtime']",
+		"self.stack_frames = parsed['stack_frames']",
+		"'origin_runtime': self.origin_runtime",
+		"'stack_frames': _copy_json_value(self.stack_frames)",
+		"def _parse_runtime_error_envelope",
+		"if body.startswith('ERR:')",
+		"origin_runtime = envelope.get('origin_runtime') or runtime_name",
+		"stack_frames = envelope.get('stack_frames')",
+		"details': _copy_json_value(envelope.get('details'))",
+		"'origin_runtime': source_runtime",
+		"'stack_frames': _runtime_error_stack_frames(traceback)",
+		"return value",
+	} {
+		if !strings.Contains(runtimeErrorPreludeForTest(), want) {
+			t.Fatalf("embedded Python RuntimeError prelude missing %q", want)
+		}
 	}
 }
 

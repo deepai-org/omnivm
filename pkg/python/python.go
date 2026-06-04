@@ -66,15 +66,23 @@ static const char* omnivm_py_runtime_error_code =
 "        super().__init__(message)\n"
 "        parsed = _parse_runtime_error_text(str(message), runtime=runtime or None, boundary_path=boundary_path or None)\n"
 "        self.runtime = parsed['runtime']\n"
+"        self.origin_runtime = parsed['origin_runtime']\n"
 "        self.type = parsed['type']\n"
 "        self.message = parsed['message']\n"
 "        self.traceback = parsed['traceback']\n"
+"        self.stack_frames = parsed['stack_frames']\n"
 "        self.cause_chain = parsed['cause_chain']\n"
 "        self.boundary_path = parsed['boundary_path']\n"
 "        self.original_error_handle = parsed['original_error_handle']\n"
 "        self.details = parsed['details']\n"
 "    def to_dict(self):\n"
-"        return {'runtime': self.runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'cause_chain': list(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle, 'details': self.details}\n"
+"        return {'runtime': self.runtime, 'origin_runtime': self.origin_runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'stack_frames': _copy_json_value(self.stack_frames), 'cause_chain': _copy_json_value(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle, 'details': _copy_json_value(self.details)}\n"
+"def _copy_json_value(value):\n"
+"    if isinstance(value, dict):\n"
+"        return {key: _copy_json_value(item) for key, item in value.items()}\n"
+"    if isinstance(value, list):\n"
+"        return [_copy_json_value(item) for item in value]\n"
+"    return value\n"
 "def _is_error_type_candidate(candidate):\n"
 "    return bool(__omnivm_re.match(r'^[A-Za-z_][A-Za-z0-9_.$:]*$', candidate or ''))\n"
 "def _is_runtime_error_metadata_line(line):\n"
@@ -89,13 +97,42 @@ static const char* omnivm_py_runtime_error_code =
 "            value = __omnivm_json.loads(stripped[len('Details: '):])\n"
 "        except Exception:\n"
 "            return None\n"
-"        if isinstance(value, dict):\n"
-"            return value\n"
-"        if isinstance(value, list):\n"
-"            return {'errors': value}\n"
-"        return {'value': value}\n"
+"        return value\n"
 "    return None\n"
+"def _runtime_error_stack_frames(traceback):\n"
+"    return [line.strip() for line in str(traceback or '').splitlines() if line.strip() and not _is_runtime_error_metadata_line(line)]\n"
+"def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):\n"
+"    body = str(text or '').strip()\n"
+"    if body.startswith('ERR:'):\n"
+"        body = body[4:].strip()\n"
+"    if not body.startswith('{'):\n"
+"        return None\n"
+"    try:\n"
+"        envelope = __omnivm_json.loads(body)\n"
+"    except Exception:\n"
+"        return None\n"
+"    if not isinstance(envelope, dict):\n"
+"        return None\n"
+"    runtime_name = envelope.get('runtime') or runtime\n"
+"    origin_runtime = envelope.get('origin_runtime') or runtime_name\n"
+"    err_type = envelope.get('type') or ''\n"
+"    detail = envelope.get('message') or ''\n"
+"    traceback = envelope.get('traceback') or ''\n"
+"    if not any((runtime_name, err_type, detail, traceback)):\n"
+"        return None\n"
+"    stack_frames = envelope.get('stack_frames')\n"
+"    if not isinstance(stack_frames, list) or not all(isinstance(frame, str) for frame in stack_frames):\n"
+"        stack_frames = _runtime_error_stack_frames(traceback)\n"
+"    cause_chain = envelope.get('cause_chain')\n"
+"    if not isinstance(cause_chain, list):\n"
+"        cause_chain = []\n"
+"    else:\n"
+"        cause_chain = [{'type': str(cause.get('type') or ''), 'message': str(cause.get('message') or '')} for cause in cause_chain if isinstance(cause, dict)]\n"
+"    return {'runtime': runtime_name, 'origin_runtime': origin_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'stack_frames': stack_frames, 'cause_chain': cause_chain, 'boundary_path': envelope.get('boundary_path') or boundary_path, 'original_error_handle': envelope.get('original_error_handle'), 'details': _copy_json_value(envelope.get('details'))}\n"
 "def _parse_runtime_error_text(text, runtime=None, boundary_path=None):\n"
+"    envelope = _parse_runtime_error_envelope(text, runtime=runtime, boundary_path=boundary_path)\n"
+"    if envelope is not None:\n"
+"        return envelope\n"
 "    source_runtime = runtime\n"
 "    body = text[4:] if text.startswith('ERR:') else text\n"
 "    boundary_parts = []\n"
@@ -161,8 +198,12 @@ static const char* omnivm_py_runtime_error_code =
 "                cause_type = candidate\n"
 "                cause_message = tail\n"
 "        cause_chain.append({'type': cause_type, 'message': cause_message})\n"
-"    return {'runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle, 'details': _parse_runtime_error_details(body)}\n"
+"    return {'runtime': source_runtime, 'origin_runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'stack_frames': _runtime_error_stack_frames(traceback), 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle, 'details': _parse_runtime_error_details(body)}\n"
 ;
+
+static const char* omnivm_py_runtime_error_code_for_test(void) {
+    return omnivm_py_runtime_error_code;
+}
 
 static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
     PyObject* mod = PyImport_ImportModule("omnivm");
@@ -3538,6 +3579,10 @@ type Runtime struct {
 // New creates a new Python runtime (not yet initialized).
 func New() *Runtime {
 	return &Runtime{}
+}
+
+func runtimeErrorPreludeForTest() string {
+	return C.GoString(C.omnivm_py_runtime_error_code_for_test())
 }
 
 func (r *Runtime) Name() string { return "python" }
