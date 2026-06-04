@@ -5284,6 +5284,11 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def omnivm_get(key)") || !contains(code, "def omnivm_set(key, value)") || !contains(code, "def omnivm_call(key, *args)") || !contains(code, "def omnivm_len") || !contains(code, "def omnivm_iter(mode = \"values\")") || !contains(code, "def omnivm_keys") || !contains(code, "def omnivm_values") || !contains(code, "def omnivm_items") || !contains(code, "def omnivm_contains(key)") || !contains(code, "def omnivm_close") {
 		t.Fatalf("Ruby materializer should expose explicit proxy get/set/call/len/iter/contains/close helpers for collision cases, got %q", code)
 	}
+	if !contains(code, "def omnivm_close(value)") ||
+		!contains(code, "def proxy_close(value)") ||
+		!contains(code, "return value.omnivm_close if value.respond_to?(:omnivm_close)") {
+		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
+	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("Ruby materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}

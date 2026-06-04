@@ -2038,6 +2038,28 @@ def __omnivm_cached_proxy(kind, value)
   proxy
 end
 
+def omnivm_close(value)
+  return value.omnivm_close if value.respond_to?(:omnivm_close)
+  if value.respond_to?(:close)
+    value.close
+    return true
+  end
+  false
+end
+
+if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
+  class << OmniVM
+    def proxy_close(value)
+      return value.omnivm_close if value.respond_to?(:omnivm_close)
+      if value.respond_to?(:close)
+        value.close
+        return true
+      end
+      false
+    end
+  end
+end
+
 class OmniVMHandleProxy
   OMNIVM_MISSING = Object.new unless const_defined?(:OMNIVM_MISSING, false)
 

@@ -572,7 +572,9 @@ Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
-`proxy.omnivm_close`.
+`proxy.omnivm_close`; generated snippets also provide
+`OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)` as collision-safe close
+helpers.
 The close helpers are idempotent. For ordinary handle proxies they release the
 proxy lease; for stream/channel proxies they cancel the lazy stream owner. In
 runtimes with explicit finalizer unregistration, close also detaches the
