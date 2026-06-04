@@ -1922,7 +1922,10 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       return {done: false, value: localValues[localIndex++]};
     }
     try {
-      if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return {done: true};
+      if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {
+        closeRemote();
+        return {done: true};
+      }
       var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true && env.value) {
@@ -1936,6 +1939,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       closeRemote();
       throw _e;
     }
+    closeRemote();
     return {done: true};
   };
   var stream = {

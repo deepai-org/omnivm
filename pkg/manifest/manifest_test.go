@@ -5826,9 +5826,11 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "if (localValues) return markRemoteClosed();") ||
 		!contains(code, "if (remoteClosed) return {done: true};") ||
 		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed();\n        return {done: true};\n      }") ||
+		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
+		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") ||
@@ -6066,6 +6068,104 @@ if (unregistered !== 1) throw new Error("closed local stream was unregistered mo
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node local stream EOF lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSRemoteStreamCancelsOnEarlyBreak(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: true, value: {done: false, value: "a"}});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 88, runtime: "javascript", kind: "stream"});
+var seen = [];
+for (var item of stream) {
+  seen.push(item);
+  break;
+}
+if (seen.length !== 1 || seen[0] !== "a") throw new Error("first value mismatch: " + JSON.stringify(seen));
+if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed after early break");
+if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+if (unregistered !== 1) throw new Error("stream finalizer was not unregistered after early break: " + unregistered);
+var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+if (cancels.length !== 1 || cancels[0].id !== 88) throw new Error("stream cancel requests mismatch: " + JSON.stringify(cancels));
+if (stream.cancel() !== false) throw new Error("closed remote stream cancel should be idempotent false");
+if (unregistered !== 1) throw new Error("closed remote stream was unregistered more than once");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node remote stream early-break lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSRemoteStreamTerminalFallbackMarksClosed(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: false, value: null});
+    if (payload.op === "stream_cancel") throw new Error("terminal fallback should not call stream_cancel");
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 99, runtime: "javascript", kind: "stream"});
+var done = stream[Symbol.iterator]().next();
+if (done.done !== true) throw new Error("terminal fallback did not report done");
+if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed after terminal fallback");
+if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+if (unregistered !== 1) throw new Error("stream finalizer was not unregistered after terminal fallback: " + unregistered);
+if (requests.some(function(req) { return req.op === "stream_cancel"; })) {
+  throw new Error("terminal fallback called remote stream_cancel");
+}
+if (stream.cancel() !== false) throw new Error("closed terminal stream cancel should be idempotent false");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node remote stream terminal fallback lifecycle check failed: %v\n%s", err, out)
 	}
 }
 
