@@ -5752,6 +5752,28 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 }
 
+func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
+	files := map[string]string{}
+	for _, path := range []string{
+		"../../pkg/python/python.go",
+		"../../pkg/ruby/ruby.go",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		files[path] = string(data)
+	}
+	if !contains(files["../../pkg/python/python.go"], "wrapped_boundary = ' > '.join(boundary_parts) or boundary_path") ||
+		!contains(files["../../pkg/python/python.go"], "envelope = _parse_runtime_error_envelope(body, runtime=source_runtime, boundary_path=wrapped_boundary)") {
+		t.Fatalf("embedded Python RuntimeError should retry structured envelope parsing after boundary stripping")
+	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? boundary_path : boundary_parts.join") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
+		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
+	}
+}
+
 func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{

@@ -97,6 +97,8 @@ func TestPythonRuntimeErrorPreludeStructuredEnvelopeSource(t *testing.T) {
 		"origin_runtime = envelope.get('origin_runtime') or runtime_name",
 		"stack_frames = envelope.get('stack_frames')",
 		"details': _copy_json_value(envelope.get('details'))",
+		"wrapped_boundary = ' > '.join(boundary_parts) or boundary_path",
+		"envelope = _parse_runtime_error_envelope(body, runtime=source_runtime, boundary_path=wrapped_boundary)",
 		"'origin_runtime': source_runtime",
 		"'stack_frames': _runtime_error_stack_frames(traceback)",
 		"return value",
