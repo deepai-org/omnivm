@@ -11,6 +11,15 @@ import (
 	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDrainFinalizerReleasesOnHostBoundary(t *testing.T) {
 	prevEng := eng
 	defer func() {
@@ -94,9 +103,13 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 		}
 	}
 	pythonAsyncio := targets["python_asyncio"].(map[string]interface{})
-	if !strings.Contains(pythonAsyncio["current_behavior"].(string), "async stream close") ||
-		!strings.Contains(pythonAsyncio["diagnostic"].(string), "narrow owner-loop teardown path") {
-		t.Fatalf("Python asyncio target should report narrow stream-close teardown without claiming owner dispatch support: %+v", pythonAsyncio)
+	if !strings.Contains(pythonAsyncio["current_behavior"].(string), "pump-owned asyncio loop") ||
+		!strings.Contains(pythonAsyncio["diagnostic"].(string), "narrow pump-owned pull/close paths") {
+		t.Fatalf("Python asyncio target should report narrow async stream pull/close without claiming owner dispatch support: %+v", pythonAsyncio)
+	}
+	capabilities, ok := pythonAsyncio["narrow_capabilities"].([]string)
+	if !ok || !containsString(capabilities, "python_async_stream_pull") || !containsString(capabilities, "python_async_stream_close") {
+		t.Fatalf("Python asyncio target should expose narrow async stream capabilities: %+v", pythonAsyncio)
 	}
 	if status["python_assert_host_thread"] != true {
 		t.Fatalf("Python host-thread assertion capability omitted: %+v", status)

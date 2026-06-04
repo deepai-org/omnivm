@@ -607,8 +607,9 @@ func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
 				"supported":           false,
 				"owner_kind":          "python_asyncio_loop",
 				"required_capability": "schedule callbacks onto the owning Python asyncio loop from foreign runtimes",
-				"current_behavior":    "affinity_status reports the current running loop and host-thread relationship; Python async stream close can submit teardown to a running owner loop from another host thread",
-				"diagnostic":          "Python async stream close has a narrow owner-loop teardown path, but general callbacks are not migrated back to the owner loop",
+				"current_behavior":    "affinity_status reports the current running loop and host-thread relationship; Python async stream pulls and close are scheduled on OmniVM's pump-owned asyncio loop",
+				"narrow_capabilities": []string{"python_async_stream_pull", "python_async_stream_close"},
+				"diagnostic":          "Python async streams have narrow pump-owned pull/close paths, but general callbacks are not migrated back to the owner loop",
 			},
 			"javascript_event_loop": map[string]interface{}{
 				"supported":           false,

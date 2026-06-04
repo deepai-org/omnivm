@@ -608,6 +608,11 @@ exception. The nested `owner_dispatch_targets` map breaks that down for
 `python_asyncio`, `javascript_event_loop`, `java_executor`, and
 `ruby_fiber_thread`, with `supported=false`, `owner_kind`,
 `required_capability`, `current_behavior`, and a diagnostic for each owner kind.
+Targets may also expose `narrow_capabilities` for bounded cases that are safe
+without universal owner dispatch. For example, `python_asyncio` reports
+`python_async_stream_pull` and `python_async_stream_close` because lazy stream
+pulls and cancellation run on OmniVM's pump-owned asyncio loop; this does not
+make general Python asyncio callbacks owner-dispatched.
 `omnivm.owner_dispatch_target_status(target)` returns one target block, and
 `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
 target-specific fail-fast guard. `omnivm.assert_owner_dispatch_supported(label)`
