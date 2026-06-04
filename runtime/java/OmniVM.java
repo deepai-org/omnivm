@@ -15,11 +15,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -2035,9 +2035,11 @@ public class OmniVM {
     public static final class FlowPublisherIterator implements Iterator<Object>, AutoCloseable, Flow.Subscriber<Object> {
         private final Object doneSignal = new Object();
         private final Object nullSignal = new Object();
-        private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>();
+        private final BlockingQueue<Object> queue = new ArrayBlockingQueue<>(2);
         private final CountDownLatch subscribed = new CountDownLatch(1);
         private final AtomicReference<Throwable> error = new AtomicReference<>();
+        private final AtomicLong requested = new AtomicLong(0);
+        private final AtomicBoolean terminalSignalled = new AtomicBoolean(false);
         private volatile Flow.Subscription subscription;
         private volatile boolean closed;
         private boolean loaded;
@@ -2066,18 +2068,62 @@ public class OmniVM {
 
         @Override
         public void onNext(Object item) {
-            queue.offer(item == null ? nullSignal : item);
+            if (closed || terminalSignalled.get()) {
+                return;
+            }
+            if (!claimRequested()) {
+                failProtocol(new IllegalStateException("Flow.Publisher emitted without demand"));
+                return;
+            }
+            if (!queue.offer(item == null ? nullSignal : item)) {
+                failProtocol(new IllegalStateException("Flow.Publisher exceeded OmniVM stream backpressure buffer"));
+            }
         }
 
         @Override
         public void onError(Throwable error) {
-            this.error.set(error);
-            queue.offer(doneSignal);
+            signalDone(error, false);
         }
 
         @Override
         public void onComplete() {
-            queue.offer(doneSignal);
+            signalDone(null, false);
+        }
+
+        private boolean claimRequested() {
+            while (true) {
+                long current = requested.get();
+                if (current <= 0) {
+                    return false;
+                }
+                if (requested.compareAndSet(current, current - 1)) {
+                    return true;
+                }
+            }
+        }
+
+        private void failProtocol(Throwable failure) {
+            Flow.Subscription current = subscription;
+            if (current != null) {
+                current.cancel();
+            }
+            signalDone(failure, true);
+        }
+
+        private void signalDone(Throwable failure, boolean discardPending) {
+            if (failure != null) {
+                error.compareAndSet(null, failure);
+            }
+            if (!terminalSignalled.compareAndSet(false, true)) {
+                return;
+            }
+            if (discardPending) {
+                queue.clear();
+            }
+            if (!queue.offer(doneSignal)) {
+                queue.clear();
+                queue.offer(doneSignal);
+            }
         }
 
         private void load() {
@@ -2095,7 +2141,10 @@ public class OmniVM {
                     finished = true;
                     return;
                 }
-                current.request(1);
+                if (!terminalSignalled.get()) {
+                    requested.incrementAndGet();
+                    current.request(1);
+                }
                 Object next = queue.take();
                 if (next == doneSignal) {
                     finished = true;
@@ -2137,7 +2186,8 @@ public class OmniVM {
             if (current != null) {
                 current.cancel();
             }
-            queue.offer(doneSignal);
+            subscribed.countDown();
+            signalDone(null, true);
         }
     }
 

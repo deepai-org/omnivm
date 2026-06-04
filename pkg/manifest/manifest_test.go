@@ -7522,6 +7522,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers")
 	}
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
+		!contains(code, "import java.util.concurrent.ArrayBlockingQueue;") ||
 		!contains(code, "import java.util.stream.Stream;") ||
 		!contains(code, "import java.util.stream.StreamSupport;") ||
 		!contains(code, "public static final class HandleProxy extends AbstractMap<String, Object> implements AutoCloseable") ||
@@ -7567,6 +7568,24 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	if !contains(code, "if (closed) {\n                subscription.cancel();\n                subscribed.countDown();\n                return;\n            }") {
 		t.Fatalf("Java Flow.Publisher iterator should cancel subscriptions that arrive after close")
+	}
+	for _, want := range []string{
+		"private final BlockingQueue<Object> queue = new ArrayBlockingQueue<>(2);",
+		"private final AtomicLong requested = new AtomicLong(0);",
+		"private final AtomicBoolean terminalSignalled = new AtomicBoolean(false);",
+		"if (!claimRequested())",
+		`failProtocol(new IllegalStateException("Flow.Publisher emitted without demand"))`,
+		`failProtocol(new IllegalStateException("Flow.Publisher exceeded OmniVM stream backpressure buffer"))`,
+		"private void signalDone(Throwable failure, boolean discardPending)",
+		"signalDone(failure, true);",
+		"subscribed.countDown();",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Java Flow.Publisher iterator should enforce bounded backpressure, missing %q", want)
+		}
+	}
+	if contains(code, "new LinkedBlockingQueue<>") {
+		t.Fatalf("Java Flow.Publisher iterator should not use an unbounded stream queue")
 	}
 	if !contains(code, "private boolean isDescriptorValue()") ||
 		!contains(code, `Boolean.TRUE.equals(value.get("__omnivm_table__"))`) ||
@@ -7758,6 +7777,121 @@ public final class ProxyCloseCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyCloseCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java proxy close check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaFlowPublisherIteratorEnforcesBackpressure(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/FlowPublisherBackpressureCheck.java"
+	check := `package omnivm;
+
+import java.util.concurrent.Flow;
+
+public final class FlowPublisherBackpressureCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static final class OneAndDonePublisher implements Flow.Publisher<Object> {
+        @Override
+        public void subscribe(Flow.Subscriber<? super Object> subscriber) {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override
+                public void request(long n) {
+                    subscriber.onNext("ok");
+                    subscriber.onComplete();
+                }
+
+                @Override
+                public void cancel() {
+                }
+            });
+        }
+    }
+
+    public static final class BurstPublisher implements Flow.Publisher<Object> {
+        BurstSubscription subscription;
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super Object> subscriber) {
+            subscription = new BurstSubscription(subscriber);
+            subscriber.onSubscribe(subscription);
+        }
+    }
+
+    public static final class BurstSubscription implements Flow.Subscription {
+        private final Flow.Subscriber<? super Object> subscriber;
+        int cancels;
+
+        BurstSubscription(Flow.Subscriber<? super Object> subscriber) {
+            this.subscriber = subscriber;
+        }
+
+        @Override
+        public void request(long n) {
+            subscriber.onNext("first");
+            subscriber.onNext("overflow");
+        }
+
+        @Override
+        public void cancel() {
+            cancels++;
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.FlowPublisherIterator compliant = new OmniVM.FlowPublisherIterator(new OneAndDonePublisher());
+        require(compliant.hasNext(), "compliant publisher first item missing");
+        require("ok".equals(compliant.next()), "compliant publisher item mismatch");
+        require(!compliant.hasNext(), "compliant publisher terminal signal was lost");
+
+        BurstPublisher burst = new BurstPublisher();
+        OmniVM.FlowPublisherIterator iterator = new OmniVM.FlowPublisherIterator(burst);
+        try {
+            iterator.hasNext();
+            throw new AssertionError("overproducing publisher did not fail");
+        } catch (RuntimeException err) {
+            Throwable cause = err.getCause();
+            require(cause instanceof IllegalStateException, "unexpected overproduction cause: " + cause);
+            require(String.valueOf(cause.getMessage()).contains("without demand"), "missing demand diagnostic: " + cause.getMessage());
+        }
+        require(burst.subscription.cancels == 1, "overproducing subscription was not cancelled exactly once: " + burst.subscription.cancels);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java Flow.Publisher backpressure check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java Flow.Publisher backpressure check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.FlowPublisherBackpressureCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java Flow.Publisher backpressure check: %v\n%s", err, out)
 	}
 }
 
