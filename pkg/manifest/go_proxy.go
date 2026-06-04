@@ -512,15 +512,10 @@ func (p *GoHandleProxy) localPayload() map[string]interface{} {
 }
 
 func (p *GoHandleProxy) isInternalDescriptorKey(key string) bool {
-	if p == nil || p.payload == nil || p.payload["__omnivm_resource__"] != true {
+	if p == nil || !isDescriptorPayload(p.payload) {
 		return false
 	}
-	switch key {
-	case "__omnivm_resource__", "__omnivm_materialized__", "id", "runtime", "kind", "closed", "transfer", "disposer":
-		return true
-	default:
-		return false
-	}
+	return isDescriptorInternalKey(key)
 }
 
 func (p *GoHandleProxy) closedOperationError(op string) error {

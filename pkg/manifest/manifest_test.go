@@ -2586,6 +2586,55 @@ func TestGoHandleProxyKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	}
 }
 
+func TestGoHandleProxyKeepsTableAndJobDescriptorFieldsPrivate(t *testing.T) {
+	tableProxy := newGoHandleProxy(0, nil, "table", map[string]interface{}{
+		"__omnivm_table__": true,
+		"id":               uint64(7),
+		"runtime":          "python",
+		"format":           "arrow_c_data",
+		"ownership":        "borrowed",
+		"metadata":         map[string]interface{}{"dtype": 4},
+		"buffer":           "descriptor-buffer",
+		"released":         false,
+		"name":             "orders",
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	for _, key := range []string{"id", "runtime", "format", "ownership", "metadata", "buffer", "released"} {
+		if got := tableProxy.Get(key); got != nil {
+			t.Fatalf("table GoHandleProxy.Get(%q) = %#v, want nil descriptor-private field", key, got)
+		}
+		if tableProxy.Contains(key) {
+			t.Fatalf("table GoHandleProxy.Contains(%q) = true, want descriptor-private field", key)
+		}
+	}
+	if asMap := tableProxy.AsMap(); len(asMap) != 1 || asMap["name"] != "orders" {
+		t.Fatalf("table GoHandleProxy.AsMap = %#v, want only user payload", asMap)
+	}
+
+	jobProxy := newGoHandleProxy(0, nil, "job", map[string]interface{}{
+		"__omnivm_job__": true,
+		"id":             uint64(8),
+		"runtime":        "javascript",
+		"kind":           "job",
+		"done":           true,
+		"cancelled":      false,
+		"cancelReason":   "descriptor-reason",
+		"payload":        "descriptor-payload",
+		"result":         "descriptor-result",
+		"name":           "import",
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	for _, key := range []string{"id", "runtime", "kind", "done", "cancelled", "cancelReason", "payload", "result"} {
+		if got := jobProxy.Get(key); got != nil {
+			t.Fatalf("job GoHandleProxy.Get(%q) = %#v, want nil descriptor-private field", key, got)
+		}
+		if jobProxy.Contains(key) {
+			t.Fatalf("job GoHandleProxy.Contains(%q) = true, want descriptor-private field", key)
+		}
+	}
+	if asMap := jobProxy.AsMap(); len(asMap) != 1 || asMap["name"] != "import" {
+		t.Fatalf("job GoHandleProxy.AsMap = %#v, want only user payload", asMap)
+	}
+}
+
 func TestGoHandleProxyMetadataAccessorsAreNilSafe(t *testing.T) {
 	var proxy *GoHandleProxy
 
@@ -5886,6 +5935,28 @@ func TestEscapeJavaString(t *testing.T) {
 
 // --- Capture wrapping tests ---
 
+func TestDescriptorInternalKeyContractFeedsGeneratedProxyMaterializers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code string
+	}{
+		{name: "python", code: pythonCaptureMaterializer()},
+		{name: "javascript", code: jsChannelMaterializer()},
+		{name: "ruby", code: rubyCaptureMaterializer()},
+	} {
+		if contains(tc.code, descriptorInternalKeysMarker) {
+			t.Fatalf("%s materializer still contains descriptor-key marker", tc.name)
+		}
+		for _, group := range descriptorInternalKeyGroups {
+			for _, key := range group {
+				if !contains(tc.code, strconv.Quote(key)) {
+					t.Fatalf("%s materializer missing shared descriptor key %q", tc.name, key)
+				}
+			}
+		}
+	}
+}
+
 func TestWrapPythonCaptures(t *testing.T) {
 	code := wrapPythonCaptures("print(x)", map[string]string{"x": "42"})
 	if !contains(code, "__json.loads") {
@@ -8125,7 +8196,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, `Boolean.TRUE.equals(value.get("__omnivm_job__"))`) ||
 		!contains(code, `"format".equals(text)`) ||
 		!contains(code, `"metadata".equals(text)`) ||
-		!contains(code, `"released".equals(text)`) {
+		!contains(code, `"buffer".equals(text)`) ||
+		!contains(code, `"released".equals(text)`) ||
+		!contains(code, `"done".equals(text)`) ||
+		!contains(code, `"cancelled".equals(text)`) ||
+		!contains(code, `"cancelReason".equals(text)`) ||
+		!contains(code, `"payload".equals(text)`) ||
+		!contains(code, `"result".equals(text)`) {
 		t.Fatalf("Java HandleProxy should keep resource/table/job descriptor metadata out of user-visible map fields")
 	}
 	if !contains(code, "private final String originRuntime;") ||

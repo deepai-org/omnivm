@@ -1901,7 +1901,13 @@ public class OmniVM {
                 || "format".equals(text)
                 || "ownership".equals(text)
                 || "metadata".equals(text)
+                || "buffer".equals(text)
                 || "released".equals(text)
+                || "done".equals(text)
+                || "cancelled".equals(text)
+                || "cancelReason".equals(text)
+                || "payload".equals(text)
+                || "result".equals(text)
                 || "__omnivm_materialized__".equals(text);
         }
 

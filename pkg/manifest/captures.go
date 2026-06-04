@@ -515,7 +515,7 @@ func injectPythonCaptures(captures map[string]string) string {
 }
 
 func pythonCaptureMaterializer() string {
-	return `__omnivm_arg_refs = globals().setdefault("__omnivm_arg_refs", {})
+	body := `__omnivm_arg_refs = globals().setdefault("__omnivm_arg_refs", {})
 __omnivm_arg_ref_counter = globals().setdefault("__omnivm_arg_ref_counter", 0)
 import weakref as __omnivm_weakref
 import collections.abc as __omnivm_collections_abc
@@ -735,10 +735,7 @@ class __OmniVMHandleProxy:
         ):
             return False
         return str(key) in (
-            "__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__",
-            "id", "runtime", "kind", "closed", "transfer", "disposer",
-            "format", "ownership", "metadata", "buffer", "released",
-            "done", "cancelled", "cancelReason", "payload", "result",
+            __OMNIVM_DESCRIPTOR_INTERNAL_KEYS__,
         )
 
     def _has_local_value(self, key):
@@ -1234,6 +1231,7 @@ def __omnivm_materialize_capture(value):
     if isinstance(value, dict):
         return {key: __omnivm_materialize_capture(item) for key, item in value.items()}
     return value`
+	return strings.Replace(body, descriptorInternalKeysMarker, descriptorInternalKeysTupleLiteral("            "), 1)
 }
 
 // injectJSCaptures generates JS code to set capture variables as globals.
@@ -1306,7 +1304,7 @@ func materializeJSCaptures(values []string) []string {
 }
 
 func jsChannelMaterializer() string {
-	return `globalThis.__omnivm_chatty_proxy_warned = globalThis.__omnivm_chatty_proxy_warned || {};
+	body := `globalThis.__omnivm_chatty_proxy_warned = globalThis.__omnivm_chatty_proxy_warned || {};
 globalThis.__omnivm_chatty_proxy_warned_order = globalThis.__omnivm_chatty_proxy_warned_order || [];
 globalThis.__omnivm_chatty_proxy_warned_limit = globalThis.__omnivm_chatty_proxy_warned_limit || 4096;
 globalThis.__omnivm_warn_chatty_proxy = globalThis.__omnivm_warn_chatty_proxy || function(report) {
@@ -1646,10 +1644,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   };
   var isInternalDescriptorProp = function(prop) {
     if (!descriptor || typeof prop !== 'string') return false;
-    return prop === "__omnivm_resource__" || prop === "__omnivm_table__" || prop === "__omnivm_job__" || prop === "__omnivm_materialized__" ||
-      prop === "id" || prop === "runtime" || prop === "kind" || prop === "closed" || prop === "transfer" || prop === "disposer" ||
-      prop === "format" || prop === "ownership" || prop === "metadata" || prop === "buffer" || prop === "released" ||
-      prop === "done" || prop === "cancelled" || prop === "cancelReason" || prop === "payload" || prop === "result";
+    return __OMNIVM_DESCRIPTOR_INTERNAL_KEYS__;
   };
   var hasLocalProp = function(obj, prop) {
     return Object.prototype.hasOwnProperty.call(obj, prop) && !isInternalDescriptorProp(prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
@@ -2264,6 +2259,7 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
   }
   return value;
 };`
+	return strings.Replace(body, descriptorInternalKeysMarker, descriptorInternalKeysJSPredicate("prop", "      "), 1)
 }
 
 // injectRubyCaptures generates Ruby code to set capture variables as globals.
@@ -2281,7 +2277,7 @@ func injectRubyCaptures(captures map[string]string) string {
 }
 
 func rubyCaptureMaterializer() string {
-	return `require 'weakref'
+	body := `require 'weakref'
 $__omnivm_proxy_cache ||= {}
 $__omnivm_proxy_cache_limit ||= 4096
 
@@ -2468,10 +2464,7 @@ class OmniVMHandleProxy
   def __omnivm_internal_descriptor_key?(key)
     return false unless @value["__omnivm_resource__"] == true || @value["__omnivm_table__"] == true || @value["__omnivm_job__"] == true
     [
-      "__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__",
-      "id", "runtime", "kind", "closed", "transfer", "disposer",
-      "format", "ownership", "metadata", "buffer", "released",
-      "done", "cancelled", "cancelReason", "payload", "result"
+      __OMNIVM_DESCRIPTOR_INTERNAL_KEYS__
     ].include?(key.to_s)
   end
 
@@ -3009,6 +3002,7 @@ def __omnivm_materialize_capture(value)
   end
   value
 end`
+	return strings.Replace(body, descriptorInternalKeysMarker, descriptorInternalKeysTupleLiteral("      "), 1)
 }
 
 // injectJavaCaptures generates Java code to set captures via OmniVM.
