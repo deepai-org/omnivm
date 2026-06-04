@@ -7595,6 +7595,23 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"def self.__actual_public_method?(value, name)",
+		"def self.proxy_close(value)",
+		"def self.omnivm_close(value)",
+		"return value.public_send(:omnivm_close) if __actual_public_method?(value, :omnivm_close)",
+		"if __actual_public_method?(value, :close)",
+		"result = value.public_send(:close)",
+		"return result.nil? ? true : result",
+	} {
+		if !contains(files["../../pkg/ruby/ruby.go"], want) {
+			t.Fatalf("embedded Ruby OmniVM module should expose collision-safe close helpers, missing %q", want)
+		}
+	}
+	if contains(files["../../pkg/ruby/ruby.go"], "value.respond_to?(:close)") ||
+		contains(files["../../pkg/ruby/ruby.go"], "value.respond_to?(:omnivm_close)") {
+		t.Fatalf("embedded Ruby close helpers should not trust respond_to_missing? for lifecycle methods")
+	}
+	for _, want := range []string{
 		"def stack_frames",
 		"OmniVM.__copy_json_value(@stack_frames)",
 		"def cause_chain",
