@@ -40,21 +40,24 @@ import (
 type cSharedPluginHandle uintptr
 
 type cSharedPluginEnvelope struct {
-	OK       bool        `json:"ok"`
-	Boundary string      `json:"boundary,omitempty"`
-	Dtype    string      `json:"dtype,omitempty"`
-	Format   string      `json:"format,omitempty"`
-	HandleID string      `json:"handle_id,omitempty"`
-	Kind     string      `json:"kind,omitempty"`
-	Pointer  string      `json:"pointer,omitempty"`
-	BufferID string      `json:"buffer_id,omitempty"`
-	BytesLen int64       `json:"bytes_len,omitempty"`
-	Elements int64       `json:"elements,omitempty"`
-	Shape    []int64     `json:"shape,omitempty"`
-	Strides  []int64     `json:"strides,omitempty"`
-	Found    bool        `json:"found,omitempty"`
-	Value    interface{} `json:"value,omitempty"`
-	Error    string      `json:"error,omitempty"`
+	OK          bool        `json:"ok"`
+	Boundary    string      `json:"boundary,omitempty"`
+	Dtype       string      `json:"dtype,omitempty"`
+	Format      string      `json:"format,omitempty"`
+	MemorySpace string      `json:"memory_space,omitempty"`
+	Ownership   string      `json:"ownership,omitempty"`
+	ReadOnly    bool        `json:"read_only,omitempty"`
+	HandleID    string      `json:"handle_id,omitempty"`
+	Kind        string      `json:"kind,omitempty"`
+	Pointer     string      `json:"pointer,omitempty"`
+	BufferID    string      `json:"buffer_id,omitempty"`
+	BytesLen    int64       `json:"bytes_len,omitempty"`
+	Elements    int64       `json:"elements,omitempty"`
+	Shape       []int64     `json:"shape,omitempty"`
+	Strides     []int64     `json:"strides,omitempty"`
+	Found       bool        `json:"found,omitempty"`
+	Value       interface{} `json:"value,omitempty"`
+	Error       string      `json:"error,omitempty"`
 }
 
 type cSharedOwnedBuffer struct {
@@ -362,6 +365,9 @@ func (p *cSharedObjectProxy) decodeInlineValue(value interface{}) (interface{}, 
 	env.Boundary, _ = descriptor["boundary"].(string)
 	env.Dtype, _ = descriptor["dtype"].(string)
 	env.Format, _ = descriptor["format"].(string)
+	env.MemorySpace, _ = descriptor["memory_space"].(string)
+	env.Ownership, _ = descriptor["ownership"].(string)
+	env.ReadOnly, _ = descriptor["read_only"].(bool)
 	env.HandleID, _ = descriptor["handle_id"].(string)
 	env.Kind, _ = descriptor["kind"].(string)
 	env.Pointer, _ = descriptor["pointer"].(string)
@@ -536,6 +542,9 @@ func (e *Executor) encodeCSharedGoTableArg(ref *TableRef) (interface{}, *cShared
 		"boundary":                  "borrowed_buffer",
 		"dtype":                     dtype,
 		"format":                    lease.Metadata.Format,
+		"memory_space":              nonEmpty(lease.Metadata.MemorySpace, "host"),
+		"ownership":                 nonEmpty(lease.Metadata.Ownership, "omnivm"),
+		"read_only":                 lease.Metadata.ReadOnly,
 		"bytes_len":                 lease.Len,
 		"elements":                  elements,
 	}

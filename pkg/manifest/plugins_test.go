@@ -34,6 +34,39 @@ func TestGoToolPathFallsBackToGOROOT(t *testing.T) {
 	}
 }
 
+func TestGoCSharedBorrowedTableArgCarriesMemoryOwnershipMetadata(t *testing.T) {
+	e := NewExecutor(nil)
+	ref, ok, err := e.autoBulkTableRefForCapture([2][2]float32{{1, 2}, {3, 4}})
+	if err != nil || !ok {
+		t.Fatalf("autoBulkTableRefForCapture = (%v, %v)", ok, err)
+	}
+
+	payloadValue, lease, err := e.encodeCSharedGoTableArg(ref)
+	if err != nil {
+		t.Fatalf("encodeCSharedGoTableArg: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("encodeCSharedGoTableArg did not retain a borrowed buffer lease")
+	}
+	defer lease.release()
+	t.Cleanup(func() {
+		if err := e.releaseAllHandleScopes(); err != nil {
+			t.Fatalf("releaseAllHandleScopes: %v", err)
+		}
+	})
+
+	payload, ok := payloadValue.(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload = %T, want map", payloadValue)
+	}
+	if payload["memory_space"] != "host" || payload["ownership"] != "producer" || payload["read_only"] != true {
+		t.Fatalf("borrowed c-shared payload memory ownership metadata = %#v", payload)
+	}
+	if payload["boundary"] != "borrowed_buffer" || payload["dtype"] != "f32" || payload["format"] != "f" {
+		t.Fatalf("borrowed c-shared payload core metadata = %#v", payload)
+	}
+}
+
 func TestGoCSharedSourceFallbackCompilesGenericFunction(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")

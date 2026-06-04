@@ -425,9 +425,9 @@ Implementation requirements:
   primitive numeric slices and arrays. Returns export an owned C data buffer
   with dtype, Arrow format, shape, and release callback metadata, then the host
   imports that memory into the shared Arrow store. Parameters receive borrowed
-  table buffers through the same dtype/format descriptor for the duration of the
-  call. The rule is based on value shape and element type, not producer package
-  names.
+  table buffers through the same dtype/format descriptor plus memory-space,
+  ownership, and read-only metadata for the duration of the call. The rule is
+  based on value shape and element type, not producer package names.
 
 Runtime adapters should target generic protocols instead of named-library
 branches:
