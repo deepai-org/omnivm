@@ -1720,7 +1720,11 @@ def get_buffer(name):
     rc = _lib.OmniBufGet(encoded_name, ctypes.byref(out))
     if rc != 0:
         return None
-    if not out.data or out.len <= 0:
+    if out.len == 0:
+        _lib.OmniBufRelease(encoded_name)
+        empty = memoryview(b"" if out.read_only else bytearray())
+        return empty.toreadonly() if out.read_only else empty
+    if not out.data or out.len < 0:
         _lib.OmniBufRelease(encoded_name)
         return None
     view_owner = (ctypes.c_char * int(out.len)).from_address(int(out.data))
