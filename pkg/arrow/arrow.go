@@ -58,16 +58,17 @@ type Buffer struct {
 // use this when they can expose a stable memory view directly instead of
 // materializing through JSON or another copied format.
 type BorrowedBuffer struct {
-	store       *SharedStore
-	name        string
-	Buffer      *Buffer
-	Data        unsafe.Pointer
-	Len         int64
-	Validity    unsafe.Pointer
-	ValidityLen int64
-	Dtype       int32
-	Metadata    BufferMetadata
-	once        sync.Once
+	store        *SharedStore
+	name         string
+	Buffer       *Buffer
+	Data         unsafe.Pointer
+	Len          int64
+	Validity     unsafe.Pointer
+	ValidityLen  int64
+	Dtype        int32
+	Metadata     BufferMetadata
+	namedTracked bool
+	once         sync.Once
 }
 
 // Stats is a process-level snapshot for bulk data diagnostics.
@@ -254,11 +255,12 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 	buf.mu.Lock()
 	buf.refs++
 	lease := &BorrowedBuffer{
-		store:  s,
-		name:   name,
-		Buffer: buf,
-		Len:    int64(buf.Len),
-		Dtype:  buf.Dtype,
+		store:        s,
+		name:         name,
+		Buffer:       buf,
+		Len:          int64(buf.Len),
+		Dtype:        buf.Dtype,
+		namedTracked: trackNameRelease,
 		Metadata: BufferMetadata{
 			Dtype:             buf.Dtype,
 			Format:            buf.Format,
@@ -307,16 +309,37 @@ func (b *BorrowedBuffer) ReleaseWithError() error {
 	}
 	var err error
 	b.once.Do(func() {
-		err = b.store.releaseBorrow(b.name, b.Buffer)
+		err = b.store.releaseBorrow(b.name, b.Buffer, b.namedTracked)
 	})
 	return err
 }
 
-func (s *SharedStore) releaseBorrow(name string, buf *Buffer) error {
+func (s *SharedStore) releaseBorrow(name string, buf *Buffer, namedTracked bool) error {
 	s.mu.Lock()
+	if namedTracked {
+		s.removeNamedBorrowLocked(name, buf)
+	}
 	release := s.releaseBufferLocked(name, buf)
 	s.mu.Unlock()
 	return callBufferRelease(release)
+}
+
+func (s *SharedStore) removeNamedBorrowLocked(name string, buf *Buffer) {
+	queue := s.namedBorrows[name]
+	for i, queued := range queue {
+		if queued != buf {
+			continue
+		}
+		copy(queue[i:], queue[i+1:])
+		queue[len(queue)-1] = nil
+		queue = queue[:len(queue)-1]
+		if len(queue) == 0 {
+			delete(s.namedBorrows, name)
+		} else {
+			s.namedBorrows[name] = queue
+		}
+		return
+	}
 }
 
 func (s *SharedStore) releaseNamedBorrow(name string) error {
@@ -331,12 +354,8 @@ func (s *SharedStore) releaseNamedBorrow(name string) error {
 			s.namedBorrows[name] = queue[1:]
 		}
 	} else {
-		var ok bool
-		buf, ok = s.buffers[name]
-		if !ok {
-			s.mu.Unlock()
-			return fmt.Errorf("arrow: buffer %q not found", name)
-		}
+		s.mu.Unlock()
+		return fmt.Errorf("arrow: buffer %q has no active named borrow", name)
 	}
 
 	release := s.releaseBufferLocked(name, buf)

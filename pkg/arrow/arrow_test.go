@@ -569,6 +569,26 @@ func TestNamedBorrowQueueDiagnostics(t *testing.T) {
 	}
 }
 
+func TestNamedBorrowDirectReleaseClearsReleaseQueue(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.borrowNamed("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lease.Release()
+	stats := s.Stats()
+	if stats.ActiveBorrows != 0 || stats.ActiveNamedBorrows != 0 || stats.NamedBorrowQueues != 0 {
+		t.Fatalf("direct named lease release left stale diagnostics: %+v", stats)
+	}
+	if err := s.releaseNamedBorrow("payload"); err == nil {
+		t.Fatal("stale named release queue allowed a second borrow release")
+	}
+}
+
 func TestNamedBorrowQueueDiagnosticsExposeAmbiguousSameNameBorrows(t *testing.T) {
 	s := NewSharedStore()
 	if _, err := s.SetWithDtype("payload", []byte{1}, DtypeBytes); err != nil {
@@ -730,8 +750,8 @@ drained:
 	}
 
 	s.DrainDeferred()
-	if _, err := s.Get("overflow"); err == nil {
-		t.Fatal("overflow release should be drained from spill queue")
+	if _, err := s.Get("overflow"); err != nil {
+		t.Fatalf("stale overflow cleanup release should not free owner: %v", err)
 	}
 	stats = s.Stats()
 	if stats.DeferredDrops != 0 {
@@ -798,17 +818,32 @@ func TestDrainDeferred(t *testing.T) {
 	globalStore = s
 	BufSet("drain1", nil, 0, DtypeBytes, false)
 	BufSet("drain2", nil, 0, DtypeBytes, false)
+	if _, err := s.borrowNamed("drain1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("drain2"); err != nil {
+		t.Fatal(err)
+	}
 
 	DeferredRelease <- "drain1"
 	DeferredRelease <- "drain2"
 
 	s.DrainDeferred()
 
-	// Both should be freed
-	if _, err := s.Get("drain1"); err == nil {
-		t.Fatal("drain1 should be freed")
+	for _, name := range []string{"drain1", "drain2"} {
+		buf, err := s.Get(name)
+		if err != nil {
+			t.Fatalf("%s owner should remain live after borrow cleanup: %v", name, err)
+		}
+		buf.mu.Lock()
+		refs := buf.refs
+		buf.mu.Unlock()
+		if refs != 1 {
+			t.Fatalf("%s refs after deferred borrow cleanup = %d, want owner ref only", name, refs)
+		}
 	}
-	if _, err := s.Get("drain2"); err == nil {
-		t.Fatal("drain2 should be freed")
+	stats := s.Stats()
+	if stats.ActiveNamedBorrows != 0 || stats.NamedBorrowQueues != 0 || stats.ActiveBorrows != 0 {
+		t.Fatalf("deferred borrow cleanup left stale diagnostics: %+v", stats)
 	}
 }

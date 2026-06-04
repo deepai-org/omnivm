@@ -289,10 +289,10 @@ func applyMetadataLocked(buf *Buffer, meta BufferMetadata) {
 	}
 }
 
-// DeferredRelease is the fast path for buffer release requests from GC threads.
-// The Golden Thread drains this on each pump cycle. Overflow releases are kept
-// in deferredReleaseOverflow so a saturated channel cannot silently leak a
-// borrowed buffer.
+// DeferredRelease is the fast path for named-borrow cleanup requests from GC
+// threads. The Golden Thread drains this on each pump cycle. Overflow releases
+// are kept in deferredReleaseOverflow so a saturated channel cannot silently
+// leak a borrowed buffer.
 var DeferredRelease = make(chan string, 256)
 
 var deferredReleaseOverflow struct {
@@ -302,7 +302,7 @@ var deferredReleaseOverflow struct {
 	total  int
 }
 
-// DrainDeferred processes all pending deferred buffer releases.
+// DrainDeferred processes all pending deferred named-borrow releases.
 // Must be called from the Golden Thread (or any single-threaded context).
 func (s *SharedStore) DrainDeferred() {
 	for {

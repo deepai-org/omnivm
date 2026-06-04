@@ -42,7 +42,9 @@ func BufSet(name string, data unsafe.Pointer, length int64, dtype int32, readOnl
 	return 0
 }
 
-// BufRelease schedules a deferred buffer release (safe from any thread).
+// BufRelease schedules deferred cleanup for a named borrow (safe from any
+// thread). It does not release the named owner reference; use BufFree for
+// explicit owner release.
 func BufRelease(name string) {
 	select {
 	case DeferredRelease <- name:
