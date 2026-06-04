@@ -5013,6 +5013,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") || !contains(code, "def __omnivm_local_value(key)") || !contains(code, "__omnivm_local_key?(key)") {
 		t.Fatalf("Ruby resource proxy should keep internal descriptor metadata out of user-visible fields, got %q", code)
 	}
+	if !contains(code, "def self.__omnivm_missing_bridge_error?(error)") || !contains(code, "raise unless __omnivm_missing_bridge_error?(e)") {
+		t.Fatalf("Ruby materializer should propagate owner lifecycle errors while preserving ordinary missing-field fallbacks, got %q", code)
+	}
 	if !contains(code, "chatty cross-runtime proxy access detected") {
 		t.Fatalf("Ruby materializer should warn on chatty proxy access, got %q", code)
 	}
@@ -5121,6 +5124,9 @@ func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	}
 	if !contains(code, "return hasLocalValue(key)") {
 		t.Fatalf("Java containsKey fallback should not expose descriptor metadata")
+	}
+	if !contains(code, "private boolean isMissingBridgeError(RuntimeException err)") || !contains(code, "if (!isMissingBridgeError(err))") {
+		t.Fatalf("Java runtime should propagate owner lifecycle errors while preserving ordinary missing-field fallbacks")
 	}
 	if contains(code, "if (value.containsKey(key)) {\n                return value.get(key);\n            }\n            Map<?, ?> report = record(\"property\");") {
 		t.Fatalf("Java get should not return descriptor fields before consulting the handle bridge")

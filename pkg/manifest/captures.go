@@ -1825,6 +1825,20 @@ end
 class OmniVMHandleProxy
   OMNIVM_MISSING = Object.new unless const_defined?(:OMNIVM_MISSING, false)
 
+  def self.__omnivm_missing_bridge_error?(error)
+    text = error.message.to_s
+    text.include?(" has no property ") ||
+      text.include?(" has no index ") ||
+      text.include?(" has no length") ||
+      text.include?(" is not iterable") ||
+      text.include?(" does not support contains") ||
+      text.include?(" has no writable property ")
+  end
+
+  def __omnivm_missing_bridge_error?(error)
+    self.class.__omnivm_missing_bridge_error?(error)
+  end
+
   def initialize(value)
     @value = value
     id = @value["id"]
@@ -1841,7 +1855,8 @@ class OmniVMHandleProxy
         env = JSON.parse(raw)
         return env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
       end
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     false
   end
@@ -1853,7 +1868,8 @@ class OmniVMHandleProxy
         env = JSON.parse(raw)
         return env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
       end
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     false
   end
@@ -1910,7 +1926,8 @@ class OmniVMHandleProxy
         env = JSON.parse(raw)
         return !!env["value"] if env.is_a?(Hash) && env["__omnivm_result__"] == true
       end
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     false
   end
@@ -1948,13 +1965,15 @@ class OmniVMHandleProxy
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_index", id: @value["id"], value: text_key}))
         env = JSON.parse(raw)
         return __omnivm_materialize_bridge_value(env["value"]) if env.is_a?(Hash) && env["__omnivm_result__"] == true
-      rescue
+      rescue => e
+        raise unless __omnivm_missing_bridge_error?(e)
       end
       begin
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_get", id: @value["id"], key: text_key}))
         env = JSON.parse(raw)
         return __omnivm_materialize_bridge_value(env["value"]) if env.is_a?(Hash) && env["__omnivm_result__"] == true
-      rescue
+      rescue => e
+        raise unless __omnivm_missing_bridge_error?(e)
       end
     end
     return default unless default.equal?(OMNIVM_MISSING)
@@ -1973,7 +1992,8 @@ class OmniVMHandleProxy
         @value[key] = __omnivm_materialize_bridge_value(pair[1]) unless @value.key?(key)
       end
       @value["__omnivm_materialized__"] = true
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
   end
 
@@ -2068,7 +2088,8 @@ class OmniVMHandleProxy
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_contains", id: @value["id"], value: key}))
       env = JSON.parse(raw)
       return !!env["value"] if env.is_a?(Hash) && env["__omnivm_result__"] == true
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     __omnivm_record("property")
     __omnivm_local_key?(key)
@@ -2084,7 +2105,8 @@ class OmniVMHandleProxy
       if env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"].is_a?(Array)
         return __omnivm_materialize_bridge_value(env["value"]).each(&block)
       end
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     __omnivm_record("iterate")
     @value.each(&block)
@@ -2096,7 +2118,8 @@ class OmniVMHandleProxy
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "keys"}))
       env = JSON.parse(raw)
       return __omnivm_materialize_bridge_value(env["value"]) if env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"].is_a?(Array)
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     __omnivm_record("iterate")
     @value.keys
@@ -2108,7 +2131,8 @@ class OmniVMHandleProxy
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "values"}))
       env = JSON.parse(raw)
       return __omnivm_materialize_bridge_value(env["value"]) if env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"].is_a?(Array)
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     __omnivm_record("iterate")
     @value.values
@@ -2120,7 +2144,8 @@ class OmniVMHandleProxy
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_len", id: @value["id"]}))
       env = JSON.parse(raw)
       return env["value"] if env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"].is_a?(Numeric)
-    rescue
+    rescue => e
+      raise unless __omnivm_missing_bridge_error?(e)
     end
     __omnivm_record("property")
     @value.length
@@ -2162,7 +2187,8 @@ class OmniVMHandleProxy
           @value[target_key] = args[0] if __omnivm_local_key?(target_key)
           return args[0]
         end
-      rescue
+      rescue => e
+        raise unless __omnivm_missing_bridge_error?(e)
       end
       super
     end
@@ -2186,7 +2212,8 @@ class OmniVMHandleProxy
         if env.is_a?(Hash) && env["__omnivm_result__"] == true
           return __omnivm_materialize_bridge_value(env["value"])
         end
-      rescue
+      rescue => e
+        raise unless __omnivm_missing_bridge_error?(e)
       end
       super
     elsif defined?(OmniVM) && OmniVM.respond_to?(:call)
@@ -2195,7 +2222,8 @@ class OmniVMHandleProxy
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: key, args: args.map { |arg| __omnivm_encode_arg(arg) }}))
         env = JSON.parse(raw)
         return __omnivm_materialize_bridge_value(env["value"]) if env.is_a?(Hash) && env["__omnivm_result__"] == true
-      rescue
+      rescue => e
+        raise unless __omnivm_missing_bridge_error?(e)
       end
       super
     else

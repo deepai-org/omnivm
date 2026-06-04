@@ -26988,6 +26988,23 @@ def test_manifest_closed_resource_proxy_reports_owner_lifecycle_error():
                 "code": "globalThis.staleJSReq = req; if (globalThis.staleJSReq.path !== '/closed-owner') throw new Error('bad JS request path');",
             },
             {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"req": "req"},
+                "code": "$stale_ruby_req = req\nraise 'bad Ruby request path' unless $stale_ruby_req.path == '/closed-owner'",
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"req": "req"},
+                "code": (
+                    "Object req = omnivm.OmniVM.getCapture(\"req\"); "
+                    "omnivm.OmniVM.HandleProxy proxy = (omnivm.OmniVM.HandleProxy) req; "
+                    "if (!\"/closed-owner\".equals(proxy.get(\"path\"))) throw new RuntimeException(\"bad Java request path\"); "
+                    "omnivm.OmniVM.setCaptureObject(\"staleJavaReq\", proxy);"
+                ),
+            },
+            {
                 "op": "resource",
                 "action": "close",
                 "target": "req",
@@ -27015,6 +27032,32 @@ def test_manifest_closed_resource_proxy_reports_owner_lifecycle_error():
                     "  globalThis.closedOwnerProxyErrorSeen = true; "
                     "} "
                     "if (!globalThis.closedOwnerProxyErrorSeen) throw new Error('closed JS resource proxy access did not raise');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "begin\n"
+                    "  $stale_ruby_req.path\n"
+                    "rescue => e\n"
+                    "  raise e unless e.message.include?('manifest HandleCall: unknown handle')\n"
+                    "  $closed_owner_proxy_error_seen_ruby = true\n"
+                    "end\n"
+                    "raise 'closed Ruby resource proxy access did not raise' unless $closed_owner_proxy_error_seen_ruby\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "omnivm.OmniVM.HandleProxy proxy = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"staleJavaReq\"); "
+                    "try { proxy.get(\"path\"); } "
+                    "catch (RuntimeException err) { "
+                    "  if (!String.valueOf(err.getMessage()).contains(\"manifest HandleCall: unknown handle\")) throw err; "
+                    "  omnivm.OmniVM.setCaptureObject(\"closedOwnerProxyErrorSeenJava\", Boolean.TRUE); "
+                    "} "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedOwnerProxyErrorSeenJava\"))) throw new RuntimeException(\"closed Java resource proxy access did not raise\");"
                 ),
             },
         ],

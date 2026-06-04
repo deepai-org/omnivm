@@ -1364,7 +1364,14 @@ public class OmniVM {
         @Override
         public Object get(Object key) {
             if (isIndexedDescriptor() && numericIndex(key) != null) {
-                return index(key);
+                try {
+                    return index(key);
+                } catch (RuntimeException err) {
+                    if (!isMissingBridgeError(err)) {
+                        throw err;
+                    }
+                    return null;
+                }
             }
             if (hasLocalValue(key)) {
                 return localValue(key);
@@ -1377,7 +1384,15 @@ public class OmniVM {
                 }
             }
             String textKey = String.valueOf(key);
-            Object value = bridgeGet(textKey);
+            Object value;
+            try {
+                value = bridgeGet(textKey);
+            } catch (RuntimeException err) {
+                if (!isMissingBridgeError(err)) {
+                    throw err;
+                }
+                return null;
+            }
             if (isZeroArgCallableDescriptor(value)) {
                 return call(textKey);
             }
@@ -1426,7 +1441,7 @@ public class OmniVM {
                     return ((Number) length).intValue();
                 }
             } catch (RuntimeException err) {
-                if (!String.valueOf(err.getMessage()).contains("has no length")) {
+                if (!isMissingBridgeError(err)) {
                     throw err;
                 }
             }
@@ -1437,24 +1452,36 @@ public class OmniVM {
         @Override
         @SuppressWarnings("unchecked")
         public Collection<Object> values() {
-            Object values = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"values\"}");
-            if (values instanceof List<?>) {
-                return Collections.unmodifiableList((List<Object>) values);
+            try {
+                Object values = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"values\"}");
+                if (values instanceof List<?>) {
+                    return Collections.unmodifiableList((List<Object>) values);
+                }
+            } catch (RuntimeException err) {
+                if (!isMissingBridgeError(err)) {
+                    throw err;
+                }
             }
             return super.values();
         }
 
         @Override
         public Set<Entry<String, Object>> entrySet() {
-            Object items = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"items\"}");
-            if (items instanceof List<?>) {
-                LinkedHashSet<Entry<String, Object>> entries = new LinkedHashSet<>();
-                for (Object item : (List<?>) items) {
-                    if (item instanceof List<?> pair && pair.size() == 2) {
-                        entries.add(new SimpleImmutableEntry<>(String.valueOf(pair.get(0)), pair.get(1)));
+            try {
+                Object items = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"items\"}");
+                if (items instanceof List<?>) {
+                    LinkedHashSet<Entry<String, Object>> entries = new LinkedHashSet<>();
+                    for (Object item : (List<?>) items) {
+                        if (item instanceof List<?> pair && pair.size() == 2) {
+                            entries.add(new SimpleImmutableEntry<>(String.valueOf(pair.get(0)), pair.get(1)));
+                        }
                     }
+                    return Collections.unmodifiableSet(entries);
                 }
-                return Collections.unmodifiableSet(entries);
+            } catch (RuntimeException err) {
+                if (!isMissingBridgeError(err)) {
+                    throw err;
+                }
             }
             record("iterate");
             return Collections.unmodifiableMap(value).entrySet();
@@ -1462,9 +1489,15 @@ public class OmniVM {
 
         @Override
         public boolean containsKey(Object key) {
-            Object contains = bridgeOp("{\"op\":\"handle_contains\",\"id\":" + jsonScalar(value.get("id")) + ",\"value\":" + jsonValue(key) + "}");
-            if (contains instanceof Boolean) {
-                return Boolean.TRUE.equals(contains);
+            try {
+                Object contains = bridgeOp("{\"op\":\"handle_contains\",\"id\":" + jsonScalar(value.get("id")) + ",\"value\":" + jsonValue(key) + "}");
+                if (contains instanceof Boolean) {
+                    return Boolean.TRUE.equals(contains);
+                }
+            } catch (RuntimeException err) {
+                if (!isMissingBridgeError(err)) {
+                    throw err;
+                }
             }
             record("property");
             return hasLocalValue(key);
@@ -1544,7 +1577,15 @@ public class OmniVM {
             if (Boolean.TRUE.equals(value.get("__omnivm_materialized__"))) {
                 return;
             }
-            Object items = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"items\",\"materialize\":true}");
+            Object items;
+            try {
+                items = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"items\",\"materialize\":true}");
+            } catch (RuntimeException err) {
+                if (!isMissingBridgeError(err)) {
+                    throw err;
+                }
+                return;
+            }
             if (!(items instanceof List<?>)) {
                 return;
             }
@@ -1577,6 +1618,16 @@ public class OmniVM {
                 String accessKind = rawKind == null ? "access" : String.valueOf(rawKind);
                 System.err.println("omnivm: chatty cross-runtime proxy access detected for handle " + id + " (" + accessKind + "); consider runtime-local iteration or bulk materialization");
             }
+        }
+
+        private boolean isMissingBridgeError(RuntimeException err) {
+            String text = String.valueOf(err.getMessage());
+            return text.contains(" has no property ")
+                || text.contains(" has no index ")
+                || text.contains(" has no length")
+                || text.contains(" is not iterable")
+                || text.contains(" does not support contains")
+                || text.contains(" has no writable property ");
         }
 
         @SuppressWarnings("unchecked")
