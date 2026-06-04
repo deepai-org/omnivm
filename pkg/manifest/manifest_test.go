@@ -4723,6 +4723,19 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 			}
 		}
 	}
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_cancel after cancel did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_cancel diagnostic missing %q: %s", want, got)
+			}
+		}
+		if strings.Contains(got, "unknown handle") {
+			t.Fatalf("stale stream_cancel used generic handle-table diagnostic: %s", got)
+		}
+	}
 	if len(ch.ch) != 1 {
 		t.Fatalf("stream_cancel should not drain channel, len = %d, want 1", len(ch.ch))
 	}
@@ -7286,6 +7299,18 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 	}
 	val, _ := e.getBinding("req")
 	ref := val.(*ResourceRef)
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "arg",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/arg"}},
+	}); err != nil {
+		t.Fatalf("resource arg open: %v", err)
+	}
+	argVal, _ := e.getBinding("arg")
+	argRef := argVal.(*ResourceRef)
 	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "req"}); err != nil {
 		t.Fatalf("resource close: %v", err)
 	}
@@ -7310,6 +7335,24 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("closed resource call %s diagnostic missing %q: %s", call, want, got)
 			}
+		}
+	}
+	argCall := fmt.Sprintf(
+		`{"op":"handle_call","id":%d,"key":"accept","args":[{"__omnivm_resource__":true,"id":%d,"runtime":"python","kind":"request"}]}`,
+		ref.ID,
+		argRef.ID,
+	)
+	if _, err := e.HandleCall(argCall); err == nil {
+		t.Fatal("closed resource handle_call with live proxy arg did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed resource handle", "runtime=python", "kind=request", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("closed resource handle_call with arg diagnostic missing %q: %s", want, got)
+			}
+		}
+		if strings.Contains(got, "unknown source handle") {
+			t.Fatalf("closed resource handle_call with arg used generic handle-table diagnostic: %s", got)
 		}
 	}
 }

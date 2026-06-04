@@ -1065,6 +1065,9 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if err != nil {
 			return "", err
 		}
+		if _, err := e.handleEntry(id); err != nil {
+			return "", err
+		}
 		if err := e.ensureHandleTable().ReleaseAllRefs(id); err != nil {
 			return "", err
 		}
@@ -1089,6 +1092,9 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 	case "handle_call":
 		id, err := bridgeHandleID(req.ID)
 		if err != nil {
+			return "", err
+		}
+		if _, err := e.handleEntry(id); err != nil {
 			return "", err
 		}
 		args := decodeRuntimeRefArgs(req.Args)
