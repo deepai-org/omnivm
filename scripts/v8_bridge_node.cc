@@ -310,6 +310,14 @@ static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
             return json;
         }
     }
+    std::string issues = omnivm_v8_json_stringify_prop(isolate, context, object, "issues");
+    if (!issues.empty()) {
+        return "{\"issues\":" + issues + "}";
+    }
+    std::string errors = omnivm_v8_json_stringify_prop(isolate, context, object, "errors");
+    if (!errors.empty()) {
+        return "{\"errors\":" + errors + "}";
+    }
     return "";
 }
 

@@ -7777,6 +7777,10 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`cause.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, cause_object)`,
 		`omnivm_v8_set_string_prop(isolate, context, cause, "origin_runtime", env.cause_chain[i].origin_runtime)`,
 		`const char* keys[] = {"details_json", "detailsJson"}`,
+		`std::string issues = omnivm_v8_json_stringify_prop(isolate, context, object, "issues")`,
+		`return "{\"issues\":" + issues + "}"`,
+		`std::string errors = omnivm_v8_json_stringify_prop(isolate, context, object, "errors")`,
+		`return "{\"errors\":" + errors + "}"`,
 		`details = details_text`,
 	} {
 		if !contains(code, want) {
