@@ -7621,6 +7621,17 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "throw err;") {
 		t.Fatalf("Java stream proxy should mark itself released after terminal owner stream errors")
 	}
+	streamClass := strings.Index(code, "public static final class StreamProxy")
+	streamRelease := -1
+	streamCancel := -1
+	if streamClass >= 0 {
+		streamBody := code[streamClass:]
+		streamRelease = strings.Index(streamBody, "public boolean releaseExplicit() {\n            return cancel();\n        }")
+		streamCancel = strings.Index(streamBody, "public boolean cancel()")
+	}
+	if streamClass < 0 || streamRelease < 0 || streamCancel < 0 || streamRelease > streamCancel {
+		t.Fatalf("Java stream proxy releaseExplicit should use stream cancellation, not generic handle release")
+	}
 	if !contains(code, "private final List<?> localValues;") ||
 		!contains(code, "this.localValues = values instanceof List<?> ? (List<?>) values : null;") ||
 		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
@@ -7998,9 +8009,10 @@ public final class LocalStreamProxyCloseCheck {
         Object rows = OmniVM.getCapture("rows");
         require(rows instanceof OmniVM.StreamProxy, "capture did not materialize a stream proxy");
         OmniVM.StreamProxy stream = (OmniVM.StreamProxy) rows;
-        stream.close();
+        require(stream.releaseExplicit(), "local stream releaseExplicit should close the stream");
         stream.close();
         require(!stream.iterator().hasNext(), "closed local stream still had items");
+        require(!stream.releaseExplicit(), "local stream releaseExplicit should be idempotent false");
         require(!OmniVM.proxyClose(stream), "proxyClose after local stream close should be idempotent false");
     }
 }
