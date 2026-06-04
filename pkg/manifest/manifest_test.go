@@ -7508,6 +7508,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonProp, "collections.abc") || !strings.Contains(pythonProp, "Mapping) and __k in __o") || strings.Index(pythonProp, "__o[__k]") > strings.Index(pythonProp, "getattr") {
 		t.Fatalf("python property lookup should prefer mapping keys before attributes, got %q", pythonProp)
 	}
+	if !strings.Contains(pythonProp, "hasattr(__o, '__contains__')") || !strings.Contains(pythonProp, "hasattr(__o, '__getitem__')") {
+		t.Fatalf("python property lookup should treat key-addressable session-like objects as data before attributes, got %q", pythonProp)
+	}
 	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
 		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
 	}
@@ -7546,8 +7549,11 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefCallableExpr python: ok=%v err=%v", ok, err)
 	}
-	if !strings.Contains(pythonCallable, "callable(__o[__k]) if isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
+	if !strings.Contains(pythonCallable, "callable(__o[__k]) if ((isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
 		t.Fatalf("python callable lookup should inspect mapping keys before attributes, got %q", pythonCallable)
+	}
+	if !strings.Contains(pythonCallable, "hasattr(__o, '__contains__')") || !strings.Contains(pythonCallable, "hasattr(__o, '__getitem__')") {
+		t.Fatalf("python callable lookup should inspect key-addressable session-like objects before attributes, got %q", pythonCallable)
 	}
 	if !strings.Contains(pythonCallable, "model_fields") || strings.Index(pythonCallable, "Mapping) and __k in __o") > strings.Index(pythonCallable, "model_fields") || strings.Index(pythonCallable, "model_fields") > strings.LastIndex(pythonCallable, "hasattr(__o, __k)") {
 		t.Fatalf("python callable lookup should inspect Pydantic fields before same-named methods, got %q", pythonCallable)
@@ -7596,6 +7602,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(pythonCode, "MutableMapping") || strings.Index(pythonCode, "__o[__k] = __v") > strings.Index(pythonCode, "hasattr(__o, __k)") {
 		t.Fatalf("python RuntimeRef set should prefer mutable mapping keys before attributes, got %q", pythonCode)
+	}
+	if !strings.Contains(pythonCode, "hasattr(__o, '__contains__')") || !strings.Contains(pythonCode, "hasattr(__o, '__setitem__')") {
+		t.Fatalf("python RuntimeRef set should update existing key-addressable session-like keys before attributes, got %q", pythonCode)
 	}
 	if !strings.Contains(pythonCode, "MutableSequence") || !strings.Contains(pythonCode, "__k == 'length'") || !strings.Contains(pythonCode, "del __o[__n:]") {
 		t.Fatalf("python RuntimeRef set should resize mutable sequences for length writes, got %q", pythonCode)

@@ -7099,6 +7099,161 @@ finally:
         raise AssertionError(f"Flask request/session used JSON fallback: {after_boundary}")
 
 
+def test_manifest_django_session_middleware_session_stays_live():
+    before = omnivm.status()
+    before_boundary = before.get("boundary", {})
+    before_handles = before.get("handles", {})
+    setup = r'''
+import io
+from django.conf import settings
+
+if not settings.configured:
+    settings.configure(
+        DEFAULT_CHARSET="utf-8",
+        SECRET_KEY="poly",
+        SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+        ROOT_URLCONF=__name__,
+        ALLOWED_HOSTS=["*"],
+    )
+else:
+    settings.SECRET_KEY = getattr(settings, "SECRET_KEY", "poly") or "poly"
+    settings.DEFAULT_CHARSET = getattr(settings, "DEFAULT_CHARSET", "utf-8") or "utf-8"
+    settings.SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+
+import django
+from django.apps import apps
+if not apps.ready:
+    django.setup()
+
+from django.contrib.sessions.middleware import SessionMiddleware
+from django.core.handlers.wsgi import WSGIRequest
+
+body = b"session-body"
+environ = {
+    "REQUEST_METHOD": "POST",
+    "PATH_INFO": "/django/session",
+    "QUERY_STRING": "mode=poly",
+    "SERVER_NAME": "example.test",
+    "SERVER_PORT": "443",
+    "wsgi.version": (1, 0),
+    "wsgi.url_scheme": "https",
+    "wsgi.input": io.BytesIO(body),
+    "wsgi.errors": io.StringIO(),
+    "wsgi.multithread": False,
+    "wsgi.multiprocess": False,
+    "wsgi.run_once": False,
+    "CONTENT_LENGTH": str(len(body)),
+    "CONTENT_TYPE": "text/plain",
+    "HTTP_X_REQUEST_ID": "django-session-42",
+}
+django_session_request = WSGIRequest(environ)
+django_session_middleware = SessionMiddleware(lambda request: None)
+django_session_middleware.process_request(django_session_request)
+django_session = django_session_request.session
+django_session["user_id"] = "u-42"
+django_session["items"] = "field-items"
+django_session["keys"] = "field-keys"
+django_session["get"] = "field-get"
+django_session["close"] = "field-close"
+'''
+    verify = r'''
+if django_session_request.path != "/django/session":
+    raise AssertionError(f"request path changed: {django_session_request.path!r}")
+expected = {
+    "user_id": "u-42",
+    "items": "js-items",
+    "keys": "ruby-keys",
+    "get": "js-get",
+    "close": "java-close",
+    "from_js": "yes",
+    "from_ruby": "yes",
+    "from_java": "yes",
+}
+for key, want in expected.items():
+    got = django_session.get(key)
+    if got != want:
+        raise AssertionError(f"Django session key {key!r} = {got!r}, want {want!r}; session={dict(django_session)!r}")
+if not django_session.modified:
+    raise AssertionError("Django session did not record cross-runtime mutations")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"req": "django_session_request", "sess": "django_session"},
+                "code": (
+                    "if (req.method !== 'POST') throw new Error('bad Django session request method: ' + req.method); "
+                    "if (req.path !== '/django/session') throw new Error('bad Django session request path: ' + req.path); "
+                    "if (req.META.HTTP_X_REQUEST_ID !== 'django-session-42') throw new Error('bad Django session header: ' + req.META.HTTP_X_REQUEST_ID); "
+                    "if (sess.user_id !== 'u-42') throw new Error('bad Django session user_id: ' + sess.user_id); "
+                    "if (sess.items !== 'field-items') throw new Error('Django session items key collided with method: ' + sess.items); "
+                    "if (sess.keys !== 'field-keys') throw new Error('Django session keys key collided with method: ' + sess.keys); "
+                    "if (sess.get !== 'field-get') throw new Error('Django session get key collided with method: ' + sess.get); "
+                    "if (sess.close !== 'field-close') throw new Error('Django session close key collided with method: ' + sess.close); "
+                    "sess.from_js = 'yes'; "
+                    "sess.items = 'js-items'; "
+                    "sess.get = 'js-get';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"sess": "django_session"},
+                "code": (
+                    "raise \"bad Django session user_id #{sess.user_id}\" unless sess.user_id == 'u-42'; "
+                    "raise \"bad Django session items #{sess.items}\" unless sess.items == 'js-items'; "
+                    "raise \"bad Django session keys #{sess.keys}\" unless sess.keys == 'field-keys'; "
+                    "raise \"bad Django session get #{sess.get}\" unless sess.get == 'js-get'; "
+                    "raise \"bad Django session close #{sess.close}\" unless sess.close == 'field-close'; "
+                    "sess.from_ruby = 'yes'; "
+                    "sess.keys = 'ruby-keys';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"sess": "django_session"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"sess\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"Django session should cross as HandleProxy: \" + raw); "
+                    "omnivm.OmniVM.HandleProxy sess = (omnivm.OmniVM.HandleProxy) raw; "
+                    "if (!\"u-42\".equals(String.valueOf(sess.get(\"user_id\")))) throw new RuntimeException(\"bad Django session Java user_id: \" + sess.get(\"user_id\")); "
+                    "if (!\"js-items\".equals(String.valueOf(sess.get(\"items\")))) throw new RuntimeException(\"bad Django session Java items: \" + sess.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(sess.get(\"keys\")))) throw new RuntimeException(\"bad Django session Java keys: \" + sess.get(\"keys\")); "
+                    "if (!\"js-get\".equals(String.valueOf(sess.get(\"get\")))) throw new RuntimeException(\"bad Django session Java get: \" + sess.get(\"get\")); "
+                    "if (!\"field-close\".equals(String.valueOf(sess.get(\"close\")))) throw new RuntimeException(\"bad Django session Java close: \" + sess.get(\"close\")); "
+                    "if (!sess.set(\"from_java\", \"yes\")) throw new RuntimeException(\"Django session Java from_java set failed\"); "
+                    "if (!sess.set(\"close\", \"java-close\")) throw new RuntimeException(\"Django session Java close set failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after = omnivm.status()
+    boundary = after.get("boundary", {})
+    handles = after.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 2 and resource_capture_delta < 2:
+        raise AssertionError(f"Django request/session did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Django request/session crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Django request/session used JSON fallback: before={before_boundary}, after={boundary}")
+    access_delta = handles.get("handle_accesses_by_kind", {}).get("property", 0) - before_handles.get("handle_accesses_by_kind", {}).get("property", 0)
+    mutation_delta = handles.get("handle_accesses_by_kind", {}).get("mutation", 0) - before_handles.get("handle_accesses_by_kind", {}).get("mutation", 0)
+    if access_delta < 8:
+        raise AssertionError(f"Django session did not record property accesses: before={before_handles}, after={handles}")
+    if mutation_delta < 4:
+        raise AssertionError(f"Django session did not record mutations: before={before_handles}, after={handles}")
+
+
 def test_manifest_django_queryset_transaction_rollback_cross_runtime():
     before = omnivm.status()
     setup = r'''
@@ -29050,6 +29205,7 @@ def main():
         check("Manifest Werkzeug WSGI writer after close reports owner error", test_manifest_werkzeug_wsgi_writer_after_close_reports_owner_error)
         check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
+        check("Manifest Django SessionMiddleware session stays live", test_manifest_django_session_middleware_session_stays_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
         check("Manifest Django QuerySet iterator is lazy and cancellable", test_manifest_django_queryset_iterator_is_lazy_and_cancellable)
         check("Manifest Django model collision fields stay natural", test_manifest_django_model_collision_fields_stay_natural)
