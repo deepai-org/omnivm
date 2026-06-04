@@ -6172,6 +6172,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, `"op\":\"handle_release_explicit\"`) ||
 		!contains(code, "public boolean releaseExplicit()") ||
 		!contains(code, "public void close()") ||
+		!contains(code, "java.lang.reflect.Modifier.isPublic(method.getModifiers())") ||
 		!contains(code, "Object result = invokeProxyMethod(method, target);") ||
 		!contains(code, "return !(result instanceof Boolean) || Boolean.TRUE.equals(result);") ||
 		!contains(code, "if (!Boolean.TRUE.equals(result)) {\n                return false;\n            }") ||

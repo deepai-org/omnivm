@@ -1141,7 +1141,8 @@ public class OmniVM {
             }
         }
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
-            if (method.getName().equals("close") && method.getParameterCount() == 0) {
+            if (method.getName().equals("close") && method.getParameterCount() == 0
+                && java.lang.reflect.Modifier.isPublic(method.getModifiers())) {
                 try {
                     Object result = invokeProxyMethod(method, target);
                     return !(result instanceof Boolean) || Boolean.TRUE.equals(result);
