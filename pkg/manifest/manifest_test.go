@@ -6172,11 +6172,13 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "class OmniVMStreamProxy") ||
 		!contains(code, `@local_values = value["values"].is_a?(Array) ? value["values"] : nil`) ||
-		!contains(code, "if @local_values\n      @local_values.each do |item|") ||
+		!contains(code, "begin\n      if @local_values\n        @local_values.each do |item|") ||
 		!contains(code, "yield __omnivm_materialize_capture(item)") ||
+		!contains(code, "ensure\n      if @__omnivm_closed != true") ||
+		!contains(code, "begin\n          close\n        rescue\n        end") ||
 		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
-		!contains(code, "rescue\n        __omnivm_mark_closed\n        raise") ||
+		!contains(code, "rescue\n          __omnivm_mark_closed\n          raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "__omnivm_mark_closed if released") ||
@@ -6213,6 +6215,47 @@ func TestInjectRubyCapturesUsesSafeBindingNames(t *testing.T) {
 	code := injectRubyCaptures(map[string]string{"class": `"hi"`})
 	if !contains(code, `($omnivm_bindings ||= {})["class"] =`) || !contains(code, `__omnivm_materialize_capture(JSON.parse`) {
 		t.Fatalf("Ruby capture injection should assign unsafe names through binding map, got %q", code)
+	}
+}
+
+func TestRubyLocalStreamClosesOnEarlyBreak(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    raise "local early break should not cancel remote stream" if req["op"] == "stream_cancel"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 77, "runtime" => "ruby", "kind" => "stream", "values" => ["a", "b"]})
+seen = []
+stream.each do |item|
+  seen << item
+  break
+end
+raise "first item mismatch: #{seen.inspect}" unless seen == ["a"]
+raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
+raise "close was not idempotent" unless stream.close == false
+raise "stream handle was not retained" unless OmniVM.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 77 }
+raise "local stream called remote cancel" if OmniVM.requests.any? { |req| req["op"] == "stream_cancel" }
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby local stream early-break lifecycle check failed: %v\n%s", err, out)
 	}
 }
 

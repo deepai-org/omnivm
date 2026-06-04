@@ -2790,28 +2790,37 @@ class OmniVMStreamProxy
 
   def each
     return enum_for(:each) unless block_given?
-    if @local_values
-      @local_values.each do |item|
-        break if @__omnivm_closed == true
-        yield __omnivm_materialize_capture(item)
-      end
-      __omnivm_mark_closed
-      return
-    end
-    loop do
-      begin
-        raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
-        env = JSON.parse(raw)
-      rescue
+    begin
+      if @local_values
+        @local_values.each do |item|
+          break if @__omnivm_closed == true
+          yield __omnivm_materialize_capture(item)
+        end
         __omnivm_mark_closed
-        raise
+        return
       end
-      item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
-      if item.nil? || item["done"] == true
-        __omnivm_mark_closed
-        break
+      loop do
+        begin
+          raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
+          env = JSON.parse(raw)
+        rescue
+          __omnivm_mark_closed
+          raise
+        end
+        item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
+        if item.nil? || item["done"] == true
+          __omnivm_mark_closed
+          break
+        end
+        yield __omnivm_stream_chunk_value(item["value"])
       end
-      yield __omnivm_stream_chunk_value(item["value"])
+    ensure
+      if @__omnivm_closed != true
+        begin
+          close
+        rescue
+        end
+      end
     end
   end
 
