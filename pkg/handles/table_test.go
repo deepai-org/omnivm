@@ -546,6 +546,15 @@ func TestDropReferenceAndReleaseRemoveGraphEdges(t *testing.T) {
 	if stats.ReferenceEdges != 0 {
 		t.Fatalf("release should remove inbound graph edges, stats=%+v", stats)
 	}
+
+	table.DropReference(id1, id2)
+	table.DropReference(id2, id1)
+	table.DropReference(999, id1)
+	table.DropReference(id1, 999)
+	stats = table.Stats(time.Now())
+	if stats.ReferenceEdges != 0 {
+		t.Fatalf("stale cleanup drops should remain idempotent, stats=%+v", stats)
+	}
 }
 
 func TestRecordReferenceValidatesLiveHandles(t *testing.T) {
