@@ -111,6 +111,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
 ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
 RUN cd /usr/local/lib && npm install \
       express \
+      fastify \
       zod \
       cheerio \
       lodash \
@@ -344,6 +345,7 @@ ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
 # JavaScript ecosystem libraries used by manifest examples.
 RUN cd /usr/local/lib && npm install \
       express \
+      fastify \
       zod \
       cheerio \
       lodash \

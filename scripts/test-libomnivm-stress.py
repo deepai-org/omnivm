@@ -11173,6 +11173,157 @@ def test_manifest_node_http_response_write_after_end_reports_owner_error():
         raise AssertionError(f"Node http response after-end writer status assignment was not recorded: before={before_handles}, after={handles}")
 
 
+def test_manifest_fastify_request_reply_lifecycle_stays_live():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+const fastifyFactory = require('fastify');
+globalThis.fastifyLifecycleState = {{
+  started: false,
+  handler: false,
+  closed: false,
+  events: []
+}};
+globalThis.fastify_lifecycle_req = null;
+globalThis.fastify_lifecycle_reply = null;
+const app = fastifyFactory({{logger: false}});
+globalThis.fastifyLifecycleApp = app;
+app.get('/fastify/lifecycle', async (request, reply) => {{
+  const state = globalThis.fastifyLifecycleState;
+  state.handler = true;
+  globalThis.fastify_lifecycle_req = request;
+  globalThis.fastify_lifecycle_reply = reply;
+  request.raw.on('close', () => state.events.push('req-raw-close'));
+  reply.raw.on('finish', () => state.events.push('reply-finish'));
+  reply.raw.on('close', () => state.events.push('reply-close'));
+  const marker = omnivm.call('python', "'fastify-server-reentry'");
+  if (marker !== 'fastify-server-reentry') state.events.push('bad-marker:' + String(marker));
+  reply.code(202).header('X-Poly', 'fastify');
+  return 'done';
+}});
+await app.listen({{port: {port!r}, host: '127.0.0.1'}});
+globalThis.fastifyLifecycleState.started = true;
+'''
+    drive_client = f'''
+import socket
+import time
+
+def pump_started():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.fastifyLifecycleState && globalThis.fastifyLifecycleState.started)"
+    ))
+
+def events_text():
+    return str(omnivm.call(
+        "javascript",
+        "(globalThis.fastifyLifecycleState && globalThis.fastifyLifecycleState.events || []).join('|')"
+    ))
+
+deadline = time.time() + 5
+while not pump_started() and time.time() < deadline:
+    time.sleep(0.01)
+if not pump_started():
+    raise AssertionError(f"Fastify server did not start: {{events_text()}}")
+
+sock = socket.create_connection(("127.0.0.1", {port!r}), timeout=5)
+try:
+    sock.settimeout(0.2)
+    sock.sendall(
+        b"GET /fastify/lifecycle HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"X-Request-Id: fastify-42\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            omnivm.call("javascript", "true")
+            continue
+        if not chunk:
+            break
+        data += chunk
+    data_lower = data.lower()
+    if b"202 accepted" not in data_lower or b"done" not in data_lower or b"x-poly: fastify" not in data_lower:
+        raise AssertionError(f"bad Fastify response bytes: {{data!r}}")
+finally:
+    sock.close()
+'''
+    verify = r'''
+const state = globalThis.fastifyLifecycleState;
+const reply = globalThis.fastify_lifecycle_reply;
+if (!state.started) throw new Error('Fastify server never started');
+if (!state.handler) throw new Error('Fastify handler never ran');
+if (state.events.some((event) => event.startsWith('bad-marker:'))) {
+  throw new Error('Fastify handler could not re-enter Python: ' + state.events.join('|'));
+}
+if (!reply || reply.sent !== true) throw new Error('Fastify reply was not marked sent');
+if (reply.statusCode !== 202) throw new Error('bad Fastify reply status: ' + (reply && reply.statusCode));
+if (reply.getHeader('X-Poly') !== 'fastify') throw new Error('bad Fastify reply header: ' + reply.getHeader('X-Poly'));
+if (!state.events.includes('reply-finish')) {
+  throw new Error('Fastify reply owner did not finish: ' + state.events.join('|'));
+}
+'''
+    close_server = r'''
+if (globalThis.fastifyLifecycleApp && !globalThis.fastifyLifecycleState.closed) {
+  await globalThis.fastifyLifecycleApp.close();
+  globalThis.fastifyLifecycleState.closed = true;
+}
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "javascript", "async": True, "code": setup},
+            {"op": "exec", "runtime": "python", "code": drive_client},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {
+                    "fastify_lifecycle_req": "fastify_lifecycle_req",
+                    "fastify_lifecycle_reply": "fastify_lifecycle_reply",
+                },
+                "code": (
+                    "assert fastify_lifecycle_req.method == 'GET', fastify_lifecycle_req.method\n"
+                    "assert fastify_lifecycle_req.url == '/fastify/lifecycle', fastify_lifecycle_req.url\n"
+                    "assert fastify_lifecycle_req.headers['x-request-id'] == 'fastify-42', fastify_lifecycle_req.headers\n"
+                    "assert fastify_lifecycle_reply.sent is True, fastify_lifecycle_reply.sent\n"
+                    "assert fastify_lifecycle_reply.statusCode == 202, fastify_lifecycle_reply.statusCode\n"
+                    "assert fastify_lifecycle_reply.getHeader('X-Poly') == 'fastify', fastify_lifecycle_reply.getHeader('X-Poly')"
+                ),
+            },
+            {"op": "exec", "runtime": "javascript", "code": verify},
+            {"op": "exec", "runtime": "javascript", "async": True, "code": close_server},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 2 and resource_capture_delta < 2:
+        raise AssertionError(f"Fastify request/reply did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Fastify request/reply crossed as streams: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Fastify request/reply should not claim bulk transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Fastify request/reply used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"Fastify request/reply method calls were not recorded: before={before_handles}, after={handles}")
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"Fastify request/reply property access was not recorded: before={before_handles}, after={handles}")
+
+
 def test_manifest_express_server_client_abort_closes_response_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -23743,6 +23894,7 @@ def main():
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
         check("Manifest Express response write after end reports owner error", test_manifest_express_response_write_after_end_reports_owner_error)
         check("Manifest Node http response write after end reports owner error", test_manifest_node_http_response_write_after_end_reports_owner_error)
+        check("Manifest Fastify request reply lifecycle stays live", test_manifest_fastify_request_reply_lifecycle_stays_live)
         check("Manifest Express server client abort closes response owner", test_manifest_express_server_client_abort_closes_response_owner)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
