@@ -119,6 +119,79 @@ public class OmniVM {
         nativeReleaseBuffer(name);
     }
 
+    /**
+     * Create an AutoCloseable owner for a named buffer that is already published.
+     */
+    public static BufferOwner bufferOwner(String name) {
+        return new BufferOwner(name, null, 0, false).enter();
+    }
+
+    /**
+     * Publish bytes with dtype 0 and return an AutoCloseable named-buffer owner.
+     */
+    public static BufferOwner bufferOwner(String name, byte[] data) {
+        return new BufferOwner(name, data, 0, true).enter();
+    }
+
+    /**
+     * Publish bytes with an explicit dtype and return an AutoCloseable named-buffer owner.
+     */
+    public static BufferOwner bufferOwner(String name, byte[] data, int dtype) {
+        return new BufferOwner(name, data, dtype, true).enter();
+    }
+
+    public static final class BufferOwner implements AutoCloseable {
+        private final String name;
+        private final byte[] data;
+        private final int dtype;
+        private final boolean hasData;
+        private boolean entered;
+        private boolean released;
+
+        private BufferOwner(String name, byte[] data, int dtype, boolean hasData) {
+            this.name = String.valueOf(name);
+            this.data = data;
+            this.dtype = dtype;
+            this.hasData = hasData;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public boolean isReleased() {
+            return released;
+        }
+
+        public BufferOwner enter() {
+            if (entered) {
+                return this;
+            }
+            if (hasData) {
+                if (data == null) {
+                    throw new IllegalArgumentException("bufferOwner data cannot be null");
+                }
+                setBuffer(name, data, dtype);
+            }
+            entered = true;
+            return this;
+        }
+
+        public boolean release() {
+            if (released) {
+                return false;
+            }
+            releaseBuffer(name);
+            released = true;
+            return true;
+        }
+
+        @Override
+        public void close() {
+            release();
+        }
+    }
+
     // Native bridge methods — implemented in Go via JNI RegisterNatives.
     public static native String nativeCall(String runtime, String code);
     public static native byte[] nativeGetBuffer(String name);

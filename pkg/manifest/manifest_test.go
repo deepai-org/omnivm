@@ -9414,6 +9414,26 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
 		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
 	}
+	javaRuntime, err := os.ReadFile("../../runtime/java/OmniVM.java")
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	javaCode := string(javaRuntime)
+	for _, want := range []string{
+		"public static BufferOwner bufferOwner(String name)",
+		"public static BufferOwner bufferOwner(String name, byte[] data)",
+		"public static BufferOwner bufferOwner(String name, byte[] data, int dtype)",
+		"public static final class BufferOwner implements AutoCloseable",
+		"setBuffer(name, data, dtype)",
+		"if (released) {\n                return false;",
+		"releaseBuffer(name)",
+		"released = true",
+		"public void close() {\n            release();",
+	} {
+		if !contains(javaCode, want) {
+			t.Fatalf("Java BufferOwner helper contract missing %q", want)
+		}
+	}
 	for _, want := range []string{
 		"GetDirectBufferAddress(env, obj)",
 		"handle->object = (*env)->NewGlobalRef(env, obj)",

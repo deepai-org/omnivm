@@ -777,6 +777,12 @@ Native `Promise` results release after settlement without probing arbitrary
 then-like fields. If cleanup fails during a callback exception, the callback
 exception is preserved and cleanup errors are retained on
 `error.omnivmCleanupErrors`.
+Java mirrors the same owner boundary as an `AutoCloseable`:
+`OmniVM.bufferOwner(name)`, `OmniVM.bufferOwner(name, data)`, and
+`OmniVM.bufferOwner(name, data, dtype)` return an entered owner for
+try-with-resources cleanup. `release()` returns `true` only for the first owner
+release, `close()` delegates to `release()`, and release failures propagate
+through the same user-initiated `OmniVM.releaseBuffer(name)` diagnostic path.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel
 backlog and the overflow spill map, while `deferred_release_overflow_names`

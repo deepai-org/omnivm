@@ -555,7 +555,9 @@ Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxyItems(proxy)`, `OmniVM.proxyContains(proxy, key)`, and
 `OmniVM.proxyClose(proxy)` or `OmniVM.omnivmClose(proxy)` to force remote
 get/set/call/length, iteration, membership, and proxy-release operations when a
-remote key collides with Java proxy methods or `Map` methods.
+remote key collides with Java proxy methods or `Map` methods. Java also
+provides `OmniVM.bufferOwner(name[, data], dtype)` as an `AutoCloseable`
+named-buffer owner for try-with-resources cleanup.
 
 ```bash
 # Run a single manifest
