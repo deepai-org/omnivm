@@ -2146,6 +2146,41 @@ func TestNormalizeGoArgMaterializesStreamDescriptor(t *testing.T) {
 	}
 }
 
+func TestGoStreamProxyCloseCancelsWithoutDraining(t *testing.T) {
+	e, _ := makeExecutor("go")
+	ch := &ChanRef{ch: make(chan interface{}, 2)}
+	ch.ch <- "first"
+	ch.ch <- "second"
+	id, err := e.channelStreamHandle(ch)
+	if err != nil {
+		t.Fatalf("channelStreamHandle: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "channel")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "channel")))
+	}
+	if value, ok := stream.Recv(); !ok || value != "first" {
+		t.Fatalf("stream Recv first = (%#v, %v), want first,true", value, ok)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if value, ok := stream.Recv(); ok || value != nil {
+		t.Fatalf("stream Recv after Close = (%#v, %v), want nil,false", value, ok)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second stream Close: %v", err)
+	}
+	stream.ReleaseFromFinalizer()
+	stats := e.handleTable.Stats(time.Now())
+	if stats.HandleAccessesByKind["stream"] != 1 || stats.Live != 0 || stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go stream proxy close stats = %+v, want one read, one explicit release, no finalizer queue", stats)
+	}
+	if got := len(ch.ch); got != 1 {
+		t.Fatalf("remaining channel values = %d, want 1", got)
+	}
+}
+
 func TestGoHandleProxyKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	table := handles.NewTable()
 	id, err := table.Register(map[string]interface{}{

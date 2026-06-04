@@ -416,8 +416,9 @@ func (p *GoHandleProxy) materialize(value interface{}) interface{} {
 }
 
 // GoStreamProxy is the Go-side representation of a manifest stream descriptor.
-// It pulls lazily from the owning runtime and queues release through the handle
-// table when the proxy is finalized.
+// It pulls lazily from the owning runtime, can be closed explicitly to cancel
+// partial consumption, and queues release through the handle table when the
+// proxy is finalized.
 type GoStreamProxy struct {
 	id     handles.ID
 	table  *handles.Table
@@ -443,6 +444,7 @@ func (p *GoStreamProxy) Recv() (interface{}, bool) {
 	value, done, ok, err := p.next(p.id)
 	if err != nil || !ok || done {
 		p.closed = true
+		runtime.SetFinalizer(p, nil)
 		return nil, false
 	}
 	return value, true
@@ -459,8 +461,22 @@ func (p *GoStreamProxy) Values() []interface{} {
 	}
 }
 
-func (p *GoStreamProxy) ReleaseFromFinalizer() {
+// Close cancels a partially consumed stream and releases all refs for the
+// underlying stream handle. It is safe to call more than once.
+func (p *GoStreamProxy) Close() error {
+	if p == nil || p.closed {
+		return nil
+	}
+	p.closed = true
+	runtime.SetFinalizer(p, nil)
 	if p.table == nil || p.id == 0 {
+		return nil
+	}
+	return p.table.ReleaseAllRefs(p.id)
+}
+
+func (p *GoStreamProxy) ReleaseFromFinalizer() {
+	if p == nil || p.closed || p.table == nil || p.id == 0 {
 		return
 	}
 	p.table.QueueReleaseFromFinalizer(p.id)
