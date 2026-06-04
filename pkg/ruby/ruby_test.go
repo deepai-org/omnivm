@@ -235,6 +235,57 @@ puts "ok"
 	}
 }
 
+func TestRubyOwnerDispatchGuardsReportStructuredDiagnostic(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+status = OmniVM.owner_dispatch_status
+raise "mode #{status.inspect}" unless status["mode"] == "diagnostic_only"
+raise "owner dispatch #{status.inspect}" unless status["owner_dispatch_supported"] == false
+raise "missing JS target #{status.inspect}" unless status["owner_dispatch_targets"].key?("javascript_event_loop")
+status["owner_dispatch_targets"]["javascript_event_loop"]["supported"] = true
+raise "status leaked mutation" unless OmniVM.owner_dispatch_status["owner_dispatch_targets"]["javascript_event_loop"]["supported"] == false
+
+target = OmniVM.owner_dispatch_target_status("js")
+raise "target alias #{target.inspect}" unless target["target"] == "javascript_event_loop"
+raise "requested target #{target.inspect}" unless target["requested_target"] == "js"
+target["supported"] = true
+raise "target leaked mutation" unless OmniVM.owner_dispatch_target_status("js")["supported"] == false
+
+begin
+  OmniVM.assert_owner_dispatch_supported("rack startup")
+  raise "missing universal diagnostic"
+rescue OmniVM::RuntimeError => e
+  raise "message #{e.message.inspect}" unless e.message.include?("rack startup: owner dispatch unsupported")
+  raise "boundary #{e.boundary_path.inspect}" unless e.boundary_path == "owner_dispatch"
+  details = e.details
+  raise "details #{details.inspect}" unless details["owner_dispatch"]["owner_dispatch_supported"] == false
+  details["owner_dispatch"]["mode"] = "mutated"
+  raise "details leaked mutation" unless e.details["owner_dispatch"]["mode"] == "diagnostic_only"
+end
+
+begin
+  OmniVM.assert_owner_dispatch_target_supported("ruby", "async bridge")
+  raise "missing target diagnostic"
+rescue OmniVM::RuntimeError => e
+  raise "target message #{e.message.inspect}" unless e.message.include?("async bridge: owner dispatch target unsupported: ruby_fiber_thread")
+  raise "target boundary #{e.boundary_path.inspect}" unless e.boundary_path == "owner_dispatch_target"
+  raise "target details #{e.details.inspect}" unless e.details["owner_dispatch_target"]["target"] == "ruby_fiber_thread"
+end
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
 func TestRubyExecuteMultiline(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

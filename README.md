@@ -559,7 +559,11 @@ ownership with idempotent release. Owners expose `status()`, and
 Ruby code that may load native-threaded app servers can call
 `OmniVM.ruby_threading_status` or
 `OmniVM.assert_ruby_native_threads_supported("puma startup")` before invoking
-framework startup.
+framework startup. Ruby code that needs owner-loop routing can also preflight
+the diagnostic-only boundary with `OmniVM.owner_dispatch_status`,
+`OmniVM.owner_dispatch_target_status(target)`,
+`OmniVM.assert_owner_dispatch_supported(label)`, or
+`OmniVM.assert_owner_dispatch_target_supported(target, label)`.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and

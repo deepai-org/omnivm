@@ -658,6 +658,11 @@ Embedded Java exposes the same contract as
 `OmniVM.assertOwnerDispatchSupported(label)`, and
 `OmniVM.assertOwnerDispatchTargetSupported(target, label)` for integrations
 that require a captured Java `Executor`.
+Embedded Ruby exposes the contract with Ruby-style names:
+`OmniVM.owner_dispatch_status`,
+`OmniVM.owner_dispatch_target_status(target)`,
+`OmniVM.assert_owner_dispatch_supported(label)`, and
+`OmniVM.assert_owner_dispatch_target_supported(target, label)`.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
