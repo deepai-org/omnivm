@@ -364,11 +364,14 @@ static const char* omnivm_py_proxy_close_code =
 "    return False\n"
 "def omnivm_close(value):\n"
 "    return proxy_close(value)\n"
+"def cleanup_errors(error):\n"
+"    errors = getattr(error, 'omnivm_cleanup_errors', None)\n"
+"    return list(errors) if isinstance(errors, list) else []\n"
 "try:\n"
 "    __all__\n"
 "except NameError:\n"
 "    __all__ = []\n"
-"for __omnivm_name in ('proxy_close', 'omnivm_close'):\n"
+"for __omnivm_name in ('proxy_close', 'omnivm_close', 'cleanup_errors'):\n"
 "    if __omnivm_name not in __all__:\n"
 "        __all__.append(__omnivm_name)\n";
 
