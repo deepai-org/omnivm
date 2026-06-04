@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -948,12 +949,10 @@ public class OmniVM {
             return false;
         }
         if (target instanceof HandleProxy proxy) {
-            proxy.releaseFromFinalizer();
-            return true;
+            return proxy.releaseExplicit();
         }
         if (target instanceof StreamProxy proxy) {
-            proxy.releaseFromFinalizer();
-            return true;
+            return proxy.releaseExplicit();
         }
         if (target instanceof AutoCloseable closeable) {
             try {
@@ -1386,6 +1385,7 @@ public class OmniVM {
         private static final Set<String> chattyProxyWarned = Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
         private static final int chattyProxyWarnedLimit = 4096;
         private final Map<String, Object> value;
+        private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
         private HandleProxy(Map<String, Object> value) {
@@ -1395,7 +1395,7 @@ public class OmniVM {
             } else {
                 retain(value.get("id"));
             }
-            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id")));
+            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id"), released));
         }
 
         private static boolean retain(Object id) {
@@ -1446,6 +1446,19 @@ public class OmniVM {
 
         public void releaseFromFinalizer() {
             cleanable.clean();
+        }
+
+        public boolean releaseExplicit() {
+            Object id = value.get("id");
+            if (id == null || released.get()) {
+                return false;
+            }
+            Object result = bridgeManifestOp("{\"op\":\"handle_release_finalizer\",\"id\":" + jsonScalar(id) + "}");
+            if (!released.compareAndSet(false, true)) {
+                return false;
+            }
+            cleanable.clean();
+            return Boolean.TRUE.equals(result);
         }
 
         @Override
@@ -1756,14 +1769,16 @@ public class OmniVM {
 
     private static final class FinalizerState implements Runnable {
         private final Object id;
+        private final AtomicBoolean released;
 
-        private FinalizerState(Object id) {
+        private FinalizerState(Object id, AtomicBoolean released) {
             this.id = id;
+            this.released = released;
         }
 
         @Override
         public void run() {
-            if (id == null) {
+            if (id == null || !released.compareAndSet(false, true)) {
                 return;
             }
             try {
@@ -1879,6 +1894,7 @@ public class OmniVM {
 
     public static final class StreamProxy implements Iterable<Object> {
         private final Map<String, Object> value;
+        private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
         private StreamProxy(Map<String, Object> value) {
@@ -1888,16 +1904,36 @@ public class OmniVM {
             } else {
                 HandleProxy.retain(value.get("id"));
             }
-            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id")));
+            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id"), released));
         }
 
         public void releaseFromFinalizer() {
             cleanable.clean();
         }
 
+        public boolean releaseExplicit() {
+            Object id = value.get("id");
+            if (id == null || released.get()) {
+                return false;
+            }
+            Object result = bridgeManifestOp("{\"op\":\"handle_release_finalizer\",\"id\":" + jsonScalar(id) + "}");
+            if (!released.compareAndSet(false, true)) {
+                return false;
+            }
+            cleanable.clean();
+            return Boolean.TRUE.equals(result);
+        }
+
         public boolean cancel() {
             Object id = value.get("id");
+            if (id == null || released.get()) {
+                return false;
+            }
             Object result = bridgeManifestOp("{\"op\":\"stream_cancel\",\"id\":" + jsonScalar(id) + "}");
+            if (!released.compareAndSet(false, true)) {
+                return false;
+            }
+            cleanable.clean();
             return Boolean.TRUE.equals(result);
         }
 

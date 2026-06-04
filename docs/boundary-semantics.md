@@ -192,8 +192,9 @@ scope cleanup races quiet without hiding ordinary stale-proxy use.
 Explicit proxy-close helpers use the same release operation, but as
 user-initiated calls: after a successful release, Python detaches the
 `weakref.finalize` hook, JavaScript unregisters the `FinalizationRegistry`
-token, and Ruby undefines the `ObjectSpace` finalizer so later GC does not
-enqueue redundant cleanup for that proxy.
+token, Ruby undefines the `ObjectSpace` finalizer, and Java marks the shared
+`Cleaner` state released before running `Cleanable.clean()` so later GC does
+not enqueue redundant cleanup for that proxy.
 
 ### Cross-Runtime Cycles
 

@@ -5312,6 +5312,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean proxyCallable") {
 		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers")
 	}
+	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
+		!contains(code, "return proxy.releaseExplicit();") ||
+		!contains(code, "public boolean releaseExplicit()") ||
+		!contains(code, "released.compareAndSet(false, true)") ||
+		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
+		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")
+	}
 	if !contains(code, "public String getOriginRuntime()") || !contains(code, `out.put("origin_runtime", runtime)`) {
 		t.Fatalf("Java runtime error envelope should expose origin_runtime alias")
 	}
