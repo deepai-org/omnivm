@@ -551,6 +551,10 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 provides `OmniVM.buffer_owner(name[, data], dtype: 0)` for scoped named-buffer
 ownership with idempotent release. Owners expose `status()`, and
 `OmniVM.buffer_status(name)` returns the same per-name lifecycle diagnostics.
+Ruby code that may load native-threaded app servers can call
+`OmniVM.ruby_threading_status` or
+`OmniVM.assert_ruby_native_threads_supported("puma startup")` before invoking
+framework startup.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and

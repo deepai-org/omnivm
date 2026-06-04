@@ -186,6 +186,45 @@ raise "wrapped boundary #{wrapped.boundary_path.inspect}" unless wrapped.boundar
 direct = OmniVM::RuntimeError.new("ERR:javascript: " + JSON.generate(wrapped_payload), runtime: "ruby")
 raise "direct origin #{direct.origin_runtime.inspect}" unless direct.origin_runtime == "python"
 raise "direct boundary #{direct.boundary_path.inspect}" unless direct.boundary_path == "call[javascript]"
+override = OmniVM::RuntimeError.new("ERR:plain", runtime: "ruby", boundary_path: "custom", details: {"code" => "E_CUSTOM"})
+raise "override details #{override.details.inspect}" unless override.details == {"code" => "E_CUSTOM"}
+raise "override details_json #{override.details_json.inspect}" unless override.details_json == "{\"code\":\"E_CUSTOM\"}"
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
+func TestRubyNativeThreadingGuardReportsStructuredDiagnostic(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+status = OmniVM.ruby_threading_status
+raise "mode #{status.inspect}" unless status["mode"] == "single_vm_thread"
+raise "native thread status #{status.inspect}" unless status["native_threads_supported"] == false
+raise "Puma boundary #{status.inspect}" unless status["app_server_boundary"].include?("Puma")
+status["mode"] = "mutated"
+raise "status leaked mutation" unless OmniVM.ruby_threading_status["mode"] == "single_vm_thread"
+
+begin
+  OmniVM.assert_ruby_native_threads_supported("puma startup")
+  raise "missing diagnostic"
+rescue OmniVM::RuntimeError => e
+  raise "message #{e.message.inspect}" unless e.message.include?("puma startup: native Ruby threads unsupported")
+  raise "boundary #{e.boundary_path.inspect}" unless e.boundary_path == "ruby_threading"
+  details = e.details
+  raise "details #{details.inspect}" unless details["ruby_threading"]["native_threads_supported"] == false
+  details["ruby_threading"]["mode"] = "mutated"
+  raise "details leaked mutation" unless e.details["ruby_threading"]["mode"] == "single_vm_thread"
+end
 puts "ok"
 `)
 	if result.Err != nil {

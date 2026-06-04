@@ -9163,7 +9163,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"def details",
 		"OmniVM.__copy_json_value(@details)",
 		"attr_reader :runtime, :origin_runtime, :type, :traceback, :boundary_path, :original_error_handle, :details_json",
-		"@details_json = parsed[:details_json]",
+		"def initialize(message, runtime: nil, boundary_path: nil, details: nil)",
+		"@details = details.nil? ? parsed[:details] : OmniVM.__copy_json_value(details)",
+		"@details_json = details.nil? ? parsed[:details_json] : nil",
 		"details_json: @details_json",
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
@@ -9248,6 +9250,12 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		"Thread.start diagnostic",
 		"Thread.fork diagnostic",
 		"native-threaded Ruby app servers such as Puma out of process",
+		"def self.ruby_threading_status",
+		`\"native_threads_supported\" => false`,
+		`\"app_server_boundary\" => \"Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.\"`,
+		"def self.assert_ruby_native_threads_supported(label = nil)",
+		`boundary_path: \"ruby_threading\"`,
+		`details: {\"ruby_threading\" => info}`,
 		"def push(value, non_block = false)",
 		"raise ThreadError, 'queue full' if non_block",
 		"Ruby SizedQueue#push would block in OmniVM embedded Ruby",

@@ -590,6 +590,10 @@ servers such as Puma should run out of process or be guarded by a startup check.
 `omnivm.ruby_threading_status()` returns the same block, and
 `omnivm.assert_ruby_native_threads_supported(label)` is the fail-fast form for
 integrations that require native Ruby thread scheduling.
+Embedded Ruby exposes the same in-runtime guard shape as
+`OmniVM.ruby_threading_status` and
+`OmniVM.assert_ruby_native_threads_supported(label)`, so Ruby framework
+bootstraps can fail before invoking unsupported native thread creation.
 
 For CPython-hosted app servers, `omnivm.drain_worker_hook(*args, **kwargs)` is
 the lifecycle-hook form of `omnivm.drain_worker()`. It accepts server callback
