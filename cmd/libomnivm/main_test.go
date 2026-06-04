@@ -93,6 +93,11 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 			t.Fatalf("owner dispatch target %q omitted current_behavior: %+v", key, target)
 		}
 	}
+	pythonAsyncio := targets["python_asyncio"].(map[string]interface{})
+	if !strings.Contains(pythonAsyncio["current_behavior"].(string), "async stream close") ||
+		!strings.Contains(pythonAsyncio["diagnostic"].(string), "narrow owner-loop teardown path") {
+		t.Fatalf("Python asyncio target should report narrow stream-close teardown without claiming owner dispatch support: %+v", pythonAsyncio)
+	}
 	if status["python_assert_host_thread"] != true {
 		t.Fatalf("Python host-thread assertion capability omitted: %+v", status)
 	}

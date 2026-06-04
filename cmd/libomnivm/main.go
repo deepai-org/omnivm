@@ -607,8 +607,8 @@ func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
 				"supported":           false,
 				"owner_kind":          "python_asyncio_loop",
 				"required_capability": "schedule callbacks onto the owning Python asyncio loop from foreign runtimes",
-				"current_behavior":    "affinity_status reports the current running loop and host-thread relationship only",
-				"diagnostic":          "affinity_status reports the running asyncio loop; callbacks are not migrated back to the owner loop",
+				"current_behavior":    "affinity_status reports the current running loop and host-thread relationship; Python async stream close can submit teardown to a running owner loop from another host thread",
+				"diagnostic":          "Python async stream close has a narrow owner-loop teardown path, but general callbacks are not migrated back to the owner loop",
 			},
 			"javascript_event_loop": map[string]interface{}{
 				"supported":           false,
