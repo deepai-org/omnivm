@@ -773,7 +773,8 @@ Embedded Ruby mirrors the scoped owner shape with
 `OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
 it returns an entered owner whose `release`/`close` method is idempotent.
 When block cleanup fails during a body exception, the body exception is
-preserved and the cleanup error is retained on `@omnivm_cleanup_errors`.
+preserved and the cleanup error is retained on `@omnivm_cleanup_errors`;
+`OmniVM.cleanup_errors(error)` returns a copy of that cleanup-error list.
 Embedded JavaScript provides the same owner shape as
 `omnivm.bufferOwner(name[, data], dtype[, callback])`; without a callback it
 returns an entered owner with idempotent `release()`/`close()`, and with a
@@ -781,7 +782,8 @@ callback it releases after the callback while returning the callback result.
 Native `Promise` results release after settlement without probing arbitrary
 then-like fields. If cleanup fails during a callback exception, the callback
 exception is preserved and cleanup errors are retained on
-`error.omnivmCleanupErrors`.
+`error.omnivmCleanupErrors`; `omnivm.cleanupErrors(error)` returns a copy of
+that cleanup-error list.
 Java mirrors the same owner boundary as an `AutoCloseable`:
 `OmniVM.bufferOwner(name)`, `OmniVM.bufferOwner(name, data)`, and
 `OmniVM.bufferOwner(name, data, dtype)` return an entered owner for

@@ -6678,6 +6678,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"result instanceof Promise",
 		"return result.then(finishSuccess, finishError)",
 		"bodyError.omnivmCleanupErrors",
+		"Object.defineProperty(omnivm, \"cleanupErrors\"",
+		"return Array.isArray(errors) ? errors.slice() : []",
 		"return finishSuccess(result)",
 	} {
 		if !contains(code, want) {
@@ -6846,7 +6848,10 @@ promiseResult.then(function(value) {
     throw new Error("body exception was not raised");
   } catch (err) {
     if (err.message !== "body failed") throw new Error("body exception was masked: " + err.message);
-    if (!err.omnivmCleanupErrors || err.omnivmCleanupErrors[0].message !== "release failed") throw new Error("cleanup error was not retained");
+    var cleanupErrors = omnivm.cleanupErrors(err);
+    if (!cleanupErrors || cleanupErrors[0].message !== "release failed") throw new Error("cleanup error was not retained");
+    cleanupErrors.length = 0;
+    if (omnivm.cleanupErrors(err)[0].message !== "release failed") throw new Error("cleanupErrors returned internal storage");
   }
 }).catch(function(err) {
   console.error(err && err.stack || err);
@@ -9399,6 +9404,8 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"return false if @released",
 		"OmniVM.release_buffer(@name)",
 		"alias close release",
+		"def self.cleanup_errors(error)",
+		"errors.is_a?(Array) ? errors.dup : []",
 		"result = yield owner",
 		"result",
 		"__record_cleanup_error(body_error, cleanup_error)",
@@ -9627,6 +9634,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult",
 		`var close = globalThis.__omnivm_actual_public_method(value, "close")`,
 		"return result === undefined ? true : result",
+		`Object.defineProperty(globalThis.omnivm, "cleanupErrors"`,
+		"return Array.isArray(errors) ? errors.slice() : []",
 		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"globalThis.omnivm.releaseBuffer(this.name)",
 		"result instanceof Promise",

@@ -286,8 +286,10 @@ begin
   end
 rescue => err
   raise "body exception was masked: #{err.message}" unless err.message == "body failed"
-  cleanup_errors = err.instance_variable_get(:@omnivm_cleanup_errors)
+  cleanup_errors = OmniVM.cleanup_errors(err)
   raise "cleanup error was not retained" unless cleanup_errors&.first&.message == "release failed"
+  cleanup_errors.clear
+  raise "cleanup_errors returned internal storage" unless OmniVM.cleanup_errors(err)&.first&.message == "release failed"
 else
   raise "body exception was not raised"
 end

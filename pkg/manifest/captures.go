@@ -1590,6 +1590,15 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       value: function(value) { return omnivm.proxyClose(value); }
     });
   }
+  if (typeof omnivm.cleanupErrors !== 'function') {
+    Object.defineProperty(omnivm, "cleanupErrors", {
+      configurable: true,
+      value: function(error) {
+        var errors = error && error.omnivmCleanupErrors;
+        return Array.isArray(errors) ? errors.slice() : [];
+      }
+    });
+  }
   globalThis.__omnivm_buffer_owner_unset = globalThis.__omnivm_buffer_owner_unset || {};
   if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
     Object.defineProperty(globalThis, "__omnivm_BufferOwner", {

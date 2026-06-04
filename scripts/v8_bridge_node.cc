@@ -1786,6 +1786,15 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       value: function(value) { return globalThis.omnivm.proxyClose(value); }
     });
   }
+  if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm && typeof globalThis.omnivm.cleanupErrors !== 'function') {
+    Object.defineProperty(globalThis.omnivm, "cleanupErrors", {
+      configurable: true,
+      value: function(error) {
+        var errors = error && error.omnivmCleanupErrors;
+        return Array.isArray(errors) ? errors.slice() : [];
+      }
+    });
+  }
   if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm) {
     globalThis.__omnivm_buffer_owner_unset = globalThis.__omnivm_buffer_owner_unset || {};
     if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
