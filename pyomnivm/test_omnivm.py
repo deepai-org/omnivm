@@ -1180,6 +1180,91 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(trap) is False
         assert trap.dynamic_lookup_count == 0
 
+    def test_proxy_close_prefers_collision_safe_omnivm_close(self):
+        class BothClosers:
+            def _omnivm_close(self):
+                return "omnivm-closed"
+
+            def close(self):
+                return "public-close"
+
+        assert omnivm_mod.proxy_close(BothClosers()) == "omnivm-closed"
+
+    def test_proxy_close_preserves_static_class_and_instance_methods(self):
+        class StaticCloser:
+            @staticmethod
+            def close():
+                return "static-closed"
+
+        class ClassCloser:
+            @classmethod
+            def close(cls):
+                return cls.__name__
+
+        class InstanceCloser:
+            def __init__(self):
+                self.close = lambda: "instance-closed"
+
+        assert omnivm_mod.proxy_close(StaticCloser()) == "static-closed"
+        assert omnivm_mod.proxy_close(ClassCloser()) == "ClassCloser"
+        assert omnivm_mod.proxy_close(InstanceCloser()) == "instance-closed"
+
+    def test_proxy_helpers_ignore_descriptor_fields(self):
+        class CloseProperty:
+            property_accesses = 0
+
+            @property
+            def close(self):
+                self.property_accesses += 1
+                return lambda: "property-close"
+
+        class ValuesProperty:
+            property_accesses = 0
+
+            @property
+            def values(self):
+                self.property_accesses += 1
+                return lambda: ["property-value"]
+
+            def __iter__(self):
+                return iter(["a", "b"])
+
+        class ItemsProperty:
+            property_accesses = 0
+
+            @property
+            def items(self):
+                self.property_accesses += 1
+                return lambda: [("property", "item")]
+
+            def __iter__(self):
+                return iter(["a", "b"])
+
+        class KeysProperty:
+            property_accesses = 0
+
+            @property
+            def keys(self):
+                self.property_accesses += 1
+                return lambda: ["property-key"]
+
+            def __len__(self):
+                return 2
+
+        close_value = CloseProperty()
+        values = ValuesProperty()
+        items = ItemsProperty()
+        keys = KeysProperty()
+
+        assert omnivm_mod.proxy_close(close_value) is False
+        assert close_value.property_accesses == 0
+        assert omnivm_mod.proxy_values(values) == ["a", "b"]
+        assert values.property_accesses == 0
+        assert omnivm_mod.proxy_items(items) == [(0, "a"), (1, "b")]
+        assert items.property_accesses == 0
+        assert omnivm_mod.proxy_keys(keys) == [0, 1]
+        assert keys.property_accesses == 0
+
     def test_proxy_iter_ignores_non_method_identity_fields(self):
         class ValuesField:
             values = "field-values"

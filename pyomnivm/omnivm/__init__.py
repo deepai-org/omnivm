@@ -1464,20 +1464,28 @@ def _actual_public_method(value, name):
         raw = inspect.getattr_static(value, name)
     except Exception:
         return None
+    if isinstance(raw, (staticmethod, classmethod)):
+        try:
+            method = raw.__get__(value, type(value))
+        except Exception:
+            return None
+        return method if callable(method) else None
+    if not callable(raw):
+        return None
     try:
-        if isinstance(raw, (staticmethod, classmethod)):
-            raw = raw.__get__(value, type(value))
-        elif hasattr(raw, "__get__"):
-            raw = raw.__get__(value, type(value))
+        method = getattr(value, name)
     except Exception:
         return None
-    return raw if callable(raw) else None
+    return method if callable(method) else None
 
 
 def proxy_close(value):
     """Release a proxy lease without colliding with a data field named close."""
     if isinstance(value, ManifestProxy):
         return value.close()
+    close = _actual_public_method(value, "_omnivm_close")
+    if callable(close):
+        return close()
     close = _actual_public_method(value, "close")
     if callable(close):
         result = close()
