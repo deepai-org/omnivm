@@ -871,6 +871,21 @@ class __OmniVMHandleProxy:
     def close(self):
         return self._omnivm_close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, exc, _tb):
+        if _exc_type is None:
+            self._omnivm_close()
+            return False
+        try:
+            self._omnivm_close()
+        except BaseException as close_exc:
+            add_note = getattr(exc, "add_note", None)
+            if callable(add_note):
+                add_note(f"OmniVM proxy close failed during exception cleanup: {close_exc}")
+        return False
+
     def __getitem__(self, key):
         try:
             return self._local_value(key)

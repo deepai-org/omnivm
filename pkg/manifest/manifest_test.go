@@ -5987,7 +5987,12 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
 		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
-		!contains(code, "finalizer.detach()") {
+		!contains(code, "finalizer.detach()") ||
+		!contains(code, "def __enter__(self):\n        return self") ||
+		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
+		!contains(code, "if _exc_type is None:\n            self._omnivm_close()") ||
+		!contains(code, "try:\n            self._omnivm_close()") ||
+		!contains(code, "add_note(f\"OmniVM proxy close failed during exception cleanup: {close_exc}\")") {
 		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
 	}
 	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) || contains(code, `getattr(value, name, None)`) || contains(code, `getattr(value, name)`) {
@@ -6107,6 +6112,51 @@ if any(req["op"] == "handle_call" and req.get("key") in ("close", "dispose") for
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonHandleProxyContextPreservesBodyExceptionWhenCloseFails(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_release_explicit":
+            raise RuntimeError("release failed")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+proxy = __omnivm_materialize_capture({"__omnivm_resource__": True, "id": 91, "runtime": "python", "kind": "request"})
+try:
+    with proxy:
+        raise ValueError("body failed")
+except ValueError as exc:
+    if "body failed" not in str(exc):
+        raise
+    notes = getattr(exc, "__notes__", [])
+    if not any("release failed" in note for note in notes):
+        raise RuntimeError("close failure note missing: " + repr(notes))
+else:
+    raise RuntimeError("body exception was not preserved")
+releases = [req for req in Bridge.requests if req.get("op") == "handle_release_explicit"]
+if len(releases) != 1 or releases[0].get("id") != 91:
+    raise RuntimeError("explicit release requests mismatch: " + repr(releases))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python handle context close-failure check failed: %v\n%s", err, out)
 	}
 }
 
