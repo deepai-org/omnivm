@@ -2085,21 +2085,31 @@ public class OmniVM {
 
     public static final class StreamProxy implements Iterable<Object>, AutoCloseable {
         private final Map<String, Object> value;
+        private final List<?> localValues;
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
         private StreamProxy(Map<String, Object> value) {
             this.value = value;
-            if (Boolean.TRUE.equals(value.get("transfer"))) {
-                HandleProxy.adopt(value.get("id"));
-            } else {
-                HandleProxy.retain(value.get("id"));
+            Object values = value.get("values");
+            this.localValues = values instanceof List<?> ? (List<?>) values : null;
+            Object id = value.get("id");
+            if (id != null && Boolean.TRUE.equals(value.get("transfer"))) {
+                HandleProxy.adopt(id);
+            } else if (id != null) {
+                HandleProxy.retain(id);
             }
-            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id"), released));
+            if (id != null) {
+                this.cleanable = captureCleaner.register(this, new FinalizerState(id, released));
+            } else {
+                this.cleanable = null;
+            }
         }
 
         public void releaseFromFinalizer() {
-            cleanable.clean();
+            if (cleanable != null) {
+                cleanable.clean();
+            }
         }
 
         public boolean releaseExplicit() {
@@ -2114,7 +2124,9 @@ public class OmniVM {
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
-            cleanable.clean();
+            if (cleanable != null) {
+                cleanable.clean();
+            }
             return true;
         }
 
@@ -2122,11 +2134,16 @@ public class OmniVM {
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
-            cleanable.clean();
+            if (cleanable != null) {
+                cleanable.clean();
+            }
             return true;
         }
 
         public boolean cancel() {
+            if (localValues != null) {
+                return markReleased();
+            }
             Object id = value.get("id");
             if (id == null || released.get()) {
                 return false;
@@ -2158,6 +2175,7 @@ public class OmniVM {
         @Override
         public Iterator<Object> iterator() {
             return new Iterator<Object>() {
+                private int localIndex;
                 private boolean loaded;
                 private boolean done;
                 private Object next;
@@ -2186,6 +2204,15 @@ public class OmniVM {
                         return;
                     }
                     loaded = true;
+                    if (localValues != null) {
+                        if (released.get() || localIndex >= localValues.size()) {
+                            done = true;
+                            markReleased();
+                            return;
+                        }
+                        next = materializeCapture(localValues.get(localIndex++));
+                        return;
+                    }
                     Object id = value.get("id");
                     Object result;
                     try {

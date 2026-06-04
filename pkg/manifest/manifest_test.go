@@ -6084,7 +6084,10 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, `\"op\":\"handle_adopt\"`) || !contains(code, "private static boolean adopt(Object id)") {
 		t.Fatalf("Java runtime should expose internal handle adoption for returned proxies")
 	}
-	if !contains(code, `Boolean.TRUE.equals(value.get("transfer"))`) || !contains(code, "HandleProxy.adopt(value.get(\"id\"))") {
+	if !contains(code, `Boolean.TRUE.equals(value.get("transfer"))`) ||
+		!contains(code, "adopt(value.get(\"id\"))") ||
+		!contains(code, "if (id != null && Boolean.TRUE.equals(value.get(\"transfer\")))") ||
+		!contains(code, "HandleProxy.adopt(id)") {
 		t.Fatalf("Java runtime should adopt transfer handles for handle and stream proxies")
 	}
 	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean proxyCallable") {
@@ -6109,6 +6112,14 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "markReleased();") ||
 		!contains(code, "throw err;") {
 		t.Fatalf("Java stream proxy should mark itself released after terminal owner stream errors")
+	}
+	if !contains(code, "private final List<?> localValues;") ||
+		!contains(code, "this.localValues = values instanceof List<?> ? (List<?>) values : null;") ||
+		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
+		!contains(code, "if (localValues != null) {\n                        if (released.get() || localIndex >= localValues.size())") ||
+		!contains(code, "next = materializeCapture(localValues.get(localIndex++));") ||
+		!contains(code, "if (cleanable != null) {\n                cleanable.clean();\n            }") {
+		t.Fatalf("Java stream proxy should consume embedded local stream values without manifest next/cancel calls")
 	}
 	if !contains(code, "if (closed) {\n                subscription.cancel();\n                subscribed.countDown();\n                return;\n            }") {
 		t.Fatalf("Java Flow.Publisher iterator should cancel subscriptions that arrive after close")
