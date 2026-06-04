@@ -764,6 +764,11 @@ Python borrowed `memoryview` cleanup follows the same finalizer rule:
 object: optional data is published on entry, `release_buffer(name)` runs on
 exit, and release failures keep the native-memory diagnostic while preserving
 any exception raised by the body.
+Embedded Ruby mirrors the scoped owner shape with
+`OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
+it returns an entered owner whose `release`/`close` method is idempotent.
+When block cleanup fails during a body exception, the body exception is
+preserved and the cleanup error is retained on `@omnivm_cleanup_errors`.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel
 backlog and the overflow spill map, while `deferred_release_overflow_names`

@@ -217,6 +217,91 @@ puts x + y
 	}
 }
 
+func TestRubyBufferOwnerScopesAndReleases(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+module OmniVM
+  @events = []
+  class << self
+    attr_reader :events
+    def set_buffer(name, data, dtype = 0)
+      @events << [:set, name, data, dtype]
+    end
+    def release_buffer(name)
+      @events << [:release, name]
+    end
+  end
+end
+
+owner = OmniVM.buffer_owner(:payload, "abc", dtype: 7)
+raise "set event mismatch #{OmniVM.events.inspect}" unless OmniVM.events == [[:set, "payload", "abc", 7]]
+raise "release did not return true" unless owner.release == true
+raise "second release was not idempotent" unless owner.release == false
+raise "released? mismatch" unless owner.released? == true
+
+events_before_block = OmniVM.events.dup
+block_result = OmniVM.buffer_owner("block") do |scoped|
+  raise "block owner name mismatch" unless scoped.name == "block"
+  :body_result
+end
+raise "block result mismatch #{block_result.inspect}" unless block_result == :body_result
+raise "block release mismatch #{OmniVM.events.inspect}" unless OmniVM.events == events_before_block + [[:release, "block"]]
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
+func TestRubyBufferOwnerPreservesBodyExceptionWhenReleaseFails(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+module OmniVM
+  @events = []
+  class << self
+    attr_reader :events
+    def release_buffer(name)
+      @events << [:release, name]
+      raise "release failed"
+    end
+  end
+end
+
+begin
+  OmniVM.buffer_owner("payload") do |_owner|
+    raise "body failed"
+  end
+rescue => err
+  raise "body exception was masked: #{err.message}" unless err.message == "body failed"
+  cleanup_errors = err.instance_variable_get(:@omnivm_cleanup_errors)
+  raise "cleanup error was not retained" unless cleanup_errors&.first&.message == "release failed"
+else
+  raise "body exception was not raised"
+end
+raise "release not attempted #{OmniVM.events.inspect}" unless OmniVM.events == [[:release, "payload"]]
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
 func TestRubyNotInitialized(t *testing.T) {
 	r := New()
 	result := r.Execute("puts 'hi'")

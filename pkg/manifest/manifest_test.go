@@ -9303,6 +9303,22 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/ruby/ruby.go"], `rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized")`) {
 		t.Fatalf("embedded Ruby explicit release_buffer should diagnose a missing buffer-free callback")
 	}
+	for _, want := range []string{
+		"class BufferOwner",
+		"def self.buffer_owner(name, data = BUFFER_OWNER_UNSET, dtype: 0)",
+		"OmniVM.set_buffer(@name, @data, @dtype) unless @data.equal?(BUFFER_OWNER_UNSET)",
+		"return false if @released",
+		"OmniVM.release_buffer(@name)",
+		"alias close release",
+		"result = yield owner",
+		"result",
+		"__record_cleanup_error(body_error, cleanup_error)",
+		"raise body_error",
+	} {
+		if !contains(files["../../pkg/ruby/ruby.go"], want) {
+			t.Fatalf("embedded Ruby buffer owner helper contract missing %q", want)
+		}
+	}
 	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_free(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_release(lease->name)") {
 		t.Fatalf("V8 bridge should use g_buf_free for releaseBuffer and g_buf_release for external buffer cleanup")
 	}

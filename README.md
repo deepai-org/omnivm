@@ -543,7 +543,9 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
 `proxy.omnivm_close`; generated snippets also provide
-`OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)`.
+`OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)`. Embedded Ruby also
+provides `OmniVM.buffer_owner(name[, data], dtype: 0)` for scoped named-buffer
+ownership with idempotent release.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
