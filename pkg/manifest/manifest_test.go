@@ -5888,6 +5888,11 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "def as_json(*_args)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "JSON.generate(to_h, *args)") {
+		t.Fatalf("embedded Ruby RuntimeError should expose Rails/Ruby JSON envelope helpers")
+	}
 }
 
 func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {

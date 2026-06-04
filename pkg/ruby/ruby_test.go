@@ -115,6 +115,12 @@ copy[:details][0]["code"] = "changed"
 raise "stack leaked" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
 raise "cause leaked" unless err.cause_chain == [{type: "TypeError", message: "inner"}]
 raise "details leaked" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+json_hash = JSON.parse(err.to_json)
+raise "json origin #{json_hash.inspect}" unless json_hash["origin_runtime"] == "python"
+raise "json details #{json_hash.inspect}" unless json_hash["details"] == [{"path" => ["user", "age"], "code" => "too_small"}]
+as_json = err.as_json
+as_json[:details][0]["code"] = "changed"
+raise "as_json leaked" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
 wrapped_payload = payload.reject { |key, _| key == :boundary_path }
 wrapped = OmniVM::RuntimeError.new("ERR:execute manifest: call [javascript]: " + JSON.generate(wrapped_payload), runtime: "ruby")
 raise "wrapped origin #{wrapped.origin_runtime.inspect}" unless wrapped.origin_runtime == "python"
