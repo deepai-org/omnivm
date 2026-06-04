@@ -1446,7 +1446,11 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxyClose", {
       configurable: true,
       value: function(value) {
-        if (value && typeof value.__omnivm_close === 'function') return value.__omnivm_close();
+        var omnivmClose = null;
+        try {
+          omnivmClose = value && value.__omnivm_close;
+        } catch (_omnivmCloseLookupError) {}
+        if (typeof omnivmClose === 'function') return omnivmClose.call(value);
         var close = globalThis.__omnivm_actual_public_method(value, "close");
         if (close) {
           close();

@@ -5775,10 +5775,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "globalThis.__omnivm_actual_public_method") ||
 		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
+		!contains(code, "try {\n          omnivmClose = value && value.__omnivm_close;") ||
+		!contains(code, "return omnivmClose.call(value)") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
-	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") {
+	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") {
 		t.Fatalf("JS proxyClose should not invoke dynamic close property lookup")
 	}
 	if !contains(code, `prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON"`) {
