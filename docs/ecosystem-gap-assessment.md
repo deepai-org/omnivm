@@ -285,11 +285,14 @@ Ruby callers can rescue `OmniVM::RuntimeError` as a
 normal `RuntimeError` and read equivalent `runtime`, `type`, `traceback`,
 `cause_chain`, `boundary_path`, `original_error_handle`, and `to_h`/`to_dict`
 envelope fields when the source runtime reports those details. Java cause
-chains and Python traceback errors are covered for native Ruby rescue paths.
+chains, Python traceback errors, and Pydantic/Zod validation-library details
+are covered for native Ruby rescue paths.
 Native Java callers can catch
 `OmniVM.RuntimeError` as a normal `RuntimeException` and read equivalent
 `getRuntime()`, `getType()`, `getTraceback()`, `getCauseChain()`,
-`getBoundaryPath()`, `getOriginalErrorHandle()`, and `toMap()` envelope fields.
+`getBoundaryPath()`, `getOriginalErrorHandle()`, and `toMap()` envelope fields;
+this includes Pydantic and Zod validation-library errors crossing into Java
+callers.
 Python, JavaScript, Ruby, and Java rethrow paths now serialize the structured
 OmniVM error envelope again when a guest catches and rethrows it, so the next
 boundary preserves the source runtime, type, message, traceback, and causes

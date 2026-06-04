@@ -304,7 +304,7 @@ public class OmniVM {
         if (colon > 0) {
             String candidate = line.substring(0, colon).trim();
             if (isErrorTypeCandidate(candidate)) {
-                parsed.type = simpleTypeName(candidate);
+                parsed.type = simpleTypeName(candidate, parsed.runtime);
                 parsed.message = line.substring(colon + 2).trim();
                 return;
             }
@@ -334,7 +334,7 @@ public class OmniVM {
             if (colon > 0) {
                 String candidate = detail.substring(0, colon).trim();
                 if (isErrorTypeCandidate(candidate)) {
-                    type = simpleTypeName(candidate);
+                    type = simpleTypeName(candidate, "");
                     message = detail.substring(colon + 2).trim();
                 }
             }
@@ -394,8 +394,15 @@ public class OmniVM {
         return true;
     }
 
-    private static String simpleTypeName(String typeName) {
-        return safeString(typeName);
+    private static String simpleTypeName(String typeName, String runtime) {
+        String safe = safeString(typeName);
+        if ("python".equals(normalizeRuntime(runtime))) {
+            int dot = safe.lastIndexOf('.');
+            if (dot >= 0 && dot + 1 < safe.length()) {
+                return safe.substring(dot + 1);
+            }
+        }
+        return safe;
     }
 
     private static boolean isErrorTypeCandidate(String value) {

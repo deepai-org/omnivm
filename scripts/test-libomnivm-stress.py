@@ -15740,6 +15740,181 @@ def test_javascript_native_activerecord_error_fields_cross_runtime_call():
         raise AssertionError(f"JS ActiveRecord error should not invent original handle: {envelope}")
 
 
+def test_ruby_java_native_validation_library_error_fields_cross_runtime_calls():
+    pydantic_source = (
+        "from pydantic import BaseModel, Field\n"
+        "class User(BaseModel):\n"
+        "    age:int=Field(gt=0)\n"
+        "    name:str\n"
+        "User(age=0)\n"
+    )
+    zod_source = (
+        "(() => { const { z } = require('zod'); "
+        "return z.object({age:z.number().min(1), name:z.string()}).parse({age:0}); })();"
+    )
+
+    ruby_result = omnivm.call(
+        "ruby",
+        f'''
+out = []
+begin
+  OmniVM.call("python", {json.dumps(pydantic_source)})
+rescue OmniVM::RuntimeError => e
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    e.message.include?("2 validation errors for User"),
+    e.message.include?("greater_than") || e.traceback.to_s.include?("greater_than"),
+    e.message.include?("missing") || e.traceback.to_s.include?("missing"),
+    e.traceback.to_s.include?("Traceback"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+begin
+  OmniVM.call("javascript", {json.dumps(zod_source)})
+rescue OmniVM::RuntimeError => e
+  detail = e.message.to_s + "\n" + e.traceback.to_s
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    detail.include?("too_small"),
+    detail.include?("age"),
+    detail.include?("invalid_type"),
+    e.traceback.to_s.include?("at <anonymous>"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+out.join("\\n")
+'''
+    )
+    ruby_lines = ruby_result.splitlines()
+    if len(ruby_lines) != 2:
+        raise AssertionError(f"unexpected Ruby validation error field result: {ruby_result}")
+    ruby_pydantic = ruby_lines[0].split("|")
+    want_ruby_pydantic = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if ruby_pydantic != want_ruby_pydantic:
+        raise AssertionError(f"Ruby Pydantic error fields lost structure: {ruby_pydantic!r}")
+    ruby_zod = ruby_lines[1].split("|")
+    want_ruby_zod = [
+        "true",
+        "javascript",
+        "ZodError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[javascript]",
+        "true",
+        "ZodError",
+        "call[javascript]",
+    ]
+    if ruby_zod != want_ruby_zod:
+        raise AssertionError(f"Ruby Zod error fields lost structure: {ruby_zod!r}")
+
+    java_result = omnivm.call(
+        "java",
+        f'''
+((java.util.concurrent.Callable<String>)(() -> {{
+    java.util.List<String> out = new java.util.ArrayList<>();
+    try {{
+        omnivm.OmniVM.call("python", {json.dumps(pydantic_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("2 validation errors for User")),
+            Boolean.toString(detail.contains("greater_than")),
+            Boolean.toString(detail.contains("missing")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("Traceback")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    try {{
+        omnivm.OmniVM.call("javascript", {json.dumps(zod_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("too_small")),
+            Boolean.toString(detail.contains("age")),
+            Boolean.toString(detail.contains("invalid_type")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("at <anonymous>")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    return String.join("\\n", out);
+}})).call()
+'''
+    )
+    java_lines = java_result.splitlines()
+    if len(java_lines) != 2:
+        raise AssertionError(f"unexpected Java validation error field result: {java_result}")
+    java_pydantic = java_lines[0].split("|")
+    want_java_pydantic = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if java_pydantic != want_java_pydantic:
+        raise AssertionError(f"Java Pydantic error fields lost structure: {java_pydantic!r}")
+    java_zod = java_lines[1].split("|")
+    want_java_zod = [
+        "true",
+        "javascript",
+        "ZodError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[javascript]",
+        "true",
+        "ZodError",
+        "call[javascript]",
+    ]
+    if java_zod != want_java_zod:
+        raise AssertionError(f"Java Zod error fields lost structure: {java_zod!r}")
+
+
 def test_javascript_native_runtime_error_fields_cross_runtime_calls():
     result = omnivm.call(
         "javascript",
@@ -24392,6 +24567,7 @@ def main():
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
+        check("Ruby and Java native validation library error fields cross runtime calls", test_ruby_java_native_validation_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
