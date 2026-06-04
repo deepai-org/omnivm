@@ -1926,7 +1926,10 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       var listeners = closeListeners.slice();
       closeListeners.length = 0;
       for (var i = 0; i < listeners.length; i++) {
-        try { listeners[i](); } catch (_listenerError) {}
+        try {
+          var listenerResult = listeners[i]();
+          if (listenerResult && typeof listenerResult.then === 'function') listenerResult.catch(function() {});
+        } catch (_listenerError) {}
       }
     }
     return true;
@@ -2030,7 +2033,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         return Promise.resolve();
       };
       unregisterCloseListener = addCloseListener(function() {
-        closeIterator("source closed");
+        return closeIterator("source closed");
       });
       var opts = Object.assign({}, options || {});
       opts.read = function() {
