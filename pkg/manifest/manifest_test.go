@@ -5586,6 +5586,11 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def then(*args, &block)") || !contains(code, `__omnivm_data_key_value("then")`) {
 		t.Fatalf("Ruby materializer should let remote then fields beat Object#then, got %q", code)
 	}
+	if !contains(code, "def class") || !contains(code, `__omnivm_data_key_value("class")`) ||
+		!contains(code, "def inspect") || !contains(code, `__omnivm_data_key_value("inspect")`) ||
+		!contains(code, "def to_s") || !contains(code, `__omnivm_data_key_value("to_s")`) {
+		t.Fatalf("Ruby materializer should let remote identity-name fields beat local Object methods, got %q", code)
+	}
 	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") || !contains(code, "def __omnivm_local_value(key)") || !contains(code, "__omnivm_local_key?(key)") {
 		t.Fatalf("Ruby resource proxy should keep internal descriptor metadata out of user-visible fields, got %q", code)
 	}

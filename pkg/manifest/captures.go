@@ -2470,6 +2470,21 @@ class OmniVMHandleProxy
     super
   end
 
+  def class
+    return __omnivm_data_key_value("class") if __omnivm_data_key?("class")
+    super
+  end
+
+  def inspect
+    return __omnivm_data_key_value("inspect") if __omnivm_data_key?("inspect")
+    super
+  end
+
+  def to_s
+    return __omnivm_data_key_value("to_s") if __omnivm_data_key?("to_s")
+    super
+  end
+
   def to_h
     return __omnivm_data_key_value("to_h") if __omnivm_data_key?("to_h")
     @value.dup
