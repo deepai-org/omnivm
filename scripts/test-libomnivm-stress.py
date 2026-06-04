@@ -21504,6 +21504,177 @@ def test_manifest_express_body_parser_json_abort_cancels_python_owner():
         raise AssertionError(f"Express/body-parser JSON body leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_koa_bodyparser_json_abort_cancels_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "class KoaJsonBody:\n"
+                    "    def __init__(self):\n"
+                    "        self.chunks = [b'{\"payload\":\"koa-json-'] + [((b'koa-tail-%04d-' % i) + (b'y' * 32768)) for i in range(40)] + [b'\"}']\n"
+                    "        self.index = 0\n"
+                    "        self.pulls = 0\n"
+                    "        self.closed = False\n"
+                    "    def __iter__(self):\n"
+                    "        return self\n"
+                    "    def __next__(self):\n"
+                    "        self.pulls += 1\n"
+                    "        if self.index >= len(self.chunks):\n"
+                    "            raise StopIteration\n"
+                    "        chunk = self.chunks[self.index]\n"
+                    "        self.index += 1\n"
+                    "        return chunk\n"
+                    "    def close(self):\n"
+                    "        self.closed = True\n"
+                    "koa_json_body = KoaJsonBody()\n"
+                ),
+            },
+            {"op": "eval", "runtime": "python", "bind": "koa_json_body", "code": "koa_json_body"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "(async () => {\n"
+                    "  const Koa = require('koa');\n"
+                    "  const bodyParser = require('koa-bodyparser');\n"
+                    "  const {request: undiciRequest} = require('undici');\n"
+                    "  globalThis.koaJsonAbortState = {\n"
+                    "    requests: 0,\n"
+                    "    bytes: 0,\n"
+                    "    aborted: false,\n"
+                    "    reqAborted: false,\n"
+                    "    reqClosed: false,\n"
+                    "    parserFinished: false,\n"
+                    "    parserError: null,\n"
+                    "    parsed: false,\n"
+                    "    bodyClosed: false,\n"
+                    "    bodyError: null,\n"
+                    "    sourceCancelled: false,\n"
+                    "    clientRejected: false,\n"
+                    "    clientRejectName: null,\n"
+                    "    clientRejectMessage: null\n"
+                    "  };\n"
+                    "  if (typeof koa_json_body.toNodeReadable !== 'function') {\n"
+                    "    throw new Error('OmniVM stream proxy did not expose toNodeReadable');\n"
+                    "  }\n"
+                    "  const originalCancel = koa_json_body.cancel.bind(koa_json_body);\n"
+                    "  koa_json_body.cancel = reason => {\n"
+                    "    globalThis.koaJsonAbortState.sourceCancelled = true;\n"
+                    "    return originalCancel(reason);\n"
+                    "  };\n"
+                    "  const abortController = new AbortController();\n"
+                    "  const app = new Koa();\n"
+                    "  app.on('error', err => {\n"
+                    "    globalThis.koaJsonAbortState.parserError = err && err.message ? err.message : String(err);\n"
+                    "  });\n"
+                    "  app.use(async (ctx, next) => {\n"
+                    "    const state = globalThis.koaJsonAbortState;\n"
+                    "    if (ctx.method === 'POST' && ctx.path === '/json') {\n"
+                    "      state.requests += 1;\n"
+                    "      ctx.req.on('data', chunk => {\n"
+                    "        state.bytes += chunk.length;\n"
+                    "        if (!state.aborted && state.bytes > 4096) {\n"
+                    "          state.aborted = true;\n"
+                    "          abortController.abort(new Error('client-stop'));\n"
+                    "        }\n"
+                    "      });\n"
+                    "      ctx.req.on('aborted', () => { state.reqAborted = true; });\n"
+                    "      ctx.req.on('close', () => { state.reqClosed = true; });\n"
+                    "    }\n"
+                    "    try {\n"
+                    "      await next();\n"
+                    "    } catch (err) {\n"
+                    "      state.parserFinished = true;\n"
+                    "      state.parserError = err && (err.type || err.message) ? (err.type || err.message) : String(err);\n"
+                    "      if (!ctx.respond && ctx.res.destroyed) return;\n"
+                    "      if (!ctx.res.destroyed && !ctx.headerSent) {\n"
+                    "        ctx.status = 499;\n"
+                    "        ctx.body = 'aborted';\n"
+                    "      }\n"
+                    "    }\n"
+                    "  });\n"
+                    "  app.use(bodyParser({jsonLimit: '8mb'}));\n"
+                    "  app.use(async ctx => {\n"
+                    "    const state = globalThis.koaJsonAbortState;\n"
+                    "    state.parserFinished = true;\n"
+                    "    state.parsed = !!ctx.request.body;\n"
+                    "    ctx.status = 200;\n"
+                    "    ctx.body = 'ok';\n"
+                    "  });\n"
+                    "  const server = app.listen(0, '127.0.0.1');\n"
+                    "  await new Promise((resolve, reject) => {\n"
+                    "    server.once('listening', resolve);\n"
+                    "    server.once('error', reject);\n"
+                    "  });\n"
+                    "  const body = koa_json_body.toNodeReadable({objectMode: false, highWaterMark: 1});\n"
+                    "  body.on('close', () => { globalThis.koaJsonAbortState.bodyClosed = true; });\n"
+                    "  body.on('error', err => { globalThis.koaJsonAbortState.bodyError = err && err.message ? err.message : String(err); });\n"
+                    "  const port = server.address().port;\n"
+                    "  try {\n"
+                    "    await undiciRequest('http://127.0.0.1:' + port + '/json', {\n"
+                    "      method: 'POST',\n"
+                    "      body,\n"
+                    "      headers: {'content-type': 'application/json'},\n"
+                    "      signal: abortController.signal\n"
+                    "    });\n"
+                    "  } catch (err) {\n"
+                    "    globalThis.koaJsonAbortState.clientRejected = true;\n"
+                    "    globalThis.koaJsonAbortState.clientRejectName = err && err.name ? err.name : null;\n"
+                    "    globalThis.koaJsonAbortState.clientRejectMessage = err && err.message ? err.message : String(err);\n"
+                    "  } finally {\n"
+                    "    await new Promise(resolve => setTimeout(resolve, 80));\n"
+                    "    await new Promise(resolve => server.close(resolve));\n"
+                    "  }\n"
+                    "  for (let i = 0; i < 20 && !globalThis.koaJsonAbortState.sourceCancelled; i++) {\n"
+                    "    await new Promise(resolve => setImmediate(resolve));\n"
+                    "  }\n"
+                    "  const state = globalThis.koaJsonAbortState;\n"
+                    "  if (state.requests !== 1) throw new Error('Koa/bodyparser saw bad request count: ' + JSON.stringify(state));\n"
+                    "  if (state.bytes <= 4096) throw new Error('Koa/bodyparser did not receive JSON bytes before abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.aborted || !state.clientRejected) throw new Error('Koa/bodyparser did not abort client: ' + JSON.stringify(state));\n"
+                    "  if (!state.reqClosed) throw new Error('Koa/bodyparser request did not close after abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.bodyClosed) throw new Error('Koa/bodyparser upload body stream did not close: ' + JSON.stringify(state));\n"
+                    "  if (!state.sourceCancelled) throw new Error('Koa/bodyparser abort did not cancel Python source: ' + JSON.stringify(state));\n"
+                    "})()\n"
+                ),
+                "captures": {"koa_json_body": "koa_json_body"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not koa_json_body.closed:\n"
+                    "    raise AssertionError('Koa/bodyparser JSON abort did not close Python owner')\n"
+                    "if koa_json_body.index <= 1:\n"
+                    "    raise AssertionError(f'Koa/bodyparser did not consume JSON body before abort: {koa_json_body.__dict__!r}')\n"
+                    "if koa_json_body.index >= len(koa_json_body.chunks):\n"
+                    "    raise AssertionError(f'Koa/bodyparser drained entire JSON upload after abort: {koa_json_body.__dict__!r}')\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Koa/bodyparser JSON body did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Koa/bodyparser JSON body used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Koa/bodyparser JSON body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Koa/bodyparser JSON body leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -26627,6 +26798,7 @@ def main():
         check("Manifest Busboy upload abort cancels Python owner", test_manifest_busboy_upload_abort_cancels_python_owner)
         check("Manifest Express Multer upload abort cancels Python owner", test_manifest_express_multer_upload_abort_cancels_python_owner)
         check("Manifest Express body-parser JSON abort cancels Python owner", test_manifest_express_body_parser_json_abort_cancels_python_owner)
+        check("Manifest Koa bodyparser JSON abort cancels Python owner", test_manifest_koa_bodyparser_json_abort_cancels_python_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)

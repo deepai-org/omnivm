@@ -123,6 +123,8 @@ RUN cd /usr/local/lib && npm install \
       busboy \
       multer \
       body-parser \
+      koa \
+      koa-bodyparser \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \
@@ -360,6 +362,8 @@ RUN cd /usr/local/lib && npm install \
       busboy \
       multer \
       body-parser \
+      koa \
+      koa-bodyparser \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \
