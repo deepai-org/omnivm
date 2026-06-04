@@ -862,6 +862,16 @@ class TestNotInitialized(unittest.TestCase):
     def test_drain_worker_hook_noops(self):
         assert omnivm_mod.drain_worker_hook(object(), worker=object()) is None
 
+    def test_drain_finalizer_releases_noops_without_runtime(self):
+        assert omnivm_mod.drain_finalizer_releases() is False
+
+    def test_drain_finalizer_releases_noops_without_capability(self):
+        class OldLib:
+            pass
+
+        omnivm_mod._lib = OldLib()
+        assert omnivm_mod.drain_finalizer_releases() is False
+
     @patch.object(omnivm_mod.atexit, "register")
     def test_install_worker_drain_hook_registers_once(self, register):
         assert omnivm_mod.install_worker_drain_hook() is omnivm_mod.drain_worker_hook
@@ -1045,6 +1055,21 @@ class TestCallWithMockLib(unittest.TestCase):
         result = omnivm_mod.drain_worker_hook(object(), object(), reason="reload")
         assert result == "OK"
         self.mock_lib.OmniDrainWorker.assert_called_once_with()
+
+    def test_drain_finalizer_releases_calls_lib(self):
+        self.mock_lib.OmniDrainFinalizerReleases.return_value = 0
+        assert omnivm_mod.drain_finalizer_releases(12) is True
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(12)
+
+    def test_drain_finalizer_releases_stays_quiet_on_failure(self):
+        self.mock_lib.OmniDrainFinalizerReleases.return_value = -1
+        assert omnivm_mod.drain_finalizer_releases() is False
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
+
+    def test_drain_finalizer_releases_stays_quiet_on_exception(self):
+        self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
+        assert omnivm_mod.drain_finalizer_releases() is False
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
 
     def test_manifest_call_decodes_return_envelope(self):
         self.mock_lib.OmniManifestCall.return_value = (

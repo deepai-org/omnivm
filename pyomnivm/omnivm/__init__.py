@@ -45,6 +45,7 @@ __all__ = [
     "drain_worker",
     "drain_worker_hook",
     "install_worker_drain_hook",
+    "drain_finalizer_releases",
     "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
@@ -1102,6 +1103,19 @@ def install_worker_drain_hook():
         atexit.register(drain_worker_hook)
         _worker_drain_hook_installed = True
     return drain_worker_hook
+
+
+def drain_finalizer_releases(max_releases=0):
+    """
+    Quietly drain queued proxy-finalizer releases from a safe host callback.
+
+    Call this at the end of a request, job, or framework lifecycle callback to
+    avoid waiting for process-wide worker drain. It is intentionally best-effort:
+    cleanup-only finalizer paths must stay idempotent and should not mask the
+    application error that caused the cleanup path to run. Use drain_worker()
+    for explicit worker-reload failures that should be reported.
+    """
+    return _drain_finalizer_releases(max_releases)
 
 
 def manifest_call(module_id, func, args=()):

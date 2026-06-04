@@ -593,6 +593,10 @@ the lifecycle-hook form of `omnivm.drain_worker()`. It accepts server callback
 arguments, drains initialized workers, and no-ops when a worker exits without
 ever loading OmniVM. `omnivm.install_worker_drain_hook()` registers the same
 hook with `atexit` as an idempotent process-exit fallback.
+For narrower request/job boundaries, `omnivm.drain_finalizer_releases()` drains
+queued proxy-finalizer releases on a best-effort basis and returns `False`
+instead of raising when cleanup is unavailable or fails, preserving the
+distinction between user-initiated lifecycle operations and quiet GC teardown.
 
 `omnivm.affinity_status()` reports the current Python native thread id, the
 libomnivm host thread id, whether the call is on the host thread, and any
