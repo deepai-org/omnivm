@@ -87,11 +87,15 @@ func copyJSONValue(value interface{}) interface{} {
 	case map[string]interface{}:
 		copied := make(map[string]interface{}, len(typed))
 		for key, item := range typed {
-			copied[key] = item
+			copied[key] = copyJSONValue(item)
 		}
 		return copied
 	case []interface{}:
-		return append([]interface{}(nil), typed...)
+		copied := make([]interface{}, len(typed))
+		for i, item := range typed {
+			copied[i] = copyJSONValue(item)
+		}
+		return copied
 	default:
 		return typed
 	}

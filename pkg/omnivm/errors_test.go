@@ -83,12 +83,17 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 		Runtime:     "python",
 		StackFrames: []string{"File \"<string>\", line 1"},
 		CauseChain:  []RuntimeErrorCause{{Type: "ValueError", Message: "bad"}},
-		Details:     map[string]interface{}{"code": "E_PY"},
+		Details: map[string]interface{}{
+			"code":  "E_PY",
+			"items": []interface{}{map[string]interface{}{"path": "user.age"}},
+		},
 	}
 	envelope := e.ToMap()
 	envelope["stack_frames"].([]string)[0] = "changed"
 	envelope["cause_chain"].([]map[string]string)[0]["message"] = "changed"
-	envelope["details"].(map[string]interface{})["code"] = "changed"
+	details := envelope["details"].(map[string]interface{})
+	details["code"] = "changed"
+	details["items"].([]interface{})[0].(map[string]interface{})["path"] = "changed"
 
 	if e.StackFrames[0] != "File \"<string>\", line 1" {
 		t.Fatalf("ToMap exposed StackFrames backing storage: %#v", e.StackFrames)
@@ -96,8 +101,12 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	if e.CauseChain[0].Message != "bad" {
 		t.Fatalf("ToMap exposed CauseChain backing storage: %#v", e.CauseChain)
 	}
-	if e.Details.(map[string]interface{})["code"] != "E_PY" {
+	originalDetails := e.Details.(map[string]interface{})
+	if originalDetails["code"] != "E_PY" {
 		t.Fatalf("ToMap exposed Details map backing storage: %#v", e.Details)
+	}
+	if originalDetails["items"].([]interface{})[0].(map[string]interface{})["path"] != "user.age" {
+		t.Fatalf("ToMap exposed nested Details backing storage: %#v", e.Details)
 	}
 }
 
