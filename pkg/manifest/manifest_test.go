@@ -5707,6 +5707,8 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
+		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
+		!contains(code, "return {done: true, value: released};") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") {
 		t.Fatalf("JS stream proxy close/error handling should return the manifest release result and mark remote streams closed through explicit paths, got %q", code)
 	}

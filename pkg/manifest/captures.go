@@ -1887,8 +1887,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       return {
         next: nextValue,
         return: function(reason) {
-          owner.cancel(reason);
-          return {done: true};
+          return {done: true, value: owner.cancel(reason)};
         }
       };
     },
@@ -1899,8 +1898,11 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           return Promise.resolve(nextValue());
         },
         return: function(reason) {
-          owner.cancel(reason);
-          return Promise.resolve({done: true});
+          return Promise.resolve().then(function() {
+            return owner.cancel(reason);
+          }).then(function(released) {
+            return {done: true, value: released};
+          });
         }
       };
     }
