@@ -1143,8 +1143,8 @@ public class OmniVM {
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
             if (method.getName().equals("close") && method.getParameterCount() == 0) {
                 try {
-                    invokeProxyMethod(method, target);
-                    return true;
+                    Object result = invokeProxyMethod(method, target);
+                    return !(result instanceof Boolean) || Boolean.TRUE.equals(result);
                 } catch (ReflectiveOperationException err) {
                     throw new RuntimeException("proxy close failed", err);
                 }
