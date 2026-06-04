@@ -7179,6 +7179,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private static Object parseDetailsJson(String detailsJson)",
 		"return detailsJson;",
 		"private static Object copyJsonValue(Object value)",
+		"private static List<Map<String, Object>> copyCauseChain(List<Map<String, Object>> causes)",
+		"return copyCauseChain(causeChain);",
 		`out.put("cause_chain", copyJsonValue(causeChain))`,
 		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
 		`parsed.detailsJson = detailsJsonValue(envelope)`,
@@ -7303,6 +7305,122 @@ public final class ProxyCloseCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyCloseCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java proxy close check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaRuntimeErrorPreservesStructuredEnvelope(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/RuntimeErrorCheck.java"
+	check := `package omnivm;
+
+import java.util.List;
+import java.util.Map;
+
+public final class RuntimeErrorCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void main(String[] args) {
+        String payload = """
+{
+  "runtime": "javascript",
+  "originRuntime": "python",
+  "type": "AggregateError",
+  "message": "invalid",
+  "traceback": "fallback frame",
+  "stackFrames": ["at parse (<anonymous>:1:2)"],
+  "causeChain": [{
+    "runtime": "java",
+    "originRuntime": "ruby",
+    "type": "TypeError",
+    "message": "inner",
+    "traceback": "TypeError: inner",
+    "stackFrames": ["at cause (<anonymous>:2:4)"],
+    "boundaryPath": "call[javascript] > callback[java]",
+    "originalErrorHandle": "java-error-3",
+    "details": {"code": "E_INNER", "path": ["user", "age"]}
+  }],
+  "originalErrorHandle": "js-error-7",
+  "details": [{"path": ["user", "age"]}]
+}
+""";
+        OmniVM.RuntimeError err = OmniVM.RuntimeError.fromBridge(
+            "ERR:execute manifest: call[javascript]: " + payload,
+            "go",
+            "call[go]",
+            new IllegalStateException("bridge cause")
+        );
+
+        require("javascript".equals(err.getRuntime()), "runtime mismatch: " + err.getRuntime());
+        require("python".equals(err.getOriginRuntime()), "origin runtime mismatch: " + err.getOriginRuntime());
+        require("AggregateError".equals(err.getType()), "type mismatch: " + err.getType());
+        require("invalid".equals(err.getMessage()), "message mismatch: " + err.getMessage());
+        require("execute manifest > call[javascript]".equals(err.getBoundaryPath()), "boundary mismatch: " + err.getBoundaryPath());
+        require("js-error-7".equals(err.getOriginalErrorHandle()), "handle mismatch: " + err.getOriginalErrorHandle());
+        require(err.getCause() instanceof IllegalStateException, "bridge cause was not preserved");
+        require(err.getStackFrames().equals(List.of("at parse (<anonymous>:1:2)")), "stack frames mismatch: " + err.getStackFrames());
+
+        List<Object> details = (List<Object>) err.getDetails();
+        ((Map<String, Object>) details.get(0)).put("path", List.of("changed"));
+        List<Object> detailsAgain = (List<Object>) err.getDetails();
+        require(((Map<String, Object>) detailsAgain.get(0)).get("path").equals(List.of("user", "age")), "details getter leaked mutable state");
+
+        List<Map<String, Object>> causes = err.getCauseChain();
+        Map<String, Object> first = causes.get(0);
+        require("java".equals(first.get("runtime")), "cause runtime mismatch: " + first);
+        require("ruby".equals(first.get("origin_runtime")), "cause origin mismatch: " + first);
+        require("call[javascript] > callback[java]".equals(first.get("boundary_path")), "cause boundary mismatch: " + first);
+        require("java-error-3".equals(first.get("original_error_handle")), "cause handle mismatch: " + first);
+        Map<String, Object> causeDetails = (Map<String, Object>) first.get("details");
+        require("E_INNER".equals(causeDetails.get("code")), "cause details mismatch: " + causeDetails);
+        causeDetails.put("code", "changed");
+        causes.get(0).put("message", "changed");
+
+        Map<String, Object> firstAgain = err.getCauseChain().get(0);
+        require("inner".equals(firstAgain.get("message")), "cause-chain getter leaked top-level mutation");
+        require("E_INNER".equals(((Map<String, Object>) firstAgain.get("details")).get("code")), "cause-chain getter leaked nested details mutation");
+
+        Map<String, Object> envelope = err.toMap();
+        ((Map<String, Object>) ((List<Map<String, Object>>) envelope.get("cause_chain")).get(0).get("details")).put("code", "changed-again");
+        require("E_INNER".equals(((Map<String, Object>) err.getCauseChain().get(0).get("details")).get("code")), "toMap leaked nested cause details mutation");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java runtime error check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java runtime error check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RuntimeErrorCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java runtime error check: %v\n%s", err, out)
 	}
 }
 

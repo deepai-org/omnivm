@@ -174,7 +174,7 @@ public class OmniVM {
         }
 
         public List<Map<String, Object>> getCauseChain() {
-            return causeChain;
+            return copyCauseChain(causeChain);
         }
 
         public String getBoundaryPath() {
@@ -240,6 +240,11 @@ public class OmniVM {
                 return out;
             }
             return value;
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<Map<String, Object>> copyCauseChain(List<Map<String, Object>> causes) {
+            return (List<Map<String, Object>>) copyJsonValue(causes);
         }
     }
 
