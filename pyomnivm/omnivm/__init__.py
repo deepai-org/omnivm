@@ -282,6 +282,20 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return envelope.get(fallback) if value is None else value
     def text_field(value, fallback=""):
         return str(value) if value is not None else fallback
+    def details_field(source):
+        if not isinstance(source, dict):
+            return None
+        if "details" in source:
+            return _copy_json_value(source.get("details"))
+        raw_details = source.get("details_json")
+        if raw_details is None:
+            raw_details = source.get("detailsJson")
+        if isinstance(raw_details, str):
+            try:
+                return json.loads(raw_details)
+            except Exception:
+                return raw_details
+        return _copy_json_value(raw_details) if raw_details is not None else None
     runtime_name = text_field(envelope.get("runtime"), runtime)
     origin_runtime = text_field(field("origin_runtime", "originRuntime"), runtime_name)
     err_type = text_field(envelope.get("type"))
@@ -328,8 +342,9 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
                     item[key] = str(value)
             if "runtime" in item and not item.get("origin_runtime"):
                 item["origin_runtime"] = item["runtime"]
-            if "details" in cause:
-                item["details"] = _copy_json_value(cause.get("details"))
+            cause_details = details_field(cause)
+            if cause_details is not None:
+                item["details"] = cause_details
             parsed_causes.append(item)
         cause_chain = parsed_causes
     return {
@@ -342,7 +357,7 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         "cause_chain": cause_chain,
         "boundary_path": text_field(field("boundary_path", "boundaryPath"), boundary_path),
         "original_error_handle": text_field(field("original_error_handle", "originalErrorHandle"), None),
-        "details": _copy_json_value(envelope.get("details")),
+        "details": details_field(envelope),
     }
 
 

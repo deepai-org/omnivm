@@ -213,6 +213,36 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_parses_details_json_structured_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "java",
+                    "type": "IllegalStateException",
+                    "message": "outer",
+                    "details_json": "{\"code\":\"E_OUTER\",\"path\":[\"payload\",\"age\"]}",
+                    "cause_chain": [
+                        {
+                            "runtime": "javascript",
+                            "type": "TypeError",
+                            "message": "inner",
+                            "details_json": "[{\"code\":\"E_INNER\"}]",
+                        },
+                        {
+                            "runtime": "python",
+                            "type": "ValueError",
+                            "message": "bad details",
+                            "detailsJson": "not json",
+                        },
+                    ],
+                }
+            ),
+            runtime="java",
+        )
+        assert err.details == {"code": "E_OUTER", "path": ["payload", "age"]}
+        assert err.cause_chain[0]["details"] == [{"code": "E_INNER"}]
+        assert err.cause_chain[1]["details"] == "not json"
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"
