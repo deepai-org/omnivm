@@ -3507,7 +3507,7 @@ func runtimeRefStreamCloseCode(ref RuntimeRef, stateVar string) (string, bool) {
 	stateRef := runtimeVarRef(ref.Runtime, stateVar)
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("{ const __omnivm_stream_obj = %s; const __omnivm_iter = %s; if (__omnivm_iter && typeof __omnivm_iter.return === 'function') __omnivm_iter.return(); else if (__omnivm_iter && typeof __omnivm_iter.cancel === 'function') __omnivm_iter.cancel(); else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.return === 'function') __omnivm_stream_obj.return(); else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.cancel === 'function') __omnivm_stream_obj.cancel(); if (__omnivm_iter && typeof __omnivm_iter.releaseLock === 'function') { try { __omnivm_iter.releaseLock(); } catch (__omnivm_release_err) {} } %s = undefined; }", base, stateRef, stateRef), true
+		return "", false
 	case "python":
 		return fmt.Sprintf(`__omnivm_stream_obj = %s
 __omnivm_stream_iter = globals().get(%q)

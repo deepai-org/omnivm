@@ -5117,7 +5117,6 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 		ref  RuntimeRef
 		want string
 	}{
-		{RuntimeRef{Runtime: "javascript", VarName: "rows"}, ".return"},
 		{RuntimeRef{Runtime: "python", VarName: "rows"}, "getattr(__omnivm_stream_obj, 'close', None)"},
 		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_close_frame_iterators"},
 		{RuntimeRef{Runtime: "ruby", VarName: "rows"}, "to_io"},
@@ -5131,6 +5130,9 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 		if !contains(code, tc.want) {
 			t.Fatalf("runtimeRefStreamCloseCode(%s) = %q, want %q", tc.ref.Runtime, code, tc.want)
 		}
+	}
+	if code, ok := runtimeRefStreamCloseCode(RuntimeRef{Runtime: "javascript", VarName: "rows"}, "__omnivm_stream_state"); ok {
+		t.Fatalf("runtimeRefStreamCloseCode(javascript) = %q, want unsupported so callers use awaited JS close step", code)
 	}
 }
 
