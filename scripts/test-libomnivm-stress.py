@@ -17451,6 +17451,18 @@ def test_validation_error_fidelity_popular_libraries():
             {"runtime": "python", "type": "ValidationError", "message": "age"},
         ),
         (
+            "jsonschema",
+            "python",
+            (
+                "from jsonschema import Draft202012Validator\n"
+                "schema = {'type': 'object', 'properties': {'age': {'type': 'integer', 'minimum': 1}}}\n"
+                "errors = list(Draft202012Validator(schema).iter_errors({'age': 0}))\n"
+                "raise next(err for err in errors if err.validator == 'minimum')"
+            ),
+            ["ValidationError", "0 is less than the minimum of 1", "minimum", "age"],
+            {"runtime": "python", "type": "ValidationError", "message": "0 is less than the minimum of 1"},
+        ),
+        (
             "django forms",
             "python",
             (
@@ -17735,6 +17747,12 @@ def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
         "    name = fields.String(required=True)\n"
         "User().load({'age': 0})\n"
     )
+    jsonschema_source = (
+        "from jsonschema import Draft202012Validator\n"
+        "schema = {'type': 'object', 'properties': {'age': {'type': 'integer', 'minimum': 1}}}\n"
+        "errors = list(Draft202012Validator(schema).iter_errors({'age': 0}))\n"
+        "raise next(err for err in errors if err.validator == 'minimum')\n"
+    )
     active_record_source = "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)"
 
     ruby_result = omnivm.call(
@@ -17814,6 +17832,24 @@ rescue OmniVM::RuntimeError => e
   ].join("|")
 end
 begin
+  OmniVM.call("python", {json.dumps(jsonschema_source)})
+rescue OmniVM::RuntimeError => e
+  detail = e.message.to_s + "\\n" + e.traceback.to_s
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    detail.include?("0 is less than the minimum of 1"),
+    detail.include?("minimum"),
+    detail.include?("age"),
+    e.traceback.to_s.include?("ValidationError"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+begin
   OmniVM.call("python", {json.dumps(django_form_source)})
 rescue OmniVM::RuntimeError => e
   detail = e.message.to_s + "\\n" + e.traceback.to_s
@@ -17835,7 +17871,7 @@ out.join("\\n")
 '''
     )
     ruby_lines = ruby_result.splitlines()
-    if len(ruby_lines) != 5:
+    if len(ruby_lines) != 6:
         raise AssertionError(f"unexpected Ruby validation error field result: {ruby_result}")
     ruby_pydantic = ruby_lines[0].split("|")
     want_ruby_pydantic = [
@@ -17902,7 +17938,23 @@ out.join("\\n")
     ]
     if ruby_marshmallow != want_ruby_marshmallow:
         raise AssertionError(f"Ruby Marshmallow error fields lost structure: {ruby_marshmallow!r}")
-    ruby_django = ruby_lines[4].split("|")
+    ruby_jsonschema = ruby_lines[4].split("|")
+    want_ruby_jsonschema = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if ruby_jsonschema != want_ruby_jsonschema:
+        raise AssertionError(f"Ruby jsonschema error fields lost structure: {ruby_jsonschema!r}")
+    ruby_django = ruby_lines[5].split("|")
     want_ruby_django = [
         "true",
         "python",
@@ -18002,6 +18054,25 @@ out.join("\\n")
         ));
     }}
     try {{
+        omnivm.OmniVM.call("python", {json.dumps(jsonschema_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("0 is less than the minimum of 1")),
+            Boolean.toString(detail.contains("minimum")),
+            Boolean.toString(detail.contains("age")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("ValidationError")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    try {{
         omnivm.OmniVM.call("python", {json.dumps(django_form_source)});
     }} catch (omnivm.OmniVM.RuntimeError e) {{
         java.util.Map<String, Object> envelope = e.toMap();
@@ -18042,7 +18113,7 @@ out.join("\\n")
 '''
     )
     java_lines = java_result.splitlines()
-    if len(java_lines) != 6:
+    if len(java_lines) != 7:
         raise AssertionError(f"unexpected Java validation error field result: {java_result}")
     java_pydantic = java_lines[0].split("|")
     want_java_pydantic = [
@@ -18109,7 +18180,23 @@ out.join("\\n")
     ]
     if java_marshmallow != want_java_marshmallow:
         raise AssertionError(f"Java Marshmallow error fields lost structure: {java_marshmallow!r}")
-    java_django = java_lines[4].split("|")
+    java_jsonschema = java_lines[4].split("|")
+    want_java_jsonschema = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if java_jsonschema != want_java_jsonschema:
+        raise AssertionError(f"Java jsonschema error fields lost structure: {java_jsonschema!r}")
+    java_django = java_lines[5].split("|")
     want_java_django = [
         "true",
         "python",
@@ -18125,7 +18212,7 @@ out.join("\\n")
     ]
     if java_django != want_java_django:
         raise AssertionError(f"Java Django form error fields lost structure: {java_django!r}")
-    java_active_record = java_lines[5].split("|")
+    java_active_record = java_lines[6].split("|")
     want_java_active_record = [
         "true",
         "ruby",
