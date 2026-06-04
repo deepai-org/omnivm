@@ -9377,7 +9377,8 @@ async def sa_async_setup_db():
         )
 
 class AsyncSQLAlchemyResultOwner:
-    def __init__(self):
+    def __init__(self, label):
+        self.label = label
         self.session = None
         self.result = None
         self.iterator = None
@@ -9396,6 +9397,16 @@ class AsyncSQLAlchemyResultOwner:
     async def __anext__(self):
         row = await self.iterator.__anext__()
         self.rows_pulled += 1
+        if self.label == "java":
+            return [
+                row["name"],
+                row["items"],
+                row["keys"],
+                int(row["count"]),
+                row["then"],
+                int(row["length"]),
+                row["close"],
+            ]
         return {{
             "name": row["name"],
             "items": row["items"],
@@ -9415,8 +9426,8 @@ class AsyncSQLAlchemyResultOwner:
             await self.session.close()
             self.session = None
 
-async def make_sa_async_result():
-    return await AsyncSQLAlchemyResultOwner().open()
+async def make_sa_async_result(label):
+    return await AsyncSQLAlchemyResultOwner(label).open()
 
 async def sa_async_rollback_check():
     rollback_seen = False
@@ -9444,13 +9455,20 @@ async def sa_async_rollback_check():
             raise AssertionError(f"SQLAlchemy AsyncSession transaction did not roll back: {{total}}")
 
 sa_async_loop.run_until_complete(sa_async_setup_db())
-sa_async_result_js = sa_async_loop.run_until_complete(make_sa_async_result())
+sa_async_result_js = sa_async_loop.run_until_complete(make_sa_async_result("javascript"))
+sa_async_result_ruby = sa_async_loop.run_until_complete(make_sa_async_result("ruby"))
+sa_async_result_java = sa_async_loop.run_until_complete(make_sa_async_result("java"))
 '''
         verify = r'''
-if sa_async_result_js.rows_pulled != 1:
-    raise AssertionError(f"SQLAlchemy async result pulled {sa_async_result_js.rows_pulled} rows instead of one")
-if not sa_async_result_js.closed:
-    raise AssertionError("SQLAlchemy async result owner was not closed by stream cancellation")
+for name, result in (
+    ("javascript", sa_async_result_js),
+    ("ruby", sa_async_result_ruby),
+    ("java", sa_async_result_java),
+):
+    if result.rows_pulled != 1:
+        raise AssertionError(f"{name} SQLAlchemy async result pulled {result.rows_pulled} rows instead of one")
+    if not result.closed:
+        raise AssertionError(f"{name} SQLAlchemy async result owner was not closed by stream cancellation")
 sa_async_loop.run_until_complete(sa_async_rollback_check())
 sa_async_loop.run_until_complete(sa_async_engine.dispose())
 sa_async_loop.close()
@@ -9479,6 +9497,48 @@ sa_async_loop.close()
                         "if (sa_async_result_js.cancel('client-stop') !== true) throw new Error('SQLAlchemy async cancel failed');"
                     ),
                 },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"sa_async_result_ruby": "sa_async_result_ruby"},
+                    "code": (
+                        "row = sa_async_result_ruby.first; "
+                        "raise 'SQLAlchemy async Ruby result was empty' if row.nil?; "
+                        "raise \"bad SQLAlchemy async Ruby name #{row['name']}\" unless row['name'] == 'ada'; "
+                        "raise 'SQLAlchemy async Ruby items field lost' unless row['items'] == 'field-items'; "
+                        "raise 'SQLAlchemy async Ruby keys field lost' unless row['keys'] == 'field-keys'; "
+                        "raise 'SQLAlchemy async Ruby count field lost' unless row['count'].to_s == '7'; "
+                        "raise 'SQLAlchemy async Ruby then field lost' unless row['then'] == 'field-then'; "
+                        "raise 'SQLAlchemy async Ruby length field lost' unless row['length'].to_s == '12'; "
+                        "raise 'SQLAlchemy async Ruby close field lost' unless row['close'] == 'field-close'; "
+                        "sa_async_result_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"sa_async_result_java": "sa_async_result_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"sa_async_result_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"SQLAlchemy async result should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"SQLAlchemy async Java result was empty\"); "
+                        "final Object rowObj = it.next(); "
+                        "java.util.function.Function<Integer, Object> cell = (idx) -> { "
+                        "    if (rowObj instanceof java.util.List<?>) return ((java.util.List<?>) rowObj).get(idx); "
+                        "    if (rowObj instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> row = (java.util.Map<?, ?>) rowObj; return row.containsKey(idx) ? row.get(idx) : row.get(String.valueOf(idx)); } "
+                        "    throw new RuntimeException(\"unexpected SQLAlchemy async Java row shape: \" + rowObj); "
+                        "}; "
+                        "if (!\"ada\".equals(String.valueOf(cell.apply(0)))) throw new RuntimeException(\"bad SQLAlchemy async Java name: \" + cell.apply(0)); "
+                        "if (!\"field-items\".equals(String.valueOf(cell.apply(1)))) throw new RuntimeException(\"SQLAlchemy async Java items field lost\"); "
+                        "if (!\"field-keys\".equals(String.valueOf(cell.apply(2)))) throw new RuntimeException(\"SQLAlchemy async Java keys field lost\"); "
+                        "if (!\"7\".equals(String.valueOf(cell.apply(3)))) throw new RuntimeException(\"SQLAlchemy async Java count field lost\"); "
+                        "if (!\"field-then\".equals(String.valueOf(cell.apply(4)))) throw new RuntimeException(\"SQLAlchemy async Java then field lost\"); "
+                        "if (!\"12\".equals(String.valueOf(cell.apply(5)))) throw new RuntimeException(\"SQLAlchemy async Java length field lost\"); "
+                        "if (!\"field-close\".equals(String.valueOf(cell.apply(6)))) throw new RuntimeException(\"SQLAlchemy async Java close field lost\"); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"SQLAlchemy async Java cancel failed\");"
+                    ),
+                },
                 {"op": "exec", "runtime": "python", "code": verify},
             ],
         }
@@ -9489,14 +9549,14 @@ sa_async_loop.close()
         handles = after_status.get("handles", {})
         stream_captures = boundary.get("stream_proxy_captures", 0)
         stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
-        if stream_captures < 1 and stream_capture_delta < 1:
-            raise AssertionError(f"SQLAlchemy async Result did not cross as lazy stream proxy: before={before_boundary}, after={boundary}")
+        if stream_captures < 3 and stream_capture_delta < 3:
+            raise AssertionError(f"SQLAlchemy async Result did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
         if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
             raise AssertionError(f"SQLAlchemy async Result used JSON fallback: before={before_boundary}, after={boundary}")
         explicit_releases = handles.get("explicit_releases", 0)
         explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
-        if explicit_releases < 1 and explicit_release_delta < 1:
-            raise AssertionError(f"SQLAlchemy async Result stream did not release: before={before_handles}, after={handles}")
+        if explicit_releases < 3 and explicit_release_delta < 3:
+            raise AssertionError(f"SQLAlchemy async Result streams did not release: before={before_handles}, after={handles}")
     finally:
         stop_postgres()
 
