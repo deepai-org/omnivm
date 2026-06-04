@@ -119,6 +119,32 @@ func TestParseError_RuntimePrefixedWithoutERR(t *testing.T) {
 	}
 }
 
+func TestParseError_RuntimeRefAssignPreservesOwnerRuntime(t *testing.T) {
+	raw := "ERR:runtime ref assign [python]: Traceback (most recent call last):\n" +
+		"  File \"<string>\", line 1, in <module>\n" +
+		"OSError: [Errno 9] Bad file descriptor\n" +
+		" (expr: (lambda __o, __args, __kwargs: __o(*__args, **__kwargs))(...))"
+	re := ParseError("__manifest", raw)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "python" {
+		t.Errorf("Runtime = %q, want python", re.Runtime)
+	}
+	if re.Type != "OSError" {
+		t.Errorf("Type = %q, want OSError", re.Type)
+	}
+	if re.Message != "[Errno 9] Bad file descriptor" {
+		t.Errorf("Message = %q, want [Errno 9] Bad file descriptor", re.Message)
+	}
+	if re.BoundaryPath != "call[python]" {
+		t.Errorf("BoundaryPath = %q, want call[python]", re.BoundaryPath)
+	}
+	if !contains(re.Traceback, "Traceback") || !contains(re.Traceback, "(expr:") {
+		t.Errorf("Traceback should retain source stack and expression metadata, got: %q", re.Traceback)
+	}
+}
+
 func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
 	raw := "ERR:execute manifest: exec [java]: java: java.lang.RuntimeException: outer\n" +
 		"\tat OmniVMEval.run(OmniVMEval.java:3)\n" +

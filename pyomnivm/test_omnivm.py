@@ -90,6 +90,22 @@ class TestRuntimeError(unittest.TestCase):
         assert err.message == "UNIQUE constraint failed: users.name"
         assert "[parameters:" in err.traceback
 
+    def test_runtime_ref_assign_preserves_owner_runtime(self):
+        err = omnivm_mod.RuntimeError(
+            "runtime ref assign [python]: Traceback (most recent call last):\n"
+            "  File \"<string>\", line 1, in <module>\n"
+            "OSError: [Errno 9] Bad file descriptor\n"
+            " (expr: (lambda __o, __args, __kwargs: __o(*__args, **__kwargs))(...))",
+            runtime="__manifest",
+            boundary_path="call[__manifest]",
+        )
+        assert err.runtime == "python"
+        assert err.type == "OSError"
+        assert err.message == "[Errno 9] Bad file descriptor"
+        assert err.boundary_path == "call[python]"
+        assert "Traceback" in err.traceback
+        assert "(expr:" in err.traceback
+
     def test_parses_original_error_handle_marker(self):
         err = omnivm_mod.RuntimeError(
             "javascript: Error: outer\n"

@@ -204,6 +204,7 @@ public class OmniVM {
         text = stripBoundaryPrefix(text, "load manifest module", boundaryParts);
         text = stripBoundaryPrefix(text, "manifest module call", boundaryParts);
         text = stripCallBoundary(text, parsed, boundaryParts);
+        text = stripRuntimeRefAssignPrefix(text, parsed);
         text = stripRuntimePrefixes(text, parsed);
 
         if (!boundaryParts.isEmpty()) {
@@ -268,6 +269,23 @@ public class OmniVM {
             }
         }
         return text;
+    }
+
+    private static String stripRuntimeRefAssignPrefix(String text, ParsedRuntimeError parsed) {
+        String prefix = "runtime ref assign [";
+        if (!text.startsWith(prefix)) {
+            return text;
+        }
+        int close = text.indexOf("]: ", prefix.length());
+        if (close < 0) {
+            return text;
+        }
+        String runtime = text.substring(prefix.length(), close);
+        if (!isRuntimeLike(runtime)) {
+            return text;
+        }
+        parsed.runtime = normalizeRuntime(runtime);
+        return text.substring(close + 3).trim();
     }
 
     private static void parseMessageAndType(String text, ParsedRuntimeError parsed) {

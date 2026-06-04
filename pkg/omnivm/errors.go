@@ -67,6 +67,8 @@ func ParseError(runtime, s string) *RuntimeError {
 	recognized = recognized || matched
 	body, matched = stripCallBoundary(body, &sourceRuntime, &boundaryParts)
 	recognized = recognized || matched
+	body, matched = stripRuntimeRefAssignPrefix(body, &sourceRuntime)
+	recognized = recognized || matched
 	body, matched = stripRuntimePrefixes(body, &sourceRuntime)
 	recognized = recognized || matched
 
@@ -163,6 +165,24 @@ func stripRuntimePrefixes(text string, runtime *string) (string, bool) {
 		text = strings.TrimSpace(text[colon+2:])
 		matched = true
 	}
+}
+
+func stripRuntimeRefAssignPrefix(text string, runtime *string) (string, bool) {
+	const prefix = "runtime ref assign ["
+	if !strings.HasPrefix(text, prefix) {
+		return text, false
+	}
+	rest := text[len(prefix):]
+	close := strings.Index(rest, "]: ")
+	if close < 0 {
+		return text, false
+	}
+	rt := rest[:close]
+	if !isRuntimeLike(rt) {
+		return text, false
+	}
+	*runtime = normalizeRuntime(rt)
+	return strings.TrimSpace(rest[close+3:]), true
 }
 
 func parseCauseChain(text string) []RuntimeErrorCause {

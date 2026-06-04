@@ -116,6 +116,11 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         source_runtime = op_runtime
         body = op_match.group("body")
 
+    runtime_ref_assign_match = re.match(r"runtime ref assign \[(?P<runtime>[A-Za-z0-9_-]+)\]: (?P<body>.*)", body, re.S)
+    if runtime_ref_assign_match:
+        source_runtime = runtime_ref_assign_match.group("runtime")
+        body = runtime_ref_assign_match.group("body")
+
     changed = True
     while changed:
         changed = False

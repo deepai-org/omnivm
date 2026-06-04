@@ -337,6 +337,14 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
         body = op_match[3].str();
     }
 
+    std::smatch runtime_ref_assign_match;
+    static const std::regex runtime_ref_assign_re(
+        R"(^runtime ref assign \[([A-Za-z0-9_-]+)\]: ([\s\S]*))");
+    if (std::regex_match(body, runtime_ref_assign_match, runtime_ref_assign_re)) {
+        env.runtime = runtime_ref_assign_match[1].str();
+        body = runtime_ref_assign_match[2].str();
+    }
+
     omnivm_parse_runtime_prefix(body, env.runtime);
 
     size_t newline = body.find('\n');

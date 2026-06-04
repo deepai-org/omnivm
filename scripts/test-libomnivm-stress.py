@@ -6467,6 +6467,134 @@ finally:
         raise AssertionError(f"aiohttp closed StreamResponse leaked handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_werkzeug_wsgi_writer_after_close_reports_owner_error():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import socket
+import threading
+import time
+
+from werkzeug.serving import make_server
+
+werkzeug_closed_writer = None
+werkzeug_closed_writer_events = []
+port = {port!r}
+
+def wsgi_app(environ, start_response):
+    global werkzeug_closed_writer
+    write = start_response("209 Custom", [("Content-Type", "text/plain"), ("X-Poly", "wsgi")])
+    werkzeug_closed_writer = write
+    werkzeug_closed_writer_events.append("handler")
+    write(b"first")
+    werkzeug_closed_writer_events.append("wrote-first")
+    return [b"second"]
+
+server = make_server("127.0.0.1", port, wsgi_app, threaded=False)
+server_thread = threading.Thread(target=server.handle_request)
+server_thread.start()
+
+sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+try:
+    sock.settimeout(1)
+    sock.sendall(
+        b"GET /werkzeug/write-after-close HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not chunk:
+            break
+        data += chunk
+    data_lower = data.lower()
+    if b"209 custom" not in data_lower or b"x-poly: wsgi" not in data_lower or b"firstsecond" not in data:
+        raise AssertionError(f"bad Werkzeug WSGI response bytes: {{data!r}}")
+finally:
+    sock.close()
+
+server_thread.join(timeout=5)
+server.server_close()
+
+if server_thread.is_alive():
+    raise AssertionError(f"Werkzeug WSGI server request thread did not stop: {{werkzeug_closed_writer_events!r}}")
+if werkzeug_closed_writer is None:
+    raise AssertionError("Werkzeug WSGI writer was never captured")
+if werkzeug_closed_writer_events != ["handler", "wrote-first"]:
+    raise AssertionError(f"bad Werkzeug WSGI writer events: {{werkzeug_closed_writer_events!r}}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"werkzeug_closed_writer": "werkzeug_closed_writer"},
+                "code": (
+                    "globalThis.werkzeugClosedWriter = werkzeug_closed_writer; "
+                    "if (typeof werkzeugClosedWriter !== 'function') throw new Error('Werkzeug WSGI writer did not cross as callable');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "let failed = false; "
+                    "try { "
+                    "  globalThis.werkzeugClosedWriter(new Uint8Array([108, 97, 116, 101])); "
+                    "} catch (err) { "
+                    "  globalThis.werkzeugLateWriterError = {"
+                    "    name: err && err.name, "
+                    "    message: err && err.message, "
+                    "    runtime: err && err.runtime, "
+                    "    type: err && err.type, "
+                    "    traceback: err && err.traceback, "
+                    "    boundaryPath: err && err.boundaryPath"
+                    "  }; "
+                    "  failed = err && err.runtime === 'python' && err.type === 'OSError' && "
+                    "    String(err.message || '').includes('Bad file descriptor') && "
+                    "    String(err.traceback || '').includes('Traceback') && "
+                    "    err.boundaryPath === 'call[python]'; "
+                    "} "
+                    "if (!failed) throw new Error('Werkzeug WSGI writer after close did not report owner OSError: ' + JSON.stringify(globalThis.werkzeugLateWriterError));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert werkzeug_closed_writer is not None\n"
+                    "assert werkzeug_closed_writer_events == ['handler', 'wrote-first'], werkzeug_closed_writer_events"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"Werkzeug WSGI writer did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Werkzeug WSGI writer crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Werkzeug WSGI writer used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 1:
+        raise AssertionError(f"Werkzeug WSGI writer call was not recorded: before={before_handles}, after={handles}")
+
+
 def test_manifest_flask_werkzeug_client_abort_closes_request_body_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -25413,6 +25541,7 @@ def main():
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest aiohttp server client abort cleans up streaming response", test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response)
         check("Manifest aiohttp StreamResponse write after EOF reports owner error", test_manifest_aiohttp_stream_response_write_after_eof_reports_owner_error)
+        check("Manifest Werkzeug WSGI writer after close reports owner error", test_manifest_werkzeug_wsgi_writer_after_close_reports_owner_error)
         check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)
