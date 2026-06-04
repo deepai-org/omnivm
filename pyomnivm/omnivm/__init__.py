@@ -2234,11 +2234,12 @@ def _drop_handle_reference(from_id, to_id):
 
 
 def _drain_finalizer_releases(max_releases=0):
-    if _lib is None:
-        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
-    if not hasattr(_lib, "OmniDrainFinalizerReleases"):
-        raise RuntimeError("libomnivm does not expose OmniDrainFinalizerReleases")
-    return _lib.OmniDrainFinalizerReleases(int(max_releases)) == 0
+    try:
+        if _lib is None or not hasattr(_lib, "OmniDrainFinalizerReleases"):
+            return False
+        return _lib.OmniDrainFinalizerReleases(int(max_releases)) == 0
+    except BaseException:
+        return False
 
 
 def load_plugin(runtime, path):

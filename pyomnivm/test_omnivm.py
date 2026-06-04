@@ -2130,6 +2130,22 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod._drain_finalizer_releases(25) is True
         self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(25)
 
+    def test_drain_finalizer_releases_stays_quiet_without_runtime(self):
+        omnivm_mod._lib = None
+        assert omnivm_mod._drain_finalizer_releases(25) is False
+
+    def test_drain_finalizer_releases_stays_quiet_without_capability(self):
+        class OldLib:
+            pass
+
+        omnivm_mod._lib = OldLib()
+        assert omnivm_mod._drain_finalizer_releases(25) is False
+
+    def test_drain_finalizer_releases_stays_quiet_on_failure(self):
+        self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
+        assert omnivm_mod._drain_finalizer_releases(25) is False
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(25)
+
     def test_set_task_timeout_calls_lib(self):
         omnivm_mod.set_task_timeout(250)
         self.mock_lib.OmniSetTaskTimeout.assert_called_once_with(250)
