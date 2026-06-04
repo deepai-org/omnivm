@@ -25,6 +25,7 @@ extern void OmniFree(char* ptr);
 extern char* OmniInitRuntimes(char* list);
 extern char* OmniLoadPlugin(char* runtime, char* path);
 extern void OmniShutdownRuntimes(void);
+extern char* OmniPyModeStatus(void);
 
 // Buffer bridge exports
 #include <stdint.h>
@@ -66,6 +67,7 @@ static void* get_omni_call_typed_ptr()  { return (void*)OmniCallTyped; }
 static void* get_omni_init_runtimes_ptr() { return (void*)OmniInitRuntimes; }
 static void* get_omni_load_plugin_ptr()   { return (void*)OmniLoadPlugin; }
 static void* get_omni_shutdown_ptr()      { return (void*)OmniShutdownRuntimes; }
+static void* get_omni_pymode_status_ptr() { return (void*)OmniPyModeStatus; }
 
 // Get the current OS thread ID (Linux-specific).
 static long get_thread_id() { return syscall(SYS_gettid); }
@@ -75,11 +77,14 @@ import "C"
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
@@ -567,6 +572,7 @@ func runPythonInterpreter() int {
 		unsafe.Pointer(C.get_omni_init_runtimes_ptr()),
 		unsafe.Pointer(C.get_omni_load_plugin_ptr()),
 		unsafe.Pointer(C.get_omni_shutdown_ptr()),
+		unsafe.Pointer(C.get_omni_pymode_status_ptr()),
 		unsafe.Pointer(C.get_omni_free_ptr()),
 	)
 
@@ -582,6 +588,92 @@ func runPythonInterpreter() int {
 	}
 
 	return python.BytesMain(args)
+}
+
+func pythonModeThreadAffinityStatus(hostThreadID int64) map[string]interface{} {
+	return map[string]interface{}{
+		"mode":                     "diagnostic_only",
+		"host_thread_id":           hostThreadID,
+		"host_thread_required":     true,
+		"owner_dispatch_supported": false,
+		"owner_dispatch_targets": map[string]interface{}{
+			"python_asyncio": map[string]interface{}{
+				"supported":           false,
+				"owner_kind":          "python_asyncio_loop",
+				"required_capability": "schedule callbacks onto the owning Python asyncio loop from foreign runtimes",
+				"current_behavior":    "Python interpreter mode exposes affinity diagnostics and pump-owned async stream close paths, but not universal callback migration",
+				"narrow_capabilities": []string{"python_async_stream_pull", "python_async_stream_close"},
+				"diagnostic":          "Python async streams have narrow pump-owned pull/close paths, but general callbacks are not migrated back to the owner loop",
+			},
+			"javascript_event_loop": map[string]interface{}{
+				"supported":           false,
+				"owner_kind":          "javascript_event_loop",
+				"required_capability": "enqueue callbacks onto the owning JavaScript event loop from foreign runtimes",
+				"current_behavior":    "timers and promises are cooperatively pumped at host call boundaries",
+				"diagnostic":          "JavaScript timers and promises are cooperatively pumped at host boundaries; callbacks are not routed to an owner event loop",
+			},
+			"java_executor": map[string]interface{}{
+				"supported":           false,
+				"owner_kind":          "java_executor",
+				"required_capability": "resubmit callbacks to the originating Java Executor or scheduler",
+				"current_behavior":    "executors remain caller-managed",
+				"diagnostic":          "Java executors remain caller-managed; OmniVM does not resubmit callbacks to the originating Executor",
+			},
+			"ruby_fiber_thread": map[string]interface{}{
+				"supported":           false,
+				"owner_kind":          "ruby_fiber_or_thread",
+				"required_capability": "resume callbacks on the owning Ruby fiber or native Ruby thread without leaving the Golden Thread model",
+				"current_behavior":    "Ruby runs on the single VM thread with native Ruby thread scheduling disabled",
+				"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported",
+			},
+		},
+		"python_asyncio_loop":     "observable_when_running",
+		"javascript_event_loop":   "cooperatively_pumped_at_host_boundaries",
+		"java_executor":           "caller_managed",
+		"ruby_vm_thread":          "single_vm_thread",
+		"foreign_thread_behavior": "reject_runtime_calls",
+		"reason":                  "Python interpreter mode runs direct runtime calls on the pinned Golden Thread; OmniVM exposes affinity diagnostics but does not export a universal owner-loop/executor dispatcher.",
+	}
+}
+
+//export OmniPyModeStatus
+func OmniPyModeStatus() *C.char {
+	hostThreadID := int64(C.get_thread_id())
+	initialized := eng != nil
+	status := map[string]interface{}{
+		"initialized":      initialized,
+		"pid":              os.Getpid(),
+		"golden_thread_id": int64(0),
+		"runtimes":         []string{},
+		"go_plugins":       []string{},
+		"thread_affinity":  pythonModeThreadAffinityStatus(hostThreadID),
+		"ruby_threading": map[string]interface{}{
+			"mode":                     "single_vm_thread",
+			"native_threads_supported": false,
+			"thread_new":               "unsupported_diagnostic",
+			"supported_concurrency":    "fiber_async_or_external_process_threads",
+			"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.",
+		},
+		"arrow": arrow.GlobalStore().Stats(),
+	}
+	if eng != nil {
+		status["golden_thread_id"] = eng.GoldenThreadID
+		status["thread_affinity"] = pythonModeThreadAffinityStatus(eng.GoldenThreadID)
+		runtimes := make([]string, 0, len(eng.Runtimes))
+		for name := range eng.Runtimes {
+			runtimes = append(runtimes, name)
+		}
+		sort.Strings(runtimes)
+		status["runtimes"] = runtimes
+		if eng.Handles != nil {
+			status["handles"] = eng.Handles.Stats(time.Now())
+		}
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
+	return C.CString(string(data))
 }
 
 //export OmniInitRuntimes

@@ -7734,6 +7734,65 @@ func TestLibOmniVMThreadAffinityStatusReportsUnsupportedOwnerDispatch(t *testing
 	}
 }
 
+func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
+	files := map[string]string{}
+	for _, path := range []string{
+		"../../pkg/python/python.go",
+		"../../cmd/omnivm/main.go",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		files[path] = string(data)
+	}
+	pythonCode := files["../../pkg/python/python.go"]
+	for _, want := range []string{
+		"typedef char* (*omni_status_fn)(void)",
+		"static omni_status_fn         g_status",
+		"static PyObject* pymode_status",
+		`{"status",        pymode_status`,
+		"def owner_dispatch_status():",
+		"def owner_dispatch_target_status(target):",
+		"def assert_owner_dispatch_supported(label=''):",
+		"def assert_owner_dispatch_target_supported(target, label=''):",
+		"def ruby_threading_status():",
+		"def assert_ruby_native_threads_supported(label=''):",
+		"omnivm_py_install_pymode_status_helpers(mod)",
+		"C.omni_status_fn(statusPtr)",
+	} {
+		if !contains(pythonCode, want) {
+			t.Fatalf("Python interpreter mode status helpers missing %q", want)
+		}
+	}
+	cmdCode := files["../../cmd/omnivm/main.go"]
+	for _, want := range []string{
+		"extern char* OmniPyModeStatus(void)",
+		"get_omni_pymode_status_ptr",
+		"func pythonModeThreadAffinityStatus(hostThreadID int64)",
+		`"mode":                     "diagnostic_only"`,
+		`"owner_dispatch_supported": false`,
+		`"foreign_thread_behavior": "reject_runtime_calls"`,
+		`"python_asyncio": map[string]interface{}{`,
+		`"narrow_capabilities": []string{"python_async_stream_pull", "python_async_stream_close"}`,
+		`"ruby_fiber_thread": map[string]interface{}{`,
+		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"`,
+		"func OmniPyModeStatus() *C.char",
+		`"ruby_threading": map[string]interface{}{`,
+		`"native_threads_supported": false`,
+		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
+		"json.Marshal(status)",
+	} {
+		if !contains(cmdCode, want) {
+			t.Fatalf("Python interpreter mode Go status contract missing %q", want)
+		}
+	}
+	if contains(cmdCode, `"owner_dispatch_supported": true`) ||
+		contains(cmdCode, `"supported":           true`) {
+		t.Fatalf("Python interpreter mode status should not claim universal owner dispatch")
+	}
+}
+
 func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{

@@ -342,6 +342,66 @@ static const char* omnivm_py_proxy_close_code_for_test(void) {
     return omnivm_py_proxy_close_code;
 }
 
+static const char* omnivm_py_pymode_status_helpers_code =
+"def owner_dispatch_status():\n"
+"    status_info = status()\n"
+"    info = status_info.get('thread_affinity')\n"
+"    if not isinstance(info, dict):\n"
+"        raise RuntimeError('omnivm.status omitted thread_affinity capability', boundary_path='thread_affinity', details={'status': status_info})\n"
+"    return info\n"
+"def owner_dispatch_target_status(target):\n"
+"    target_name = str(target)\n"
+"    dispatch_info = owner_dispatch_status()\n"
+"    targets = dispatch_info.get('owner_dispatch_targets')\n"
+"    if not isinstance(targets, dict):\n"
+"        raise RuntimeError('omnivm.status omitted owner_dispatch_targets capability', boundary_path='thread_affinity', details={'thread_affinity': dispatch_info})\n"
+"    info = targets.get(target_name)\n"
+"    if not isinstance(info, dict):\n"
+"        known_targets = sorted(str(name) for name in targets.keys())\n"
+"        raise RuntimeError('omnivm.status omitted owner dispatch target %r; known targets: %s' % (target_name, ', '.join(known_targets) if known_targets else 'none'), boundary_path='thread_affinity', details={'target': target_name, 'known_targets': known_targets, 'owner_dispatch_targets': targets})\n"
+"    return info\n"
+"def assert_owner_dispatch_supported(label=''):\n"
+"    info = owner_dispatch_status()\n"
+"    if info.get('owner_dispatch_supported') is True:\n"
+"        return True\n"
+"    prefix = (str(label) + ': ') if label else ''\n"
+"    mode = info.get('mode') or 'unknown'\n"
+"    reason = info.get('reason') or 'owner dispatch is not supported by this OmniVM build'\n"
+"    raise RuntimeError('%sowner dispatch unsupported: mode=%s: %s' % (prefix, mode, reason), boundary_path='thread_affinity', details={'thread_affinity': info})\n"
+"def assert_owner_dispatch_target_supported(target, label=''):\n"
+"    target_name = str(target)\n"
+"    info = owner_dispatch_target_status(target_name)\n"
+"    if info.get('supported') is True:\n"
+"        return True\n"
+"    prefix = (str(label) + ': ') if label else ''\n"
+"    diagnostic = info.get('diagnostic') or 'owner dispatch is not supported for this target'\n"
+"    raise RuntimeError('%sowner dispatch target %s unsupported: %s' % (prefix, target_name, diagnostic), boundary_path='thread_affinity', details={'target': target_name, 'owner_dispatch_target': info})\n"
+"def ruby_threading_status():\n"
+"    status_info = status()\n"
+"    info = status_info.get('ruby_threading')\n"
+"    if not isinstance(info, dict):\n"
+"        raise RuntimeError('omnivm.status omitted ruby_threading capability', boundary_path='ruby_threading', details={'status': status_info})\n"
+"    return info\n"
+"def assert_ruby_native_threads_supported(label=''):\n"
+"    info = ruby_threading_status()\n"
+"    if info.get('native_threads_supported') is True:\n"
+"        return True\n"
+"    prefix = (str(label) + ': ') if label else ''\n"
+"    mode = info.get('mode') or 'unknown'\n"
+"    reason = info.get('app_server_boundary') or 'native Ruby threads are not supported by this OmniVM build'\n"
+"    raise RuntimeError('%snative Ruby threads unsupported: mode=%s: %s' % (prefix, mode, reason), boundary_path='ruby_threading', details={'ruby_threading': info})\n"
+"try:\n"
+"    __all__\n"
+"except NameError:\n"
+"    __all__ = []\n"
+"for __omnivm_name in ('status', 'owner_dispatch_status', 'owner_dispatch_target_status', 'assert_owner_dispatch_supported', 'assert_owner_dispatch_target_supported', 'ruby_threading_status', 'assert_ruby_native_threads_supported'):\n"
+"    if __omnivm_name not in __all__:\n"
+"        __all__.append(__omnivm_name)\n";
+
+static const char* omnivm_py_pymode_status_helpers_code_for_test(void) {
+    return omnivm_py_pymode_status_helpers_code;
+}
+
 static void omnivm_py_raise_runtime_error(const char* runtime, const char* message, const char* boundary_path) {
     PyObject* mod = PyImport_ImportModule("omnivm");
     PyObject* cls = mod ? PyObject_GetAttrString(mod, "RuntimeError") : NULL;
@@ -3493,6 +3553,16 @@ static void omnivm_py_install_proxy_close_helpers(PyObject* module) {
     }
 }
 
+static void omnivm_py_install_pymode_status_helpers(PyObject* module) {
+    PyObject* dict = module ? PyModule_GetDict(module) : NULL;
+    PyObject* result = dict ? PyRun_String(omnivm_py_pymode_status_helpers_code, Py_file_input, dict, dict) : NULL;
+    if (result) {
+        Py_DECREF(result);
+    } else {
+        PyErr_Clear();
+    }
+}
+
 // Register the omnivm module
 static void omnivm_py_register_bridge() {
     if (PyType_Ready(&py_omnivm_buffer_view_type) < 0) {
@@ -3643,19 +3713,23 @@ static void omnivm_activate_fork_guard(void) {
 typedef char* (*omni_init_runtimes_fn)(const char* list);
 typedef char* (*omni_load_plugin_fn)(const char* runtime, const char* path);
 typedef void  (*omni_shutdown_fn)(void);
+typedef char* (*omni_status_fn)(void);
 
 static omni_init_runtimes_fn  g_init_runtimes = NULL;
 static omni_load_plugin_fn    g_load_plugin   = NULL;
 static omni_shutdown_fn       g_shutdown      = NULL;
+static omni_status_fn         g_status        = NULL;
 
 static void omnivm_set_pymode_callbacks(
     omni_init_runtimes_fn init_fn,
     omni_load_plugin_fn   load_fn,
-    omni_shutdown_fn      shut_fn
+    omni_shutdown_fn      shut_fn,
+    omni_status_fn        status_fn
 ) {
     g_init_runtimes = init_fn;
     g_load_plugin   = load_fn;
     g_shutdown      = shut_fn;
+    g_status        = status_fn;
 }
 
 // omnivm.init_runtimes(["go", "javascript"])
@@ -3740,6 +3814,42 @@ static PyObject* pymode_shutdown(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+// omnivm.status()
+static PyObject* pymode_status(PyObject* self, PyObject* args) {
+    if (!g_status) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm: status callback not installed");
+        return NULL;
+    }
+
+    PyThreadState* _save = PyEval_SaveThread();
+    char* result = g_status();
+    PyEval_RestoreThread(_save);
+
+    if (!result) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm.status returned NULL");
+        return NULL;
+    }
+    if (strncmp(result, "ERR:", 4) == 0) {
+        omnivm_py_raise_runtime_error(NULL, result + 4, "status");
+        if (g_bridge_free) g_bridge_free(result);
+        return NULL;
+    }
+
+    PyObject* json_mod = PyImport_ImportModule("json");
+    PyObject* loads = json_mod ? PyObject_GetAttrString(json_mod, "loads") : NULL;
+    PyObject* text = PyUnicode_FromString(result);
+    PyObject* parsed = (loads && text) ? PyObject_CallFunctionObjArgs(loads, text, NULL) : NULL;
+    Py_XDECREF(text);
+    Py_XDECREF(loads);
+    Py_XDECREF(json_mod);
+    if (g_bridge_free) g_bridge_free(result);
+    if (!parsed) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm.status returned invalid JSON");
+        return NULL;
+    }
+    return parsed;
+}
+
 // omnivm.execute(runtime, code) — runs code, returns captured stdout
 static PyObject* pymode_execute(PyObject* self, PyObject* args) {
     const char* runtime;
@@ -3764,6 +3874,7 @@ static PyMethodDef omnivm_pymode_methods[] = {
     {"call_typed",    py_omnivm_call_typed, METH_VARARGS, "Call a function with typed args: omnivm.call_typed(runtime, func, (args,))"},
     {"load_plugin",   pymode_load_plugin,   METH_VARARGS, "Load a plugin: omnivm.load_plugin('go', '/path/to/plugin.so')"},
     {"shutdown",      pymode_shutdown,       METH_NOARGS,  "Shut down runtimes"},
+    {"status",        pymode_status,         METH_NOARGS,  "Return OmniVM runtime status and capability diagnostics"},
     {"execute",       pymode_execute,        METH_VARARGS, "Execute code: omnivm.execute('javascript', 'code')"},
     {NULL, NULL, 0, NULL}
 };
@@ -3796,6 +3907,7 @@ PyMODINIT_FUNC PyInit_omnivm(void) {
     }
 
     omnivm_py_install_proxy_close_helpers(mod);
+    omnivm_py_install_pymode_status_helpers(mod);
     return mod;
 }
 */
@@ -4338,11 +4450,12 @@ func BytesMain(args []string) int {
 
 // SetPyModeCallbacks installs the Go callback function pointers used by the
 // omnivm Python module in interpreter mode. Called from the main binary.
-func SetPyModeCallbacks(initPtr, loadPtr, shutdownPtr, freePtr unsafe.Pointer) {
+func SetPyModeCallbacks(initPtr, loadPtr, shutdownPtr, statusPtr, freePtr unsafe.Pointer) {
 	C.omnivm_set_pymode_callbacks(
 		C.omni_init_runtimes_fn(initPtr),
 		C.omni_load_plugin_fn(loadPtr),
 		C.omni_shutdown_fn(shutdownPtr),
+		C.omni_status_fn(statusPtr),
 	)
 	// Also set the bridge free function so pymode can free Go-allocated strings
 	C.omnivm_py_set_bridge_free(C.omni_free_fn(freePtr))
