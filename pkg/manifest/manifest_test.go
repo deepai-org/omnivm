@@ -5125,6 +5125,13 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, "FinalizationRegistry") || !contains(code, `op: "handle_release_finalizer"`) {
 		t.Fatalf("JS materializer should queue finalizer releases, got %q", code)
 	}
+	if !contains(code, "__omnivm_release_handle_explicit") ||
+		!contains(code, "globalThis.__omnivm_release_handle_explicit(handleId)") ||
+		!contains(code, "globalThis.__omnivm_handle_finalizers.unregister(target)") ||
+		!contains(code, "globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target)") ||
+		!contains(code, "globalThis.__omnivm_handle_finalizers.register(stream, value.id, stream)") {
+		t.Fatalf("JS explicit proxy close should use a non-quiet release path and unregister finalizers, got %q", code)
+	}
 	if !contains(code, `op: "handle_retain"`) || !contains(code, "__omnivm_retain_handle") {
 		t.Fatalf("JS materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
@@ -5230,6 +5237,16 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "ObjectSpace.define_finalizer") || !contains(code, `op: "handle_release_finalizer"`) {
 		t.Fatalf("Ruby materializer should queue finalizer releases, got %q", code)
+	}
+	if !contains(code, "@__omnivm_closed = false") ||
+		!contains(code, "ObjectSpace.undefine_finalizer(self)") ||
+		!contains(code, "return false if @__omnivm_closed == true") {
+		t.Fatalf("Ruby explicit proxy close should be idempotent and unregister its finalizer after release, got %q", code)
+	}
+	if !contains(code, "class OmniVMStreamProxy") ||
+		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
+		!contains(code, "def omnivm_close\n    close\n  end") {
+		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, got %q", code)
 	}
 	if !contains(code, `op: "handle_retain"`) || !contains(code, "def self.omnivm_retain") {
 		t.Fatalf("Ruby materializer should retain handles for guest proxy lifetime, got %q", code)

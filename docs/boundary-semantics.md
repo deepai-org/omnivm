@@ -189,6 +189,10 @@ different: `handle_release_finalizer` returns `false` for an already released
 handle without queueing work, and `handle_drop_reference` is an idempotent
 no-op when either side of the edge is already gone. This keeps GC/finalizer and
 scope cleanup races quiet without hiding ordinary stale-proxy use.
+Explicit proxy-close helpers use the same release operation, but as
+user-initiated calls: after a successful release, JavaScript unregisters the
+`FinalizationRegistry` token and Ruby undefines the `ObjectSpace` finalizer so
+later GC does not enqueue redundant cleanup for that proxy.
 
 ### Cross-Runtime Cycles
 
@@ -556,6 +560,9 @@ Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
 `proxy.omnivm_close`.
+The close helpers are idempotent. In runtimes with explicit finalizer
+unregistration, close also detaches the fallback GC cleanup hook after the
+release succeeds.
 Java manifest proxies provide the static helpers
 `OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
 `OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,

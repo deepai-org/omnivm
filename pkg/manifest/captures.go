@@ -1188,6 +1188,12 @@ globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record
     }
   } catch (_e) {}
 };
+globalThis.__omnivm_release_handle_explicit = globalThis.__omnivm_release_handle_explicit || function(id) {
+  if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
+  var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_release_finalizer", id: id}));
+  var env = JSON.parse(raw);
+  return !!(env && env.__omnivm_result__ === true && env.value === true);
+};
 globalThis.__omnivm_retain_handle = globalThis.__omnivm_retain_handle || function(id) {
   try {
     if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
@@ -1513,9 +1519,12 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var releaseProxyLease = function() {
     var handleId = globalThis.__omnivm_proxy_handle_id(target);
     if (handleId == null || target.__omnivm_closed__ === true) return false;
+    var released = globalThis.__omnivm_release_handle_explicit(handleId);
     target.__omnivm_closed__ = true;
-    globalThis.__omnivm_record_handle_release_finalizer(handleId);
-    return true;
+    if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
+      globalThis.__omnivm_handle_finalizers.unregister(target);
+    }
+    return released;
   };
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
@@ -1670,7 +1679,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     } else {
       globalThis.__omnivm_retain_handle(finalizerHandleId);
     }
-    globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId);
+    globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target);
   }
   return proxy;
 };
@@ -1688,6 +1697,10 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
       }
     } catch (_e) {}
+    if (stream) stream.__omnivm_closed__ = true;
+    if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function' && stream) {
+      globalThis.__omnivm_handle_finalizers.unregister(stream);
+    }
   };
   var nextValue = function() {
     if (localValues) {
@@ -1770,9 +1783,12 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     },
     __omnivm_close: function() {
       if (this.__omnivm_closed__ === true) return false;
+      var released = globalThis.__omnivm_release_handle_explicit(value.id);
       this.__omnivm_closed__ = true;
-      globalThis.__omnivm_record_handle_release_finalizer(value.id);
-      return true;
+      if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
+        globalThis.__omnivm_handle_finalizers.unregister(this);
+      }
+      return released;
     },
     [Symbol.iterator]: function() {
       var owner = this;
@@ -1803,7 +1819,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     } else {
       globalThis.__omnivm_retain_handle(value.id);
     }
-    globalThis.__omnivm_handle_finalizers.register(stream, value.id);
+    globalThis.__omnivm_handle_finalizers.register(stream, value.id, stream);
   }
   return stream;
 };
@@ -1977,6 +1993,7 @@ class OmniVMHandleProxy
 
   def initialize(value)
     @value = value
+    @__omnivm_closed = false
     id = @value["id"]
     if !id.nil?
       @value["transfer"] == true ? self.class.omnivm_adopt(id) : self.class.omnivm_retain(id)
@@ -2263,8 +2280,12 @@ class OmniVMHandleProxy
 
   def omnivm_close
     return false if @__omnivm_closed == true
-    @__omnivm_closed = true
     OmniVM.call("__manifest", JSON.generate({op: "handle_release_finalizer", id: @value["id"]}))
+    @__omnivm_closed = true
+    begin
+      ObjectSpace.undefine_finalizer(self)
+    rescue
+    end
     true
   end
 
@@ -2482,6 +2503,7 @@ class OmniVMStreamProxy
 
   def initialize(value)
     @value = value
+    @__omnivm_closed = false
     id = @value["id"]
     if !id.nil?
       @value["transfer"] == true ? OmniVMHandleProxy.omnivm_adopt(id) : OmniVMHandleProxy.omnivm_retain(id)
@@ -2501,10 +2523,22 @@ class OmniVMStreamProxy
   end
 
   def close
+    return false if @__omnivm_closed == true
     begin
       OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
+      @__omnivm_closed = true
+      begin
+        ObjectSpace.undefine_finalizer(self)
+      rescue
+      end
+      true
     rescue
+      false
     end
+  end
+
+  def omnivm_close
+    close
   end
 end
 
