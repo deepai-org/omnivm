@@ -2753,6 +2753,140 @@ static PyObject* omnivm_py_details_from_db_error(PyObject* value) {
     return details;
 }
 
+#define OMNIVM_PY_EXCEPTION_GROUP_MAX_DEPTH 4
+#define OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN 64
+
+static PyObject* omnivm_py_exception_group_summary(PyObject* value, int depth);
+
+static PyObject* omnivm_py_exception_group_children(PyObject* value, int depth, Py_ssize_t* total) {
+    if (!value || depth >= OMNIVM_PY_EXCEPTION_GROUP_MAX_DEPTH || !PyObject_HasAttrString(value, "exceptions")) {
+        return NULL;
+    }
+    PyObject* exceptions = PyObject_GetAttrString(value, "exceptions");
+    if (!exceptions) {
+        PyErr_Clear();
+        return NULL;
+    }
+    if (!PySequence_Check(exceptions)) {
+        Py_DECREF(exceptions);
+        return NULL;
+    }
+    Py_ssize_t n = PySequence_Size(exceptions);
+    if (n < 0) {
+        Py_DECREF(exceptions);
+        PyErr_Clear();
+        return NULL;
+    }
+    if (total) *total = n;
+    PyObject* out = PyList_New(0);
+    if (!out) {
+        Py_DECREF(exceptions);
+        PyErr_Clear();
+        return NULL;
+    }
+    Py_ssize_t limit = n < OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN ? n : OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN;
+    for (Py_ssize_t i = 0; i < limit; ++i) {
+        PyObject* child = PySequence_GetItem(exceptions, i);
+        if (!child) {
+            PyErr_Clear();
+            continue;
+        }
+        PyObject* item = omnivm_py_exception_group_summary(child, depth + 1);
+        Py_DECREF(child);
+        if (!item) {
+            continue;
+        }
+        if (PyList_Append(out, item) != 0) {
+            Py_DECREF(item);
+            Py_DECREF(out);
+            Py_DECREF(exceptions);
+            PyErr_Clear();
+            return NULL;
+        }
+        Py_DECREF(item);
+    }
+    Py_DECREF(exceptions);
+    return out;
+}
+
+static PyObject* omnivm_py_exception_group_summary(PyObject* value, int depth) {
+    if (!value) return NULL;
+    PyObject* item = PyDict_New();
+    if (!item) {
+        PyErr_Clear();
+        return NULL;
+    }
+    PyObject* type_name = PyObject_GetAttrString((PyObject*)Py_TYPE(value), "__name__");
+    if (type_name) {
+        PyDict_SetItemString(item, "type", type_name);
+        Py_DECREF(type_name);
+    } else {
+        PyErr_Clear();
+    }
+    PyObject* message = PyObject_Str(value);
+    if (message) {
+        PyDict_SetItemString(item, "message", message);
+        Py_DECREF(message);
+    } else {
+        PyErr_Clear();
+    }
+    Py_ssize_t nested_total = 0;
+    PyObject* nested = omnivm_py_exception_group_children(value, depth, &nested_total);
+    if (nested) {
+        if (PyList_Size(nested) > 0) {
+            PyDict_SetItemString(item, "exceptions", nested);
+        }
+        if (nested_total > OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN) {
+            PyObject* truncated = Py_True;
+            Py_INCREF(truncated);
+            PyDict_SetItemString(item, "exceptions_truncated", truncated);
+            Py_DECREF(truncated);
+            PyObject* total = PyLong_FromSsize_t(nested_total);
+            if (total) {
+                PyDict_SetItemString(item, "exception_count", total);
+                Py_DECREF(total);
+            } else {
+                PyErr_Clear();
+            }
+        }
+        Py_DECREF(nested);
+    }
+    return item;
+}
+
+static PyObject* omnivm_py_details_from_exception_group(PyObject* value) {
+    Py_ssize_t total = 0;
+    PyObject* exceptions = omnivm_py_exception_group_children(value, 0, &total);
+    if (!exceptions) return NULL;
+    PyObject* details = PyDict_New();
+    if (!details) {
+        Py_DECREF(exceptions);
+        PyErr_Clear();
+        return NULL;
+    }
+    if (PyDict_SetItemString(details, "exceptions", exceptions) != 0) {
+        Py_DECREF(exceptions);
+        Py_DECREF(details);
+        PyErr_Clear();
+        return NULL;
+    }
+    Py_DECREF(exceptions);
+    if (total > OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN) {
+        PyObject* truncated = Py_True;
+        Py_INCREF(truncated);
+        PyDict_SetItemString(details, "exceptions_truncated", truncated);
+        Py_DECREF(truncated);
+        PyObject* count = PyLong_FromSsize_t(total);
+        if (count) {
+            PyDict_SetItemString(details, "exception_count", count);
+            Py_DECREF(count);
+        } else {
+            PyErr_Clear();
+        }
+    }
+    return details;
+}
+
 static PyObject* omnivm_py_details_from_noarg_method(PyObject* value, const char* name, int parse_json) {
     PyObject* details = omnivm_py_call_noarg_method(value, name);
     if (!details) return NULL;
@@ -2804,6 +2938,9 @@ static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     if (details) return details;
 
     details = omnivm_py_details_from_json_messages(value);
+    if (details) return details;
+
+    details = omnivm_py_details_from_exception_group(value);
     if (details) return details;
 
     static const char* attrs[] = {"messages", "message_dict", "error_dict", NULL};

@@ -7486,6 +7486,22 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		t.Fatalf("embedded Python RuntimeError should accept copied structured details overrides")
 	}
 	for _, want := range []string{
+		"#define OMNIVM_PY_EXCEPTION_GROUP_MAX_DEPTH 4",
+		"#define OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN 64",
+		"static PyObject* omnivm_py_details_from_exception_group(PyObject* value)",
+		`PyObject_HasAttrString(value, "exceptions")`,
+		`PyDict_SetItemString(item, "type", type_name)`,
+		`PyDict_SetItemString(item, "message", message)`,
+		`PyDict_SetItemString(item, "exceptions", nested)`,
+		`PyDict_SetItemString(details, "exceptions", exceptions)`,
+		`PyDict_SetItemString(details, "exceptions_truncated", truncated)`,
+		"details = omnivm_py_details_from_exception_group(value)",
+	} {
+		if !contains(files["../../pkg/python/python.go"], want) {
+			t.Fatalf("embedded Python errors should expose ExceptionGroup details, missing %q", want)
+		}
+	}
+	for _, want := range []string{
 		"self._stack_frames = _copy_json_value(parsed['stack_frames'])",
 		"self._cause_chain = _copy_json_value(parsed['cause_chain'])",
 		"def stack_frames(self):",
