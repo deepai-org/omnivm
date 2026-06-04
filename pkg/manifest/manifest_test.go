@@ -6148,6 +6148,65 @@ if (symbolAsyncDisposeResult !== symbolAsyncDisposePromise) throw new Error("Sym
 	}
 }
 
+func TestJSCaptureProxyIdentityNameCollisionsPreferRemoteFields(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  calls: [],
+  fields: {
+    constructor: "remote-constructor",
+    toString: "remote-toString",
+    valueOf: "remote-valueOf",
+    inspect: "remote-inspect",
+    toJSON: "remote-toJSON"
+  },
+  call: function(name, raw) {
+    if (name !== "__manifest") throw new Error("unexpected bridge name " + name);
+    var payload = JSON.parse(raw);
+    this.calls.push(payload);
+    if (payload.op === "handle_access") {
+      return JSON.stringify({__omnivm_result__: true, value: {chatty: false}});
+    }
+    if (payload.op === "handle_retain") {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (payload.op === "handle_contains") {
+      return JSON.stringify({__omnivm_result__: true, value: Object.prototype.hasOwnProperty.call(this.fields, payload.value)});
+    }
+    if (payload.op === "handle_get") {
+      if (Object.prototype.hasOwnProperty.call(this.fields, payload.key)) {
+        return JSON.stringify({__omnivm_result__: true, value: this.fields[payload.key]});
+      }
+      throw new Error("resource has no property " + payload.key);
+    }
+    throw new Error("unexpected op " + payload.op);
+  }
+};
+` + code + `
+var proxy = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 77, runtime: "python", kind: "object"});
+if (proxy.constructor !== "remote-constructor") throw new Error("constructor was not remote-first: " + String(proxy.constructor));
+if (proxy.toString !== "remote-toString") throw new Error("toString was not remote-first: " + String(proxy.toString));
+if (proxy.valueOf !== "remote-valueOf") throw new Error("valueOf was not remote-first: " + String(proxy.valueOf));
+if (proxy.inspect !== "remote-inspect") throw new Error("inspect was not remote-first: " + String(proxy.inspect));
+var localToJSON = proxy.toJSON();
+if (!localToJSON || localToJSON.id !== 77 || localToJSON.runtime !== "python") throw new Error("local toJSON bookkeeping changed");
+var remoteToJSON = omnivm.proxyGet(proxy, "toJSON");
+if (remoteToJSON !== "remote-toJSON") throw new Error("proxyGet did not recover remote toJSON: " + String(remoteToJSON));
+var requested = omnivm.calls.filter(function(call) { return call.op === "handle_get"; }).map(function(call) { return call.key; });
+["constructor", "toString", "valueOf", "inspect", "toJSON"].forEach(function(key) {
+  if (requested.indexOf(key) < 0) throw new Error("missing remote lookup for " + key + ": " + requested.join(","));
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node identity-name collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestJSLocalStreamMarksClosedAtEOF(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
