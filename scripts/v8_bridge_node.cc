@@ -431,6 +431,9 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         v8::Local<v8::Object> cause_object = cause_value.As<v8::Object>();
         OmniRuntimeErrorCause cause;
         cause.runtime = omnivm_v8_get_string_prop(isolate, context, cause_object, "runtime");
+        if (cause.runtime.empty()) {
+            cause.runtime = env.runtime;
+        }
         cause.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "origin_runtime", "originRuntime");
         if (cause.origin_runtime.empty()) {
             cause.origin_runtime = cause.runtime;
@@ -696,6 +699,8 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
         if (omnivm_starts_with(stripped, cause_prefix)) {
             std::string cause_text = stripped.substr(strlen(cause_prefix));
             OmniRuntimeErrorCause cause;
+            cause.runtime = env.runtime;
+            cause.origin_runtime = env.runtime;
             cause.message = cause_text;
             size_t cause_sep = cause_text.find(": ");
             if (cause_sep != std::string::npos) {
