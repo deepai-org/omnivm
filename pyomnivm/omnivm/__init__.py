@@ -1470,6 +1470,12 @@ def _actual_public_method(value, name):
         except Exception:
             return None
         return method if callable(method) else None
+    if inspect.ismemberdescriptor(raw):
+        try:
+            method = raw.__get__(value, type(value))
+        except Exception:
+            return None
+        return method if callable(method) else None
     if not callable(raw):
         return None
     try:

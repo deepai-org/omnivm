@@ -621,6 +621,12 @@ def __omnivm_actual_public_method(value, name):
         except Exception:
             return None
         return method if callable(method) else None
+    if __inspect.ismemberdescriptor(raw):
+        try:
+            method = raw.__get__(value, type(value))
+        except Exception:
+            return None
+        return method if callable(method) else None
     if not callable(raw):
         return None
     try:

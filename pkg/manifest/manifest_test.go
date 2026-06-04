@@ -5673,6 +5673,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `__inspect.getattr_static(value, name)`) ||
 		!contains(code, `isinstance(raw, (staticmethod, classmethod))`) ||
 		!contains(code, `method = raw.__get__(value, type(value))`) ||
+		!contains(code, `__inspect.ismemberdescriptor(raw)`) ||
 		!contains(code, `if not callable(raw):`) ||
 		!contains(code, `instance_dict = object.__getattribute__(value, "__dict__")`) ||
 		!contains(code, `instance_dict.get(name) is raw`) ||

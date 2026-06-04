@@ -1205,6 +1205,12 @@ class TestCallWithMockLib(unittest.TestCase):
             def __init__(self):
                 self.close = lambda: "instance-closed"
 
+        class SlottedInstanceCloser:
+            __slots__ = ("close",)
+
+            def __init__(self):
+                self.close = lambda: "slotted-instance-closed"
+
         class InstanceGetattributeTrap:
             def __init__(self):
                 self.lookup_count = 0
@@ -1225,6 +1231,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(StaticCloser()) == "static-closed"
         assert omnivm_mod.proxy_close(ClassCloser()) == "ClassCloser"
         assert omnivm_mod.proxy_close(InstanceCloser()) == "instance-closed"
+        assert omnivm_mod.proxy_close(SlottedInstanceCloser()) == "slotted-instance-closed"
         assert omnivm_mod.proxy_close(trap) == "instance-static-closed"
         assert trap.lookup_count == 0
 
