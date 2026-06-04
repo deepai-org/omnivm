@@ -1951,6 +1951,11 @@ public class OmniVM {
                 subscription.cancel();
                 return;
             }
+            if (closed) {
+                subscription.cancel();
+                subscribed.countDown();
+                return;
+            }
             this.subscription = subscription;
             subscribed.countDown();
         }

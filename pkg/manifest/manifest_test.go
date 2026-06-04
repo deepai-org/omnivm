@@ -5838,6 +5838,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "throw err;") {
 		t.Fatalf("Java stream proxy should mark itself released after terminal owner stream errors")
 	}
+	if !contains(code, "if (closed) {\n                subscription.cancel();\n                subscribed.countDown();\n                return;\n            }") {
+		t.Fatalf("Java Flow.Publisher iterator should cancel subscriptions that arrive after close")
+	}
 	if !contains(code, "private final String originRuntime;") ||
 		!contains(code, "public String getOriginRuntime()") ||
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
