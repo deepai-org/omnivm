@@ -1559,7 +1559,7 @@ public class OmniVM {
     /**
      * Generic proxy for runtime-owned handle descriptors.
      */
-    public static final class HandleProxy extends AbstractMap<String, Object> {
+    public static final class HandleProxy extends AbstractMap<String, Object> implements AutoCloseable {
         private static final Set<String> chattyProxyWarned = Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
         private static final int chattyProxyWarnedLimit = 4096;
         private final Map<String, Object> value;
@@ -1640,6 +1640,11 @@ public class OmniVM {
             }
             cleanable.clean();
             return true;
+        }
+
+        @Override
+        public void close() {
+            releaseExplicit();
         }
 
         @Override
@@ -2078,7 +2083,7 @@ public class OmniVM {
         }
     }
 
-    public static final class StreamProxy implements Iterable<Object> {
+    public static final class StreamProxy implements Iterable<Object>, AutoCloseable {
         private final Map<String, Object> value;
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
@@ -2135,6 +2140,11 @@ public class OmniVM {
             }
             cleanable.clean();
             return true;
+        }
+
+        @Override
+        public void close() {
+            cancel();
         }
 
         public List<Object> toList() {

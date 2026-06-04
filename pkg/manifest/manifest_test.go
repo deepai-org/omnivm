@@ -6071,10 +6071,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers")
 	}
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
+		!contains(code, "public static final class HandleProxy extends AbstractMap<String, Object> implements AutoCloseable") ||
+		!contains(code, "public static final class StreamProxy implements Iterable<Object>, AutoCloseable") ||
 		!contains(code, "return proxy.releaseExplicit();") ||
 		!contains(code, "return proxy.cancel();") ||
 		!contains(code, `"op\":\"handle_release_explicit\"`) ||
 		!contains(code, "public boolean releaseExplicit()") ||
+		!contains(code, "public void close()") ||
 		!contains(code, "if (!Boolean.TRUE.equals(result)) {\n                return false;\n            }") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
