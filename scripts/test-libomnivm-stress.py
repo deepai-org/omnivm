@@ -25937,9 +25937,11 @@ def test_manifest_python_mapping_collision_setters_prefer_keys():
                     "if (omnivm.proxyGet(py_payload, 'close') !== 'old-close') throw new Error('proxyGet lost close key: ' + omnivm.proxyGet(py_payload, 'close')); "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 5) throw new Error('proxyGet lost length key: ' + omnivm.proxyGet(py_payload, 'length')); "
                     "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen lost mapping length: ' + omnivm.proxyLen(py_payload)); "
+                    "if (py_payload[omnivm.proxyLength] !== 7) throw new Error('proxyLength symbol lost mapping length: ' + py_payload[omnivm.proxyLength]); "
                     "py_payload.length = 11; "
                     "if (omnivm.proxyGet(py_payload, 'length') !== 11) throw new Error('proxyGet lost updated length key: ' + omnivm.proxyGet(py_payload, 'length')); "
                     "if (omnivm.proxyLen(py_payload) !== 7) throw new Error('proxyLen changed after value mutation: ' + omnivm.proxyLen(py_payload)); "
+                    "if (py_payload[omnivm.proxyLength] !== 7) throw new Error('proxyLength symbol changed after value mutation: ' + py_payload[omnivm.proxyLength]); "
                     "if (py_payload.length !== 11) throw new Error('bad length key after JS set: ' + py_payload.length);"
                 ),
             },
@@ -26587,6 +26589,7 @@ def test_manifest_js_sequence_length_set_resizes_mutable_sources():
                     "if (py_values.length !== 2 || py_values[0] !== 1 || py_values[1] !== 2) throw new Error('bad Python shrink: ' + py_values.length); "
                     "py_values.length = 4; "
                     "if (py_values.length !== 4 || py_values[2] !== null || py_values[3] !== null) throw new Error('bad Python extend: ' + py_values.length + ':' + py_values[2] + ':' + py_values[3]); "
+                    "if (py_values[omnivm.proxyLength] !== 4) throw new Error('bad Python symbol length: ' + py_values[omnivm.proxyLength]); "
                     "let fractionalRejected = false; "
                     "try { (function() { 'use strict'; py_values.length = 1.5; })(); } "
                     "catch (err) { fractionalRejected = err instanceof RangeError && String(err.message).includes('OmniVM cannot set remote length') && String(err.message).includes('runtime=python'); } "

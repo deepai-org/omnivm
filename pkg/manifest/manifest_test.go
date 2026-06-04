@@ -4916,8 +4916,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop))`) || !contains(code, `return bridge({op: "handle_index", value: Number(prop)});`) {
 		t.Fatalf("JS materializer should route numeric properties on indexed proxies through handle_index before handle_get, got %q", code)
 	}
-	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") {
-		t.Fatalf("JS materializer should expose proxy-safe get/len helpers for collision cases, got %q", code)
+	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
+		t.Fatalf("JS materializer should expose proxy-safe get/len helpers and length symbol for collision cases, got %q", code)
+	}
+	if !contains(code, `prop === globalThis.__omnivm_proxy_length_symbol`) {
+		t.Fatalf("JS materializer should expose collection length through a collision-free symbol, got %q", code)
 	}
 	if !contains(code, `if (prop === 'then'`) || !contains(code, `typeof thenValue === 'function' ? undefined : thenValue`) {
 		t.Fatalf("JS materializer should prevent callable remote then fields from becoming JS thenables, got %q", code)

@@ -491,6 +491,11 @@ Body:   {"fibonacci_50":"12586269025","ruby_reverse":"MVinmO"}
 
 The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target produced by Garbage/PolyScript — each op specifies a runtime, code, captures, bindings, and control flow.
 
+JavaScript manifest proxies expose `omnivm.proxyGet(proxy, key)` for explicit
+remote field access, `omnivm.proxyLen(proxy)` for explicit collection length,
+and `proxy[omnivm.proxyLength]` as a collision-free property form for length
+when a remote object also has a data field named `length`.
+
 ```bash
 # Run a single manifest
 docker run --rm --entrypoint manifest-runner omnivm /omnivm/examples/cursed-concurrency.json

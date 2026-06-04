@@ -1243,6 +1243,14 @@ globalThis.__omnivm_proxy_handle_id = globalThis.__omnivm_proxy_handle_id || fun
   return obj && obj.id;
 };
 if (typeof omnivm !== 'undefined' && omnivm) {
+  globalThis.__omnivm_proxy_length_symbol = globalThis.__omnivm_proxy_length_symbol ||
+    (typeof Symbol !== 'undefined' ? Symbol.for("omnivm.proxy.length") : null);
+  if (globalThis.__omnivm_proxy_length_symbol && typeof omnivm.proxyLength === 'undefined') {
+    Object.defineProperty(omnivm, "proxyLength", {
+      configurable: true,
+      value: globalThis.__omnivm_proxy_length_symbol
+    });
+  }
   if (typeof omnivm.proxyGet !== 'function') {
     Object.defineProperty(omnivm, "proxyGet", {
       configurable: true,
@@ -1384,6 +1392,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     get: function(obj, prop, receiver) {
       if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
+      if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
+        return bridgeLen(Reflect.get(obj, 'length', receiver));
+      }
       if (prop === 'then' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           var thenValue = bridge({op: "handle_get", key: "then"}, {preserveCallable: true});
