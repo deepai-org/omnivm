@@ -599,12 +599,23 @@ def _omnivm_encode_arg(value):
     __omnivm_arg_refs[__id] = value
     return {"__omnivm_runtime_ref__": True, "runtime": "python", "var": "__omnivm_arg_refs[%r]" % __id, "callable": callable(value)}
 
+def omnivm_close(value):
+    close = getattr(value, "_omnivm_close", None)
+    if callable(close):
+        return close()
+    close = getattr(value, "close", None)
+    if callable(close):
+        close()
+        return True
+    return False
+
 class __OmniVMHandleProxy:
     _omnivm_chatty_warned = {}
     _omnivm_chatty_warned_limit = 4096
 
     def __init__(self, value):
         object.__setattr__(self, "_value", value)
+        object.__setattr__(self, "_closed", False)
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -788,6 +799,28 @@ class __OmniVMHandleProxy:
             finalizer = None
         if finalizer is not None and finalizer.alive:
             finalizer()
+
+    def _mark_closed(self):
+        if object.__getattribute__(self, "_closed"):
+            return False
+        object.__setattr__(self, "_closed", True)
+        try:
+            finalizer = object.__getattribute__(self, "_finalizer")
+        except AttributeError:
+            finalizer = None
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
+        return True
+
+    def _omnivm_close(self):
+        if object.__getattribute__(self, "_closed"):
+            return False
+        result = self._bridge({"op": "handle_release_explicit"})
+        self._mark_closed()
+        return bool(result)
+
+    def close(self):
+        return self._omnivm_close()
 
     def __getitem__(self, key):
         try:

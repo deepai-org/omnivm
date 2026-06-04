@@ -5016,6 +5016,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `"op": "handle_retain"`) || !contains(code, "__omnivm_retain_handle_id") {
 		t.Fatalf("Python materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
+	if !contains(code, "def omnivm_close(value):") ||
+		!contains(code, `getattr(value, "_omnivm_close", None)`) ||
+		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
+		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
+		!contains(code, "finalizer.detach()") {
+		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
+	}
 	if !contains(code, `"op": "handle_adopt"`) || !contains(code, "__omnivm_adopt_handle_id") || !contains(code, `value.get("transfer") is True`) {
 		t.Fatalf("Python materializer should adopt returned transfer handles, got %q", code)
 	}
