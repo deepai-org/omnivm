@@ -1407,15 +1407,18 @@ def proxy_iter(value, mode="values"):
     if isinstance(value, ManifestProxy):
         return value._op({"op": "handle_iter", "id": value.__omnivm_handle_id__, "mode": mode})
     if mode == "keys":
-        if hasattr(value, "keys"):
-            return list(value.keys())
+        keys = _actual_public_method(value, "keys")
+        if keys is not None:
+            return list(keys())
         return list(range(len(value)))
     if mode == "items":
-        if hasattr(value, "items"):
-            return list(value.items())
+        items = _actual_public_method(value, "items")
+        if items is not None:
+            return list(items())
         return list(enumerate(value))
-    if hasattr(value, "values"):
-        return list(value.values())
+    values = _actual_public_method(value, "values")
+    if values is not None:
+        return list(values())
     return list(value)
 
 

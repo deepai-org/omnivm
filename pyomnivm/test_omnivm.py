@@ -1133,6 +1133,38 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(trap) is False
         assert trap.dynamic_lookup_count == 0
 
+    def test_proxy_iter_ignores_non_method_identity_fields(self):
+        class ValuesField:
+            values = "field-values"
+
+            def __iter__(self):
+                return iter(["a", "b"])
+
+        class ItemsField:
+            items = "field-items"
+
+            def __iter__(self):
+                return iter(["a", "b"])
+
+        class KeysTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "keys":
+                    self.dynamic_lookup_count += 1
+                    return lambda: ["dynamic-key"]
+                raise AttributeError(name)
+
+            def __len__(self):
+                return 2
+
+        trap = KeysTrap()
+
+        assert omnivm_mod.proxy_values(ValuesField()) == ["a", "b"]
+        assert omnivm_mod.proxy_items(ItemsField()) == [(0, "a"), (1, "b")]
+        assert omnivm_mod.proxy_keys(trap) == [0, 1]
+        assert trap.dynamic_lookup_count == 0
+
     def test_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
