@@ -1531,6 +1531,7 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		t.Fatalf("register table parent handle: %v", err)
 	}
 	for _, call := range []string{
+		`{"op":"handle_retain","id":%d}`,
 		`{"op":"handle_adopt","id":%d}`,
 		`{"op":"handle_access","id":%d,"kind":"property"}`,
 		`{"op":"handle_len","id":%d}`,
@@ -4771,6 +4772,7 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 		}
 	}
 	for _, call := range []string{
+		`{"op":"handle_retain","id":%d}`,
 		`{"op":"handle_adopt","id":%d}`,
 		`{"op":"handle_access","id":%d,"kind":"stream"}`,
 	} {
@@ -7383,6 +7385,7 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 	}
 
 	calls := []string{
+		`{"op":"handle_retain","id":%d}`,
 		`{"op":"handle_adopt","id":%d}`,
 		`{"op":"handle_access","id":%d,"kind":"property"}`,
 		`{"op":"handle_get","id":%d,"key":"path"}`,

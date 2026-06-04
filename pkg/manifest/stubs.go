@@ -874,6 +874,9 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if err != nil {
 			return "", err
 		}
+		if _, err := e.handleEntry(id); err != nil {
+			return "", err
+		}
 		if err := e.ensureHandleTable().Retain(id); err != nil {
 			return "", err
 		}
