@@ -757,6 +757,10 @@ buffers are rejected before they can register a lease.
 Python borrowed `memoryview` cleanup follows the same finalizer rule:
 `get_buffer()` views call `OmniBufRelease` quietly when collected, while
 `omnivm.release_buffer(name)` remains the user-initiated diagnostic path.
+`omnivm.buffer_owner(name[, data], dtype=0)` wraps that owner path in a context
+object: optional data is published on entry, `release_buffer(name)` runs on
+exit, and release failures keep the native-memory diagnostic while preserving
+any exception raised by the body.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel
 backlog and the overflow spill map, while `deferred_release_overflow_names`

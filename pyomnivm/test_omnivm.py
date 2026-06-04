@@ -2194,6 +2194,60 @@ class TestCallWithMockLib(unittest.TestCase):
         assert ctx.exception.details["buffer"]["release_error"] == "producer release failed"
         self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
 
+    def test_buffer_owner_sets_and_releases_buffer(self):
+        self.mock_lib.OmniBufSet.return_value = 0
+        self.mock_lib.OmniBufFree.return_value = 0
+
+        with omnivm_mod.buffer_owner("payload", b"abc", dtype=7) as owner:
+            assert owner.name == "payload"
+            assert owner.released is False
+
+        assert owner.released is True
+        name, buf = self.mock_lib.OmniBufSet.call_args.args
+        assert name == b"payload"
+        assert buf.len == 3
+        assert buf.dtype == 7
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
+    def test_buffer_owner_release_is_idempotent(self):
+        self.mock_lib.OmniBufFree.return_value = 0
+        owner = omnivm_mod.buffer_owner("payload")
+        assert owner.release() is True
+        assert owner.release() is False
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
+    def test_buffer_owner_status_delegates_to_buffer_status(self):
+        self.mock_lib.OmniBufStatus.return_value = b'{"name":"payload","lease_state":"owned"}'
+        owner = omnivm_mod.buffer_owner("payload")
+        assert owner.status() == {"name": "payload", "lease_state": "owned"}
+        self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
+
+    def test_buffer_owner_context_reports_release_failure_without_body_error(self):
+        self.mock_lib.OmniBufFree.return_value = -1
+        self.mock_lib.OmniBufStatus.return_value = (
+            b'{"name":"payload","state":"live","lease_state":"owned","memory_space":"host"}'
+        )
+
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            with omnivm_mod.buffer_owner("payload"):
+                pass
+
+        assert ctx.exception.boundary_path == "native_memory"
+        assert ctx.exception.details["buffer"]["lease_state"] == "owned"
+
+    def test_buffer_owner_context_preserves_body_exception_when_release_fails(self):
+        self.mock_lib.OmniBufFree.return_value = -1
+        self.mock_lib.OmniBufStatus.return_value = (
+            b'{"name":"payload","state":"live","lease_state":"owned","memory_space":"host"}'
+        )
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            with omnivm_mod.buffer_owner("payload"):
+                raise ValueError("body failed")
+
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("buffer release failed" in note for note in notes)
+
     def test_buffer_status_returns_lifecycle_diagnostics(self):
         self.mock_lib.OmniBufStatus.return_value = (
             b'{"name":"payload","state":"released_detached","live":false,'

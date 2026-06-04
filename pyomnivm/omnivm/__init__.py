@@ -79,6 +79,8 @@ __all__ = [
     "get_buffer",
     "set_buffer",
     "release_buffer",
+    "buffer_owner",
+    "BufferOwner",
     "buffer_status",
     "load_plugin",
     "shutdown",
@@ -2173,6 +2175,63 @@ def release_buffer(name):
             )
         return
     _lib.OmniBufRelease(encoded_name)
+
+
+_UNSET = object()
+
+
+class BufferOwner:
+    """
+    Context object for a named shared-buffer owner.
+
+    release() is idempotent at the Python API level. The underlying
+    release_buffer() call remains the user-initiated diagnostic path and can
+    raise RuntimeError when libomnivm reports a native-memory lifecycle error.
+    """
+
+    def __init__(self, name, data=_UNSET, dtype=0):
+        self.name = str(name)
+        self._data = data
+        self._dtype = dtype
+        self.released = False
+
+    def __enter__(self):
+        if self._data is not _UNSET:
+            set_buffer(self.name, self._data, self._dtype)
+        return self
+
+    def __exit__(self, _exc_type, exc, _tb):
+        if _exc_type is None:
+            self.release()
+            return False
+        try:
+            self.release()
+        except BaseException as release_exc:
+            add_note = getattr(exc, "add_note", None)
+            if callable(add_note):
+                add_note(f"OmniVM buffer release failed during exception cleanup: {release_exc}")
+        return False
+
+    def release(self):
+        if self.released:
+            return False
+        release_buffer(self.name)
+        self.released = True
+        return True
+
+    def status(self):
+        return buffer_status(self.name)
+
+
+def buffer_owner(name, data=_UNSET, dtype=0):
+    """
+    Return a context object that owns and releases a named shared buffer.
+
+    If data is provided, the buffer is published on entry. The owner releases
+    the public name on exit; active borrowed views remain valid until their own
+    borrow finalizers run, and release failures keep native-memory diagnostics.
+    """
+    return BufferOwner(name, data, dtype)
 
 
 def _buffer_status_details(name):
