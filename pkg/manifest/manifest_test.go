@@ -6055,6 +6055,10 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, "result = close()\n        return True if result is None else result") ||
+		!contains(code, "def cleanup_errors(error):") ||
+		!contains(code, "def _omnivm_record_cleanup_error(error, cleanup_error, note):") ||
+		!contains(code, `setattr(error, "omnivm_cleanup_errors", errors)`) ||
+		!contains(code, "return list(errors) if isinstance(errors, list) else []") ||
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
 		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
@@ -6063,7 +6067,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
 		!contains(code, "if _exc_type is None:\n            self._omnivm_close()") ||
 		!contains(code, "try:\n            self._omnivm_close()") ||
-		!contains(code, "add_note(f\"OmniVM proxy close failed during exception cleanup: {close_exc}\")") {
+		!contains(code, "f\"OmniVM proxy close failed during exception cleanup: {close_exc}\"") {
 		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
 	}
 	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) || contains(code, `getattr(value, name, None)`) || contains(code, `getattr(value, name)`) {
@@ -6105,7 +6109,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
 		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
-		!contains(code, "add_note(f\"OmniVM stream close failed during exception cleanup: {close_exc}\")") {
+		!contains(code, "f\"OmniVM stream close failed during exception cleanup: {close_exc}\"") {
 		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)
 	}
 	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
@@ -6219,6 +6223,12 @@ except ValueError as exc:
     notes = getattr(exc, "__notes__", [])
     if not any("release failed" in note for note in notes):
         raise RuntimeError("close failure note missing: " + repr(notes))
+    cleanup = cleanup_errors(exc)
+    if len(cleanup) != 1 or str(cleanup[0]) != "release failed":
+        raise RuntimeError("cleanup error missing: " + repr(cleanup))
+    cleanup.clear()
+    if str(cleanup_errors(exc)[0]) != "release failed":
+        raise RuntimeError("cleanup_errors returned internal storage")
 else:
     raise RuntimeError("body exception was not preserved")
 releases = [req for req in Bridge.requests if req.get("op") == "handle_release_explicit"]
@@ -6489,6 +6499,12 @@ except ValueError as exc:
     notes = getattr(exc, "__notes__", [])
     if not any("cancel failed" in note for note in notes):
         raise RuntimeError("close failure note missing: " + repr(notes))
+    cleanup = cleanup_errors(exc)
+    if len(cleanup) != 1 or str(cleanup[0]) != "cancel failed":
+        raise RuntimeError("cleanup error missing: " + repr(cleanup))
+    cleanup.clear()
+    if str(cleanup_errors(exc)[0]) != "cancel failed":
+        raise RuntimeError("cleanup_errors returned internal storage")
 else:
     raise RuntimeError("body exception was not preserved")
 cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]

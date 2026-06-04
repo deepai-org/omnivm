@@ -609,6 +609,23 @@ def omnivm_close(value):
         return True if result is None else result
     return False
 
+def _omnivm_record_cleanup_error(error, cleanup_error, note):
+    try:
+        errors = getattr(error, "omnivm_cleanup_errors", None)
+        if not isinstance(errors, list):
+            errors = []
+        errors.append(cleanup_error)
+        setattr(error, "omnivm_cleanup_errors", errors)
+    except BaseException:
+        pass
+    add_note = getattr(error, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+
+def cleanup_errors(error):
+    errors = getattr(error, "omnivm_cleanup_errors", None)
+    return list(errors) if isinstance(errors, list) else []
+
 def __omnivm_actual_public_method(value, name):
     try:
         import inspect as __inspect
@@ -878,9 +895,11 @@ class __OmniVMHandleProxy:
         try:
             self._omnivm_close()
         except BaseException as close_exc:
-            add_note = getattr(exc, "add_note", None)
-            if callable(add_note):
-                add_note(f"OmniVM proxy close failed during exception cleanup: {close_exc}")
+            _omnivm_record_cleanup_error(
+                exc,
+                close_exc,
+                f"OmniVM proxy close failed during exception cleanup: {close_exc}",
+            )
         return False
 
     def __getitem__(self, key):
@@ -1190,9 +1209,11 @@ class __OmniVMStreamProxy:
         try:
             self.close()
         except BaseException as close_exc:
-            add_note = getattr(exc, "add_note", None)
-            if callable(add_note):
-                add_note(f"OmniVM stream close failed during exception cleanup: {close_exc}")
+            _omnivm_record_cleanup_error(
+                exc,
+                close_exc,
+                f"OmniVM stream close failed during exception cleanup: {close_exc}",
+            )
         return False
 
 def __omnivm_materialize_capture(value):
