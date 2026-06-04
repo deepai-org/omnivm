@@ -38,10 +38,12 @@ typedef struct {
 typedef int (*omni_buf_get_fn)(const char* name, rb_omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, rb_omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
+typedef int (*omni_buf_free_fn)(const char* name);
 
 static omni_buf_get_fn g_buf_get = NULL;
 static omni_buf_set_fn g_buf_set = NULL;
 static omni_buf_release_fn g_buf_release = NULL;
+static omni_buf_free_fn g_buf_free = NULL;
 
 // Typed value bridge
 typedef struct {
@@ -151,10 +153,12 @@ static void rb_free_omni_value(rb_omni_value_t* val) {
 
 static void omnivm_ruby_set_buf_callbacks(omni_buf_get_fn get_fn,
                                            omni_buf_set_fn set_fn,
-                                           omni_buf_release_fn release_fn) {
+                                           omni_buf_release_fn release_fn,
+                                           omni_buf_free_fn free_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
+    g_buf_free = free_fn;
 }
 
 static int ruby_initialized = 0;
@@ -1910,9 +1914,11 @@ static VALUE rb_omnivm_set_buffer(int argc, VALUE* argv, VALUE self) {
 
 // OmniVM.release_buffer(name)
 static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
-    if (!g_buf_release) return Qnil;
+    if (!g_buf_free) return Qnil;
     const char* name = StringValueCStr(rb_name);
-    g_buf_release(name);
+    if (g_buf_free(name) != 0) {
+        rb_raise(rb_eRuntimeError, "OmniVM.release_buffer failed");
+    }
     return Qnil;
 }
 
@@ -2139,11 +2145,12 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
 	C.omnivm_ruby_set_buf_callbacks(
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
+		C.omni_buf_free_fn(unsafe.Pointer(freePtr)),
 	)
 }
 

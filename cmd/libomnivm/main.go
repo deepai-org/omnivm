@@ -53,6 +53,7 @@ typedef struct {
 extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
+extern int OmniBufFree(char* name);
 
 // Arrow C Data bridge exports
 typedef struct ArrowSchema {
@@ -101,6 +102,7 @@ static void* get_omni_free_ptr() { return (void*)OmniFree; }
 static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
+static void* get_omni_buf_free_ptr()    { return (void*)OmniBufFree; }
 static void* get_omni_arrow_get_ptr()   { return (void*)OmniArrowGet; }
 static void* get_omni_arrow_set_ptr()   { return (void*)OmniArrowSet; }
 static void* get_omni_call_typed_ptr() { return (void*)OmniCallTyped; }
@@ -288,7 +290,8 @@ func OmniInit(cList *C.char) *C.char {
 	bufGetPtr := uintptr(C.get_omni_buf_get_ptr())
 	bufSetPtr := uintptr(C.get_omni_buf_set_ptr())
 	bufReleasePtr := uintptr(C.get_omni_buf_release_ptr())
-	eng.SetupBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr)
+	bufFreePtr := uintptr(C.get_omni_buf_free_ptr())
+	eng.SetupBufCallbacks(bufGetPtr, bufSetPtr, bufReleasePtr, bufFreePtr)
 
 	// Typed call bridge
 	typedPtr := uintptr(C.get_omni_call_typed_ptr())

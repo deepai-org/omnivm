@@ -30,9 +30,11 @@ typedef struct {
 typedef int (*jvm_buf_get_fn)(const char* name, jvm_omni_buffer_t* out);
 typedef int (*jvm_buf_set_fn)(const char* name, jvm_omni_buffer_t buf);
 typedef void (*jvm_buf_release_fn)(const char* name);
+typedef int (*jvm_buf_free_fn)(const char* name);
 static jvm_buf_get_fn g_buf_get = NULL;
 static jvm_buf_set_fn g_buf_set = NULL;
 static jvm_buf_release_fn g_buf_release = NULL;
+static jvm_buf_free_fn g_buf_free = NULL;
 
 // Typed value bridge
 typedef struct {
@@ -306,9 +308,14 @@ static void JNICALL Java_omnivm_OmniVM_nativeSetBuffer(JNIEnv* env, jclass cls,
 // JNI: OmniVM.nativeReleaseBuffer(name) -> void
 static void JNICALL Java_omnivm_OmniVM_nativeReleaseBuffer(JNIEnv* env, jclass cls,
                                                               jstring j_name) {
-    if (!g_buf_release) return;
+    if (!g_buf_free) return;
     const char* name = (*env)->GetStringUTFChars(env, j_name, NULL);
-    g_buf_release(name);
+    if (g_buf_free(name) != 0) {
+        jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
+        if (exc) {
+            (*env)->ThrowNew(env, exc, "OmniVM.releaseBuffer failed");
+        }
+    }
     (*env)->ReleaseStringUTFChars(env, j_name, name);
 }
 
@@ -992,10 +999,12 @@ static void omnivm_jvm_release_exported_buffer(void* raw) {
 
 static void omnivm_jvm_set_buf_callbacks(jvm_buf_get_fn get_fn,
                                           jvm_buf_set_fn set_fn,
-                                          jvm_buf_release_fn release_fn) {
+                                          jvm_buf_release_fn release_fn,
+                                          jvm_buf_free_fn free_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
+    g_buf_free = free_fn;
 }
 
 static void omnivm_jvm_set_typed_callback(jvm_call_typed_fn fn) {
@@ -1522,11 +1531,12 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
 	C.omnivm_jvm_set_buf_callbacks(
 		C.jvm_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.jvm_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.jvm_buf_release_fn(unsafe.Pointer(releasePtr)),
+		C.jvm_buf_free_fn(unsafe.Pointer(freePtr)),
 	)
 }
 

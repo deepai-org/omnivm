@@ -28,6 +28,7 @@ static omni_free_fn g_bridge_free = NULL;
 // get: fill an omni_buffer_t from a named shared buffer. Returns 0 on success.
 // set: register a buffer under a name. Returns 0 on success.
 // release: schedule deferred release (safe from GC threads).
+// free: release the named owner reference. Returns 0 on success.
 typedef struct {
     void*   data;
     int64_t len;
@@ -39,17 +40,21 @@ typedef struct {
 typedef int (*omni_buf_get_fn)(const char* name, py_omni_buffer_t* out);
 typedef int (*omni_buf_set_fn)(const char* name, py_omni_buffer_t buf);
 typedef void (*omni_buf_release_fn)(const char* name);
+typedef int (*omni_buf_free_fn)(const char* name);
 
 static omni_buf_get_fn g_buf_get = NULL;
 static omni_buf_set_fn g_buf_set = NULL;
 static omni_buf_release_fn g_buf_release = NULL;
+static omni_buf_free_fn g_buf_free = NULL;
 
 static void omnivm_py_set_buf_callbacks(omni_buf_get_fn get_fn,
                                          omni_buf_set_fn set_fn,
-                                         omni_buf_release_fn release_fn) {
+                                         omni_buf_release_fn release_fn,
+                                         omni_buf_free_fn free_fn) {
     g_buf_get = get_fn;
     g_buf_set = set_fn;
     g_buf_release = release_fn;
+    g_buf_free = free_fn;
 }
 
 static const char* omnivm_py_runtime_error_code =
@@ -3065,17 +3070,20 @@ static PyObject* py_omnivm_set_buffer(PyObject* self, PyObject* args) {
 }
 
 // py_omnivm_release_buffer(name) -> None
-// Schedule a deferred release of a named buffer.
+// Release the named owner reference for a shared buffer.
 static PyObject* py_omnivm_release_buffer(PyObject* self, PyObject* args) {
     const char* name;
     if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
 
-    if (!g_buf_release) {
+    if (!g_buf_free) {
         PyErr_SetString(PyExc_RuntimeError, "omnivm buffer bridge not initialized");
         return NULL;
     }
 
-    g_buf_release(name);
+    if (g_buf_free(name) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "omnivm.release_buffer failed");
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
@@ -3890,11 +3898,12 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
 	C.omnivm_py_set_buf_callbacks(
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
+		C.omni_buf_free_fn(unsafe.Pointer(freePtr)),
 	)
 }
 

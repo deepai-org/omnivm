@@ -5303,6 +5303,46 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 }
 
+func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
+	files := map[string]string{}
+	for _, path := range []string{
+		"../../pkg/python/python.go",
+		"../../pkg/ruby/ruby.go",
+		"../../pkg/javascript/javascript.go",
+		"../../scripts/v8_bridge_node.cc",
+		"../../scripts/jvm_docker.go",
+		"../../pkg/engine/engine.go",
+		"../../cmd/libomnivm/main.go",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		files[path] = string(data)
+	}
+
+	for path, code := range files {
+		if !contains(code, "freePtr") && !contains(code, "g_buf_free") && !contains(code, "get_omni_buf_free_ptr") {
+			t.Fatalf("%s does not participate in explicit buffer-free callback plumbing", path)
+		}
+	}
+	if !contains(files["../../pkg/python/python.go"], "g_buf_free(name)") || !contains(files["../../pkg/python/python.go"], "g_buf_release(name)") {
+		t.Fatalf("embedded Python should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
+	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_free(name)") || !contains(files["../../pkg/ruby/ruby.go"], "g_buf_release(name)") {
+		t.Fatalf("embedded Ruby should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
+	}
+	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_free(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_release(lease->name)") {
+		t.Fatalf("V8 bridge should use g_buf_free for releaseBuffer and g_buf_release for external buffer cleanup")
+	}
+	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
+		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
+	}
+	if !contains(files["../../cmd/libomnivm/main.go"], "func OmniBufFree") || !contains(files["../../cmd/libomnivm/main.go"], "get_omni_buf_free_ptr") {
+		t.Fatalf("libomnivm should export and pass OmniBufFree")
+	}
+}
+
 func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	var data []byte
 	var err error

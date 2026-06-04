@@ -187,11 +187,12 @@ func (r *Runtime) SetBridgeCallback(callPtr, freePtr uintptr) {
 }
 
 // SetBufCallbacks installs the buffer bridge function pointers.
-func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr uintptr) {
+func (r *Runtime) SetBufCallbacks(getPtr, setPtr, releasePtr, freePtr uintptr) {
 	C.omnivm_v8_set_buf_callbacks(
 		C.omni_buf_get_fn(unsafe.Pointer(getPtr)),
 		C.omni_buf_set_fn(unsafe.Pointer(setPtr)),
 		C.omni_buf_release_fn(unsafe.Pointer(releasePtr)),
+		C.omni_buf_free_fn(unsafe.Pointer(freePtr)),
 	)
 }
 

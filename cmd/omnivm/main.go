@@ -38,6 +38,7 @@ typedef struct {
 extern int OmniBufGet(char* name, omni_buffer_t* out);
 extern int OmniBufSet(char* name, omni_buffer_t buf);
 extern void OmniBufRelease(char* name);
+extern int OmniBufFree(char* name);
 
 // Typed value bridge exports
 typedef struct {
@@ -58,6 +59,7 @@ static void* get_omni_free_ptr() { return (void*)OmniFree; }
 static void* get_omni_buf_get_ptr()     { return (void*)OmniBufGet; }
 static void* get_omni_buf_set_ptr()     { return (void*)OmniBufSet; }
 static void* get_omni_buf_release_ptr() { return (void*)OmniBufRelease; }
+static void* get_omni_buf_free_ptr()    { return (void*)OmniBufFree; }
 static void* get_omni_call_typed_ptr()  { return (void*)OmniCallTyped; }
 
 // Get function pointers for Python interpreter mode callbacks
@@ -268,6 +270,7 @@ func main() {
 		uintptr(C.get_omni_buf_get_ptr()),
 		uintptr(C.get_omni_buf_set_ptr()),
 		uintptr(C.get_omni_buf_release_ptr()),
+		uintptr(C.get_omni_buf_free_ptr()),
 	)
 
 	// Install typed call bridge
@@ -626,6 +629,7 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 		uintptr(C.get_omni_buf_get_ptr()),
 		uintptr(C.get_omni_buf_set_ptr()),
 		uintptr(C.get_omni_buf_release_ptr()),
+		uintptr(C.get_omni_buf_free_ptr()),
 	)
 
 	// Install typed call bridge
@@ -640,6 +644,7 @@ func OmniInitRuntimes(cList *C.char) *C.char {
 		uintptr(C.get_omni_buf_get_ptr()),
 		uintptr(C.get_omni_buf_set_ptr()),
 		uintptr(C.get_omni_buf_release_ptr()),
+		uintptr(C.get_omni_buf_free_ptr()),
 	)
 
 	// Set up Go bridge closure
