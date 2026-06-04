@@ -543,8 +543,10 @@ boundaries, but it does not export a universal owner-loop, executor, or VM
 thread dispatcher. The nested `owner_dispatch_targets` map breaks that down for
 `python_asyncio`, `javascript_event_loop`, `java_executor`, and
 `ruby_fiber_thread`, with `supported=false` and a diagnostic for each owner
-kind. `omnivm.assert_owner_dispatch_supported(label)` is the fail-fast form for
-integrations that require that dispatcher.
+kind. `omnivm.owner_dispatch_target_status(target)` returns one target block,
+and `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
+target-specific fail-fast guard. `omnivm.assert_owner_dispatch_supported(label)`
+remains the fail-fast form for integrations that require universal dispatch.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table

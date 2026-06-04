@@ -169,7 +169,9 @@ contract: `mode=diagnostic_only`, `owner_dispatch_supported=false`, the pinned
 host thread id, and an `owner_dispatch_targets` map for `python_asyncio`,
 `javascript_event_loop`, `java_executor`, and `ruby_fiber_thread`. Apps that
 require callback migration onto a framework-owned loop, executor, or Ruby VM
-thread can inspect the exact target or call
+thread can inspect the exact target with
+`omnivm.owner_dispatch_target_status(target)` or call
+`omnivm.assert_owner_dispatch_target_supported(target, label)` or
 `omnivm.assert_owner_dispatch_supported(label)` to reject the in-process
 integration before serving traffic with a structured
 `thread_affinity` diagnostic.

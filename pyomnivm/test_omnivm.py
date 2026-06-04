@@ -1051,6 +1051,48 @@ class TestCallWithMockLib(unittest.TestCase):
         )
         assert omnivm_mod.assert_owner_dispatch_supported("startup") is True
 
+    def test_owner_dispatch_target_status_reports_target_contract(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"python_asyncio":{'
+            b'"supported":false,"diagnostic":"loop not owned"}}}}'
+        )
+        info = omnivm_mod.owner_dispatch_target_status("python_asyncio")
+        assert info["supported"] is False
+        assert info["diagnostic"] == "loop not owned"
+
+    def test_owner_dispatch_target_status_requires_known_target(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{}}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.owner_dispatch_target_status("python_asyncio")
+        assert ctx.exception.boundary_path == "thread_affinity"
+
+    def test_assert_owner_dispatch_target_supported_reports_diagnostic(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"java_executor":{'
+            b'"supported":false,"diagnostic":"executor caller-managed"}}}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.assert_owner_dispatch_target_supported("java_executor", "reactor startup")
+        assert "reactor startup: owner dispatch target java_executor unsupported" in str(ctx.exception)
+        assert "executor caller-managed" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "thread_affinity"
+
+    def test_assert_owner_dispatch_target_supported_accepts_supported_target(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"owner_dispatch",'
+            b'"owner_dispatch_supported":true,'
+            b'"owner_dispatch_targets":{"python_asyncio":{"supported":true}}}}'
+        )
+        assert omnivm_mod.assert_owner_dispatch_target_supported("python_asyncio", "startup") is True
+
     def test_ruby_threading_status_reports_capability_contract(self):
         self.mock_lib.OmniStatus.return_value = (
             b'{"ruby_threading":{"mode":"single_vm_thread",'

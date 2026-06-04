@@ -61,7 +61,9 @@ __all__ = [
     "host_thread_id",
     "affinity_status",
     "owner_dispatch_status",
+    "owner_dispatch_target_status",
     "assert_owner_dispatch_supported",
+    "assert_owner_dispatch_target_supported",
     "ruby_threading_status",
     "assert_ruby_native_threads_supported",
     "assert_host_thread",
@@ -1417,6 +1419,30 @@ def owner_dispatch_status():
     return info
 
 
+def owner_dispatch_target_status(target):
+    """
+    Return the owner-dispatch capability block for one owner kind.
+
+    Known target names are reported by owner_dispatch_status()["owner_dispatch_targets"],
+    such as "python_asyncio", "javascript_event_loop", "java_executor", and
+    "ruby_fiber_thread".
+    """
+    target_name = str(target)
+    targets = owner_dispatch_status().get("owner_dispatch_targets")
+    if not isinstance(targets, dict):
+        raise RuntimeError(
+            "libomnivm status omitted owner_dispatch_targets capability",
+            boundary_path="thread_affinity",
+        )
+    info = targets.get(target_name)
+    if not isinstance(info, dict):
+        raise RuntimeError(
+            f"libomnivm status omitted owner dispatch target {target_name!r}",
+            boundary_path="thread_affinity",
+        )
+    return info
+
+
 def assert_owner_dispatch_supported(label=""):
     """
     Raise RuntimeError when this build cannot migrate callbacks to owners.
@@ -1432,6 +1458,26 @@ def assert_owner_dispatch_supported(label=""):
     reason = info.get("reason") or "owner dispatch is not supported by this libomnivm build"
     raise RuntimeError(
         f"{prefix}owner dispatch unsupported: mode={mode}: {reason}",
+        boundary_path="thread_affinity",
+    )
+
+
+def assert_owner_dispatch_target_supported(target, label=""):
+    """
+    Raise RuntimeError when this build cannot dispatch callbacks to one owner.
+
+    Use this for startup checks that require one specific owner scheduler, for
+    example "python_asyncio" for ASGI callbacks or "java_executor" for Java
+    executor callbacks.
+    """
+    target_name = str(target)
+    info = owner_dispatch_target_status(target_name)
+    if info.get("supported") is True:
+        return True
+    prefix = f"{label}: " if label else ""
+    diagnostic = info.get("diagnostic") or "owner dispatch is not supported for this target"
+    raise RuntimeError(
+        f"{prefix}owner dispatch target {target_name} unsupported: {diagnostic}",
         boundary_path="thread_affinity",
     )
 

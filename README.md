@@ -317,7 +317,9 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.host_thread_id()` | Return the OS thread id pinned by libomnivm |
 | `omnivm.affinity_status()` | Return current Python thread/asyncio-loop affinity diagnostics relative to the libomnivm host thread |
 | `omnivm.owner_dispatch_status()` | Return the machine-readable owner-dispatch/thread-affinity capability contract |
+| `omnivm.owner_dispatch_target_status(target)` | Return the owner-dispatch capability for `python_asyncio`, `javascript_event_loop`, `java_executor`, or `ruby_fiber_thread` |
 | `omnivm.assert_owner_dispatch_supported(label="")` | Raise a structured `RuntimeError` when an integration requires universal owner-loop/executor dispatch |
+| `omnivm.assert_owner_dispatch_target_supported(target, label="")` | Raise a structured `RuntimeError` when an integration requires one specific owner-loop/executor target |
 | `omnivm.ruby_threading_status()` | Return the embedded Ruby threading capability contract |
 | `omnivm.assert_ruby_native_threads_supported(label="")` | Raise a structured `RuntimeError` when an integration requires native Ruby threads |
 | `omnivm.assert_host_thread(label="")` | Raise a structured `RuntimeError` if a lifecycle callback is running off the libomnivm host thread |
