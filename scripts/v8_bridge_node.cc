@@ -76,6 +76,21 @@ static std::string omnivm_v8_value_string(v8::Isolate* isolate,
     return (*utf8 && **utf8) ? std::string(*utf8) : "";
 }
 
+static std::string omnivm_v8_get_string_prop(v8::Isolate* isolate,
+                                             v8::Local<v8::Context> context,
+                                             v8::Local<v8::Object> object,
+                                             const char* key) {
+    v8::Local<v8::Value> value;
+    if (!object->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
+        ).ToLocal(&value) || value.IsEmpty() || value->IsNullOrUndefined()) {
+        return "";
+    }
+    v8::String::Utf8Value text(isolate, value);
+    return (*text && **text) ? std::string(*text) : "";
+}
+
 static std::string omnivm_v8_error_stack(v8::Isolate* isolate,
                                          v8::Local<v8::Context> context,
                                          v8::Local<v8::Value> value) {
@@ -124,6 +139,25 @@ static void omnivm_v8_append_error_causes(v8::Isolate* isolate,
     omnivm_v8_append_error_causes(isolate, context, cause, out, depth + 1);
 }
 
+static void omnivm_v8_append_original_error_handle(v8::Isolate* isolate,
+                                                  v8::Local<v8::Context> context,
+                                                  v8::Local<v8::Value> value,
+                                                  std::string& out) {
+    if (value.IsEmpty() || !value->IsObject()) {
+        return;
+    }
+    v8::Local<v8::Object> obj = value.As<v8::Object>();
+    std::string handle = omnivm_v8_get_string_prop(isolate, context, obj, "originalErrorHandle");
+    if (handle.empty()) {
+        handle = omnivm_v8_get_string_prop(isolate, context, obj, "original_error_handle");
+    }
+    if (handle.empty()) {
+        return;
+    }
+    out += "\nOriginal error handle: ";
+    out += handle;
+}
+
 static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
                                                         v8::Local<v8::Context> context,
                                                         v8::Local<v8::Value> value);
@@ -146,6 +180,7 @@ static char* omnivm_v8_format_exception(v8::Isolate* isolate,
     std::string text = omnivm_v8_error_stack(isolate, context, exception);
     if (!text.empty()) {
         omnivm_v8_append_error_causes(isolate, context, exception, text, 0);
+        omnivm_v8_append_original_error_handle(isolate, context, exception, text);
         return strdup(text.c_str());
     }
 
@@ -197,21 +232,6 @@ static std::string omnivm_trim(const std::string& value) {
     }
     size_t end = value.find_last_not_of(" \t\r\n");
     return value.substr(start, end - start + 1);
-}
-
-static std::string omnivm_v8_get_string_prop(v8::Isolate* isolate,
-                                             v8::Local<v8::Context> context,
-                                             v8::Local<v8::Object> object,
-                                             const char* key) {
-    v8::Local<v8::Value> value;
-    if (!object->Get(
-            context,
-            v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
-        ).ToLocal(&value) || value.IsEmpty() || value->IsNullOrUndefined()) {
-        return "";
-    }
-    v8::String::Utf8Value text(isolate, value);
-    return (*text && **text) ? std::string(*text) : "";
 }
 
 static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,

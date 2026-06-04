@@ -18172,6 +18172,41 @@ result = json.dumps(out)
     if py_envelope.get("originalErrorHandle") != "js-error-42" or py_envelope.get("dictHandle") != "js-error-42":
         raise AssertionError(f"Python catch lost JS original error handle marker: {py_envelope}")
 
+    js_native_source = (
+        "(() => { const err = new Error('native handle property'); "
+        "err.originalErrorHandle = 'js-native-error-99'; "
+        "throw err; })()"
+    )
+    py_native_result = omnivm.call(
+        "python",
+        f'''(lambda ns: (__import__('builtins').exec(r"""
+import json
+import omnivm
+out = {{}}
+try:
+    omnivm.call("javascript", {json.dumps(js_native_source)})
+except omnivm.RuntimeError as exc:
+    out = {{
+        "runtime": exc.runtime,
+        "type": exc.type,
+        "message": exc.message,
+        "boundaryPath": exc.boundary_path,
+        "originalErrorHandle": exc.original_error_handle,
+        "dictHandle": exc.to_dict().get("original_error_handle"),
+    }}
+result = json.dumps(out)
+""", ns), ns["result"])[1])({{}})'''
+    )
+    py_native_envelope = json.loads(py_native_result)
+    if py_native_envelope.get("runtime") != "javascript" or py_native_envelope.get("type") != "Error":
+        raise AssertionError(f"Python catch lost JS native handle runtime/type: {py_native_envelope}")
+    if "native handle property" not in py_native_envelope.get("message", ""):
+        raise AssertionError(f"Python catch lost JS native handle message: {py_native_envelope}")
+    if py_native_envelope.get("boundaryPath") != "call[javascript]":
+        raise AssertionError(f"Python catch lost JS native handle boundary: {py_native_envelope}")
+    if py_native_envelope.get("originalErrorHandle") != "js-native-error-99" or py_native_envelope.get("dictHandle") != "js-native-error-99":
+        raise AssertionError(f"Python catch lost JS native original error handle property: {py_native_envelope}")
+
     ruby_result = omnivm.call(
         "ruby",
         f'''
@@ -18194,6 +18229,29 @@ end
     ruby_fields = ruby_result.split("|")
     if ruby_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
         raise AssertionError(f"Ruby catch lost original error handle marker: {ruby_fields!r}")
+
+    ruby_native_result = omnivm.call(
+        "ruby",
+        f'''
+begin
+  OmniVM.call("javascript", {json.dumps(js_native_source)})
+rescue OmniVM::RuntimeError => e
+  [
+    e.runtime,
+    e.type,
+    e.message.include?("native handle property"),
+    e.boundary_path,
+    e.original_error_handle,
+    e.to_h[:original_error_handle],
+  ].join("|")
+else
+  "missing"
+end
+'''
+    )
+    ruby_native_fields = ruby_native_result.split("|")
+    if ruby_native_fields != ["javascript", "Error", "true", "call[javascript]", "js-native-error-99", "js-native-error-99"]:
+        raise AssertionError(f"Ruby catch lost JS native original error handle property: {ruby_native_fields!r}")
 
     java_result = omnivm.call(
         "java",
@@ -18219,6 +18277,31 @@ end
     java_fields = java_result.split("|")
     if java_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
         raise AssertionError(f"Java catch lost original error handle marker: {java_fields!r}")
+
+    java_native_result = omnivm.call(
+        "java",
+        f'''
+((java.util.concurrent.Callable<String>)(() -> {{
+    try {{
+        omnivm.OmniVM.call("javascript", {json.dumps(js_native_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        return String.join("|",
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(e.getMessage().contains("native handle property")),
+            e.getBoundaryPath(),
+            e.getOriginalErrorHandle(),
+            String.valueOf(envelope.get("original_error_handle"))
+        );
+    }}
+    return "missing";
+}})).call()
+'''
+    )
+    java_native_fields = java_native_result.split("|")
+    if java_native_fields != ["javascript", "Error", "true", "call[javascript]", "js-native-error-99", "js-native-error-99"]:
+        raise AssertionError(f"Java catch lost JS native original error handle property: {java_native_fields!r}")
 
 
 def test_manifest_validation_error_preserves_runtime_type_and_boundary_path():
