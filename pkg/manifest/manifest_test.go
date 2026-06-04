@@ -1564,6 +1564,7 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		`{"op":"handle_retain","id":%d}`,
 		`{"op":"handle_adopt","id":%d}`,
 		`{"op":"handle_access","id":%d,"kind":"property"}`,
+		`{"op":"handle_release_explicit","id":%d}`,
 		`{"op":"handle_len","id":%d}`,
 		`{"op":"handle_index","id":%d,"value":0}`,
 	} {
@@ -1594,6 +1595,32 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		}
 		if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
 			t.Fatalf("released table reference call %s used generic handle-table diagnostic: %s", call, got)
+		}
+	}
+	beforeCleanup := e.handleTable.Stats(time.Now())
+	result, err := e.HandleCall(`{"op":"handle_release_finalizer","id":` + strconv.FormatUint(uint64(ref.ID), 10) + `}`)
+	if err != nil {
+		t.Fatalf("released table handle_release_finalizer should remain idempotent: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("released table handle_release_finalizer envelope = %#v, want false", env)
+	}
+	afterCleanup := e.handleTable.Stats(time.Now())
+	if afterCleanup.FinalizerQueued != beforeCleanup.FinalizerQueued || afterCleanup.FinalizerQueueLen != beforeCleanup.FinalizerQueueLen || afterCleanup.FinalizerReleases != beforeCleanup.FinalizerReleases {
+		t.Fatalf("released table finalizer cleanup changed finalizer stats: before=%+v after=%+v", beforeCleanup, afterCleanup)
+	}
+	for _, call := range []string{
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, ref.ID, parentID),
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, parentID, ref.ID),
+	} {
+		result, err := e.HandleCall(call)
+		if err != nil {
+			t.Fatalf("released table handle_drop_reference cleanup %s should remain idempotent: %v", call, err)
+		}
+		env := decodeResultEnvelopeForTest(t, result)
+		if env.Kind != "bool" || env.Value != true {
+			t.Fatalf("released table handle_drop_reference envelope = %#v, want true", env)
 		}
 	}
 	if !containsExecCall(mocks["python"].execCalls, "release_log.append('orders_view')") {
