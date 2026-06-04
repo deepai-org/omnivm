@@ -304,6 +304,33 @@ class TestRuntimeError(unittest.TestCase):
         assert err.details == [{"code": "too_small"}]
         assert err.cause_chain[0]["details"] == {"path": ["payload", "age"]}
 
+    def test_cause_runtime_defaults_origin_runtime(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "type": "Error",
+                    "message": "outer",
+                    "causeChain": [
+                        {
+                            "runtime": "java",
+                            "type": "java.lang.IllegalArgumentException",
+                            "message": "inner",
+                        }
+                    ],
+                }
+            ),
+            runtime="javascript",
+        )
+        assert err.cause_chain == [
+            {
+                "type": "java.lang.IllegalArgumentException",
+                "message": "inner",
+                "runtime": "java",
+                "origin_runtime": "java",
+            }
+        ]
+
     def test_details_override_supplies_structured_guard_context(self):
         details = {"thread_affinity": {"owner_dispatch_supported": False}}
         err = omnivm_mod.RuntimeError(

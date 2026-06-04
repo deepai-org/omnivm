@@ -324,6 +324,8 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
                     value = cause.get(fallback)
                 if value:
                     item[key] = str(value)
+            if "runtime" in item and not item.get("origin_runtime"):
+                item["origin_runtime"] = item["runtime"]
             if "details" in cause:
                 item["details"] = _copy_json_value(cause.get("details"))
             parsed_causes.append(item)
