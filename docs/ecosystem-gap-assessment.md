@@ -398,7 +398,10 @@ Pydantic structured `details.errors` payloads from Python validation failures,
 generic Python exception `details`/`to_dict()`/`as_dict()`/JSON envelope
 methods, Django form JSON error fields under `details.fields`, and ActiveRecord
 exception fields plus ActiveRecord validation `record.errors` details from Ruby
-calls.
+calls. The same JS `Error` exposes `toJSON()`, so `JSON.stringify(error)`
+emits a normalized snake-case envelope with runtime/origin-runtime, concrete
+type, message, traceback, stack frames, cause chain, boundary path,
+original-error handle, and structured details.
 Embedded Python guest callers now catch `omnivm.RuntimeError`
 as a normal `RuntimeError` and read the equivalent `runtime`, `type`, `message`,
 `origin_runtime`, `traceback`, `stack_frames`, `cause_chain`, `boundary_path`,

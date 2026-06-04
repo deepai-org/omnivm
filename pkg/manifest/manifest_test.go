@@ -5343,6 +5343,31 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	}
 }
 
+func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/v8_bridge_node.cc")
+	if err != nil {
+		t.Fatalf("read V8 bridge: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"omnivm_v8_runtime_error_to_json",
+		`"toJSON"`,
+		`"origin_runtime"`,
+		`"stack_frames"`,
+		`"cause_chain"`,
+		`"boundary_path"`,
+		`"original_error_handle"`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("V8 runtime error JSON envelope missing %q", want)
+		}
+	}
+	if !contains(code, `omnivm_v8_copy_prop(isolate, context, error, out, "causeChain", "cause_chain")`) ||
+		!contains(code, `omnivm_v8_copy_prop(isolate, context, error, out, "boundaryPath", "boundary_path")`) {
+		t.Fatalf("V8 runtime error toJSON should normalize camelCase fields to snake_case")
+	}
+}
+
 func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	var data []byte
 	var err error

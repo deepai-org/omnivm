@@ -598,6 +598,46 @@ static void omnivm_v8_set_string_array_prop(v8::Isolate* isolate,
     ).ToChecked();
 }
 
+static void omnivm_v8_copy_prop(v8::Isolate* isolate,
+                                v8::Local<v8::Context> context,
+                                v8::Local<v8::Object> source,
+                                v8::Local<v8::Object> target,
+                                const char* source_key,
+                                const char* target_key) {
+    v8::Local<v8::Value> value;
+    if (!source->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, source_key).ToLocalChecked()
+        ).ToLocal(&value)) {
+        value = v8::Null(isolate);
+    }
+    target->Set(
+        context,
+        v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
+        value
+    ).ToChecked();
+}
+
+static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    v8::Isolate* isolate = info.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    v8::Local<v8::Object> out = v8::Object::New(isolate);
+    if (!info.This().IsEmpty() && info.This()->IsObject()) {
+        v8::Local<v8::Object> error = info.This();
+        omnivm_v8_copy_prop(isolate, context, error, out, "runtime", "runtime");
+        omnivm_v8_copy_prop(isolate, context, error, out, "origin_runtime", "origin_runtime");
+        omnivm_v8_copy_prop(isolate, context, error, out, "type", "type");
+        omnivm_v8_copy_prop(isolate, context, error, out, "message", "message");
+        omnivm_v8_copy_prop(isolate, context, error, out, "traceback", "traceback");
+        omnivm_v8_copy_prop(isolate, context, error, out, "stack_frames", "stack_frames");
+        omnivm_v8_copy_prop(isolate, context, error, out, "causeChain", "cause_chain");
+        omnivm_v8_copy_prop(isolate, context, error, out, "boundaryPath", "boundary_path");
+        omnivm_v8_copy_prop(isolate, context, error, out, "originalErrorHandle", "original_error_handle");
+        omnivm_v8_copy_prop(isolate, context, error, out, "details", "details");
+    }
+    info.GetReturnValue().Set(out);
+}
+
 static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
                                               v8::Local<v8::Context> context,
                                               v8::Local<v8::Value> error_value,
@@ -614,14 +654,21 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
     omnivm_v8_set_string_array_prop(isolate, context, error, "stackFrames", env.stack_frames);
     omnivm_v8_set_string_array_prop(isolate, context, error, "stack_frames", env.stack_frames);
     omnivm_v8_set_string_prop(isolate, context, error, "boundaryPath", env.boundary_path);
+    omnivm_v8_set_string_prop(isolate, context, error, "boundary_path", env.boundary_path);
     if (env.original_error_handle.empty()) {
         error->Set(
             context,
             v8::String::NewFromUtf8Literal(isolate, "originalErrorHandle"),
             v8::Null(isolate)
         ).ToChecked();
+        error->Set(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "original_error_handle"),
+            v8::Null(isolate)
+        ).ToChecked();
     } else {
         omnivm_v8_set_string_prop(isolate, context, error, "originalErrorHandle", env.original_error_handle);
+        omnivm_v8_set_string_prop(isolate, context, error, "original_error_handle", env.original_error_handle);
     }
 
     v8::Local<v8::Array> causes = v8::Array::New(isolate, static_cast<int>(env.cause_chain.size()));
@@ -634,6 +681,11 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
     error->Set(
         context,
         v8::String::NewFromUtf8Literal(isolate, "causeChain"),
+        causes
+    ).ToChecked();
+    error->Set(
+        context,
+        v8::String::NewFromUtf8Literal(isolate, "cause_chain"),
         causes
     ).ToChecked();
 
@@ -661,6 +713,14 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
         v8::String::NewFromUtf8Literal(isolate, "details"),
         details
     ).ToChecked();
+    v8::Local<v8::Function> to_json;
+    if (v8::Function::New(context, omnivm_v8_runtime_error_to_json).ToLocal(&to_json)) {
+        error->Set(
+            context,
+            v8::String::NewFromUtf8Literal(isolate, "toJSON"),
+            to_json
+        ).ToChecked();
+    }
 }
 
 static void OmniExternalBufferDeleter(void* data, size_t length, void* deleter_data) {
