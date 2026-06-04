@@ -5946,8 +5946,14 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __getattribute__(self, key)") || !contains(code, `object.__getattribute__(self, "__getattr__")(key)`) {
 		t.Fatalf("Python materializer should route public proxy method-name collisions through remote lookup first, got %q", code)
 	}
-	if !contains(code, "def _is_internal_descriptor_key(self, key)") || !contains(code, "return self._has_local_value(key) or self._has_local_text_value(key)") {
-		t.Fatalf("Python resource proxy should keep internal descriptor metadata out of user-visible fields, got %q", code)
+	if !contains(code, "def _is_internal_descriptor_key(self, key)") ||
+		!contains(code, `self._value.get("__omnivm_resource__") is True`) ||
+		!contains(code, `or self._value.get("__omnivm_table__") is True`) ||
+		!contains(code, `or self._value.get("__omnivm_job__") is True`) ||
+		!contains(code, `"format", "ownership", "metadata", "buffer", "released"`) ||
+		!contains(code, `"done", "cancelled", "cancelReason", "payload", "result"`) ||
+		!contains(code, "return self._has_local_value(key) or self._has_local_text_value(key)") {
+		t.Fatalf("Python proxy should keep resource/table/job descriptor metadata out of user-visible fields, got %q", code)
 	}
 	if !contains(code, "def _omnivm_encode_arg") || !contains(code, `"__omnivm_runtime_ref__"`) || !contains(code, `[_omnivm_encode_arg(arg) for arg in args]`) {
 		t.Fatalf("Python proxy calls should preserve complex args as runtime refs, got %q", code)
@@ -6098,6 +6104,76 @@ if any(req["op"] == "handle_call" and req.get("key") in ("close", "dispose") for
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonTableDescriptorFieldsPreferRemoteFields(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    fields = {
+        "id": "remote-id",
+        "runtime": "remote-runtime",
+        "format": "remote-format",
+        "metadata": {"remote": True},
+        "buffer": "remote-buffer",
+    }
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_access":
+            return json.dumps({"__omnivm_result__": True, "value": {"chatty": False}})
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_contains":
+            return json.dumps({"__omnivm_result__": True, "value": req["value"] in Bridge.fields})
+        if req["op"] == "handle_get" and req["key"] in Bridge.fields:
+            return json.dumps({"__omnivm_result__": True, "value": Bridge.fields[req["key"]]})
+        if req["op"] == "handle_get":
+            raise RuntimeError("table has no property " + req["key"])
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+proxy = __omnivm_materialize_capture({
+    "__omnivm_table__": True,
+    "id": 81,
+    "runtime": "python",
+    "format": "arrow_c_data",
+    "ownership": "borrowed",
+    "metadata": {"dtype": 4},
+    "buffer": "descriptor-buffer",
+    "released": False,
+})
+if proxy.id != "remote-id":
+    raise RuntimeError("id was not remote-first: " + repr(proxy.id))
+if proxy.runtime != "remote-runtime":
+    raise RuntimeError("runtime was not remote-first: " + repr(proxy.runtime))
+if proxy.format != "remote-format":
+    raise RuntimeError("format was not remote-first: " + repr(proxy.format))
+if proxy.metadata != {"remote": True}:
+    raise RuntimeError("metadata was not remote-first: " + repr(proxy.metadata))
+if proxy.buffer != "remote-buffer":
+    raise RuntimeError("buffer was not remote-first: " + repr(proxy.buffer))
+descriptor = object.__getattribute__(proxy, "_value")
+if descriptor["metadata"]["dtype"] != 4 or descriptor["format"] != "arrow_c_data" or descriptor["buffer"] != "descriptor-buffer":
+    raise RuntimeError("local descriptor changed: " + repr(descriptor))
+requested = [req["key"] for req in Bridge.requests if req["op"] == "handle_get"]
+for key in ("id", "runtime", "format", "metadata", "buffer"):
+    if key not in requested:
+        raise RuntimeError("missing remote lookup for " + key + ": " + repr(requested))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python table descriptor field collision check failed: %v\n%s", err, out)
 	}
 }
 

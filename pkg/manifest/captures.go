@@ -728,9 +728,18 @@ class __OmniVMHandleProxy:
             pass
 
     def _is_internal_descriptor_key(self, key):
-        if self._value.get("__omnivm_resource__") is not True:
+        if not (
+            self._value.get("__omnivm_resource__") is True
+            or self._value.get("__omnivm_table__") is True
+            or self._value.get("__omnivm_job__") is True
+        ):
             return False
-        return str(key) in ("__omnivm_resource__", "__omnivm_materialized__", "id", "runtime", "kind", "closed", "transfer", "disposer")
+        return str(key) in (
+            "__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__",
+            "id", "runtime", "kind", "closed", "transfer", "disposer",
+            "format", "ownership", "metadata", "buffer", "released",
+            "done", "cancelled", "cancelReason", "payload", "result",
+        )
 
     def _has_local_value(self, key):
         return key in self._value and not self._is_internal_descriptor_key(key)
