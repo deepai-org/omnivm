@@ -1475,8 +1475,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
         }
         var close = globalThis.__omnivm_actual_public_method(value, "close");
         if (close) {
-          close();
-          return true;
+          var result = close();
+          return result === undefined ? true : result;
         }
         return false;
       }

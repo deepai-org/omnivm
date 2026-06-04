@@ -5820,7 +5820,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "return omnivmClose.call(value)") ||
 		!contains(code, "symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null") ||
 		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null") ||
-		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) {
+		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
+		!contains(code, "var result = close();\n          return result === undefined ? true : result") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
 	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
@@ -5890,6 +5891,32 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
+	}
+}
+
+func TestJSCaptureProxyClosePreservesLocalCloseResult(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {};
+` + code + `
+var falseClosed = 0;
+var falseResult = omnivm.proxyClose({close: function() { falseClosed++; return false; }});
+if (falseResult !== false || falseClosed !== 1) throw new Error("false close result was not preserved");
+var textResult = omnivm.proxyClose({close: function() { return "closed"; }});
+if (textResult !== "closed") throw new Error("string close result was not preserved: " + textResult);
+var undefinedResult = omnivm.proxyClose({close: function() {}});
+if (undefinedResult !== true) throw new Error("undefined close result should normalize to true");
+var promise = Promise.resolve("async-closed");
+var promiseResult = omnivm.proxyClose({close: function() { return promise; }});
+if (promiseResult !== promise) throw new Error("promise close result was not preserved");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node proxyClose return preservation check failed: %v\n%s", err, out)
 	}
 }
 
