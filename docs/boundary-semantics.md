@@ -653,6 +653,11 @@ helpers: `omnivm.ownerDispatchStatus()`,
 `omnivm.assertOwnerDispatchTargetSupported(target, label)`. These helpers do
 not add owner-loop routing; they make unsupported dispatch fail before a
 framework registers callbacks that would need migration to a foreign loop.
+Embedded Java exposes the same contract as
+`OmniVM.ownerDispatchStatus()`, `OmniVM.ownerDispatchTargetStatus(target)`,
+`OmniVM.assertOwnerDispatchSupported(label)`, and
+`OmniVM.assertOwnerDispatchTargetSupported(target, label)` for integrations
+that require a captured Java `Executor`.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table

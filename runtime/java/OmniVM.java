@@ -147,6 +147,137 @@ public class OmniVM {
         return new BufferOwner(name, data, dtype, true).enter();
     }
 
+    /**
+     * Return the owner-dispatch capability contract for this embedded Java runtime.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> ownerDispatchStatus() {
+        return (Map<String, Object>) RuntimeError.copyJsonValue(ownerDispatchContract());
+    }
+
+    /**
+     * Return one normalized owner-dispatch target capability block.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> ownerDispatchTargetStatus(String target) {
+        String requested = String.valueOf(target);
+        String name = ownerDispatchTargetName(requested);
+        Map<String, Object> status = ownerDispatchStatus();
+        Object targets = status.get("owner_dispatch_targets");
+        if (!(targets instanceof Map<?, ?> targetMap) || !targetMap.containsKey(name)) {
+            throw new IllegalArgumentException("unknown owner dispatch target: " + requested);
+        }
+        Map<String, Object> info = (Map<String, Object>) RuntimeError.copyJsonValue(targetMap.get(name));
+        info.put("requested_target", requested);
+        info.put("target", name);
+        return info;
+    }
+
+    public static boolean assertOwnerDispatchSupported() {
+        return assertOwnerDispatchSupported("");
+    }
+
+    public static boolean assertOwnerDispatchSupported(String label) {
+        Map<String, Object> info = ownerDispatchStatus();
+        if (Boolean.TRUE.equals(info.get("owner_dispatch_supported"))) {
+            return true;
+        }
+        String prefix = label == null || label.isEmpty() ? "" : label + ": ";
+        throw runtimeError(
+            prefix + "owner dispatch unsupported: " + String.valueOf(info.get("reason")),
+            "owner_dispatch",
+            ownerDispatchMap("owner_dispatch", info));
+    }
+
+    public static boolean assertOwnerDispatchTargetSupported(String target) {
+        return assertOwnerDispatchTargetSupported(target, "");
+    }
+
+    public static boolean assertOwnerDispatchTargetSupported(String target, String label) {
+        Map<String, Object> info = ownerDispatchTargetStatus(target);
+        if (Boolean.TRUE.equals(info.get("supported"))) {
+            return true;
+        }
+        String prefix = label == null || label.isEmpty() ? "" : label + ": ";
+        throw runtimeError(
+            prefix + "owner dispatch target unsupported: " + String.valueOf(info.get("target")) + ": " + String.valueOf(info.get("diagnostic")),
+            "owner_dispatch_target",
+            ownerDispatchMap("owner_dispatch_target", info));
+    }
+
+    private static RuntimeError runtimeError(String message, String boundaryPath, Object details) {
+        ParsedRuntimeError parsed = new ParsedRuntimeError();
+        parsed.runtime = "java";
+        parsed.originRuntime = "java";
+        parsed.type = "RuntimeError";
+        parsed.message = message;
+        parsed.boundaryPath = boundaryPath;
+        parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(details));
+        return new RuntimeError(parsed, null);
+    }
+
+    private static Map<String, Object> ownerDispatchContract() {
+        Map<String, Object> targets = ownerDispatchMap(
+            "python_asyncio", ownerDispatchMap(
+                "supported", false,
+                "owner_kind", "python_asyncio_loop",
+                "required_capability", "run callback on owning asyncio loop",
+                "current_behavior", "Python async stream pulls and close have narrow pump-owned paths; general callbacks are not migrated back to the owner loop",
+                "diagnostic", "Python async streams have narrow pump-owned pull/close paths, but general callbacks are not migrated back to the owner loop",
+                "narrow_capabilities", ownerDispatchList("python_async_stream_pull", "python_async_stream_close")),
+            "javascript_event_loop", ownerDispatchMap(
+                "supported", false,
+                "owner_kind", "javascript_event_loop",
+                "required_capability", "run callback on the owning JavaScript event loop",
+                "current_behavior", "JavaScript promises and timers are pumped at OmniVM call boundaries; foreign owner-loop callback dispatch is not available",
+                "diagnostic", "OmniVM does not currently route arbitrary callbacks back onto a JavaScript event loop owner"),
+            "java_executor", ownerDispatchMap(
+                "supported", false,
+                "owner_kind", "java_executor",
+                "required_capability", "run callback on the owning Java Executor",
+                "current_behavior", "Java futures and reactive handles expose cancellation/status, but arbitrary callbacks are not migrated to a captured Executor",
+                "diagnostic", "OmniVM does not currently route arbitrary callbacks back onto a Java Executor owner"),
+            "ruby_fiber_thread", ownerDispatchMap(
+                "supported", false,
+                "owner_kind", "ruby_fiber_thread",
+                "required_capability", "run callback on the owning Ruby Fiber or native Thread",
+                "current_behavior", "Ruby runs on the single VM thread with native Ruby thread scheduling disabled",
+                "diagnostic", "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"));
+        return ownerDispatchMap(
+            "mode", "diagnostic_only",
+            "owner_dispatch_supported", false,
+            "foreign_thread_behavior", "reject_runtime_calls",
+            "reason", "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",
+            "owner_dispatch_targets", targets);
+    }
+
+    private static String ownerDispatchTargetName(String target) {
+        String normalized = String.valueOf(target).trim().toLowerCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
+        return switch (normalized) {
+            case "asyncio", "python", "python_loop", "py" -> "python_asyncio";
+            case "js", "javascript", "javascript_loop", "node" -> "javascript_event_loop";
+            case "java", "jvm", "executor" -> "java_executor";
+            case "ruby", "ruby_fiber", "ruby_thread" -> "ruby_fiber_thread";
+            default -> normalized;
+        };
+    }
+
+    private static Map<String, Object> ownerDispatchMap(Object... pairs) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            out.put(String.valueOf(pairs[i]), pairs[i + 1]);
+        }
+        return out;
+    }
+
+    private static List<Object> ownerDispatchList(Object... values) {
+        List<Object> out = new ArrayList<>();
+        for (Object value : values) {
+            out.add(value);
+        }
+        return out;
+    }
+
     public static final class BufferOwner implements AutoCloseable {
         private final String name;
         private final byte[] data;

@@ -572,6 +572,11 @@ provides `OmniVM.bufferOwner(name[, data], dtype)` as an `AutoCloseable`
 named-buffer owner for try-with-resources cleanup. `OmniVM.bufferStatus(name)`
 and `owner.status()` return JSON lifecycle diagnostics from the shared buffer
 store.
+Java code that needs owner-executor routing can preflight the current
+diagnostic-only boundary with `OmniVM.ownerDispatchStatus()`,
+`OmniVM.ownerDispatchTargetStatus(target)`,
+`OmniVM.assertOwnerDispatchSupported(label)`, or
+`OmniVM.assertOwnerDispatchTargetSupported(target, label)`.
 
 ```bash
 # Run a single manifest

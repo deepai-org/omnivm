@@ -8355,6 +8355,23 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean omnivmClose") || !contains(code, "return proxyClose(target);") || !contains(code, "public static boolean proxyCallable") {
 		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers plus an omnivmClose alias")
 	}
+	for _, want := range []string{
+		"public static Map<String, Object> ownerDispatchStatus()",
+		"public static Map<String, Object> ownerDispatchTargetStatus(String target)",
+		"public static boolean assertOwnerDispatchSupported(String label)",
+		"public static boolean assertOwnerDispatchTargetSupported(String target, String label)",
+		`"owner_dispatch_supported", false`,
+		`"javascript_event_loop"`,
+		`"python_async_stream_pull"`,
+		`"owner_dispatch_target"`,
+		"private static RuntimeError runtimeError(String message, String boundaryPath, Object details)",
+		`parsed.runtime = "java"`,
+		"parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(details))",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Java runtime should expose owner-dispatch diagnostic guards, missing %q", want)
+		}
+	}
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
 		!contains(code, "import java.util.concurrent.ArrayBlockingQueue;") ||
 		!contains(code, "import java.util.stream.Stream;") ||
@@ -9038,6 +9055,86 @@ public final class JavaThrowableDetailsCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.JavaThrowableDetailsCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java throwable details check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaOwnerDispatchGuardsReportDiagnosticOnly(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/OwnerDispatchCheck.java"
+	check := `package omnivm;
+
+import java.util.Map;
+
+public final class OwnerDispatchCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void main(String[] args) {
+        Map<String, Object> status = OmniVM.ownerDispatchStatus();
+        require("diagnostic_only".equals(status.get("mode")), "bad mode: " + status);
+        require(Boolean.FALSE.equals(status.get("owner_dispatch_supported")), "owner dispatch should be unsupported");
+        Map<String, Object> targets = (Map<String, Object>) status.get("owner_dispatch_targets");
+        require(targets.containsKey("java_executor"), "missing java target: " + targets);
+        ((Map<String, Object>) targets.get("java_executor")).put("supported", true);
+        Map<String, Object> statusAgain = OmniVM.ownerDispatchStatus();
+        Map<String, Object> targetsAgain = (Map<String, Object>) statusAgain.get("owner_dispatch_targets");
+        require(Boolean.FALSE.equals(((Map<String, Object>) targetsAgain.get("java_executor")).get("supported")), "status leaked mutable state");
+
+        Map<String, Object> target = OmniVM.ownerDispatchTargetStatus("js");
+        require("javascript_event_loop".equals(target.get("target")), "alias did not normalize: " + target);
+        require("js".equals(target.get("requested_target")), "requested target missing: " + target);
+        target.put("supported", true);
+        require(Boolean.FALSE.equals(OmniVM.ownerDispatchTargetStatus("js").get("supported")), "target leaked mutable state");
+
+        try {
+            OmniVM.assertOwnerDispatchSupported("servlet startup");
+            throw new AssertionError("missing universal diagnostic");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("servlet startup: owner dispatch unsupported"), "bad universal message: " + err.getMessage());
+            require("owner_dispatch".equals(err.getBoundaryPath()), "bad universal boundary: " + err.getBoundaryPath());
+            Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            Map<String, Object> dispatch = (Map<String, Object>) details.get("owner_dispatch");
+            require(Boolean.FALSE.equals(dispatch.get("owner_dispatch_supported")), "missing universal details: " + details);
+            dispatch.put("mode", "mutated");
+            Map<String, Object> detailsAgain = (Map<String, Object>) err.getDetails();
+            require("diagnostic_only".equals(((Map<String, Object>) detailsAgain.get("owner_dispatch")).get("mode")), "details leaked mutable state");
+            require(err.getDetailsJson().contains("\"owner_dispatch_supported\":false"), "details json missing: " + err.getDetailsJson());
+        }
+
+        try {
+            OmniVM.assertOwnerDispatchTargetSupported("ruby", "async bridge");
+            throw new AssertionError("missing target diagnostic");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("async bridge: owner dispatch target unsupported: ruby_fiber_thread"), "bad target message: " + err.getMessage());
+            require("owner_dispatch_target".equals(err.getBoundaryPath()), "bad target boundary: " + err.getBoundaryPath());
+            Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            Map<String, Object> dispatch = (Map<String, Object>) details.get("owner_dispatch_target");
+            require("ruby_fiber_thread".equals(dispatch.get("target")), "missing target details: " + details);
+        }
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java owner dispatch check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, "../../runtime/java/OmniVM.java", checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java owner dispatch check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.OwnerDispatchCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java owner dispatch check: %v\n%s", err, out)
 	}
 }
 
