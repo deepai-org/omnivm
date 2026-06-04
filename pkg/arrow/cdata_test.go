@@ -386,3 +386,36 @@ func TestImportCArrowArrayRejectsNullablePrimitiveWithoutValidityBitmap(t *testi
 		t.Fatal("expected nullable primitive without validity bitmap to fail")
 	}
 }
+
+func TestImportCArrowArrayRejectsOversizedTransferWithoutLeakingBorrow(t *testing.T) {
+	source := NewSharedStore()
+	src, err := source.SetWithMetadata("numbers", []byte{1, 0, 0, 0}, BufferMetadata{
+		Dtype:  DtypeI32,
+		Format: "i",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := source.BorrowCArrowArray("numbers")
+	if err != nil {
+		t.Fatalf("BorrowCArrowArray failed: %v", err)
+	}
+	defer view.Release()
+
+	const hugeArrowLength = (1<<63-1)/4 + 1
+	view.Array.length = hugeArrowLength
+
+	target := NewSharedStore()
+	if err := target.ImportCArrowArray("oversized", unsafe.Pointer(view.Schema), unsafe.Pointer(view.Array)); err == nil {
+		t.Fatal("expected oversized Arrow import to fail")
+	}
+	src.mu.Lock()
+	refs := src.refs
+	src.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("failed oversized import leaked source borrow refs = %d, want 1", refs)
+	}
+	if stats := target.Stats(); stats.LiveBuffers != 0 || stats.ZeroCopyImports != 0 {
+		t.Fatalf("failed oversized import should not register a target buffer: %+v", stats)
+	}
+}

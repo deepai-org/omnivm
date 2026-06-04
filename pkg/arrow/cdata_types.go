@@ -379,6 +379,9 @@ func (s *SharedStore) ImportCArrowArray(name string, schemaPtr, arrayPtr unsafe.
 		return fmt.Errorf("arrow: primitive Arrow array has no value buffer")
 	}
 
+	if int64(array.length) > math.MaxInt64/int64(elemSize) {
+		return fmt.Errorf("arrow: Arrow array length %d overflows byte length for element size %d", int64(array.length), elemSize)
+	}
 	byteLen := int64(array.length) * int64(elemSize)
 	offsetBytes := int64(array.offset) * int64(elemSize)
 	validityBytes := arrowValidityByteLen(int64(array.offset), int64(array.length), int64(array.null_count))
@@ -425,10 +428,6 @@ func (s *SharedStore) ImportCArrowArray(name string, schemaPtr, arrayPtr unsafe.
 			return nil
 		})
 		if err != nil {
-			C.omni_arrow_release_array_if_live(arrayCopy)
-			C.omni_arrow_release_schema_if_live(schemaCopy)
-			C.free(unsafe.Pointer(arrayCopy))
-			C.free(unsafe.Pointer(schemaCopy))
 			return err
 		}
 		return nil
