@@ -6659,6 +6659,22 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyClose") || !contains(code, "omnivm.omnivmClose") || !contains(code, "__omnivm_close") || !contains(code, "omnivm.bufferOwner") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
 		t.Fatalf("JS materializer should expose proxy-safe get/set/call/len/iter/contains/close helpers and length symbol for collision cases, got %q", code)
 	}
+	for _, want := range []string{
+		"omnivm.ownerDispatchStatus",
+		"omnivm.ownerDispatchTargetStatus",
+		"omnivm.assertOwnerDispatchSupported",
+		"omnivm.assertOwnerDispatchTargetSupported",
+		"globalThis.__omnivm_owner_dispatch_contract",
+		`owner_dispatch_supported: false`,
+		`javascript_event_loop`,
+		`python_async_stream_pull`,
+		`boundary_path = boundaryPath`,
+		`details_json = JSON.stringify(err.details)`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("JS materializer should expose owner-dispatch diagnostic guards, missing %q", want)
+		}
+	}
 	if !contains(code, "globalThis.__omnivm_actual_public_method") ||
 		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
 		!contains(code, `omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`) ||
@@ -6768,6 +6784,53 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
+	}
+}
+
+func TestJSCaptureOwnerDispatchGuardsReportDiagnosticOnly(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {};
+` + code + `
+var status = omnivm.ownerDispatchStatus();
+if (status.mode !== "diagnostic_only") throw new Error("bad mode: " + status.mode);
+if (status.owner_dispatch_supported !== false) throw new Error("owner dispatch should be unsupported");
+if (!status.owner_dispatch_targets.javascript_event_loop) throw new Error("missing JS target");
+status.owner_dispatch_targets.javascript_event_loop.supported = true;
+if (omnivm.ownerDispatchStatus().owner_dispatch_targets.javascript_event_loop.supported !== false) {
+  throw new Error("ownerDispatchStatus leaked mutable state");
+}
+var target = omnivm.ownerDispatchTargetStatus("js");
+if (target.target !== "javascript_event_loop") throw new Error("alias did not normalize: " + target.target);
+if (target.requested_target !== "js") throw new Error("requested target missing");
+target.supported = true;
+if (omnivm.ownerDispatchTargetStatus("js").supported !== false) throw new Error("target status leaked mutable state");
+try {
+  omnivm.assertOwnerDispatchSupported("express startup");
+  throw new Error("missing universal dispatch diagnostic");
+} catch (err) {
+  if (err.message.indexOf("express startup: owner dispatch unsupported") < 0) throw new Error("bad universal message: " + err.message);
+  if (err.boundary_path !== "owner_dispatch") throw new Error("bad universal boundary: " + err.boundary_path);
+  if (!err.details || err.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing universal details");
+  err.details.owner_dispatch.mode = "mutated";
+  if (JSON.parse(err.details_json).owner_dispatch.mode !== "diagnostic_only") throw new Error("details_json was not stable");
+}
+try {
+  omnivm.assertOwnerDispatchTargetSupported("ruby", "async bridge");
+  throw new Error("missing target dispatch diagnostic");
+} catch (err) {
+  if (err.message.indexOf("async bridge: owner dispatch target unsupported: ruby_fiber_thread") < 0) throw new Error("bad target message: " + err.message);
+  if (err.boundary_path !== "owner_dispatch_target") throw new Error("bad target boundary: " + err.boundary_path);
+  if (!err.details || err.details.owner_dispatch_target.target !== "ruby_fiber_thread") throw new Error("missing target details");
+}
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node owner dispatch guard check failed: %v\n%s", err, out)
 	}
 }
 
@@ -9706,6 +9769,15 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"Object.getOwnPropertyDescriptor(cursor, name)",
 		`Object.defineProperty(globalThis.omnivm, "proxyClose"`,
 		`Object.defineProperty(globalThis.omnivm, "omnivmClose"`,
+		`Object.defineProperty(globalThis.omnivm, "ownerDispatchStatus"`,
+		`Object.defineProperty(globalThis.omnivm, "ownerDispatchTargetStatus"`,
+		`Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchSupported"`,
+		`Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchTargetSupported"`,
+		`globalThis.__omnivm_owner_dispatch_contract`,
+		`owner_dispatch_supported: false`,
+		`javascript_event_loop`,
+		`owner_dispatch_target`,
+		`err.details_json = JSON.stringify(err.details)`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",
 		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,

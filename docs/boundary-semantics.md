@@ -646,6 +646,13 @@ current affinity snapshot there as `details["affinity"]`.
 The Python interpreter-mode `omnivm` module exposes the same diagnostic status
 and fail-fast guard names, so startup checks behave consistently whether Python
 loads `libomnivm` or runs under the OmniVM Python-compatible interpreter.
+Embedded JavaScript exposes the same diagnostic-only contract with camelCase
+helpers: `omnivm.ownerDispatchStatus()`,
+`omnivm.ownerDispatchTargetStatus(target)`,
+`omnivm.assertOwnerDispatchSupported(label)`, and
+`omnivm.assertOwnerDispatchTargetSupported(target, label)`. These helpers do
+not add owner-loop routing; they make unsupported dispatch fail before a
+framework registers callbacks that would need migration to a foreign loop.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table

@@ -1859,6 +1859,130 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
     });
   }
   if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm) {
+    globalThis.__omnivm_clone_json = globalThis.__omnivm_clone_json || function(value) {
+      if (value == null) return value;
+      return JSON.parse(JSON.stringify(value));
+    };
+    globalThis.__omnivm_owner_dispatch_contract = globalThis.__omnivm_owner_dispatch_contract || function() {
+      return globalThis.__omnivm_clone_json({
+        mode: "diagnostic_only",
+        owner_dispatch_supported: false,
+        foreign_thread_behavior: "reject_runtime_calls",
+        reason: "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",
+        owner_dispatch_targets: {
+          python_asyncio: {
+            supported: false,
+            owner_kind: "python_asyncio_loop",
+            required_capability: "run callback on owning asyncio loop",
+            current_behavior: "Python async stream pulls and close have narrow pump-owned paths; general callbacks are not migrated back to the owner loop",
+            diagnostic: "Python async streams have narrow pump-owned pull/close paths, but general callbacks are not migrated back to the owner loop",
+            narrow_capabilities: ["python_async_stream_pull", "python_async_stream_close"]
+          },
+          javascript_event_loop: {
+            supported: false,
+            owner_kind: "javascript_event_loop",
+            required_capability: "run callback on the owning JavaScript event loop",
+            current_behavior: "JavaScript promises and timers are pumped at OmniVM call boundaries; foreign owner-loop callback dispatch is not available",
+            diagnostic: "OmniVM does not currently route arbitrary callbacks back onto a JavaScript event loop owner"
+          },
+          java_executor: {
+            supported: false,
+            owner_kind: "java_executor",
+            required_capability: "run callback on the owning Java Executor",
+            current_behavior: "Java futures and reactive handles expose cancellation/status, but arbitrary callbacks are not migrated to a captured Executor",
+            diagnostic: "OmniVM does not currently route arbitrary callbacks back onto a Java Executor owner"
+          },
+          ruby_fiber_thread: {
+            supported: false,
+            owner_kind: "ruby_fiber_thread",
+            required_capability: "run callback on the owning Ruby Fiber or native Thread",
+            current_behavior: "Ruby runs on the single VM thread with native Ruby thread scheduling disabled",
+            diagnostic: "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"
+          }
+        }
+      });
+    };
+    globalThis.__omnivm_owner_dispatch_target_name = globalThis.__omnivm_owner_dispatch_target_name || function(target) {
+      var raw = String(target == null ? "" : target);
+      var normalized = raw.trim().toLowerCase().replace(/[-\s]+/g, "_");
+      var aliases = {
+        asyncio: "python_asyncio",
+        python: "python_asyncio",
+        python_loop: "python_asyncio",
+        py: "python_asyncio",
+        js: "javascript_event_loop",
+        javascript: "javascript_event_loop",
+        javascript_loop: "javascript_event_loop",
+        node: "javascript_event_loop",
+        java: "java_executor",
+        jvm: "java_executor",
+        executor: "java_executor",
+        ruby: "ruby_fiber_thread",
+        ruby_fiber: "ruby_fiber_thread",
+        ruby_thread: "ruby_fiber_thread"
+      };
+      return aliases[normalized] || normalized;
+    };
+    if (typeof globalThis.omnivm.ownerDispatchStatus !== 'function') {
+      Object.defineProperty(globalThis.omnivm, "ownerDispatchStatus", {
+        configurable: true,
+        value: function() { return globalThis.__omnivm_owner_dispatch_contract(); }
+      });
+    }
+    if (typeof globalThis.omnivm.ownerDispatchTargetStatus !== 'function') {
+      Object.defineProperty(globalThis.omnivm, "ownerDispatchTargetStatus", {
+        configurable: true,
+        value: function(target) {
+          var requested = String(target == null ? "" : target);
+          var name = globalThis.__omnivm_owner_dispatch_target_name(requested);
+          var status = globalThis.omnivm.ownerDispatchStatus();
+          var info = status.owner_dispatch_targets[name];
+          if (!info) {
+            throw new Error("unknown owner dispatch target: " + requested);
+          }
+          info.requested_target = requested;
+          info.target = name;
+          return info;
+        }
+      });
+    }
+    globalThis.__omnivm_owner_dispatch_error = globalThis.__omnivm_owner_dispatch_error || function(message, boundaryPath, details) {
+      var err = new Error(message);
+      err.name = "OmniVMRuntimeError";
+      err.runtime = "javascript";
+      err.origin_runtime = "javascript";
+      err.type = "RuntimeError";
+      err.boundary_path = boundaryPath;
+      err.boundaryPath = boundaryPath;
+      err.details = globalThis.__omnivm_clone_json(details);
+      err.details_json = JSON.stringify(err.details);
+      err.detailsJson = err.details_json;
+      return err;
+    };
+    if (typeof globalThis.omnivm.assertOwnerDispatchSupported !== 'function') {
+      Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchSupported", {
+        configurable: true,
+        value: function(label) {
+          var info = globalThis.omnivm.ownerDispatchStatus();
+          if (info.owner_dispatch_supported === true) return true;
+          var prefix = label == null || String(label) === "" ? "" : String(label) + ": ";
+          throw globalThis.__omnivm_owner_dispatch_error(prefix + "owner dispatch unsupported: " + info.reason, "owner_dispatch", {owner_dispatch: info});
+        }
+      });
+    }
+    if (typeof globalThis.omnivm.assertOwnerDispatchTargetSupported !== 'function') {
+      Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchTargetSupported", {
+        configurable: true,
+        value: function(target, label) {
+          var info = globalThis.omnivm.ownerDispatchTargetStatus(target);
+          if (info.supported === true) return true;
+          var prefix = label == null || String(label) === "" ? "" : String(label) + ": ";
+          throw globalThis.__omnivm_owner_dispatch_error(prefix + "owner dispatch target unsupported: " + info.target + ": " + info.diagnostic, "owner_dispatch_target", {owner_dispatch_target: info});
+        }
+      });
+    }
+  }
+  if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm) {
     globalThis.__omnivm_buffer_owner_unset = globalThis.__omnivm_buffer_owner_unset || {};
     if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
       Object.defineProperty(globalThis, "__omnivm_BufferOwner", {

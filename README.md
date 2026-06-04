@@ -535,6 +535,11 @@ through descriptor-safe lookup. Embedded JavaScript also provides
 `omnivm.bufferOwner(name[, data], dtype[, callback])` for scoped named-buffer
 ownership with idempotent release. Owners expose `status()`, and
 `omnivm.bufferStatus(name)` returns the same per-name lifecycle diagnostics.
+JavaScript code that needs owner-loop routing can preflight the current
+diagnostic-only boundary with `omnivm.ownerDispatchStatus()`,
+`omnivm.ownerDispatchTargetStatus(target)`,
+`omnivm.assertOwnerDispatchSupported(label)`, or
+`omnivm.assertOwnerDispatchTargetSupported(target, label)`.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
