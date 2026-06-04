@@ -2482,13 +2482,103 @@ func (e *Executor) runtimeRefCall(parent handles.ID, ref RuntimeRef, key string,
 	if err := e.executeRuntimeExprPrelude(ref.Runtime, builder); err != nil {
 		return nil, false, err
 	}
-	return e.runtimeRefEvalExpr(ref, e.nextRuntimeRefVar(parent, "call"), expr)
+	valueVar := e.nextRuntimeRefVar(parent, "call")
+	value, ok, err := e.runtimeRefEvalExpr(ref, valueVar, expr)
+	if err != nil || !ok || ref.Runtime != "python" {
+		return value, ok, err
+	}
+	awaitable, err := e.runtimeRefPythonValueIsAwaitable(valueVar)
+	if err != nil {
+		return nil, false, err
+	}
+	if !awaitable {
+		return value, ok, nil
+	}
+	awaited, err := e.runtimeRefAwaitPythonValue(valueVar)
+	if err != nil {
+		return nil, false, err
+	}
+	if !awaited {
+		return value, ok, nil
+	}
+	return e.runtimeRefEvalExpr(ref, valueVar, runtimeVarRef(ref.Runtime, valueVar))
+}
+
+func (e *Executor) runtimeRefPythonValueIsAwaitable(varName string) (bool, error) {
+	value, err := e.runtimeRefEvalPrimitive(
+		RuntimeRef{Runtime: "python", VarName: varName},
+		fmt.Sprintf("(__import__('inspect').isawaitable(%s))", varName),
+	)
+	if err != nil {
+		return false, nil
+	}
+	awaitable, _ := value.(bool)
+	return awaitable, nil
+}
+
+func (e *Executor) runtimeRefAwaitPythonValue(varName string) (bool, error) {
+	rt, ok := e.runtimes["python"]
+	if !ok {
+		return false, nil
+	}
+	readyVar := varName + "_await_ready"
+	errVar := varName + "_await_error"
+	awaitedVar := varName + "_awaited"
+	code := fmt.Sprintf(`
+import inspect as __omnivm_await_inspect
+import asyncio as __omnivm_await_asyncio
+%s = False
+%s = None
+%s = False
+if __omnivm_await_inspect.isawaitable(%s):
+    %s = True
+    async def __omnivm_await_runtime_ref_call():
+        global %s, %s, %s
+        try:
+            globals()[%q] = await %s
+        except BaseException as e:
+            %s = type(e).__name__ + ": " + str(e)
+        finally:
+            %s = True
+    __omnivm_await_loop = globals().get('__omnivm_stream_loop')
+    if __omnivm_await_loop is None or __omnivm_await_loop.is_closed():
+        try:
+            __omnivm_await_loop = __omnivm_await_asyncio.get_event_loop()
+        except RuntimeError:
+            __omnivm_await_loop = __omnivm_await_asyncio.new_event_loop()
+            __omnivm_await_asyncio.set_event_loop(__omnivm_await_loop)
+        globals()['__omnivm_stream_loop'] = __omnivm_await_loop
+    __omnivm_await_asyncio.ensure_future(__omnivm_await_runtime_ref_call(), loop=__omnivm_await_loop)
+else:
+    %s = True
+`, readyVar, errVar, awaitedVar, varName, awaitedVar, varName, errVar, readyVar, varName, varName, errVar, readyVar, readyVar)
+	result := rt.Execute(code)
+	if result.Err != nil {
+		return false, fmt.Errorf("runtime ref awaitable setup [python]: %w", result.Err)
+	}
+	readyValue := "True"
+	if err := e.pumpUntilDone(func() bool {
+		check := rt.Eval(runtimeVarRef("python", readyVar))
+		return check.Value != nil && fmt.Sprintf("%v", check.Value) == readyValue
+	}); err != nil {
+		return false, err
+	}
+	if err := e.asyncPythonError(rt, runtimeVarRef("python", errVar)); err != nil {
+		return false, err
+	}
+	value, err := e.runtimeRefEvalPrimitive(RuntimeRef{Runtime: "python", VarName: awaitedVar}, runtimeVarRef("python", awaitedVar))
+	if err != nil {
+		return false, err
+	}
+	awaited, _ := value.(bool)
+	return awaited, nil
 }
 
 type runtimeExprBuilder struct {
-	executor          *Executor
-	targetRuntime     string
-	needsMaterializer bool
+	executor              *Executor
+	targetRuntime         string
+	needsMaterializer     bool
+	needsPythonTableBytes bool
 }
 
 func (b *runtimeExprBuilder) expr(value interface{}) (string, error) {
@@ -2539,11 +2629,74 @@ func (b *runtimeExprBuilder) runtimeRefExpr(ref RuntimeRef) (string, error) {
 	if ref.Runtime == "" || ref.VarName == "" {
 		return runtimeValueLiteral(b.targetRuntime, ref.Value)
 	}
+	if b.targetRuntime == "python" && ref.Runtime == "javascript" {
+		if jsonVal, ok, err := b.executor.runtimeRefBulkTableCaptureJSON("", b.targetRuntime, ref); ok || err != nil {
+			if err != nil {
+				return "", err
+			}
+			if runtimeRefTableJSONByteish(jsonVal) {
+				b.needsPythonTableBytes = true
+				return pythonTableBytesJSONExpr(jsonVal), nil
+			}
+			return b.materializedJSONExpr(jsonVal), nil
+		}
+	}
 	jsonVal, err := b.executor.runtimeRefProxyCaptureJSON(ref)
 	if err != nil {
 		return "", err
 	}
 	return b.materializedJSONExpr(jsonVal), nil
+}
+
+func runtimeRefTableJSONByteish(jsonVal string) bool {
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		return false
+	}
+	if descriptor["__omnivm_table__"] != true {
+		return false
+	}
+	metadata, _ := descriptor["metadata"].(map[string]interface{})
+	rawDtype := descriptor["dtype"]
+	if metadata != nil {
+		if value, ok := metadata["dtype"]; ok {
+			rawDtype = value
+		}
+	}
+	dtype, ok := numericInt32(rawDtype)
+	if !ok {
+		return false
+	}
+	switch dtype {
+	case arrow.DtypeBytes, arrow.DtypeI8, arrow.DtypeU8:
+		return true
+	default:
+		return false
+	}
+}
+
+func numericInt32(value interface{}) (int32, bool) {
+	switch v := value.(type) {
+	case int:
+		return int32(v), true
+	case int32:
+		return v, true
+	case int64:
+		return int32(v), true
+	case float64:
+		if math.Trunc(v) != v {
+			return 0, false
+		}
+		return int32(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int32(n), true
+	default:
+		return 0, false
+	}
 }
 
 func (b *runtimeExprBuilder) materializedDescriptorExpr(value map[string]interface{}) (string, error) {
@@ -2570,15 +2723,63 @@ func (b *runtimeExprBuilder) materializedJSONExpr(jsonVal string) string {
 	}
 }
 
+func pythonTableBytesJSONExpr(jsonVal string) string {
+	return fmt.Sprintf("__omnivm_table_bytes(__import__('json').loads(%s))", jsonStringLiteral(jsonVal))
+}
+
+func pythonTableBytesMaterializer() string {
+	return `def __omnivm_table_bytes(value):
+    if not isinstance(value, dict):
+        return bytes(value)
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+    buffer_name = value.get("buffer") or metadata.get("buffer") or value.get("value")
+    if not buffer_name:
+        return b""
+    raw = __import__("omnivm").get_buffer(buffer_name)
+    if raw is None:
+        return b""
+    data = bytes(raw)
+    shape = metadata.get("shape") if isinstance(metadata.get("shape"), list) else []
+    strides = metadata.get("strides") if isinstance(metadata.get("strides"), list) else []
+    try:
+        offset = int(metadata.get("offset") or 0)
+    except Exception:
+        offset = 0
+    try:
+        length = int(shape[0]) if shape else max(0, len(data) - offset)
+    except Exception:
+        length = max(0, len(data) - offset)
+    try:
+        stride = int(strides[0]) if strides else 1
+    except Exception:
+        stride = 1
+    if offset < 0:
+        offset = 0
+    if length <= 0:
+        return b""
+    if stride == 0:
+        stride = 1
+    if stride == 1:
+        return data[offset:offset + length]
+    return bytes(data[offset + i * stride] for i in range(length) if 0 <= offset + i * stride < len(data))`
+}
+
 func (b *runtimeExprBuilder) prelude() string {
-	if !b.needsMaterializer {
+	if !b.needsMaterializer && !b.needsPythonTableBytes {
 		return ""
 	}
 	switch b.targetRuntime {
 	case "javascript":
 		return jsChannelMaterializer()
 	case "python":
-		return pythonCaptureMaterializer()
+		var parts []string
+		if b.needsMaterializer {
+			parts = append(parts, pythonCaptureMaterializer())
+		}
+		if b.needsPythonTableBytes {
+			parts = append(parts, pythonTableBytesMaterializer())
+		}
+		return strings.Join(parts, "\n")
 	case "ruby":
 		return "require 'json'\n" + rubyCaptureMaterializer()
 	default:

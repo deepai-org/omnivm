@@ -6108,6 +6108,126 @@ if not any(event == "transport-closing" or event.startswith("write-aborted:") fo
         raise AssertionError(f"aiohttp server abort leaked handles: before={before_handles}, after={after_handles}")
 
 
+def test_manifest_aiohttp_stream_response_write_after_eof_reports_owner_error():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+import asyncio
+from aiohttp import web
+
+aiohttp_closed_stream_response = None
+aiohttp_closed_writer_events = []
+port = {port!r}
+
+async def handler(request):
+    global aiohttp_closed_stream_response
+    resp = web.StreamResponse(status=208, headers={{"Content-Type": "text/plain"}})
+    aiohttp_closed_stream_response = resp
+    await resp.prepare(request)
+    await resp.write(b"first")
+    await resp.write_eof()
+    aiohttp_closed_writer_events.append("write-eof")
+    return resp
+
+async def run_aiohttp_closed_writer_probe():
+    app = web.Application()
+    app.router.add_get("/aiohttp/write-after-eof", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+    await site.start()
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        b"GET /aiohttp/write-after-eof HTTP/1.1\\r\\n"
+        b"Host: 127.0.0.1\\r\\n"
+        b"Connection: close\\r\\n\\r\\n"
+    )
+    await writer.drain()
+    data = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    await runner.cleanup()
+    if b"first" not in data:
+        raise AssertionError(f"aiohttp closed-writer client missed body bytes: {{data!r}}")
+
+aiohttp_closed_writer_loop = asyncio.new_event_loop()
+globals()["__omnivm_stream_loop"] = aiohttp_closed_writer_loop
+try:
+    asyncio.set_event_loop(aiohttp_closed_writer_loop)
+    aiohttp_closed_writer_loop.run_until_complete(run_aiohttp_closed_writer_probe())
+finally:
+    asyncio.set_event_loop(None)
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {
+                    "aiohttp_closed_stream_response": "aiohttp_closed_stream_response",
+                },
+                "code": (
+                    "globalThis.aiohttpClosedStreamResponse = aiohttp_closed_stream_response; "
+                    "if (String(aiohttpClosedStreamResponse.status) !== '208') throw new Error('bad aiohttp closed-writer status: ' + aiohttpClosedStreamResponse.status); "
+                    "if (typeof aiohttpClosedStreamResponse.write !== 'function') throw new Error('aiohttp StreamResponse lost write method');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "let failed = false; "
+                    "try { "
+                    "  await globalThis.aiohttpClosedStreamResponse.write(new Uint8Array([108, 97, 116, 101])); "
+                    "} catch (err) { "
+                    "  globalThis.aiohttpLateWriteError = {name: err && err.name, message: err && err.message}; "
+                    "  failed = String(err && err.message || err).includes('Cannot call write() after write_eof()'); "
+                    "} "
+                    "if (!failed) throw new Error('aiohttp StreamResponse write after EOF did not report owner error: ' + JSON.stringify(globalThis.aiohttpLateWriteError));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if aiohttp_closed_stream_response is None:\n"
+                    "    raise AssertionError('aiohttp closed StreamResponse was not captured')\n"
+                    "if not aiohttp_closed_stream_response.prepared:\n"
+                    "    raise AssertionError('aiohttp closed StreamResponse lost prepared state')\n"
+                    "if 'write-eof' not in aiohttp_closed_writer_events:\n"
+                    "    raise AssertionError(f'aiohttp StreamResponse did not reach write_eof: {aiohttp_closed_writer_events!r}')\n"
+                    "aiohttp_closed_writer_loop.close()"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"aiohttp closed StreamResponse resource proxy counter regressed: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"aiohttp closed StreamResponse crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"aiohttp closed StreamResponse JS byte write did not use a table-backed byte argument: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"aiohttp closed StreamResponse JS byte write did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"aiohttp closed StreamResponse used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 1:
+        raise AssertionError(f"aiohttp closed StreamResponse write call was not recorded: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"aiohttp closed StreamResponse leaked handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_flask_werkzeug_client_abort_closes_request_body_owner():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -23489,6 +23609,7 @@ def main():
         check("Manifest Starlette StreamingResponse body iterator is lazy and cancellable", test_manifest_starlette_streaming_response_body_iterator_is_lazy_and_cancellable)
         check("Manifest aiohttp web response capture uses proxy not stream", test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream)
         check("Manifest aiohttp server client abort cleans up streaming response", test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response)
+        check("Manifest aiohttp StreamResponse write after EOF reports owner error", test_manifest_aiohttp_stream_response_write_after_eof_reports_owner_error)
         check("Manifest Flask Werkzeug client abort closes request body owner", test_manifest_flask_werkzeug_client_abort_closes_request_body_owner)
         check("Manifest Flask LocalProxy request and session stay live", test_manifest_flask_localproxy_request_and_session_stay_live)
         check("Manifest Django QuerySet transaction rollback crosses runtimes", test_manifest_django_queryset_transaction_rollback_cross_runtime)

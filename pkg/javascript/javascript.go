@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
+	"github.com/omnivm/omnivm/pkg/arrow"
 )
 
 // Runtime implements pkg.Runtime for V8 JavaScript.
@@ -108,6 +109,64 @@ func (r *Runtime) Eval(code string) pkg.Result {
 	}
 
 	return pkg.Result{Value: value, Output: value}
+}
+
+// ExportBuffer publishes a JavaScript ArrayBuffer or typed-array view into
+// OmniVM's shared data plane without copying.
+func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, error) {
+	if !r.initialized {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: not initialized")
+	}
+	cExpr := C.CString(expr)
+	defer C.free(unsafe.Pointer(cExpr))
+
+	var exported C.omnivm_v8_exported_buffer_t
+	rc := C.omnivm_v8_export_buffer(r.context, cExpr, &exported)
+	if rc < 0 {
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: export buffer failed")
+	}
+	if rc > 0 {
+		return pkg.ExportedBuffer{}, false, nil
+	}
+
+	byteLen := int64(exported.len)
+	if byteLen < 0 {
+		C.omnivm_v8_release_exported_buffer(exported.handle)
+		return pkg.ExportedBuffer{}, false, nil
+	}
+	elements := int64(exported.elements)
+	if elements < 0 {
+		C.omnivm_v8_release_exported_buffer(exported.handle)
+		return pkg.ExportedBuffer{}, false, nil
+	}
+	dtype := int32(exported.dtype)
+	arrowFormat := C.GoString(exported.arrow_format)
+	readOnly := exported.read_only != 0
+	if byteLen > 0 && exported.data == nil {
+		C.omnivm_v8_release_exported_buffer(exported.handle)
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("javascript: exported buffer %q has nil data", name)
+	}
+	if _, err := arrow.GlobalStore().SetExternalWithMetadata(name, unsafe.Pointer(exported.data), byteLen, arrow.BufferMetadata{
+		Dtype:     dtype,
+		Format:    arrowFormat,
+		Shape:     []int64{elements},
+		ReadOnly:  readOnly,
+		Ownership: "producer",
+	}, func() error {
+		C.omnivm_v8_release_exported_buffer(exported.handle)
+		return nil
+	}); err != nil {
+		C.omnivm_v8_release_exported_buffer(exported.handle)
+		return pkg.ExportedBuffer{}, false, err
+	}
+	return pkg.ExportedBuffer{
+		Name:        name,
+		Dtype:       dtype,
+		ArrowFormat: arrowFormat,
+		Elements:    elements,
+		Shape:       []int64{elements},
+		ReadOnly:    readOnly,
+	}, true, nil
 }
 
 // SetBridgeCallback installs the cross-runtime callback function pointer.

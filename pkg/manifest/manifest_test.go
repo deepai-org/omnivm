@@ -6980,6 +6980,64 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonCallMaterializesJSByteArrayArgAsBytes(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	before := arrow.GlobalStore().Stats()
+	payload := []byte("late")
+	mocks["javascript"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
+		if expr != `globalThis.__omnivm_arg_refs["arg_1"]` {
+			t.Fatalf("ExportBuffer expr = %q", expr)
+		}
+		if _, err := arrow.GlobalStore().SetWithMetadata(name, payload, arrow.BufferMetadata{
+			Dtype:     arrow.DtypeU8,
+			Format:    "C",
+			Shape:     []int64{int64(len(payload))},
+			ReadOnly:  false,
+			Ownership: "producer",
+		}); err != nil {
+			return pkg.ExportedBuffer{}, false, err
+		}
+		return pkg.ExportedBuffer{
+			Name:        name,
+			Dtype:       arrow.DtypeU8,
+			ArrowFormat: "C",
+			Elements:    int64(len(payload)),
+			Shape:       []int64{int64(len(payload))},
+		}, true, nil
+	}
+	builder := &runtimeExprBuilder{executor: e, targetRuntime: "python"}
+	expr, ok, err := runtimeRefCallExprWithBuilder(
+		RuntimeRef{Runtime: "python", VarName: "response"},
+		"write",
+		[]interface{}{RuntimeRef{Runtime: "javascript", VarName: `__omnivm_arg_refs["arg_1"]`}},
+		nil,
+		builder,
+	)
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefCallExprWithBuilder python byte arg: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(expr, "__omnivm_table_bytes") || strings.Contains(expr, "__omnivm_resource__") {
+		t.Fatalf("JS byte-array argument should compile as Python bytes, got %q", expr)
+	}
+	if prelude := builder.prelude(); !strings.Contains(prelude, "def __omnivm_table_bytes") || strings.Contains(prelude, "class __OmniVMHandleProxy") {
+		t.Fatalf("Python byte table prelude should be narrow, got %q", prelude)
+	}
+	stats := e.BoundaryStats()
+	if stats.TableProxyCaptures != 1 || stats.ArrowTransfers != 1 || stats.ResourceProxyCaptures != 0 || stats.JSONFallbacks != 0 {
+		t.Fatalf("JS byte-array arg stats = %+v, want Arrow table without proxy fallback", stats)
+	}
+	if len(mocks["javascript"].exports) != 1 {
+		t.Fatalf("ExportBuffer calls = %d, want 1", len(mocks["javascript"].exports))
+	}
+	if err := e.releaseAllHandleScopes(); err != nil {
+		t.Fatalf("releaseAllHandleScopes: %v", err)
+	}
+	released := arrow.GlobalStore().Stats()
+	if released.LiveBuffers != before.LiveBuffers {
+		t.Fatalf("runtime-ref byte arg buffer was not released: before=%+v after=%+v", before, released)
+	}
+}
+
 func TestRuntimeRefKwargsDiagnosticsExplainRejectedShape(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript", "java")
 
