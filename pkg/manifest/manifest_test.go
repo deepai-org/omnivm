@@ -5710,6 +5710,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
 		!contains(code, "self._cache.append(globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)]))") ||
+		!contains(code, "def __iter__(self):\n        def __omnivm_iter():") ||
+		!contains(code, "finally:\n                if not self._closed:") ||
+		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
 		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
@@ -5729,6 +5732,54 @@ func TestInjectPythonCapturesUsesSafeBindingNames(t *testing.T) {
 	code := injectPythonCaptures(map[string]string{"class": "42"})
 	if !contains(code, `globals()["class"] = __omnivm_materialize_capture(__json.loads('42'))`) {
 		t.Fatalf("Python capture injection should assign unsafe names through globals(), got %q", code)
+	}
+}
+
+func TestPythonRemoteStreamCancelsOnEarlyBreak(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            return json.dumps({"__omnivm_result__": True, "value": {"done": False, "value": "a"}})
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 88, "runtime": "python", "kind": "stream"})
+seen = []
+for item in stream:
+    seen.append(item)
+    break
+if seen != ["a"]:
+    raise RuntimeError("first item mismatch: " + repr(seen))
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed")
+if stream.close() is not False:
+    raise RuntimeError("close was not idempotent")
+if not any(req.get("op") == "handle_retain" and req.get("id") == 88 for req in Bridge.requests):
+    raise RuntimeError("stream handle was not retained")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 88:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream early-break cancellation check failed: %v\n%s", err, out)
 	}
 }
 

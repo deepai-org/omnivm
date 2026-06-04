@@ -1093,7 +1093,20 @@ class __OmniVMStreamProxy:
         return self._cache
 
     def __iter__(self):
-        return self
+        def __omnivm_iter():
+            try:
+                while True:
+                    try:
+                        yield self.__next__()
+                    except StopIteration:
+                        return
+            finally:
+                if not self._closed:
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+        return __omnivm_iter()
 
     def __next__(self):
         if self._cursor >= len(self._cache) and not self._pull_next():
