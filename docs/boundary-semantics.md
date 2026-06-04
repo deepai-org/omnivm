@@ -325,7 +325,9 @@ JavaScript stream proxies that are adapted to Node `Readable` streams serialize
 pending owner pulls; a second `_read` while `iterator.next()` is unresolved does
 not issue another `stream_next`. The adapter also listens for explicit
 `stream.cancel()`/proxy close on the source proxy, closes its iterator, and
-drops any late chunk from an already pending pull.
+drops any late chunk from an already pending pull. Natural EOF detaches that
+source-close listener after pushing the final `null`, so completed readable
+adapters do not stay registered on the source stream proxy.
 Request/manifest scope cleanup and proxy finalizers remain fallback release
 paths.
 

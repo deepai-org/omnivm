@@ -6170,6 +6170,9 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "if (closed) return;") ||
 		!contains(code, "var unregisterCloseListener = null") ||
+		!contains(code, "var detachCloseListener = function()") ||
+		!contains(code, "detachCloseListener();\n        if (iterator && typeof iterator.return === 'function')") ||
+		!contains(code, "closed = true;\n            detachCloseListener();\n            target.push(null);") ||
 		!contains(code, "unregisterCloseListener = addCloseListener(function()") ||
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||

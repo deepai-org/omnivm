@@ -2005,13 +2005,16 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       var closed = false;
       var reading = false;
       var unregisterCloseListener = null;
-      var closeIterator = function(reason) {
-        if (closed) return Promise.resolve();
-        closed = true;
+      var detachCloseListener = function() {
         if (unregisterCloseListener) {
           unregisterCloseListener();
           unregisterCloseListener = null;
         }
+      };
+      var closeIterator = function(reason) {
+        if (closed) return Promise.resolve();
+        closed = true;
+        detachCloseListener();
         if (iterator && typeof iterator.return === 'function') {
           return Promise.resolve(iterator.return(reason)).then(function() {});
         }
@@ -2035,6 +2038,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           if (closed) return;
           if (item && item.done) {
             closed = true;
+            detachCloseListener();
             target.push(null);
             return;
           }
