@@ -1473,7 +1473,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return Object.prototype.hasOwnProperty.call(obj, prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
-    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "toJSON";
+    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
   };
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
