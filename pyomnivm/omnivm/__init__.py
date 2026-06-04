@@ -333,40 +333,40 @@ def _load_lib():
 
         # Set up function signatures
         lib.OmniInit.argtypes = [ctypes.c_char_p]
-        lib.OmniInit.restype = ctypes.c_char_p
+        lib.OmniInit.restype = ctypes.c_void_p
 
         lib.OmniCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        lib.OmniCall.restype = ctypes.c_char_p
+        lib.OmniCall.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniCallHost"):
             lib.OmniCallHost.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-            lib.OmniCallHost.restype = ctypes.c_char_p
+            lib.OmniCallHost.restype = ctypes.c_void_p
 
         lib.OmniExec.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        lib.OmniExec.restype = ctypes.c_char_p
+        lib.OmniExec.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniExecHost"):
             lib.OmniExecHost.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-            lib.OmniExecHost.restype = ctypes.c_char_p
+            lib.OmniExecHost.restype = ctypes.c_void_p
 
         lib.OmniRunManifestFile.argtypes = [ctypes.c_char_p]
-        lib.OmniRunManifestFile.restype = ctypes.c_char_p
+        lib.OmniRunManifestFile.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniLoadManifestModule"):
             lib.OmniLoadManifestModule.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-            lib.OmniLoadManifestModule.restype = ctypes.c_char_p
+            lib.OmniLoadManifestModule.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniDrainWorker"):
             lib.OmniDrainWorker.argtypes = []
-            lib.OmniDrainWorker.restype = ctypes.c_char_p
+            lib.OmniDrainWorker.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniUnloadManifestModules"):
             lib.OmniUnloadManifestModules.argtypes = []
-            lib.OmniUnloadManifestModules.restype = ctypes.c_char_p
+            lib.OmniUnloadManifestModules.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniManifestCall"):
             lib.OmniManifestCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-            lib.OmniManifestCall.restype = ctypes.c_char_p
+            lib.OmniManifestCall.restype = ctypes.c_void_p
 
         lib.OmniBufGet.argtypes = [
             ctypes.c_char_p,
@@ -386,7 +386,7 @@ def _load_lib():
 
         if hasattr(lib, "OmniBufStatus"):
             lib.OmniBufStatus.argtypes = [ctypes.c_char_p]
-            lib.OmniBufStatus.restype = ctypes.c_char_p
+            lib.OmniBufStatus.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniArrowGet"):
             lib.OmniArrowGet.argtypes = [
@@ -445,7 +445,7 @@ def _load_lib():
             lib.OmniDrainFinalizerReleases.restype = ctypes.c_int
 
         lib.OmniLoadPlugin.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        lib.OmniLoadPlugin.restype = ctypes.c_char_p
+        lib.OmniLoadPlugin.restype = ctypes.c_void_p
 
         lib.OmniShutdown.argtypes = []
         lib.OmniShutdown.restype = None
@@ -460,7 +460,7 @@ def _load_lib():
 
         if hasattr(lib, "OmniWatchdogCapabilities"):
             lib.OmniWatchdogCapabilities.argtypes = []
-            lib.OmniWatchdogCapabilities.restype = ctypes.c_char_p
+            lib.OmniWatchdogCapabilities.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniWorkerTainted"):
             lib.OmniWorkerTainted.argtypes = []
@@ -468,21 +468,21 @@ def _load_lib():
 
         if hasattr(lib, "OmniLastTimeoutRuntime"):
             lib.OmniLastTimeoutRuntime.argtypes = []
-            lib.OmniLastTimeoutRuntime.restype = ctypes.c_char_p
+            lib.OmniLastTimeoutRuntime.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniWorkerTaintReason"):
             lib.OmniWorkerTaintReason.argtypes = []
-            lib.OmniWorkerTaintReason.restype = ctypes.c_char_p
+            lib.OmniWorkerTaintReason.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniStatus"):
             lib.OmniStatus.argtypes = []
-            lib.OmniStatus.restype = ctypes.c_char_p
+            lib.OmniStatus.restype = ctypes.c_void_p
 
         if hasattr(lib, "OmniClearWorkerTaintForTest"):
             lib.OmniClearWorkerTaintForTest.argtypes = []
             lib.OmniClearWorkerTaintForTest.restype = None
 
-        lib.OmniFree.argtypes = [ctypes.c_char_p]
+        lib.OmniFree.argtypes = [ctypes.c_void_p]
         lib.OmniFree.restype = None
 
         # Typed call bridge
@@ -632,13 +632,32 @@ def _omni_value_to_py(ov, runtime=None, boundary_path=None):
 
 def _check_result(result, runtime=None, boundary_path=None):
     """Check a C string result for ERR: prefix and raise if needed."""
-    if result is None:
+    if result is None or result == 0:
         raise RuntimeError(
             "call returned NULL",
             runtime=runtime,
             boundary_path=boundary_path,
         )
-    text = result.decode("utf-8") if isinstance(result, bytes) else result
+    free_ptr = None
+    if isinstance(result, int):
+        free_ptr = result
+        raw = ctypes.string_at(result)
+    elif isinstance(result, ctypes.c_void_p):
+        if not result.value:
+            raise RuntimeError(
+                "call returned NULL",
+                runtime=runtime,
+                boundary_path=boundary_path,
+            )
+        free_ptr = result.value
+        raw = ctypes.string_at(result.value)
+    else:
+        raw = result
+    try:
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    finally:
+        if free_ptr is not None and _lib is not None and hasattr(_lib, "OmniFree"):
+            _lib.OmniFree(free_ptr)
     if text.startswith("OK:"):
         return text[3:]
     if text.startswith("ERR:"):

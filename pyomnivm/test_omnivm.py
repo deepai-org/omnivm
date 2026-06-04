@@ -216,6 +216,9 @@ class TestRuntimeError(unittest.TestCase):
 
 
 class TestCheckResult(unittest.TestCase):
+    def tearDown(self):
+        omnivm_mod._lib = None
+
     def test_none_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod._check_result(None, runtime="go")
@@ -255,6 +258,31 @@ class TestCheckResult(unittest.TestCase):
     def test_ok_prefix_strips_transport_marker(self):
         result = omnivm_mod._check_result("OK:ERR: plain value")
         assert result == "ERR: plain value"
+
+    def test_raw_c_string_result_is_freed_after_decode(self):
+        backing = ctypes.create_string_buffer(b"OK:payload")
+        free_mock = MagicMock()
+        omnivm_mod._lib = type("Lib", (), {"OmniFree": free_mock})()
+
+        result = omnivm_mod._check_result(ctypes.cast(backing, ctypes.c_void_p))
+
+        assert result == "payload"
+        free_mock.assert_called_once_with(ctypes.addressof(backing))
+
+    def test_raw_c_string_error_is_freed_before_raise(self):
+        backing = ctypes.create_string_buffer(b"ERR:javascript: TypeError: bad")
+        free_mock = MagicMock()
+        omnivm_mod._lib = type("Lib", (), {"OmniFree": free_mock})()
+
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod._check_result(
+                ctypes.addressof(backing),
+                runtime="javascript",
+                boundary_path="call[javascript]",
+            )
+
+        assert ctx.exception.type == "TypeError"
+        free_mock.assert_called_once_with(ctypes.addressof(backing))
 
 
 class TestFindLibomnivm(unittest.TestCase):
