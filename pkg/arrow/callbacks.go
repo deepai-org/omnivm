@@ -47,3 +47,9 @@ func BufRelease(name string) {
 		queueDeferredReleaseOverflow(name)
 	}
 }
+
+// BufFree releases the named owner reference immediately. Active borrowed
+// views stay valid until their own BufRelease calls arrive.
+func BufFree(name string) error {
+	return GlobalStore().Free(name)
+}

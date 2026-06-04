@@ -579,9 +579,17 @@ The shared Arrow data plane exposes generic bulk-data diagnostics under
 - `zero_copy_borrows`;
 - `active_borrows`;
 - `active_borrowed_bytes`;
+- `detached_buffers`;
+- `detached_bytes`;
 - `deferred_release_drops`;
 - `largest_buffer_name`;
 - `largest_buffer_size`.
+
+Explicit named buffer release tombstones the public name immediately. Active
+borrowed views keep the backing memory alive until their own borrow release or
+finalizer arrives, and those unnamed leases remain visible through
+`active_borrows`, `active_borrowed_bytes`, `detached_buffers`, and
+`detached_bytes`.
 
 Internal debug helpers such as materialize-to-value or materialize-to-Arrow may
 exist, but normal `.poly` code should not need to call them.

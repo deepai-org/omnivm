@@ -940,6 +940,14 @@ func OmniBufRelease(cName *C.char) {
 	}
 }
 
+//export OmniBufFree
+func OmniBufFree(cName *C.char) C.int {
+	if err := arrow.BufFree(C.GoString(cName)); err != nil {
+		return -1
+	}
+	return 0
+}
+
 //export OmniArrowGet
 func OmniArrowGet(cName *C.char, schema *C.ArrowSchema, arrayOut *C.ArrowArray) C.int {
 	if cName == nil || schema == nil || arrayOut == nil {

@@ -807,9 +807,27 @@ class TestCallWithMockLib(unittest.TestCase):
         gc.collect()
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
 
-    def test_release_buffer_calls_lib(self):
+    def test_release_buffer_prefers_explicit_free(self):
+        self.mock_lib.OmniBufFree.return_value = 0
         omnivm_mod.release_buffer("payload")
-        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+        self.mock_lib.OmniBufRelease.assert_not_called()
+
+    def test_release_buffer_falls_back_to_release_for_old_libs(self):
+        class OldLib:
+            def __init__(self):
+                self.OmniBufRelease = MagicMock()
+
+        old_lib = OldLib()
+        omnivm_mod._lib = old_lib
+        omnivm_mod.release_buffer("payload")
+        old_lib.OmniBufRelease.assert_called_once_with(b"payload")
+
+    def test_release_buffer_reports_free_failure(self):
+        self.mock_lib.OmniBufFree.return_value = -1
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.release_buffer("payload")
+        assert "release_buffer failed" in str(ctx.exception)
 
     def test_release_handle_calls_lib(self):
         self.mock_lib.OmniHandleRelease.return_value = 0

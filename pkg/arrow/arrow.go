@@ -85,6 +85,8 @@ type Stats struct {
 	ZeroCopyImports     int64          `json:"zero_copy_imports"`
 	ActiveBorrows       int64          `json:"active_borrows"`
 	ActiveBorrowedBytes int64          `json:"active_borrowed_bytes"`
+	DetachedBuffers     int            `json:"detached_buffers"`
+	DetachedBytes       int64          `json:"detached_bytes"`
 	DeferredDrops       int64          `json:"deferred_release_drops"`
 	DeferredQueueLen    int            `json:"deferred_release_queue_len"`
 	DeferredOverflow    int            `json:"deferred_release_overflow_names"`
@@ -97,6 +99,7 @@ type SharedStore struct {
 	mu           sync.RWMutex
 	buffers      map[string]*Buffer
 	namedBorrows map[string][]*Buffer
+	detached     map[*Buffer]struct{}
 
 	allocations     int64
 	sets            int64
@@ -113,6 +116,7 @@ func NewSharedStore() *SharedStore {
 	return &SharedStore{
 		buffers:      make(map[string]*Buffer),
 		namedBorrows: make(map[string][]*Buffer),
+		detached:     make(map[*Buffer]struct{}),
 	}
 }
 
@@ -269,6 +273,7 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 		if current, ok := s.buffers[name]; ok && current == buf {
 			delete(s.buffers, name)
 		}
+		delete(s.detached, buf)
 		s.releases++
 		return release
 	}
@@ -292,8 +297,13 @@ func (s *SharedStore) Free(name string) error {
 	release := buf.release
 	buf.mu.Unlock()
 
-	if refs <= 0 {
+	if current, ok := s.buffers[name]; ok && current == buf {
 		delete(s.buffers, name)
+	}
+	if refs <= 0 {
+		delete(s.detached, buf)
+	} else {
+		s.detached[buf] = struct{}{}
 	}
 	s.releases++
 	s.mu.Unlock()
@@ -376,6 +386,20 @@ func (s *SharedStore) Stats() Stats {
 			stats.LargestBufferSize = size
 			stats.LargestBufferName = name
 		}
+	}
+	for buf := range s.detached {
+		buf.mu.Lock()
+		size := int64(buf.Len)
+		refs := buf.refs
+		buf.mu.Unlock()
+		if refs <= 0 {
+			continue
+		}
+		activeRefs := int64(refs)
+		stats.ActiveBorrows += activeRefs
+		stats.ActiveBorrowedBytes += activeRefs * size
+		stats.DetachedBuffers++
+		stats.DetachedBytes += activeRefs * size
 	}
 	return stats
 }

@@ -326,6 +326,10 @@ func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
 	if current != replacement || current.Data[0] != 9 {
 		t.Fatalf("name did not point at replacement: %+v", current)
 	}
+	stats := s.Stats()
+	if stats.DetachedBuffers != 1 || stats.DetachedBytes != 3 || stats.ActiveBorrows != 1 || stats.ActiveBorrowedBytes != 3 {
+		t.Fatalf("replacement should report detached active borrow: %+v", stats)
+	}
 
 	lease.Release()
 	old.mu.Lock()
@@ -333,6 +337,81 @@ func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
 	old.mu.Unlock()
 	if oldRefs != 0 {
 		t.Fatalf("expected old buffer refs=0 after lease release, got %d", oldRefs)
+	}
+	stats = s.Stats()
+	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
+		t.Fatalf("detached borrow stats did not clear after release: %+v", stats)
+	}
+}
+
+func TestFreeWithActiveBorrowTombstonesNameAndKeepsLeaseDiagnostics(t *testing.T) {
+	s := NewSharedStore()
+	buf, err := s.SetWithDtype("payload", []byte{1, 2, 3, 4}, DtypeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Free("payload"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("payload"); err == nil {
+		t.Fatal("explicit free should tombstone the buffer name while a borrow is active")
+	}
+	borrowed := unsafe.Slice((*byte)(lease.Data), lease.Len)
+	if borrowed[0] != 1 || borrowed[3] != 4 {
+		t.Fatalf("borrowed view changed after free: %v", borrowed)
+	}
+	stats := s.Stats()
+	if stats.LiveBuffers != 0 || stats.LiveBytes != 0 {
+		t.Fatalf("freed name should not count as a live named buffer: %+v", stats)
+	}
+	if stats.DetachedBuffers != 1 || stats.DetachedBytes != 4 || stats.ActiveBorrows != 1 || stats.ActiveBorrowedBytes != 4 {
+		t.Fatalf("active detached borrow not reported after free: %+v", stats)
+	}
+
+	lease.Release()
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs != 0 {
+		t.Fatalf("borrow release should drop detached buffer refs to zero, got %d", refs)
+	}
+	stats = s.Stats()
+	if stats.DetachedBuffers != 0 || stats.DetachedBytes != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
+		t.Fatalf("detached borrow stats did not clear: %+v", stats)
+	}
+}
+
+func TestBufFreeDoesNotConsumeBorrowFinalizerQueue(t *testing.T) {
+	s := NewSharedStore()
+	globalStore = s
+	if _, err := s.SetWithDtype("payload", []byte{1, 2}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := BufFree("payload"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("payload"); err == nil {
+		t.Fatal("BufFree should remove the named owner reference")
+	}
+	stats := s.Stats()
+	if stats.DetachedBuffers != 1 || stats.ActiveBorrows != 1 {
+		t.Fatalf("BufFree should leave active borrow diagnostics: %+v", stats)
+	}
+
+	BufRelease("payload")
+	s.DrainDeferred()
+	stats = s.Stats()
+	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 {
+		t.Fatalf("borrow finalizer release did not clear detached diagnostics: %+v", stats)
 	}
 }
 

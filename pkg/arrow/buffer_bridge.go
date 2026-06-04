@@ -87,7 +87,11 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		existing.mu.Lock()
 		if existing.refs > 1 {
 			existing.refs--
+			refs := existing.refs
 			existing.mu.Unlock()
+			if refs > 0 {
+				s.detached[existing] = struct{}{}
+			}
 			buf := &Buffer{
 				Name:     name,
 				Data:     data,

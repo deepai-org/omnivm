@@ -377,6 +377,10 @@ def _load_lib():
         lib.OmniBufRelease.argtypes = [ctypes.c_char_p]
         lib.OmniBufRelease.restype = None
 
+        if hasattr(lib, "OmniBufFree"):
+            lib.OmniBufFree.argtypes = [ctypes.c_char_p]
+            lib.OmniBufFree.restype = ctypes.c_int
+
         if hasattr(lib, "OmniArrowGet"):
             lib.OmniArrowGet.argtypes = [
                 ctypes.c_char_p,
@@ -1589,7 +1593,13 @@ def release_buffer(name):
     """
     if _lib is None:
         raise RuntimeError("omnivm not initialized - call init_runtimes() first")
-    _lib.OmniBufRelease(str(name).encode("utf-8"))
+    encoded_name = str(name).encode("utf-8")
+    if hasattr(_lib, "OmniBufFree"):
+        rc = _lib.OmniBufFree(encoded_name)
+        if rc != 0:
+            raise RuntimeError(f"omnivm.release_buffer failed for {name!r}")
+        return
+    _lib.OmniBufRelease(encoded_name)
 
 
 def _release_handle(handle_id):
