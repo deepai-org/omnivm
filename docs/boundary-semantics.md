@@ -314,7 +314,9 @@ proxy value, generated Python and JavaScript stream proxies also cancel the
 owner stream before rethrowing the materialization error.
 Python retained manifest stream iterators also attach a quiet iterator-finalizer
 cancel path, so a normal `for` loop that breaks early uses `stream_cancel`
-instead of falling back to the handle finalizer release queue.
+instead of falling back to the handle finalizer release queue. They also
+separate owner `stream_next` from chunk proxy wrapping, so a failed chunk adopt
+or retain cancels the stream while preserving the wrapping error.
 Request/manifest scope cleanup and proxy finalizers remain fallback release
 paths.
 

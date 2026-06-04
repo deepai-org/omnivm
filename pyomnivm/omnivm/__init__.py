@@ -1049,6 +1049,14 @@ def _manifest_bridge_call(module_id, payload):
     return _decode_manifest_result(_check_result(result), module_id=module_id)
 
 
+def _manifest_bridge_call_unwrapped(module_id, payload):
+    result = _lib.OmniManifestCall(
+        str(module_id).encode("utf-8"),
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+    )
+    return _decode_manifest_result_unwrapped(_check_result(result))
+
+
 def _manifest_arg(value, retained_keys):
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -1143,6 +1151,20 @@ def _decode_manifest_result(result, module_id=None):
     if envelope.get("kind") == "null":
         return None
     return _wrap_manifest_value(module_id, envelope.get("value"))
+
+
+def _decode_manifest_result_unwrapped(result):
+    if result == "":
+        return None
+    try:
+        envelope = json.loads(result)
+    except json.JSONDecodeError:
+        return result
+    if not isinstance(envelope, dict) or not envelope.get("__omnivm_result__"):
+        return envelope
+    if envelope.get("kind") == "null":
+        return None
+    return envelope.get("value")
 
 
 def _wrap_manifest_value(module_id, value):
@@ -1533,16 +1555,28 @@ class _ManifestStreamIterator:
 
     def __next__(self):
         try:
-            item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
+            item = _manifest_bridge_call_unwrapped(
+                self._proxy._module_id,
+                {"op": "stream_next", "id": self._proxy.__omnivm_handle_id__},
+            )
         except BaseException:
             self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise
-        if item.get("done") is True:
+        if not isinstance(item, dict) or item.get("done") is True:
             self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise StopIteration
-        return item.get("value")
+        try:
+            return _wrap_manifest_value(self._proxy._module_id, item.get("value"))
+        except BaseException as err:
+            try:
+                self.close()
+            except BaseException as close_exc:
+                add_note = getattr(err, "add_note", None)
+                if callable(add_note):
+                    add_note(f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}")
+            raise
 
     def close(self):
         result = self._proxy.close()
