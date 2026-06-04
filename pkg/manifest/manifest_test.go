@@ -5905,6 +5905,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")))`,
 		"private static List<String> stringListJsonValue",
 		"private static List<Map<String, String>> causeChainJsonValue",
+		`List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)

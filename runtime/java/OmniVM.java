@@ -387,6 +387,12 @@ public class OmniVM {
             Map<String, String> entry = new LinkedHashMap<>();
             entry.put("type", jsonString(cause.get("type")));
             entry.put("message", jsonString(cause.get("message")));
+            for (String key : List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")) {
+                String text = jsonString(cause.get(key));
+                if (!text.isEmpty()) {
+                    entry.put(key, text);
+                }
+            }
             out.add(Collections.unmodifiableMap(entry));
         }
         return out;
