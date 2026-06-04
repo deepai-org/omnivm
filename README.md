@@ -545,9 +545,9 @@ Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
 `OmniVM.proxyKeys(proxy)`, `OmniVM.proxyValues(proxy)`,
 `OmniVM.proxyItems(proxy)`, `OmniVM.proxyContains(proxy, key)`, and
-`OmniVM.proxyClose(proxy)` to force remote get/set/call/length, iteration,
-membership, and proxy-release operations when a remote key collides with Java
-proxy methods or `Map` methods.
+`OmniVM.proxyClose(proxy)` or `OmniVM.omnivmClose(proxy)` to force remote
+get/set/call/length, iteration, membership, and proxy-release operations when a
+remote key collides with Java proxy methods or `Map` methods.
 
 ```bash
 # Run a single manifest

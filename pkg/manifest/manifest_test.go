@@ -7763,8 +7763,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "HandleProxy.adopt(id)") {
 		t.Fatalf("Java runtime should adopt transfer handles for handle and stream proxies")
 	}
-	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean proxyCallable") {
-		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers")
+	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean omnivmClose") || !contains(code, "return proxyClose(target);") || !contains(code, "public static boolean proxyCallable") {
+		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/close/callable helpers plus an omnivmClose alias")
 	}
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
 		!contains(code, "import java.util.concurrent.ArrayBlockingQueue;") ||
@@ -8020,6 +8020,7 @@ public final class ProxyCloseCheck {
         require(falseClose.calls == 1, "false close call count mismatch");
 
         require(OmniVM.proxyClose(new TextClose()), "truthy non-boolean close result should normalize true");
+        require(OmniVM.omnivmClose(new TextClose()), "omnivmClose alias should match proxyClose");
 
         VoidClose voidClose = new VoidClose();
         require(OmniVM.proxyClose(voidClose), "AutoCloseable close should normalize true");

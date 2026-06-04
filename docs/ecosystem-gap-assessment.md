@@ -392,7 +392,7 @@ generated Ruby snippets also provide `OmniVM.proxy_close(proxy)` and
 Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
 `OmniVM.proxyCall`, `OmniVM.proxyLen`, `OmniVM.proxyIter`,
 `OmniVM.proxyKeys`, `OmniVM.proxyValues`, `OmniVM.proxyItems`,
-`OmniVM.proxyContains`, and `OmniVM.proxyClose`; for runtime-owned
+`OmniVM.proxyContains`, `OmniVM.proxyClose`, and `OmniVM.omnivmClose`; for runtime-owned
 `HandleProxy` values these helpers now force the remote handle operation before
 Java `Map` or reflection behavior can collide with keys such as `get`, `set`, `call`,
 `close`, or `length`.

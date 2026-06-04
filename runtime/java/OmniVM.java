@@ -1195,6 +1195,10 @@ public class OmniVM {
         return false;
     }
 
+    public static boolean omnivmClose(Object target) {
+        return proxyClose(target);
+    }
+
     public static boolean proxyCallable(Object target, Object keyValue) {
         String key = proxyKey(keyValue);
         if (target == null) {
