@@ -311,6 +311,12 @@ func TestDirectRetainReleasesProducerAfterOwnerFree(t *testing.T) {
 	if status := s.Status("payload"); status.State != "released" || status.DetachedBuffers != 0 {
 		t.Fatalf("status after direct release = %+v, want released without detached refs", status)
 	}
+	s.mu.RLock()
+	detached := len(s.detached)
+	s.mu.RUnlock()
+	if detached != 0 {
+		t.Fatalf("direct release left %d detached buffer entries, want none", detached)
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {

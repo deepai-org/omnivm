@@ -115,6 +115,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 				Validity: validity,
 				refs:     1,
 				ownerRef: true,
+				store:    s,
 			}
 			applyMetadataLocked(buf, meta)
 			s.buffers[name] = buf
@@ -131,6 +132,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		existing.refs = 1
 		existing.borrowRefs = 0
 		existing.ownerRef = true
+		existing.store = s
 		existing.release = nil
 		applyMetadataLocked(existing, meta)
 		existing.mu.Unlock()
@@ -145,6 +147,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		Validity: validity,
 		refs:     1,
 		ownerRef: true,
+		store:    s,
 	}
 	applyMetadataLocked(buf, meta)
 	s.buffers[name] = buf
@@ -220,6 +223,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 				ValidityLen:      int(validityLength),
 				refs:             1,
 				ownerRef:         true,
+				store:            s,
 				release:          release,
 			}
 			applyMetadataLocked(buf, meta)
@@ -238,6 +242,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		existing.refs = 1
 		existing.borrowRefs = 0
 		existing.ownerRef = true
+		existing.store = s
 		existing.release = release
 		applyMetadataLocked(existing, meta)
 		existing.mu.Unlock()
@@ -254,6 +259,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		ValidityLen:      int(validityLength),
 		refs:             1,
 		ownerRef:         true,
+		store:            s,
 		release:          release,
 	}
 	applyMetadataLocked(buf, meta)

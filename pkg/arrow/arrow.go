@@ -54,6 +54,7 @@ type Buffer struct {
 	refs              int
 	borrowRefs        int
 	ownerRef          bool
+	store             *SharedStore
 	release           func() error
 	mu                sync.Mutex
 }
@@ -240,6 +241,7 @@ func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 		Len:         size,
 		refs:        1,
 		ownerRef:    true,
+		store:       s,
 		Ownership:   "omnivm",
 		MemorySpace: "host",
 	}
@@ -423,6 +425,20 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 	}
 	s.releases++
 	return nil
+}
+
+func (s *SharedStore) forgetDetachedIfReleased(buf *Buffer) {
+	if s == nil || buf == nil {
+		return
+	}
+	s.mu.Lock()
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs <= 0 {
+		delete(s.detached, buf)
+	}
+	s.mu.Unlock()
 }
 
 func decrementBorrowRef(buf *Buffer) (int, func() error) {
@@ -741,6 +757,7 @@ func (b *Buffer) Retain() {
 // BorrowedBuffer.Release so release failures can be reported in diagnostics.
 func (b *Buffer) Release() int {
 	var release func() error
+	store := b.store
 	b.mu.Lock()
 	floor := b.borrowRefs
 	if b.ownerRef {
@@ -754,7 +771,12 @@ func (b *Buffer) Release() int {
 		release = takeBufferReleaseLocked(b, refs)
 	}
 	b.mu.Unlock()
-	_ = callBufferRelease(release)
+	if refs <= 0 {
+		store.forgetDetachedIfReleased(b)
+	}
+	if err := callBufferRelease(release); err != nil && store != nil {
+		store.recordReleaseFailure(b.Name, err)
+	}
 	return refs
 }
 
