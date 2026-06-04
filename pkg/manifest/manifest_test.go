@@ -6420,6 +6420,71 @@ var requested = omnivm.calls.filter(function(call) { return call.op === "handle_
 	}
 }
 
+func TestJSCaptureProxyLifecycleNameCollisionsPreferRemoteFields(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  calls: [],
+  fields: {
+    close: "remote-close-field",
+    dispose: "remote-dispose-field"
+  },
+  call: function(name, raw) {
+    if (name !== "__manifest") throw new Error("unexpected bridge name " + name);
+    var payload = JSON.parse(raw);
+    this.calls.push(payload);
+    if (payload.op === "handle_access") {
+      return JSON.stringify({__omnivm_result__: true, value: {chatty: false}});
+    }
+    if (payload.op === "handle_retain") {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (payload.op === "handle_contains") {
+      return JSON.stringify({__omnivm_result__: true, value: Object.prototype.hasOwnProperty.call(this.fields, payload.value)});
+    }
+    if (payload.op === "handle_get") {
+      if (Object.prototype.hasOwnProperty.call(this.fields, payload.key)) {
+        return JSON.stringify({__omnivm_result__: true, value: this.fields[payload.key]});
+      }
+      throw new Error("resource has no property " + payload.key);
+    }
+    if (payload.op === "handle_release_explicit") {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (payload.op === "handle_call" && (payload.key === "close" || payload.key === "dispose")) {
+      throw new Error("lifecycle helper called remote " + payload.key + " field");
+    }
+    throw new Error("unexpected op " + payload.op);
+  }
+};
+` + code + `
+var proxy = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 80, runtime: "python", kind: "object"});
+if (proxy.close !== "remote-close-field") throw new Error("close was not remote-first: " + String(proxy.close));
+if (proxy.dispose !== "remote-dispose-field") throw new Error("dispose was not remote-first: " + String(proxy.dispose));
+if (omnivm.proxyGet(proxy, "close") !== "remote-close-field") throw new Error("proxyGet did not recover remote close");
+if (omnivm.proxyGet(proxy, "dispose") !== "remote-dispose-field") throw new Error("proxyGet did not recover remote dispose");
+if (omnivm.proxyClose(proxy) !== true) throw new Error("proxyClose did not release the proxy");
+if (omnivm.proxyClose(proxy) !== false) throw new Error("proxyClose was not idempotent after release");
+var requested = omnivm.calls.filter(function(call) { return call.op === "handle_get"; }).map(function(call) { return call.key; });
+["close", "dispose"].forEach(function(key) {
+  if (requested.indexOf(key) < 0) throw new Error("missing remote lookup for " + key + ": " + requested.join(","));
+});
+var releases = omnivm.calls.filter(function(call) { return call.op === "handle_release_explicit"; });
+if (releases.length !== 1 || releases[0].id !== 80) throw new Error("explicit release mismatch: " + JSON.stringify(releases));
+if (omnivm.calls.some(function(call) { return call.op === "handle_call" && (call.key === "close" || call.key === "dispose"); })) {
+  throw new Error("lifecycle close dispatched to a remote lifecycle-named field");
+}
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestJSCaptureProxyThenCollisionAvoidsPromiseAssimilation(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

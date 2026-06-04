@@ -646,7 +646,10 @@ for the owner field or method. Non-callable remote `then` fields remain
 naturally readable. JavaScript handle and stream proxies also expose
 `Symbol.dispose` and `Symbol.asyncDispose` when the runtime supports them, and
 `omnivm.proxyClose(value)` honors both symbols before falling back to a
-descriptor-safe public `close` method.
+descriptor-safe public `close` method. Remote data fields named `close` or
+`dispose` remain ordinary fields on handle proxies; lifecycle release uses
+`omnivm.proxyClose(value)`, `__omnivm_close`, or the disposal symbols instead
+of calling those remote fields.
 Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
