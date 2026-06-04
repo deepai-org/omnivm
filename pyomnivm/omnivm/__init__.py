@@ -47,6 +47,10 @@ __all__ = [
     "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
+    "proxy_get",
+    "proxy_set",
+    "proxy_call",
+    "proxy_len",
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
@@ -1139,6 +1143,61 @@ class _ManifestProxyMethod:
 
     def __repr__(self):
         return f"<omnivm.ManifestProxyMethod {self._key}>"
+
+
+def proxy_get(value, key):
+    """Return a proxy field/key without colliding with local proxy methods."""
+    if isinstance(value, ManifestProxy):
+        return value._op({"op": "handle_get", "id": value.__omnivm_handle_id__, "key": str(key)})
+    if isinstance(value, dict):
+        return value[key]
+    try:
+        return value[key]
+    except (TypeError, KeyError, IndexError):
+        return getattr(value, str(key))
+
+
+def proxy_set(value, key, next_value):
+    """Set a proxy field/key without colliding with local proxy methods."""
+    if isinstance(value, ManifestProxy):
+        retained_keys = []
+        try:
+            value._op({
+                "op": "handle_set",
+                "id": value.__omnivm_handle_id__,
+                "key": str(key),
+                "value": value._arg(next_value, retained_keys),
+            })
+            return True
+        finally:
+            _release_manifest_args(retained_keys)
+    if isinstance(value, dict):
+        value[key] = next_value
+        return True
+    try:
+        value[key] = next_value
+    except TypeError:
+        setattr(value, str(key), next_value)
+    return True
+
+
+def proxy_call(value, key=None, args=(), kwargs=None):
+    """Call a proxy method without colliding with local proxy methods."""
+    call_args = tuple(args or ())
+    call_kwargs = dict(kwargs or {})
+    if isinstance(value, ManifestProxy):
+        return value._method_call("" if key is None else str(key), call_args, call_kwargs)
+    if key is None or key == "":
+        return value(*call_args, **call_kwargs)
+    method = getattr(value, str(key))
+    return method(*call_args, **call_kwargs)
+
+
+def proxy_len(value):
+    """Return remote collection length without colliding with a data field."""
+    if isinstance(value, ManifestProxy):
+        return int(value._op({"op": "handle_len", "id": value.__omnivm_handle_id__}))
+    return len(value)
 
 
 class _ManifestStreamIterator:

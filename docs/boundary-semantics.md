@@ -521,6 +521,10 @@ proxies. When user code needs an unambiguous operation, it can use
 `omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`, or the
 collision-free symbol property `proxy[omnivm.proxyLength]`; data fields remain
 available through `omnivm.proxyGet(proxy, "length")`.
+Python retained manifest proxies provide matching helpers:
+`omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
+`omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
+`omnivm.proxy_len(proxy)`.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:

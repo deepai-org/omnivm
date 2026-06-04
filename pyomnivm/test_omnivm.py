@@ -622,6 +622,51 @@ class TestCallWithMockLib(unittest.TestCase):
         }
         assert requests[-1] == {"op": "handle_release_finalizer", "id": 42}
 
+    def test_manifest_proxy_helpers_bypass_local_method_collisions(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        fields = {"close": "field-close", "length": 3}
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 43,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_get":
+                return envelope(fields[request["key"]])
+            if request.get("op") == "handle_set":
+                fields[request["key"]] = request["value"]
+                return envelope(True, "bool")
+            if request.get("op") == "handle_call" and request.get("key") == "accept":
+                return envelope("accepted-" + request["args"][0])
+            if request.get("op") == "handle_len":
+                return envelope(7, "number")
+            if request.get("op") == "handle_release_finalizer":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        assert callable(proxy.close)
+        assert omnivm_mod.proxy_get(proxy, "close") == "field-close"
+        assert omnivm_mod.proxy_set(proxy, "close", "field-updated") is True
+        assert omnivm_mod.proxy_get(proxy, "close") == "field-updated"
+        assert omnivm_mod.proxy_call(proxy, "accept", args=("js",)) == "accepted-js"
+        assert omnivm_mod.proxy_len(proxy) == 7
+        proxy.close()
+
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

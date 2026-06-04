@@ -498,6 +498,10 @@ field mutation, `omnivm.proxyCall(proxy, key, args)` for explicit remote method
 calls, `omnivm.proxyLen(proxy)` for explicit collection length, and
 `proxy[omnivm.proxyLength]` as a collision-free property form for length when a
 remote object also has a data field named `length`.
+Python retained manifest proxies expose the same escape hatches as
+`omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
+`omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
+`omnivm.proxy_len(proxy)`.
 
 ```bash
 # Run a single manifest
