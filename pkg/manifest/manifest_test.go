@@ -10574,6 +10574,42 @@ func TestExecuteDrainsPostOpRuntimeWork(t *testing.T) {
 	}
 }
 
+func TestExecutePostOpFinalizerDrainKeepsReleaseErrorsQuiet(t *testing.T) {
+	table := handles.NewTable()
+	js := newMockRuntime("javascript")
+	e := NewExecutorWithHandles(map[string]pkg.Runtime{"javascript": js}, table)
+
+	id, err := table.Register("runtime-owned", handles.RegisterOptions{
+		Runtime: "javascript",
+		Kind:    "runtime_ref",
+		ScopeID: e.currentHandleScope(),
+		Release: func(value any) error {
+			return errors.New("finalizer release failed")
+		},
+	})
+	if err != nil {
+		t.Fatalf("register handle: %v", err)
+	}
+	js.pumpFn = func() {
+		table.QueueReleaseFromFinalizer(id)
+	}
+
+	m := &Manifest{
+		Version:        1,
+		DefaultRuntime: "javascript",
+		Ops: []*Op{
+			{OpType: "exec", Runtime: "javascript", Code: "void 0"},
+		},
+	}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute should keep finalizer release errors quiet, got: %v", err)
+	}
+	stats := table.Stats(time.Now())
+	if stats.Live != 0 || stats.FinalizerReleases != 1 || stats.ReleaseErrors != 1 {
+		t.Fatalf("finalizer release stats = %+v, want quiet release error recorded", stats)
+	}
+}
+
 func TestExecuteUnknownRuntime(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"

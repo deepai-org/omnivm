@@ -303,7 +303,8 @@ func (e *Executor) drainPostOpDeferredWork() error {
 		rt.Pump()
 	}
 	arrow.GlobalStore().DrainDeferred()
-	return e.ensureHandleTable().DrainFinalizerReleases(0)
+	_ = e.ensureHandleTable().DrainFinalizerReleases(0)
+	return nil
 }
 
 // executeOp dispatches a single op by type.
