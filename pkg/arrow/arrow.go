@@ -97,12 +97,31 @@ type Stats struct {
 	LargestBufferSize   int64          `json:"largest_buffer_size"`
 }
 
+// BufferStatus is a per-name lifecycle diagnostic for native memory leases.
+type BufferStatus struct {
+	Name                string `json:"name"`
+	State               string `json:"state"`
+	Live                bool   `json:"live"`
+	Released            bool   `json:"released"`
+	Len                 int64  `json:"len,omitempty"`
+	Dtype               int32  `json:"dtype,omitempty"`
+	Format              string `json:"format,omitempty"`
+	ReadOnly            bool   `json:"read_only,omitempty"`
+	Ownership           string `json:"ownership,omitempty"`
+	ActiveBorrows       int64  `json:"active_borrows,omitempty"`
+	ActiveBorrowedBytes int64  `json:"active_borrowed_bytes,omitempty"`
+	DetachedBuffers     int    `json:"detached_buffers,omitempty"`
+	DetachedBytes       int64  `json:"detached_bytes,omitempty"`
+}
+
 // SharedStore manages named Arrow buffers accessible to all runtimes.
 type SharedStore struct {
-	mu           sync.RWMutex
-	buffers      map[string]*Buffer
-	namedBorrows map[string][]*Buffer
-	detached     map[*Buffer]struct{}
+	mu            sync.RWMutex
+	buffers       map[string]*Buffer
+	namedBorrows  map[string][]*Buffer
+	detached      map[*Buffer]struct{}
+	released      map[string]struct{}
+	releasedOrder []string
 
 	allocations     int64
 	sets            int64
@@ -114,13 +133,53 @@ type SharedStore struct {
 	deferredDrops   int64
 }
 
+const maxReleasedBufferTombstones = 4096
+
 // NewSharedStore creates an empty shared buffer store.
 func NewSharedStore() *SharedStore {
 	return &SharedStore{
 		buffers:      make(map[string]*Buffer),
 		namedBorrows: make(map[string][]*Buffer),
 		detached:     make(map[*Buffer]struct{}),
+		released:     make(map[string]struct{}),
 	}
+}
+
+func (s *SharedStore) markReleasedLocked(name string) {
+	if name == "" {
+		return
+	}
+	if _, ok := s.released[name]; ok {
+		return
+	}
+	s.released[name] = struct{}{}
+	s.releasedOrder = append(s.releasedOrder, name)
+	for len(s.releasedOrder) > maxReleasedBufferTombstones {
+		oldest := s.releasedOrder[0]
+		s.releasedOrder = s.releasedOrder[1:]
+		delete(s.released, oldest)
+	}
+}
+
+func (s *SharedStore) forgetReleasedLocked(name string) {
+	if _, ok := s.released[name]; !ok {
+		return
+	}
+	delete(s.released, name)
+	for i, releasedName := range s.releasedOrder {
+		if releasedName == name {
+			copy(s.releasedOrder[i:], s.releasedOrder[i+1:])
+			s.releasedOrder = s.releasedOrder[:len(s.releasedOrder)-1]
+			return
+		}
+	}
+}
+
+func nonEmptyString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 // Allocate creates a new named buffer of the given size.
@@ -131,6 +190,7 @@ func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 	if _, exists := s.buffers[name]; exists {
 		return nil, fmt.Errorf("arrow: buffer %q already exists", name)
 	}
+	s.forgetReleasedLocked(name)
 
 	buf := &Buffer{
 		Name:      name,
@@ -151,6 +211,9 @@ func (s *SharedStore) Get(name string) (*Buffer, error) {
 
 	buf, ok := s.buffers[name]
 	if !ok {
+		if _, released := s.released[name]; released {
+			return nil, fmt.Errorf("arrow: buffer %q was released", name)
+		}
 		return nil, fmt.Errorf("arrow: buffer %q not found", name)
 	}
 	s.gets++
@@ -173,6 +236,9 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 
 	buf, ok := s.buffers[name]
 	if !ok {
+		if _, released := s.released[name]; released {
+			return nil, fmt.Errorf("arrow: buffer %q was released", name)
+		}
 		return nil, fmt.Errorf("arrow: buffer %q not found", name)
 	}
 
@@ -290,6 +356,10 @@ func (s *SharedStore) Free(name string) error {
 
 	buf, ok := s.buffers[name]
 	if !ok {
+		if _, released := s.released[name]; released {
+			s.mu.Unlock()
+			return fmt.Errorf("arrow: buffer %q was released", name)
+		}
 		s.mu.Unlock()
 		return fmt.Errorf("arrow: buffer %q not found", name)
 	}
@@ -303,6 +373,7 @@ func (s *SharedStore) Free(name string) error {
 	if current, ok := s.buffers[name]; ok && current == buf {
 		delete(s.buffers, name)
 	}
+	s.markReleasedLocked(name)
 	if refs <= 0 {
 		delete(s.detached, buf)
 	} else {
@@ -314,6 +385,57 @@ func (s *SharedStore) Free(name string) error {
 		return callBufferRelease(release)
 	}
 	return nil
+}
+
+// Status returns a per-buffer lifecycle diagnostic.
+func (s *SharedStore) Status(name string) BufferStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if buf, ok := s.buffers[name]; ok {
+		buf.mu.Lock()
+		status := BufferStatus{
+			Name:      name,
+			State:     "live",
+			Live:      true,
+			Len:       int64(buf.Len),
+			Dtype:     buf.Dtype,
+			Format:    buf.Format,
+			ReadOnly:  buf.ReadOnly,
+			Ownership: nonEmptyString(buf.Ownership, "omnivm"),
+		}
+		if buf.refs > 1 {
+			status.ActiveBorrows = int64(buf.refs - 1)
+			status.ActiveBorrowedBytes = status.ActiveBorrows * int64(buf.Len)
+		}
+		buf.mu.Unlock()
+		return status
+	}
+
+	status := BufferStatus{Name: name, State: "missing"}
+	if _, ok := s.released[name]; ok {
+		status.State = "released"
+		status.Released = true
+	}
+	for buf := range s.detached {
+		if buf == nil || buf.Name != name {
+			continue
+		}
+		buf.mu.Lock()
+		refs := buf.refs
+		size := int64(buf.Len)
+		buf.mu.Unlock()
+		if refs <= 0 {
+			continue
+		}
+		status.State = "released_detached"
+		status.Released = true
+		status.ActiveBorrows += int64(refs)
+		status.ActiveBorrowedBytes += int64(refs) * size
+		status.DetachedBuffers++
+		status.DetachedBytes += int64(refs) * size
+	}
+	return status
 }
 
 // List returns the names of all buffers in the store.

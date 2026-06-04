@@ -190,6 +190,11 @@ func OmniBufFree(cName *C.char) C.int {
 	return 0
 }
 
+//export OmniBufStatus
+func OmniBufStatus(cName *C.char) *C.char {
+	return C.CString(arrow.BufStatusJSON(C.GoString(cName)))
+}
+
 //export OmniCallTyped
 func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
 	rtName := C.GoString(cRuntime)

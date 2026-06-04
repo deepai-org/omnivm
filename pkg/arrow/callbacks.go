@@ -1,6 +1,9 @@
 package arrow
 
-import "unsafe"
+import (
+	"encoding/json"
+	"unsafe"
+)
 
 // BufGet fills output params from a named shared buffer.
 // Returns 0 on success, -1 if not found.
@@ -52,4 +55,22 @@ func BufRelease(name string) {
 // views stay valid until their own BufRelease calls arrive.
 func BufFree(name string) error {
 	return GlobalStore().Free(name)
+}
+
+// BufStatusJSON returns a JSON lifecycle diagnostic for a named buffer.
+func BufStatusJSON(name string) string {
+	status := GlobalStore().Status(name)
+	data, err := json.Marshal(status)
+	if err != nil {
+		return `{"name":` + jsonString(name) + `,"state":"error","live":false,"released":false}`
+	}
+	return string(data)
+}
+
+func jsonString(value string) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return `""`
+	}
+	return string(data)
 }

@@ -5347,7 +5347,9 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"../../scripts/v8_bridge_node.cc",
 		"../../scripts/jvm_docker.go",
 		"../../pkg/engine/engine.go",
+		"../../cmd/omnivm/main.go",
 		"../../cmd/libomnivm/main.go",
+		"../../cmd/manifest-runner/main.go",
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -5375,6 +5377,15 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	}
 	if !contains(files["../../cmd/libomnivm/main.go"], "func OmniBufFree") || !contains(files["../../cmd/libomnivm/main.go"], "get_omni_buf_free_ptr") {
 		t.Fatalf("libomnivm should export and pass OmniBufFree")
+	}
+	for _, path := range []string{
+		"../../cmd/omnivm/main.go",
+		"../../cmd/libomnivm/main.go",
+		"../../cmd/manifest-runner/main.go",
+	} {
+		if !contains(files[path], "func OmniBufStatus") || !contains(files[path], "arrow.BufStatusJSON") {
+			t.Fatalf("%s should export OmniBufStatus lifecycle diagnostics", path)
+		}
 	}
 }
 

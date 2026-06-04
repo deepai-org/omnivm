@@ -1,6 +1,7 @@
 package arrow
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"unsafe"
@@ -412,6 +413,54 @@ func TestBufFreeDoesNotConsumeBorrowFinalizerQueue(t *testing.T) {
 	stats = s.Stats()
 	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 {
 		t.Fatalf("borrow finalizer release did not clear detached diagnostics: %+v", stats)
+	}
+}
+
+func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
+	s := NewSharedStore()
+	_, err := s.SetWithMetadata("payload", []byte{1, 2, 3, 4}, BufferMetadata{
+		Dtype:     DtypeBytes,
+		ReadOnly:  true,
+		Ownership: "producer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.State != "live" || status.Len != 4 || status.Dtype != DtypeBytes || !status.ReadOnly || status.Ownership != "producer" {
+		t.Fatalf("bad live buffer status: %+v", status)
+	}
+
+	lease, err := s.borrowNamed("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status = s.Status("payload")
+	if status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 4 {
+		t.Fatalf("bad borrowed live status: %+v", status)
+	}
+	if err := s.Free("payload"); err != nil {
+		t.Fatal(err)
+	}
+	status = s.Status("payload")
+	if status.State != "released_detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 {
+		t.Fatalf("bad released detached status: %+v", status)
+	}
+
+	lease.Release()
+	status = s.Status("payload")
+	if status.State != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 {
+		t.Fatalf("bad released status after borrow release: %+v", status)
+	}
+	if _, err := s.Get("payload"); err == nil || !strings.Contains(err.Error(), "was released") {
+		t.Fatalf("released buffer get diagnostic = %v", err)
+	}
+
+	if _, err := s.SetWithDtype("payload", []byte{9}, DtypeU8); err != nil {
+		t.Fatal(err)
+	}
+	if status = s.Status("payload"); status.State != "live" || status.Released {
+		t.Fatalf("reused buffer name did not clear release status: %+v", status)
 	}
 }
 

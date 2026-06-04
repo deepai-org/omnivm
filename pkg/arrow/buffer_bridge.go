@@ -82,6 +82,8 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		_ = callBufferRelease(release)
 	}()
 
+	s.forgetReleasedLocked(name)
+
 	// Replace existing buffer if present
 	if existing, ok := s.buffers[name]; ok {
 		existing.mu.Lock()
@@ -168,6 +170,8 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		s.mu.Unlock()
 		_ = callBufferRelease(oldRelease)
 	}()
+
+	s.forgetReleasedLocked(name)
 
 	if existing, ok := s.buffers[name]; ok {
 		existing.mu.Lock()

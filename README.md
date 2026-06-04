@@ -332,6 +332,10 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
 | `omnivm.shutdown()` | Tear down runtimes (optional — process exit works too) |
 | `omnivm.RuntimeError.to_dict()` | Return a structured runtime error envelope for logging, middleware, and JSON diagnostics |
+| `omnivm.get_buffer(name)` | Return a borrowed shared buffer view, or `None` when the name is absent |
+| `omnivm.set_buffer(name, data, dtype=0)` | Publish bytes-like data into the shared buffer store |
+| `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |
+| `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`live`, `released`, `released_detached`, or `missing`) |
 
 ### Lazy Initialization
 

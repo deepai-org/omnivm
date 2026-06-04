@@ -75,6 +75,7 @@ __all__ = [
     "get_buffer",
     "set_buffer",
     "release_buffer",
+    "buffer_status",
     "load_plugin",
     "shutdown",
     "RuntimeError",
@@ -382,6 +383,10 @@ def _load_lib():
         if hasattr(lib, "OmniBufFree"):
             lib.OmniBufFree.argtypes = [ctypes.c_char_p]
             lib.OmniBufFree.restype = ctypes.c_int
+
+        if hasattr(lib, "OmniBufStatus"):
+            lib.OmniBufStatus.argtypes = [ctypes.c_char_p]
+            lib.OmniBufStatus.restype = ctypes.c_char_p
 
         if hasattr(lib, "OmniArrowGet"):
             lib.OmniArrowGet.argtypes = [
@@ -1682,6 +1687,18 @@ def release_buffer(name):
             raise RuntimeError(f"omnivm.release_buffer failed for {name!r}")
         return
     _lib.OmniBufRelease(encoded_name)
+
+
+def buffer_status(name):
+    """
+    Return lifecycle diagnostics for a named shared OmniVM buffer.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
+    if not hasattr(_lib, "OmniBufStatus"):
+        raise RuntimeError("libomnivm does not expose OmniBufStatus")
+    raw = _check_result(_lib.OmniBufStatus(str(name).encode("utf-8")))
+    return json.loads(raw)
 
 
 def _release_handle(handle_id):

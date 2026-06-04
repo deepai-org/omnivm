@@ -931,6 +931,27 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.release_buffer("payload")
         assert "release_buffer failed" in str(ctx.exception)
 
+    def test_buffer_status_returns_lifecycle_diagnostics(self):
+        self.mock_lib.OmniBufStatus.return_value = (
+            b'{"name":"payload","state":"released_detached","live":false,'
+            b'"released":true,"active_borrows":1,"detached_buffers":1}'
+        )
+        status = omnivm_mod.buffer_status("payload")
+        self.mock_lib.OmniBufStatus.assert_called_once_with(b"payload")
+        assert status["state"] == "released_detached"
+        assert status["released"] is True
+        assert status["active_borrows"] == 1
+        assert status["detached_buffers"] == 1
+
+    def test_buffer_status_requires_capability(self):
+        class OldLib:
+            pass
+
+        omnivm_mod._lib = OldLib()
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.buffer_status("payload")
+        assert "OmniBufStatus" in str(ctx.exception)
+
     def test_release_handle_calls_lib(self):
         self.mock_lib.OmniHandleRelease.return_value = 0
         assert omnivm_mod._release_handle(123) is True

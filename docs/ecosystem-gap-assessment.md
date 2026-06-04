@@ -244,9 +244,12 @@ Explicit named buffer release now removes the public name immediately without
 invalidating active borrowed views. Those detached leases continue to count in
 Arrow diagnostics until the borrow finalizer/release arrives, so request and
 worker-drain diagnostics can distinguish "no public owner remains" from "memory
-is already free". Named-borrow queue counters make same-name borrowed views
-visible, including cases where multiple active runtime views share one release
-name and finalizer order can affect when each backing allocation is reclaimed.
+is already free". The `buffer_status(name)` API adds the per-name view that
+global counters cannot provide: `live`, `released`, `released_detached`, and
+`missing`, including active detached borrow counts and bytes. Named-borrow queue
+counters make same-name borrowed views visible, including cases where multiple
+active runtime views share one release name and finalizer order can affect when
+each backing allocation is reclaimed.
 
 The hard gap is real tensor libraries. JAX CPU tensors now exercise the
 DLPack/Arrow path with real dtype, shape, stride, and table contents. PyTorch,

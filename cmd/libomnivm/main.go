@@ -969,6 +969,11 @@ func OmniBufFree(cName *C.char) C.int {
 	return 0
 }
 
+//export OmniBufStatus
+func OmniBufStatus(cName *C.char) *C.char {
+	return C.CString(arrow.BufStatusJSON(C.GoString(cName)))
+}
+
 //export OmniArrowGet
 func OmniArrowGet(cName *C.char, schema *C.ArrowSchema, arrayOut *C.ArrowArray) C.int {
 	if cName == nil || schema == nil || arrayOut == nil {
