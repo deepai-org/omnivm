@@ -1830,6 +1830,7 @@ def _buffer_status_summary(status):
     for key in (
         "state",
         "lease_state",
+        "memory_space",
         "live",
         "released",
         "active_borrows",

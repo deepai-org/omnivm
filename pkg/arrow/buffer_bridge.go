@@ -75,6 +75,9 @@ func (s *SharedStore) SetWithMetadata(name string, data []byte, meta BufferMetad
 // SetWithValidityMetadata stores a buffer and optional Arrow validity bitmap
 // with generic Arrow-compatible metadata.
 func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity []byte, meta BufferMetadata) (*Buffer, error) {
+	if err := validateBufferMetadata(name, meta); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	var release func() error
 	defer func() {
@@ -145,6 +148,9 @@ func (s *SharedStore) SetExternalWithMetadata(name string, data unsafe.Pointer, 
 // under one release callback. Runtime adapters use this for Arrow C Data imports
 // where the producer has transferred lifetime control to OmniVM.
 func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Pointer, length int64, validity unsafe.Pointer, validityLength int64, meta BufferMetadata, release func() error) (*Buffer, error) {
+	if err := validateBufferMetadata(name, meta); err != nil {
+		return nil, err
+	}
 	if length < 0 {
 		return nil, fmt.Errorf("arrow: external buffer %q has negative length", name)
 	}
@@ -269,6 +275,13 @@ func (s *SharedStore) FromCBuffer(name string, in *C.omni_buffer_t) {
 	})
 }
 
+func validateBufferMetadata(name string, meta BufferMetadata) error {
+	if meta.MemorySpace != "" && meta.MemorySpace != "host" {
+		return fmt.Errorf("arrow: buffer %q memory_space %q is not host-accessible", name, meta.MemorySpace)
+	}
+	return nil
+}
+
 func applyMetadataLocked(buf *Buffer, meta BufferMetadata) {
 	buf.Dtype = meta.Dtype
 	buf.Format = meta.Format
@@ -286,6 +299,10 @@ func applyMetadataLocked(buf *Buffer, meta BufferMetadata) {
 	buf.Ownership = meta.Ownership
 	if buf.Ownership == "" {
 		buf.Ownership = "omnivm"
+	}
+	buf.MemorySpace = meta.MemorySpace
+	if buf.MemorySpace == "" {
+		buf.MemorySpace = "host"
 	}
 }
 

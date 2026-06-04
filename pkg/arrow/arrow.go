@@ -28,6 +28,7 @@ type BufferMetadata struct {
 	ValidityBitOffset int64   `json:"validity_bit_offset,omitempty"`
 	ReadOnly          bool    `json:"read_only"`
 	Ownership         string  `json:"ownership,omitempty"`
+	MemorySpace       string  `json:"memory_space,omitempty"`
 }
 
 // Buffer is a named, reference-counted Arrow-compatible memory buffer
@@ -49,6 +50,7 @@ type Buffer struct {
 	ValidityBitOffset int64
 	ReadOnly          bool
 	Ownership         string
+	MemorySpace       string
 	refs              int
 	release           func() error
 	mu                sync.Mutex
@@ -110,6 +112,7 @@ type BufferStatus struct {
 	Format              string `json:"format,omitempty"`
 	ReadOnly            bool   `json:"read_only,omitempty"`
 	Ownership           string `json:"ownership,omitempty"`
+	MemorySpace         string `json:"memory_space,omitempty"`
 	ActiveBorrows       int64  `json:"active_borrows,omitempty"`
 	ActiveBorrowedBytes int64  `json:"active_borrowed_bytes,omitempty"`
 	DetachedBuffers     int    `json:"detached_buffers,omitempty"`
@@ -273,6 +276,7 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 			ValidityBitOffset: buf.ValidityBitOffset,
 			ReadOnly:          buf.ReadOnly,
 			Ownership:         buf.Ownership,
+			MemorySpace:       buf.MemorySpace,
 		},
 	}
 	if len(buf.Data) > 0 {
@@ -406,15 +410,16 @@ func (s *SharedStore) Free(name string) error {
 	refs := buf.refs
 	release := buf.release
 	releasedStatus := BufferStatus{
-		Name:       name,
-		State:      "released",
-		LeaseState: "released",
-		Released:   true,
-		Len:        int64(buf.Len),
-		Dtype:      buf.Dtype,
-		Format:     buf.Format,
-		ReadOnly:   buf.ReadOnly,
-		Ownership:  nonEmptyString(buf.Ownership, "omnivm"),
+		Name:        name,
+		State:       "released",
+		LeaseState:  "released",
+		Released:    true,
+		Len:         int64(buf.Len),
+		Dtype:       buf.Dtype,
+		Format:      buf.Format,
+		ReadOnly:    buf.ReadOnly,
+		Ownership:   nonEmptyString(buf.Ownership, "omnivm"),
+		MemorySpace: nonEmptyString(buf.MemorySpace, "host"),
 	}
 	buf.mu.Unlock()
 
@@ -443,15 +448,16 @@ func (s *SharedStore) Status(name string) BufferStatus {
 	if buf, ok := s.buffers[name]; ok {
 		buf.mu.Lock()
 		status := BufferStatus{
-			Name:       name,
-			State:      "live",
-			LeaseState: "owned",
-			Live:       true,
-			Len:        int64(buf.Len),
-			Dtype:      buf.Dtype,
-			Format:     buf.Format,
-			ReadOnly:   buf.ReadOnly,
-			Ownership:  nonEmptyString(buf.Ownership, "omnivm"),
+			Name:        name,
+			State:       "live",
+			LeaseState:  "owned",
+			Live:        true,
+			Len:         int64(buf.Len),
+			Dtype:       buf.Dtype,
+			Format:      buf.Format,
+			ReadOnly:    buf.ReadOnly,
+			Ownership:   nonEmptyString(buf.Ownership, "omnivm"),
+			MemorySpace: nonEmptyString(buf.MemorySpace, "host"),
 		}
 		if buf.refs > 1 {
 			status.LeaseState = "borrowed"
@@ -481,6 +487,7 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		format := buf.Format
 		readOnly := buf.ReadOnly
 		ownership := nonEmptyString(buf.Ownership, "omnivm")
+		memorySpace := nonEmptyString(buf.MemorySpace, "host")
 		buf.mu.Unlock()
 		if refs <= 0 {
 			continue
@@ -494,6 +501,7 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			status.Format = format
 			status.ReadOnly = readOnly
 			status.Ownership = ownership
+			status.MemorySpace = memorySpace
 		}
 		status.ActiveBorrows += int64(refs)
 		status.ActiveBorrowedBytes += int64(refs) * size
@@ -530,6 +538,7 @@ func (b *Buffer) Metadata() BufferMetadata {
 		ValidityBitOffset: b.ValidityBitOffset,
 		ReadOnly:          b.ReadOnly,
 		Ownership:         b.Ownership,
+		MemorySpace:       b.MemorySpace,
 	}
 }
 

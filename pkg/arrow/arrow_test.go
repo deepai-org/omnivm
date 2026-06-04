@@ -211,13 +211,14 @@ func TestSetWithMetadataCopiesDescriptor(t *testing.T) {
 	shape := []int64{2, 3}
 	strides := []int64{12, 4}
 	buf, err := s.SetWithMetadata("tensor", []byte{1, 2, 3, 4, 5, 6}, BufferMetadata{
-		Dtype:     DtypeF32,
-		Format:    "f",
-		Shape:     shape,
-		Strides:   strides,
-		NullCount: -1,
-		ReadOnly:  true,
-		Ownership: "producer",
+		Dtype:       DtypeF32,
+		Format:      "f",
+		Shape:       shape,
+		Strides:     strides,
+		NullCount:   -1,
+		ReadOnly:    true,
+		Ownership:   "producer",
+		MemorySpace: "host",
 	})
 	if err != nil {
 		t.Fatalf("SetWithMetadata failed: %v", err)
@@ -226,7 +227,7 @@ func TestSetWithMetadataCopiesDescriptor(t *testing.T) {
 	strides[0] = 99
 
 	meta := buf.Metadata()
-	if meta.Dtype != DtypeF32 || meta.Format != "f" || !meta.ReadOnly || meta.Ownership != "producer" {
+	if meta.Dtype != DtypeF32 || meta.Format != "f" || !meta.ReadOnly || meta.Ownership != "producer" || meta.MemorySpace != "host" {
 		t.Fatalf("bad metadata: %+v", meta)
 	}
 	if meta.Shape[0] != 2 || meta.Strides[0] != 12 || meta.NullCount != -1 {
@@ -237,8 +238,28 @@ func TestSetWithMetadataCopiesDescriptor(t *testing.T) {
 		t.Fatalf("replace SetWithMetadata failed: %v", err)
 	}
 	meta = buf.Metadata()
-	if meta.Dtype != DtypeUTF8 || meta.Format != "u" || meta.Ownership != "omnivm" {
+	if meta.Dtype != DtypeUTF8 || meta.Format != "u" || meta.Ownership != "omnivm" || meta.MemorySpace != "host" {
 		t.Fatalf("bad replacement metadata: %+v", meta)
+	}
+}
+
+func TestSetWithMetadataRejectsNonHostMemorySpace(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.SetWithMetadata("gpu", []byte{1}, BufferMetadata{
+		Dtype:       DtypeBytes,
+		MemorySpace: "cuda",
+	}); err == nil || !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+		t.Fatalf("SetWithMetadata non-host memory error = %v", err)
+	}
+	data := []byte{1}
+	if _, err := s.SetExternalWithMetadata("gpu-external", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:       DtypeBytes,
+		MemorySpace: "cuda",
+	}, nil); err == nil || !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+		t.Fatalf("SetExternalWithMetadata non-host memory error = %v", err)
+	}
+	if status := s.Status("gpu"); status.State != "missing" || status.Live {
+		t.Fatalf("rejected non-host buffer should not be registered: %+v", status)
 	}
 }
 
@@ -476,7 +497,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := s.Status("payload")
-	if !status.Live || status.State != "live" || status.LeaseState != "owned" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if !status.Live || status.State != "live" || status.LeaseState != "owned" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
 		t.Fatalf("bad live buffer status: %+v", status)
 	}
 
@@ -492,13 +513,13 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.State != "released_detached" || status.LeaseState != "detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if status.State != "released_detached" || status.LeaseState != "detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
 		t.Fatalf("bad released detached status: %+v", status)
 	}
 
 	lease.Release()
 	status = s.Status("payload")
-	if status.State != "released" || status.LeaseState != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
+	if status.State != "released" || status.LeaseState != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
 		t.Fatalf("bad released status after borrow release: %+v", status)
 	}
 	if _, err := s.Get("payload"); err == nil || !strings.Contains(err.Error(), "was released") {

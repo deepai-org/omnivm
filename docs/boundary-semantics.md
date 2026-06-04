@@ -645,10 +645,13 @@ Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
 use `ReleaseWithError()`.
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports a
-coarse `state` (`live`, `released`, `released_detached`, or `missing`) plus a
+coarse `state` (`live`, `released`, `released_detached`, or `missing`), a
 direct `lease_state` (`owned`, `borrowed`, `detached`, `released`, or
-`missing`) with dtype/format/ownership metadata. Released buffer tombstones
-retain their dtype/format/read-only/ownership metadata until the bounded
+`missing`), and `memory_space` with dtype/format/ownership metadata. Current
+zero-copy buffers report `memory_space="host"`; GPU/accelerator memory should
+stay proxied or require an explicit device-aware bridge before it can report a
+different memory space. Released buffer tombstones retain their
+dtype/format/read-only/ownership/memory-space metadata until the bounded
 tombstone entry expires or the name is reused. Python
 `omnivm.release_buffer(name)` failures include the same status fields when the
 loaded library exposes `OmniBufStatus`, both in the message and as
