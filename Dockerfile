@@ -96,6 +96,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       Flask \
       beautifulsoup4 \
       pydantic \
+      marshmallow \
       SQLAlchemy \
       "psycopg[binary]" \
       asyncpg \

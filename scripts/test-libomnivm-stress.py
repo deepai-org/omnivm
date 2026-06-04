@@ -17438,6 +17438,19 @@ def test_validation_error_fidelity_popular_libraries():
             {"runtime": "python", "type": "ValidationError", "message": "2 validation errors for User"},
         ),
         (
+            "marshmallow",
+            "python",
+            (
+                "from marshmallow import Schema, fields, validate\n"
+                "class User(Schema):\n"
+                "    age = fields.Integer(required=True, validate=validate.Range(min=1))\n"
+                "    name = fields.String(required=True)\n"
+                "User().load({'age': 0})"
+            ),
+            ["ValidationError", "age", "greater than or equal to 1", "name", "Missing data"],
+            {"runtime": "python", "type": "ValidationError", "message": "age"},
+        ),
+        (
             "django forms",
             "python",
             (
@@ -17715,6 +17728,13 @@ def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
         "form=Signup({'age':'0'})\n"
         "raise ValidationError(form.errors.as_json())\n"
     )
+    marshmallow_source = (
+        "from marshmallow import Schema, fields, validate\n"
+        "class User(Schema):\n"
+        "    age = fields.Integer(required=True, validate=validate.Range(min=1))\n"
+        "    name = fields.String(required=True)\n"
+        "User().load({'age': 0})\n"
+    )
     active_record_source = "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)"
 
     ruby_result = omnivm.call(
@@ -17775,6 +17795,25 @@ rescue OmniVM::RuntimeError => e
   ].join("|")
 end
 begin
+  OmniVM.call("python", {json.dumps(marshmallow_source)})
+rescue OmniVM::RuntimeError => e
+  detail = e.message.to_s + "\\n" + e.traceback.to_s
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    detail.include?("age"),
+    detail.include?("greater than or equal to 1"),
+    detail.include?("name"),
+    detail.include?("Missing data"),
+    e.traceback.to_s.include?("ValidationError"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+begin
   OmniVM.call("python", {json.dumps(django_form_source)})
 rescue OmniVM::RuntimeError => e
   detail = e.message.to_s + "\\n" + e.traceback.to_s
@@ -17796,7 +17835,7 @@ out.join("\\n")
 '''
     )
     ruby_lines = ruby_result.splitlines()
-    if len(ruby_lines) != 4:
+    if len(ruby_lines) != 5:
         raise AssertionError(f"unexpected Ruby validation error field result: {ruby_result}")
     ruby_pydantic = ruby_lines[0].split("|")
     want_ruby_pydantic = [
@@ -17846,7 +17885,24 @@ out.join("\\n")
     ]
     if ruby_sqlalchemy != want_ruby_sqlalchemy:
         raise AssertionError(f"Ruby SQLAlchemy error fields lost structure: {ruby_sqlalchemy!r}")
-    ruby_django = ruby_lines[3].split("|")
+    ruby_marshmallow = ruby_lines[3].split("|")
+    want_ruby_marshmallow = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if ruby_marshmallow != want_ruby_marshmallow:
+        raise AssertionError(f"Ruby Marshmallow error fields lost structure: {ruby_marshmallow!r}")
+    ruby_django = ruby_lines[4].split("|")
     want_ruby_django = [
         "true",
         "python",
@@ -17926,6 +17982,26 @@ out.join("\\n")
         ));
     }}
     try {{
+        omnivm.OmniVM.call("python", {json.dumps(marshmallow_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("age")),
+            Boolean.toString(detail.contains("greater than or equal to 1")),
+            Boolean.toString(detail.contains("name")),
+            Boolean.toString(detail.contains("Missing data")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("ValidationError")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    try {{
         omnivm.OmniVM.call("python", {json.dumps(django_form_source)});
     }} catch (omnivm.OmniVM.RuntimeError e) {{
         java.util.Map<String, Object> envelope = e.toMap();
@@ -17966,7 +18042,7 @@ out.join("\\n")
 '''
     )
     java_lines = java_result.splitlines()
-    if len(java_lines) != 5:
+    if len(java_lines) != 6:
         raise AssertionError(f"unexpected Java validation error field result: {java_result}")
     java_pydantic = java_lines[0].split("|")
     want_java_pydantic = [
@@ -18016,7 +18092,24 @@ out.join("\\n")
     ]
     if java_sqlalchemy != want_java_sqlalchemy:
         raise AssertionError(f"Java SQLAlchemy error fields lost structure: {java_sqlalchemy!r}")
-    java_django = java_lines[3].split("|")
+    java_marshmallow = java_lines[3].split("|")
+    want_java_marshmallow = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if java_marshmallow != want_java_marshmallow:
+        raise AssertionError(f"Java Marshmallow error fields lost structure: {java_marshmallow!r}")
+    java_django = java_lines[4].split("|")
     want_java_django = [
         "true",
         "python",
@@ -18032,7 +18125,7 @@ out.join("\\n")
     ]
     if java_django != want_java_django:
         raise AssertionError(f"Java Django form error fields lost structure: {java_django!r}")
-    java_active_record = java_lines[4].split("|")
+    java_active_record = java_lines[5].split("|")
     want_java_active_record = [
         "true",
         "ruby",
