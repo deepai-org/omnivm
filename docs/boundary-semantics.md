@@ -654,6 +654,10 @@ helper family.
 Generated Python manifest capture code injects the same `omnivm_close(value)`
 helper so guest Python snippets can explicitly release a handle proxy or cancel
 a stream proxy even when the owner object has a real `close` field or method.
+The embedded Python `omnivm` module installs the same collision-safe
+`proxy_close(value)` and `omnivm_close(value)` helpers, so code running directly
+inside the embedded interpreter does not have to rely on proxy finalizers for
+normal lifecycle release.
 Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
