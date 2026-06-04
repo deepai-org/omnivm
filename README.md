@@ -530,7 +530,8 @@ Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`, and `omnivm.proxy_close(proxy)`.
+`omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
+`omnivm.omnivm_close(proxy)`.
 Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
