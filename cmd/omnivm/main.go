@@ -119,6 +119,9 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 	code := C.GoString(cCode)
 
 	threadID := int64(C.get_thread_id())
+	if err := requireGoldenThreadForRuntimeCall("call", threadID); err != nil {
+		return C.CString("ERR:" + err.Error())
+	}
 	val, err := eng.Call(rtName, code, threadID)
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
@@ -187,6 +190,12 @@ func OmniBufStatus(cName *C.char) *C.char {
 func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
 	rtName := C.GoString(cRuntime)
 	funcName := C.GoString(cFuncName)
+	threadID := int64(C.get_thread_id())
+	if err := requireGoldenThreadForRuntimeCall("typed call", threadID); err != nil {
+		var cv C.omni_value_t
+		polyglot.Error(err.Error()).ToCValueRaw(unsafe.Pointer(&cv))
+		return cv
+	}
 
 	// Convert C args to Go values
 	n := int(nargs)
@@ -202,6 +211,16 @@ func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, n
 	var cv C.omni_value_t
 	result.ToCValueRaw(unsafe.Pointer(&cv))
 	return cv
+}
+
+func requireGoldenThreadForRuntimeCall(op string, threadID int64) error {
+	if eng == nil {
+		return fmt.Errorf("not initialized")
+	}
+	if eng.GoldenThreadID == 0 || threadID == eng.GoldenThreadID {
+		return nil
+	}
+	return fmt.Errorf("thread affinity violation: %s must run on OmniVM Golden Thread %d, current thread %d; owner dispatch is unsupported in this mode, so OmniVM will not route this call onto the host thread", op, eng.GoldenThreadID, threadID)
 }
 
 func main() {

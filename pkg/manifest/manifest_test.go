@@ -8114,6 +8114,10 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
 		"Python interpreter mode runs direct runtime calls on the pinned host",
 		"Starting a Go background dispatcher here would move runtime",
+		`if err := requireGoldenThreadForRuntimeCall("call", threadID); err != nil`,
+		`if err := requireGoldenThreadForRuntimeCall("typed call", threadID); err != nil`,
+		"func requireGoldenThreadForRuntimeCall(op string, threadID int64) error",
+		"owner dispatch is unsupported in this mode, so OmniVM will not route this call onto the host thread",
 		"json.Marshal(status)",
 	} {
 		if !contains(cmdCode, want) {
