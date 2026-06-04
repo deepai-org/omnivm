@@ -5656,6 +5656,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `__inspect.getattr_static(value, name)`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
+		!contains(code, "result = close()\n        return True if result is None else result") ||
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
 		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
@@ -6012,7 +6013,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def proxy_close(value)") ||
 		!contains(code, "def __omnivm_actual_public_method?(value, name)") ||
 		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)") ||
-		!contains(code, "if __omnivm_actual_public_method?(value, :close)") {
+		!contains(code, "if __omnivm_actual_public_method?(value, :close)") ||
+		!contains(code, "result = value.public_send(:close)\n    return result.nil? ? true : result") ||
+		!contains(code, "result = value.public_send(:close)\n        return result.nil? ? true : result") {
 		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
 	}
 	if contains(code, "value.respond_to?(:close)") || contains(code, "value.respond_to?(:omnivm_close)") {

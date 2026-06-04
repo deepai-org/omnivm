@@ -605,8 +605,8 @@ def omnivm_close(value):
         return close()
     close = __omnivm_actual_public_method(value, "close")
     if callable(close):
-        close()
-        return True
+        result = close()
+        return True if result is None else result
     return False
 
 def __omnivm_actual_public_method(value, name):
@@ -2158,8 +2158,8 @@ end
 def omnivm_close(value)
   return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
   if __omnivm_actual_public_method?(value, :close)
-    value.public_send(:close)
-    return true
+    result = value.public_send(:close)
+    return result.nil? ? true : result
   end
   false
 end
@@ -2169,8 +2169,8 @@ if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
     def proxy_close(value)
       return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
       if __omnivm_actual_public_method?(value, :close)
-        value.public_send(:close)
-        return true
+        result = value.public_send(:close)
+        return result.nil? ? true : result
       end
       false
     end
