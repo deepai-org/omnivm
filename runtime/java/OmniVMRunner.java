@@ -723,16 +723,22 @@ public class OmniVMRunner {
     }
 
     private static Object callThrowableDetailMethod(Throwable throwable, String methodName) {
-        try {
-            Method method = throwable.getClass().getMethod(methodName);
-            if (method.getParameterCount() != 0 || method.getDeclaringClass() == Throwable.class) {
-                return null;
+        for (Class<?> current = throwable.getClass(); current != null; current = current.getSuperclass()) {
+            if (current == Throwable.class || current == Object.class) {
+                break;
             }
-            method.setAccessible(true);
-            return method.invoke(throwable);
-        } catch (ReflectiveOperationException | RuntimeException ignored) {
-            return null;
+            try {
+                Method method = current.getDeclaredMethod(methodName);
+                if (method.getParameterCount() != 0 || Modifier.isStatic(method.getModifiers())) {
+                    return null;
+                }
+                method.setAccessible(true);
+                return method.invoke(throwable);
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                // Try the next superclass.
+            }
         }
+        return null;
     }
 
     private static Object throwableDetailField(Throwable throwable, String accessorName) {

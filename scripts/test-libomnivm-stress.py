@@ -18876,6 +18876,13 @@ public class JavaDetailException extends RuntimeException {
     return "upstream validation rejected payload";
   }
 
+  java.util.Map<String, Object> toMap() {
+    java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+    details.put("packagePrivate", true);
+    details.put("source", "toMap");
+    return details;
+  }
+
   public static void main(String[] args) {
     throw new JavaDetailException();
   }
@@ -18923,6 +18930,8 @@ public class JavaDetailException extends RuntimeException {
         raise AssertionError(f"JS Java detail field payload lost: {envelope}")
     if details.get("original_message") != "upstream validation rejected payload":
         raise AssertionError(f"JS Java original message payload lost: {envelope}")
+    if details.get("to_map") != {"packagePrivate": True, "source": "toMap"}:
+        raise AssertionError(f"JS Java package-private toMap payload lost: {envelope}")
 
 
 def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
