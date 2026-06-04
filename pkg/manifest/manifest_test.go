@@ -8460,6 +8460,7 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		"omnivm_v8_parse_runtime_error_envelope_text",
 		"omnivm_v8_parse_runtime_error_envelope_object",
 		"omnivm_v8_details_json_prop_fallback",
+		"omnivm_v8_append_aggregate_errors",
 		"omnivm_v8_json_clone_value",
 		"omnivm_v8_json_fallback_stringify",
 		"value->IsBigInt()",
@@ -8520,6 +8521,13 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`return "{\"issues\":" + issues + "}"`,
 		`std::string errors = omnivm_v8_json_stringify_prop(isolate, context, object, "errors")`,
 		`return "{\"errors\":" + errors + "}"`,
+		`v8::String::NewFromUtf8(isolate, "errors").ToLocalChecked()`,
+		`uint32_t limit = length < 64 ? length : 64`,
+		`out += "\nCaused by: "`,
+		`omnivm_v8_append_error_causes(isolate, context, item, out, 0)`,
+		`omnivm_v8_append_aggregate_errors(isolate, context, item, out, depth + 1)`,
+		`out += "\nCaused by: AggregateError: additional aggregate errors truncated"`,
+		`omnivm_v8_append_aggregate_errors(isolate, context, exception, text, 0)`,
 		`details = details_text`,
 	} {
 		if !contains(code, want) {

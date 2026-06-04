@@ -369,6 +369,44 @@ static void omnivm_v8_append_error_causes(v8::Isolate* isolate,
     omnivm_v8_append_error_causes(isolate, context, cause, out, depth + 1);
 }
 
+static void omnivm_v8_append_aggregate_errors(v8::Isolate* isolate,
+                                              v8::Local<v8::Context> context,
+                                              v8::Local<v8::Value> value,
+                                              std::string& out,
+                                              int depth) {
+    if (depth >= 4 || value.IsEmpty() || !value->IsObject()) {
+        return;
+    }
+    v8::Local<v8::Object> obj = value.As<v8::Object>();
+    v8::Local<v8::Value> errors_value;
+    if (!obj->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, "errors").ToLocalChecked()
+        ).ToLocal(&errors_value) || errors_value.IsEmpty() || !errors_value->IsArray()) {
+        return;
+    }
+    v8::Local<v8::Array> errors = errors_value.As<v8::Array>();
+    uint32_t length = errors->Length();
+    uint32_t limit = length < 64 ? length : 64;
+    for (uint32_t i = 0; i < limit; ++i) {
+        v8::Local<v8::Value> item;
+        if (!errors->Get(context, i).ToLocal(&item) || item.IsEmpty()) {
+            continue;
+        }
+        std::string item_text = omnivm_v8_error_stack(isolate, context, item);
+        if (item_text.empty()) {
+            continue;
+        }
+        out += "\nCaused by: ";
+        out += item_text;
+        omnivm_v8_append_error_causes(isolate, context, item, out, 0);
+        omnivm_v8_append_aggregate_errors(isolate, context, item, out, depth + 1);
+    }
+    if (length > limit) {
+        out += "\nCaused by: AggregateError: additional aggregate errors truncated";
+    }
+}
+
 static void omnivm_v8_append_original_error_handle(v8::Isolate* isolate,
                                                   v8::Local<v8::Context> context,
                                                   v8::Local<v8::Value> value,
@@ -426,6 +464,7 @@ static char* omnivm_v8_format_exception(v8::Isolate* isolate,
     std::string text = omnivm_v8_error_stack(isolate, context, exception);
     if (!text.empty()) {
         omnivm_v8_append_error_causes(isolate, context, exception, text, 0);
+        omnivm_v8_append_aggregate_errors(isolate, context, exception, text, 0);
         omnivm_v8_append_error_details(isolate, context, exception, text);
         omnivm_v8_append_original_error_handle(isolate, context, exception, text);
         return strdup(text.c_str());
