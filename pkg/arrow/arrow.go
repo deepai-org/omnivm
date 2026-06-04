@@ -210,11 +210,12 @@ func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 	s.forgetReleasedLocked(name)
 
 	buf := &Buffer{
-		Name:      name,
-		Data:      make([]byte, size),
-		Len:       size,
-		refs:      1,
-		Ownership: "omnivm",
+		Name:        name,
+		Data:        make([]byte, size),
+		Len:         size,
+		refs:        1,
+		Ownership:   "omnivm",
+		MemorySpace: "host",
 	}
 	s.buffers[name] = buf
 	s.allocations++
@@ -278,8 +279,8 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 			ValidityBytes:     int64(buf.ValidityLen),
 			ValidityBitOffset: buf.ValidityBitOffset,
 			ReadOnly:          buf.ReadOnly,
-			Ownership:         buf.Ownership,
-			MemorySpace:       buf.MemorySpace,
+			Ownership:         nonEmptyString(buf.Ownership, "omnivm"),
+			MemorySpace:       nonEmptyString(buf.MemorySpace, "host"),
 		},
 	}
 	if len(buf.Data) > 0 {
@@ -546,8 +547,8 @@ func (b *Buffer) Metadata() BufferMetadata {
 		ValidityBytes:     int64(b.ValidityLen),
 		ValidityBitOffset: b.ValidityBitOffset,
 		ReadOnly:          b.ReadOnly,
-		Ownership:         b.Ownership,
-		MemorySpace:       b.MemorySpace,
+		Ownership:         nonEmptyString(b.Ownership, "omnivm"),
+		MemorySpace:       nonEmptyString(b.MemorySpace, "host"),
 	}
 }
 

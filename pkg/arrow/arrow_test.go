@@ -46,6 +46,21 @@ func TestAllocate(t *testing.T) {
 	if len(buf.Data) != 1024 {
 		t.Fatalf("expected data len 1024, got %d", len(buf.Data))
 	}
+	if buf.Ownership != "omnivm" || buf.MemorySpace != "host" {
+		t.Fatalf("allocated buffer ownership metadata = %q/%q, want omnivm/host", buf.Ownership, buf.MemorySpace)
+	}
+	meta := buf.Metadata()
+	if meta.Ownership != "omnivm" || meta.MemorySpace != "host" {
+		t.Fatalf("allocated buffer metadata snapshot = %q/%q, want omnivm/host", meta.Ownership, meta.MemorySpace)
+	}
+	lease, err := s.Borrow("test")
+	if err != nil {
+		t.Fatalf("borrow allocated buffer: %v", err)
+	}
+	defer lease.Release()
+	if lease.Metadata.Ownership != "omnivm" || lease.Metadata.MemorySpace != "host" {
+		t.Fatalf("allocated buffer borrow metadata = %q/%q, want omnivm/host", lease.Metadata.Ownership, lease.Metadata.MemorySpace)
+	}
 }
 
 func TestAllocateDuplicate(t *testing.T) {
