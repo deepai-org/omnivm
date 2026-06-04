@@ -2471,9 +2471,9 @@ class TestCallWithMockLib(unittest.TestCase):
             b'"ruby_fiber_thread":{"supported":false}}}}'
         )
         assert omnivm_mod.owner_dispatch_target_status("asyncio") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("js") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("java") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("ruby") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("JavaScript") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("java-executor") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("ruby fiber") == {"supported": False}
 
     def test_owner_dispatch_target_status_requires_known_target(self):
         self.mock_lib.OmniStatus.return_value = (

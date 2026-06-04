@@ -1896,13 +1896,15 @@ _OWNER_DISPATCH_TARGET_ALIASES = {
     "ruby": "ruby_fiber_thread",
     "fiber": "ruby_fiber_thread",
     "thread": "ruby_fiber_thread",
+    "ruby_fiber": "ruby_fiber_thread",
     "ruby_thread": "ruby_fiber_thread",
 }
 
 
 def _owner_dispatch_target_name(target):
     target_name = str(target)
-    return _OWNER_DISPATCH_TARGET_ALIASES.get(target_name, target_name)
+    normalized = target_name.strip().lower().replace("-", "_").replace(" ", "_")
+    return _OWNER_DISPATCH_TARGET_ALIASES.get(normalized, normalized)
 
 
 def owner_dispatch_target_status(target):
