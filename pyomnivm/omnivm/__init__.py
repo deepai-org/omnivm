@@ -88,7 +88,7 @@ import builtins as _builtins
 class RuntimeError(_builtins.RuntimeError):
     """Raised when a runtime call fails (Go panic, JS exception, etc.)."""
 
-    def __init__(self, message, runtime=None, boundary_path=None):
+    def __init__(self, message, runtime=None, boundary_path=None, details=None):
         super().__init__(message)
         parsed = _parse_runtime_error_text(
             str(message),
@@ -104,7 +104,7 @@ class RuntimeError(_builtins.RuntimeError):
         self.cause_chain = parsed["cause_chain"]
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
-        self.details = parsed["details"]
+        self.details = _copy_json_value(details) if details is not None else parsed["details"]
 
     def to_dict(self):
         """Return a structured, JSON-serializable runtime error envelope."""
@@ -1513,11 +1513,13 @@ def owner_dispatch_status():
     integrations whether OmniVM can move callbacks back to owner schedulers, and
     which runtime-specific affinity diagnostics are available.
     """
-    info = status().get("thread_affinity")
+    status_info = status()
+    info = status_info.get("thread_affinity")
     if not isinstance(info, dict):
         raise RuntimeError(
             "libomnivm status omitted thread_affinity capability",
             boundary_path="thread_affinity",
+            details={"status": status_info},
         )
     return info
 
@@ -1531,17 +1533,20 @@ def owner_dispatch_target_status(target):
     "ruby_fiber_thread".
     """
     target_name = str(target)
-    targets = owner_dispatch_status().get("owner_dispatch_targets")
+    dispatch_info = owner_dispatch_status()
+    targets = dispatch_info.get("owner_dispatch_targets")
     if not isinstance(targets, dict):
         raise RuntimeError(
             "libomnivm status omitted owner_dispatch_targets capability",
             boundary_path="thread_affinity",
+            details={"thread_affinity": dispatch_info},
         )
     info = targets.get(target_name)
     if not isinstance(info, dict):
         raise RuntimeError(
             f"libomnivm status omitted owner dispatch target {target_name!r}",
             boundary_path="thread_affinity",
+            details={"target": target_name, "owner_dispatch_targets": targets},
         )
     return info
 
@@ -1562,6 +1567,7 @@ def assert_owner_dispatch_supported(label=""):
     raise RuntimeError(
         f"{prefix}owner dispatch unsupported: mode={mode}: {reason}",
         boundary_path="thread_affinity",
+        details={"thread_affinity": info},
     )
 
 
@@ -1582,6 +1588,7 @@ def assert_owner_dispatch_target_supported(target, label=""):
     raise RuntimeError(
         f"{prefix}owner dispatch target {target_name} unsupported: {diagnostic}",
         boundary_path="thread_affinity",
+        details={"target": target_name, "owner_dispatch_target": info},
     )
 
 
@@ -1592,11 +1599,13 @@ def ruby_threading_status():
     This lets host startup code decide whether a Ruby framework that requires
     native Ruby threads can run in process before loading that framework.
     """
-    info = status().get("ruby_threading")
+    status_info = status()
+    info = status_info.get("ruby_threading")
     if not isinstance(info, dict):
         raise RuntimeError(
             "libomnivm status omitted ruby_threading capability",
             boundary_path="ruby_threading",
+            details={"status": status_info},
         )
     return info
 
@@ -1619,6 +1628,7 @@ def assert_ruby_native_threads_supported(label=""):
     raise RuntimeError(
         f"{prefix}native Ruby threads unsupported: mode={mode}: {reason}",
         boundary_path="ruby_threading",
+        details={"ruby_threading": info},
     )
 
 
@@ -1639,6 +1649,7 @@ def assert_host_thread(label=""):
         f"{info['current_thread_id']} is not libomnivm host thread "
         f"{info['host_thread_id']}",
         boundary_path="thread_affinity",
+        details={"affinity": info},
     )
 
 

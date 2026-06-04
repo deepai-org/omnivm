@@ -5884,6 +5884,10 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/python/python.go"], "envelope = _parse_runtime_error_envelope(body, runtime=source_runtime, boundary_path=wrapped_boundary)") {
 		t.Fatalf("embedded Python RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
+	if !contains(files["../../pkg/python/python.go"], "def __init__(self, message, runtime=None, boundary_path=None, details=None)") ||
+		!contains(files["../../pkg/python/python.go"], "self.details = _copy_json_value(details) if details is not None else parsed['details']") {
+		t.Fatalf("embedded Python RuntimeError should accept copied structured details overrides")
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? boundary_path : boundary_parts.join") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")

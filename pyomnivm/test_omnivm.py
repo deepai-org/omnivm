@@ -201,6 +201,20 @@ class TestRuntimeError(unittest.TestCase):
         envelope["details"]["field"] = "changed"
         assert err.details == {"field": "age"}
 
+    def test_details_override_supplies_structured_guard_context(self):
+        details = {"thread_affinity": {"owner_dispatch_supported": False}}
+        err = omnivm_mod.RuntimeError(
+            "owner dispatch unsupported",
+            boundary_path="thread_affinity",
+            details=details,
+        )
+        details["thread_affinity"]["owner_dispatch_supported"] = True
+
+        assert err.details == {"thread_affinity": {"owner_dispatch_supported": False}}
+        envelope = err.to_dict()
+        envelope["details"]["thread_affinity"]["owner_dispatch_supported"] = True
+        assert err.details == {"thread_affinity": {"owner_dispatch_supported": False}}
+
     def test_to_dict_copies_mutable_envelope_values(self):
         err = omnivm_mod.RuntimeError(
             "javascript: Error: outer\n"
@@ -1234,6 +1248,8 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.assert_host_thread("callback")
         assert "callback: thread affinity violation" in str(ctx.exception)
         assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.details["affinity"]["host_thread_id"] == 12345
+        assert ctx.exception.details["affinity"]["current_thread_id"] == 99
 
     def test_owner_dispatch_status_reports_capability_contract(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -1272,6 +1288,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "django startup: owner dispatch unsupported" in str(ctx.exception)
         assert "diagnostic_only" in str(ctx.exception)
         assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.details["thread_affinity"]["owner_dispatch_supported"] is False
+        assert "c-shared mode" in ctx.exception.details["thread_affinity"]["reason"]
 
     def test_assert_owner_dispatch_supported_accepts_supported_status(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -1300,6 +1318,8 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.owner_dispatch_target_status("python_asyncio")
         assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.details["target"] == "python_asyncio"
+        assert ctx.exception.details["owner_dispatch_targets"] == {}
 
     def test_assert_owner_dispatch_target_supported_reports_diagnostic(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -1313,6 +1333,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "reactor startup: owner dispatch target java_executor unsupported" in str(ctx.exception)
         assert "executor caller-managed" in str(ctx.exception)
         assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.details["target"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["diagnostic"] == "executor caller-managed"
 
     def test_assert_owner_dispatch_target_supported_accepts_supported_target(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -1350,6 +1372,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "puma startup: native Ruby threads unsupported" in str(ctx.exception)
         assert "single_vm_thread" in str(ctx.exception)
         assert ctx.exception.boundary_path == "ruby_threading"
+        assert ctx.exception.details["ruby_threading"]["native_threads_supported"] is False
+        assert "Puma" in ctx.exception.details["ruby_threading"]["app_server_boundary"]
 
     def test_assert_ruby_native_threads_supported_accepts_supported_status(self):
         self.mock_lib.OmniStatus.return_value = (
