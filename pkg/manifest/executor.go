@@ -2681,12 +2681,13 @@ func (e *Executor) autoBulkTableRefForCapture(val interface{}) (*TableRef, bool,
 	name := fmt.Sprintf("__omnivm_auto_buffer_%p_%d", e, e.nextRuntimeRefID)
 	dtype := view.dtype
 	meta := arrow.BufferMetadata{
-		Dtype:     dtype,
-		Format:    view.format,
-		Shape:     view.shapeOrDefault(),
-		Strides:   append([]int64(nil), view.strides...),
-		ReadOnly:  true,
-		Ownership: "producer",
+		Dtype:       dtype,
+		Format:      view.format,
+		Shape:       view.shapeOrDefault(),
+		Strides:     append([]int64(nil), view.strides...),
+		ReadOnly:    true,
+		Ownership:   "producer",
+		MemorySpace: nonEmpty(view.memorySpace, "host"),
 	}
 	var buf *arrow.Buffer
 	var err error
@@ -2735,15 +2736,16 @@ func (e *Executor) autoBulkTableRefForCapture(val interface{}) (*TableRef, bool,
 }
 
 type bulkCaptureView struct {
-	bytes    []byte
-	ptr      unsafe.Pointer
-	bytesLen int64
-	elements int64
-	shape    []int64
-	strides  []int64
-	dtype    int32
-	format   string
-	release  func() error
+	bytes       []byte
+	ptr         unsafe.Pointer
+	bytesLen    int64
+	elements    int64
+	shape       []int64
+	strides     []int64
+	dtype       int32
+	format      string
+	memorySpace string
+	release     func() error
 }
 
 func (v bulkCaptureView) shapeOrDefault() []int64 {
@@ -2803,14 +2805,15 @@ func bulkCaptureViewForValue(val interface{}) (bulkCaptureView, bool) {
 
 func cSharedOwnedBufferBulkCaptureView(data *cSharedOwnedBuffer) bulkCaptureView {
 	return bulkCaptureView{
-		ptr:      data.ptr,
-		bytesLen: data.bytesLen,
-		elements: data.elements,
-		shape:    append([]int64(nil), data.shape...),
-		strides:  append([]int64(nil), data.strides...),
-		dtype:    data.dtype,
-		format:   data.format,
-		release:  data.release,
+		ptr:         data.ptr,
+		bytesLen:    data.bytesLen,
+		elements:    data.elements,
+		shape:       append([]int64(nil), data.shape...),
+		strides:     append([]int64(nil), data.strides...),
+		dtype:       data.dtype,
+		format:      data.format,
+		memorySpace: data.memorySpace,
+		release:     data.release,
 	}
 }
 

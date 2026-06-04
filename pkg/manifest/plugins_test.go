@@ -67,6 +67,58 @@ func TestGoCSharedBorrowedTableArgCarriesMemoryOwnershipMetadata(t *testing.T) {
 	}
 }
 
+func TestGoCSharedOwnedBufferRejectsNonHostMemorySpace(t *testing.T) {
+	_, err := decodeCSharedOwnedBuffer(0, cSharedPluginEnvelope{
+		OK:          true,
+		Boundary:    "owned_buffer",
+		Dtype:       "u8",
+		Format:      "C",
+		MemorySpace: "cuda",
+		BytesLen:    0,
+		Elements:    0,
+	})
+	if err == nil {
+		t.Fatal("decodeCSharedOwnedBuffer accepted non-host memory_space")
+	}
+	if !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+		t.Fatalf("decodeCSharedOwnedBuffer non-host memory error = %v", err)
+	}
+}
+
+func TestGoCSharedOwnedBufferCarriesHostMemorySpace(t *testing.T) {
+	buf, err := decodeCSharedOwnedBuffer(0, cSharedPluginEnvelope{
+		OK:          true,
+		Boundary:    "owned_buffer",
+		Dtype:       "u8",
+		Format:      "C",
+		MemorySpace: "host",
+		BytesLen:    0,
+		Elements:    0,
+	})
+	if err != nil {
+		t.Fatalf("decodeCSharedOwnedBuffer: %v", err)
+	}
+
+	e := NewExecutor(nil)
+	ref, ok, err := e.autoBulkTableRefForCapture(buf)
+	if err != nil || !ok {
+		t.Fatalf("autoBulkTableRefForCapture = (%v, %v)", ok, err)
+	}
+	t.Cleanup(func() {
+		if err := e.releaseAllHandleScopes(); err != nil {
+			t.Fatalf("releaseAllHandleScopes: %v", err)
+		}
+	})
+
+	if ref.Metadata == nil || ref.Metadata.MemorySpace != "host" {
+		t.Fatalf("owned c-shared table memory_space = %#v, want host", ref.Metadata)
+	}
+	status := arrow.GlobalStore().Status(ref.Metadata.Buffer)
+	if status.MemorySpace != "host" {
+		t.Fatalf("owned c-shared store memory_space = %q, want host", status.MemorySpace)
+	}
+}
+
 func TestGoCSharedSourceFallbackCompilesGenericFunction(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")

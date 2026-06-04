@@ -61,15 +61,16 @@ type cSharedPluginEnvelope struct {
 }
 
 type cSharedOwnedBuffer struct {
-	ptr      unsafe.Pointer
-	bytesLen int64
-	elements int64
-	shape    []int64
-	strides  []int64
-	dtype    int32
-	format   string
-	release  func() error
-	once     *sync.Once
+	ptr         unsafe.Pointer
+	bytesLen    int64
+	elements    int64
+	shape       []int64
+	strides     []int64
+	dtype       int32
+	format      string
+	memorySpace string
+	release     func() error
+	once        *sync.Once
 }
 
 type cSharedArgLease struct {
@@ -608,6 +609,10 @@ func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvel
 	if env.Format != "" && env.Format != format {
 		return nil, fmt.Errorf("decode Go c-shared owned buffer: dtype %q has format %q, got %q", env.Dtype, format, env.Format)
 	}
+	memorySpace := nonEmpty(env.MemorySpace, "host")
+	if memorySpace != "host" {
+		return nil, fmt.Errorf("decode Go c-shared owned buffer: memory_space %q is not host-accessible", memorySpace)
+	}
 	if env.BytesLen < 0 || env.Elements < 0 {
 		return nil, fmt.Errorf("decode Go c-shared owned buffer: negative length bytes=%d elements=%d", env.BytesLen, env.Elements)
 	}
@@ -638,14 +643,15 @@ func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvel
 		ptr = unsafe.Pointer(uintptr(addr))
 	}
 	buf := &cSharedOwnedBuffer{
-		ptr:      ptr,
-		bytesLen: env.BytesLen,
-		elements: env.Elements,
-		shape:    shape,
-		strides:  strides,
-		dtype:    dtype,
-		format:   format,
-		once:     &sync.Once{},
+		ptr:         ptr,
+		bytesLen:    env.BytesLen,
+		elements:    env.Elements,
+		shape:       shape,
+		strides:     strides,
+		dtype:       dtype,
+		format:      format,
+		memorySpace: memorySpace,
+		once:        &sync.Once{},
 	}
 	if env.BufferID != "" {
 		bufferID := env.BufferID

@@ -422,12 +422,14 @@ Implementation requirements:
   without lying. Invalid elements surface as native null values through table
   proxies.
 - Generated Go `c-shared` manifest functions use the same contract for
-  primitive numeric slices and arrays. Returns export an owned C data buffer
-  with dtype, Arrow format, shape, and release callback metadata, then the host
-  imports that memory into the shared Arrow store. Parameters receive borrowed
-  table buffers through the same dtype/format descriptor plus memory-space,
-  ownership, and read-only metadata for the duration of the call. The rule is
-  based on value shape and element type, not producer package names.
+  primitive numeric slices and arrays. Returns export an owned host C data
+  buffer with dtype, Arrow format, shape, memory-space, and release callback
+  metadata, then the host imports that memory into the shared Arrow store.
+  Non-host returned buffers are rejected until an explicit device-aware bridge
+  exists. Parameters receive borrowed table buffers through the same
+  dtype/format descriptor plus memory-space, ownership, and read-only metadata
+  for the duration of the call. The rule is based on value shape and element
+  type, not producer package names.
 
 Runtime adapters should target generic protocols instead of named-library
 branches:
