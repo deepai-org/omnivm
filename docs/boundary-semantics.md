@@ -189,8 +189,9 @@ different: `handle_release_finalizer` returns `false` for an already released
 handle without queueing work, and `handle_drop_reference` is an idempotent
 no-op when either side of the edge is already gone. This keeps GC/finalizer and
 scope cleanup races quiet without hiding ordinary stale-proxy use.
-Explicit proxy-close helpers use the same release operation, but as
-user-initiated calls: after a successful release, Python detaches the
+Explicit proxy-close helpers route through the user-initiated
+`handle_release_explicit` operation instead of the quiet finalizer queue: after
+a successful release, Python detaches the
 `weakref.finalize` hook, JavaScript unregisters the `FinalizationRegistry`
 token, Ruby undefines the `ObjectSpace` finalizer, and Java marks the shared
 `Cleaner` state released before running `Cleanable.clean()` so later GC does

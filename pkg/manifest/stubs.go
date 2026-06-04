@@ -960,6 +960,18 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 			return "", err
 		}
 		return marshalResult(e.ensureHandleTable().QueueReleaseFromFinalizer(id))
+	case "handle_release_explicit":
+		id, err := bridgeHandleID(req.ID)
+		if err != nil {
+			return "", err
+		}
+		if _, err := e.handleEntry(id); err != nil {
+			return "", err
+		}
+		if err := e.ensureHandleTable().Release(id); err != nil {
+			return "", err
+		}
+		return marshalResult(true)
 	case "handle_get":
 		id, err := bridgeHandleID(req.ID)
 		if err != nil {

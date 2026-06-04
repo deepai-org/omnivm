@@ -1190,7 +1190,7 @@ globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record
 };
 globalThis.__omnivm_release_handle_explicit = globalThis.__omnivm_release_handle_explicit || function(id) {
   if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
-  var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_release_finalizer", id: id}));
+  var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_release_explicit", id: id}));
   var env = JSON.parse(raw);
   return !!(env && env.__omnivm_result__ === true && env.value === true);
 };
@@ -2298,7 +2298,7 @@ class OmniVMHandleProxy
 
   def omnivm_close
     return false if @__omnivm_closed == true
-    OmniVM.call("__manifest", JSON.generate({op: "handle_release_finalizer", id: @value["id"]}))
+    OmniVM.call("__manifest", JSON.generate({op: "handle_release_explicit", id: @value["id"]}))
     @__omnivm_closed = true
     begin
       ObjectSpace.undefine_finalizer(self)

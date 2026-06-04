@@ -1112,7 +1112,7 @@ class ManifestProxy:
     def close(self):
         if object.__getattribute__(self, "_closed"):
             return False
-        op = "stream_cancel" if self._is_stream_proxy() else "handle_release_finalizer"
+        op = "stream_cancel" if self._is_stream_proxy() else "handle_release_explicit"
         released = bool(_manifest_bridge_call(
             object.__getattribute__(self, "_module_id"),
             {

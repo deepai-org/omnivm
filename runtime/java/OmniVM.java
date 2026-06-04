@@ -1453,7 +1453,7 @@ public class OmniVM {
             if (id == null || released.get()) {
                 return false;
             }
-            Object result = bridgeManifestOp("{\"op\":\"handle_release_finalizer\",\"id\":" + jsonScalar(id) + "}");
+            Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
@@ -1916,7 +1916,7 @@ public class OmniVM {
             if (id == null || released.get()) {
                 return false;
             }
-            Object result = bridgeManifestOp("{\"op\":\"handle_release_finalizer\",\"id\":" + jsonScalar(id) + "}");
+            Object result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
             if (!released.compareAndSet(false, true)) {
                 return false;
             }

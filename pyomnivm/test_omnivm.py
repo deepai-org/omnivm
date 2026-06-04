@@ -609,7 +609,7 @@ class TestCallWithMockLib(unittest.TestCase):
                     "kind": "request",
                     "transfer": True,
                 })
-            if request_payload.get("op") in {"handle_adopt", "handle_release_finalizer"}:
+            if request_payload.get("op") in {"handle_adopt", "handle_release_explicit"}:
                 return envelope(True, "bool")
             raise AssertionError(request_payload)
 
@@ -623,7 +623,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert requests[0]["args"][0]["var"].startswith("__omnivm_arg_refs['py_")
         assert {"op": "handle_adopt", "id": 7} in requests
-        assert {"op": "handle_release_finalizer", "id": 7} in requests
+        assert {"op": "handle_release_explicit", "id": 7} in requests
 
     def test_manifest_call_wraps_complex_return_proxy(self):
         def envelope(value, kind="json"):
@@ -650,7 +650,7 @@ class TestCallWithMockLib(unittest.TestCase):
                 return envelope({"__omnivm_callable__": True, "key": "items"})
             if request.get("op") == "handle_call" and request.get("key") == "items":
                 return envelope(["a", "b"])
-            if request.get("op") == "handle_release_finalizer":
+            if request.get("op") == "handle_release_explicit":
                 return envelope(True, "bool")
             raise AssertionError(request)
 
@@ -671,7 +671,7 @@ class TestCallWithMockLib(unittest.TestCase):
             "args": ["open"],
             "kwargs": {"limit": 2},
         }
-        assert requests[-1] == {"op": "handle_release_finalizer", "id": 42}
+        assert requests[-1] == {"op": "handle_release_explicit", "id": 42}
 
     def test_manifest_proxy_helpers_bypass_local_method_collisions(self):
         def envelope(value, kind="json"):
@@ -710,7 +710,7 @@ class TestCallWithMockLib(unittest.TestCase):
                 return envelope([fields["close"], fields["length"]])
             if request.get("op") == "handle_contains":
                 return envelope(request["value"] in fields, "bool")
-            if request.get("op") == "handle_release_finalizer":
+            if request.get("op") == "handle_release_explicit":
                 return envelope(True, "bool")
             raise AssertionError(request)
 
@@ -730,10 +730,10 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
         assert omnivm_mod.proxy_close(proxy) is True
-        release_count = sum(1 for request in requests if request.get("op") == "handle_release_finalizer")
+        release_count = sum(1 for request in requests if request.get("op") == "handle_release_explicit")
         assert omnivm_mod.proxy_close(proxy) is False
-        assert sum(1 for request in requests if request.get("op") == "handle_release_finalizer") == release_count
-        assert requests[-1] == {"op": "handle_release_finalizer", "id": 43}
+        assert sum(1 for request in requests if request.get("op") == "handle_release_explicit") == release_count
+        assert requests[-1] == {"op": "handle_release_explicit", "id": 43}
 
     def test_manifest_proxy_close_propagates_explicit_release_failure(self):
         def envelope(value, kind="json"):
@@ -751,7 +751,7 @@ class TestCallWithMockLib(unittest.TestCase):
                 })
             if request.get("op") == "handle_adopt":
                 return envelope(True, "bool")
-            if request.get("op") == "handle_release_finalizer":
+            if request.get("op") == "handle_release_explicit":
                 raise RuntimeError("release failed")
             raise AssertionError(request)
 
@@ -857,7 +857,7 @@ class TestCallWithMockLib(unittest.TestCase):
                     "items": [descriptor(7)],
                     "meta": {"primary": descriptor(8, transfer=False)},
                 })
-            if request.get("op") in {"handle_adopt", "handle_retain", "handle_release_finalizer"}:
+            if request.get("op") in {"handle_adopt", "handle_retain", "handle_release_explicit"}:
                 return envelope(True, "bool")
             raise AssertionError(request)
 
@@ -875,8 +875,8 @@ class TestCallWithMockLib(unittest.TestCase):
         primary.close()
         assert {"op": "handle_adopt", "id": 7} in requests
         assert {"op": "handle_retain", "id": 8} in requests
-        assert {"op": "handle_release_finalizer", "id": 7} in requests
-        assert {"op": "handle_release_finalizer", "id": 8} in requests
+        assert {"op": "handle_release_explicit", "id": 7} in requests
+        assert {"op": "handle_release_explicit", "id": 8} in requests
 
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0

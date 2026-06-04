@@ -3613,6 +3613,38 @@ func TestHandleCallInternalHandleReleaseFinalizerQueuesRelease(t *testing.T) {
 	}
 }
 
+func TestHandleCallInternalHandleReleaseExplicitReleasesImmediately(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/explicit"}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+
+	result, err := e.HandleCall(`{"op":"handle_release_explicit","id":` + strconv.FormatUint(uint64(ref.ID), 10) + `}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_release_explicit: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != true {
+		t.Fatalf("handle_release_explicit envelope = %#v, want true", env)
+	}
+	if !ref.Closed {
+		t.Fatal("explicit release did not close owner immediately")
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 || stats.FinalizerQueueLen != 0 {
+		t.Fatalf("explicit release stats = %+v, want one explicit release and no finalizer queue", stats)
+	}
+}
+
 func TestHandleRetainProtectsScopeOwnerFromProxyFinalizer(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript")
 	_, err := e.executeOp(&Op{
@@ -5136,6 +5168,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		t.Fatalf("JS materializer should queue finalizer releases, got %q", code)
 	}
 	if !contains(code, "__omnivm_release_handle_explicit") ||
+		!contains(code, `op: "handle_release_explicit"`) ||
 		!contains(code, "globalThis.__omnivm_release_handle_explicit(handleId)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.unregister(target)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target)") ||
@@ -5249,6 +5282,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby materializer should queue finalizer releases, got %q", code)
 	}
 	if !contains(code, "@__omnivm_closed = false") ||
+		!contains(code, `JSON.generate({op: "handle_release_explicit", id: @value["id"]})`) ||
 		!contains(code, "ObjectSpace.undefine_finalizer(self)") ||
 		!contains(code, "return false if @__omnivm_closed == true") {
 		t.Fatalf("Ruby explicit proxy close should be idempotent and unregister its finalizer after release, got %q", code)
@@ -5329,6 +5363,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "import java.util.concurrent.atomic.AtomicBoolean;") ||
 		!contains(code, "return proxy.releaseExplicit();") ||
 		!contains(code, "return proxy.cancel();") ||
+		!contains(code, `"op\":\"handle_release_explicit\"`) ||
 		!contains(code, "public boolean releaseExplicit()") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
@@ -7704,6 +7739,36 @@ func TestClosedProxyCleanupOpsRemainIdempotent(t *testing.T) {
 		env := decodeResultEnvelopeForTest(t, result)
 		if env.Kind != "bool" || env.Value != true {
 			t.Fatalf("closed handle_drop_reference envelope = %#v, want true", env)
+		}
+	}
+}
+
+func TestClosedProxyExplicitReleaseReportsLifecycleDiagnostic(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/closed-explicit"}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "req"}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+
+	_, err := e.HandleCall(`{"op":"handle_release_explicit","id":` + strconv.FormatUint(uint64(ref.ID), 10) + `}`)
+	if err == nil {
+		t.Fatal("closed handle_release_explicit did not report owner lifecycle error")
+	}
+	got := err.Error()
+	for _, want := range []string{"closed resource handle", "runtime=python", "kind=request", "owner-side lifecycle is closed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("closed handle_release_explicit diagnostic missing %q: %s", want, got)
 		}
 	}
 }
