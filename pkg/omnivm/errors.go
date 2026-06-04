@@ -334,9 +334,9 @@ func parseStructuredErrorEnvelope(body, fallbackRuntime string) *RuntimeError {
 	}
 	runtimeName := stringEnvelopeValue(envelope, "runtime")
 	originRuntime := stringEnvelopeValue(envelope, "origin_runtime", "originRuntime")
-	errType := stringEnvelopeValue(envelope, "type")
+	errType := stringEnvelopeValue(envelope, "type", "name", "error_type", "errorType")
 	message := stringEnvelopeValue(envelope, "message")
-	traceback := stringEnvelopeValue(envelope, "traceback")
+	traceback := stringEnvelopeValue(envelope, "traceback", "stack")
 	boundary := stringEnvelopeValue(envelope, "boundary_path", "boundaryPath")
 	handle := stringEnvelopeValue(envelope, "original_error_handle", "originalErrorHandle")
 	if runtimeName == "" {
@@ -492,13 +492,13 @@ func causeChainEnvelopeValue(value interface{}, fallbackRuntime string) []Runtim
 		if cause.OriginRuntime == "" {
 			cause.OriginRuntime = cause.Runtime
 		}
-		if causeType := stringEnvelopeValue(entry, "type"); causeType != "" {
+		if causeType := stringEnvelopeValue(entry, "type", "name", "error_type", "errorType"); causeType != "" {
 			cause.Type = causeType
 		}
 		if message := stringEnvelopeValue(entry, "message"); message != "" {
 			cause.Message = message
 		}
-		if traceback := stringEnvelopeValue(entry, "traceback"); traceback != "" {
+		if traceback := stringEnvelopeValue(entry, "traceback", "stack"); traceback != "" {
 			cause.Traceback = traceback
 		}
 		cause.StackFrames = stringSliceEnvelopeValue(firstEnvelopeValue(entry, "stack_frames", "stackFrames"), stackFrames(cause.Traceback))

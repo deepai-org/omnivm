@@ -625,6 +625,49 @@ func TestParseError_StructuredJSONEnvelopeAcceptsCamelCase(t *testing.T) {
 	}
 }
 
+func TestParseError_StructuredJSONEnvelopeAcceptsJSNameStackAliases(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime": "javascript",
+		"name":    "TypeError",
+		"message": "outer",
+		"stack":   "TypeError: outer\n    at outer (<anonymous>:1:2)",
+		"cause_chain": []interface{}{map[string]interface{}{
+			"runtime": "javascript",
+			"name":    "RangeError",
+			"message": "inner",
+			"stack":   "RangeError: inner\n    at inner (<anonymous>:2:4)",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Type != "TypeError" || re.Traceback != "TypeError: outer\n    at outer (<anonymous>:1:2)" {
+		t.Fatalf("type/traceback aliases were not normalized: %#v", re)
+	}
+	if !reflect.DeepEqual(re.StackFrames, []string{"TypeError: outer", "at outer (<anonymous>:1:2)"}) {
+		t.Fatalf("StackFrames = %#v", re.StackFrames)
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	cause := re.CauseChain[0]
+	if cause.Type != "RangeError" || cause.Traceback != "RangeError: inner\n    at inner (<anonymous>:2:4)" {
+		t.Fatalf("cause type/traceback aliases were not normalized: %#v", cause)
+	}
+	envelope := re.ToMap()
+	if envelope["type"] != "TypeError" || envelope["traceback"] != "TypeError: outer\n    at outer (<anonymous>:1:2)" {
+		t.Fatalf("normalized envelope = %#v", envelope)
+	}
+	causes, ok := envelope["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 || causes[0]["type"] != "RangeError" || causes[0]["traceback"] != "RangeError: inner\n    at inner (<anonymous>:2:4)" {
+		t.Fatalf("normalized cause envelope = %#v", envelope["cause_chain"])
+	}
+}
+
 func TestParseError_StructuredJSONEnvelopeNormalizesScalarFields(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":             8,

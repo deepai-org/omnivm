@@ -564,9 +564,9 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
     if (env.origin_runtime.empty()) {
         env.origin_runtime = env.runtime;
     }
-    env.type = omnivm_v8_get_string_prop(isolate, context, object, "type");
+    env.type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name");
     env.message = omnivm_v8_get_string_prop(isolate, context, object, "message");
-    env.traceback = omnivm_v8_get_string_prop(isolate, context, object, "traceback");
+    env.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack");
     if (env.runtime.empty() && env.type.empty() && env.message.empty() && env.traceback.empty()) {
         return false;
     }
@@ -611,9 +611,9 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         if (cause.origin_runtime.empty()) {
             cause.origin_runtime = cause.runtime;
         }
-        cause.type = omnivm_v8_get_string_prop(isolate, context, cause_object, "type");
+        cause.type = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "type", "name");
         cause.message = omnivm_v8_get_string_prop(isolate, context, cause_object, "message");
-        cause.traceback = omnivm_v8_get_string_prop(isolate, context, cause_object, "traceback");
+        cause.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "traceback", "stack");
         cause.stack_frames = omnivm_v8_get_string_array_prop_fallback(isolate, context, cause_object, "stack_frames", "stackFrames");
         if (cause.stack_frames.empty() && !cause.traceback.empty()) {
             cause.stack_frames = omnivm_runtime_error_stack_frames(cause.traceback);
@@ -1097,9 +1097,9 @@ static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::V
         v8::Local<v8::Object> error = info.This();
         omnivm_v8_copy_prop(isolate, context, error, out, "runtime", "runtime");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "origin_runtime", "originRuntime", "origin_runtime");
-        omnivm_v8_copy_prop(isolate, context, error, out, "type", "type");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "type", "name", "type");
         omnivm_v8_copy_prop(isolate, context, error, out, "message", "message");
-        omnivm_v8_copy_prop(isolate, context, error, out, "traceback", "traceback");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "traceback", "stack", "traceback");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "stack_frames", "stackFrames", "stack_frames");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "cause_chain", "causeChain", "cause_chain");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path");

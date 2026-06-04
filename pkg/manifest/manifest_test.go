@@ -7507,6 +7507,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
 		!contains(code, "ParsedRuntimeError envelope = parseStructuredErrorEnvelope") ||
 		!contains(code, `parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime)`) ||
+		!contains(code, `parsed.type = jsonString(jsonValue(envelope, "type", "name"))`) ||
+		!contains(code, `parsed.traceback = jsonString(jsonValue(envelope, "traceback", "stack"))`) ||
 		!contains(code, `parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback))`) ||
 		!contains(code, `parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"), parsed.runtime)`) ||
 		!contains(code, `parsed.causeChain = parseCauseChain(text, parsed.runtime)`) ||
@@ -7541,6 +7543,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private static List<String> stringListJsonValue",
 		"private static List<Map<String, Object>> causeChainJsonValue(Object value, String fallbackRuntime)",
 		`private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey)`,
+		`entry.put("type", jsonString(jsonValue(cause, "type", "name")))`,
+		`String traceback = jsonString(jsonValue(cause, "traceback", "stack"))`,
 		`entry.put("traceback", traceback)`,
 		`entry.put("stack_frames", stackFrames)`,
 		`String defaultRuntime = safeString(fallbackRuntime)`,
@@ -7703,16 +7707,16 @@ public final class RuntimeErrorCheck {
 {
   "runtime": "javascript",
   "originRuntime": "python",
-  "type": "AggregateError",
+  "name": "AggregateError",
   "message": "invalid",
-  "traceback": "fallback frame",
+  "stack": "fallback frame",
   "stackFrames": ["at parse (<anonymous>:1:2)"],
   "causeChain": [{
     "runtime": "java",
     "originRuntime": "ruby",
-    "type": "TypeError",
+    "name": "TypeError",
     "message": "inner",
-    "traceback": "TypeError: inner",
+    "stack": "TypeError: inner",
     "stackFrames": ["at cause (<anonymous>:2:4)"],
     "boundaryPath": "call[javascript] > callback[java]",
     "originalErrorHandle": "java-error-3",
@@ -7834,8 +7838,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"def text_field(value, fallback=''):",
 		"runtime_name = text_field(envelope.get('runtime'), runtime)",
 		"origin_runtime = text_field(field('origin_runtime', 'originRuntime'), runtime_name)",
-		"err_type = text_field(envelope.get('type'))",
+		"err_type = text_field(field('type', 'name'))",
 		"detail = text_field(envelope.get('message'))",
+		"traceback = text_field(field('traceback', 'stack'))",
 		"def details_field(source):",
 		"raw_details = source.get('details_json')",
 		"raw_details = source.get('detailsJson')",
@@ -7843,6 +7848,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"return raw_details",
 		"stack_frames = field('stack_frames', 'stackFrames')",
 		"cause_chain = field('cause_chain', 'causeChain')",
+		"item = {'type': str(cause.get('type') or cause.get('name') or ''), 'message': str(cause.get('message') or '')}",
+		"cause_traceback = cause.get('stack')",
 		"cause_stack_frames = cause.get('stackFrames')",
 		"for key, fallback in (('runtime', 'runtime'), ('origin_runtime', 'originRuntime'), ('boundary_path', 'boundaryPath'), ('original_error_handle', 'originalErrorHandle')):",
 		"if not item.get('runtime') and runtime_name:",
@@ -7857,6 +7864,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"cause_traceback = cause.get('traceback')",
+		"cause_traceback = cause.get('stack')",
 		"item['stack_frames'] = list(cause_stack_frames)",
 		"cause_details = details_field(cause)",
 		"item['details'] = cause_details",
@@ -7878,8 +7886,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`text_field = ->(value, fallback = \"\") { value.nil? ? fallback : value.to_s }`,
 		`runtime_name = text_field.call(field.call(\"runtime\", \"runtime\"), runtime)`,
 		`origin_runtime = text_field.call(field.call(\"origin_runtime\", \"originRuntime\"), runtime_name)`,
-		`err_type = text_field.call(field.call(\"type\", \"type\"))`,
+		`err_type = text_field.call(field.call(\"type\", \"name\"))`,
 		`detail = text_field.call(field.call(\"message\", \"message\"))`,
+		`traceback = text_field.call(field.call(\"traceback\", \"stack\"))`,
 		`details_field = ->(source) do`,
 		`raw_details = read_field.call(source, \"details_json\", \"detailsJson\")`,
 		`return JSON.parse(raw_details)`,
@@ -7889,6 +7898,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
 		"item[:runtime] = runtime_name if !item[:runtime] && runtime_name && !runtime_name.to_s.empty?",
 		`boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path)`,
+		`item = {type: (read_field.call(cause, \"type\", \"name\") || \"\").to_s, message: (read_field.call(cause, \"message\") || \"\").to_s}`,
 		"causes << {type: cause_type, message: cause_message, runtime: source_runtime, origin_runtime: source_runtime}",
 		`details: details_field.call(envelope)`,
 	} {
@@ -7897,7 +7907,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`cause_traceback = read_field.call(cause, \"traceback\")`,
+		`cause_traceback = read_field.call(cause, \"traceback\", \"stack\")`,
 		`cause_stack_frames = read_field.call(cause, \"stack_frames\", \"stackFrames\")`,
 		"item[:stack_frames] = cause_stack_frames.dup",
 		`item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]`,
@@ -8194,6 +8204,8 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	}
 	for _, want := range []string{
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "origin_runtime", "originRuntime", "origin_runtime")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "type", "name", "type")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "traceback", "stack", "traceback")`,
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "stack_frames", "stackFrames", "stack_frames")`,
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "cause_chain", "causeChain", "cause_chain")`,
 		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path")`,
@@ -8207,11 +8219,15 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`if (!omnivm_v8_parse_runtime_error_envelope_text(isolate, context, err_msg, runtime_hint, envelope))`,
 		`std::string origin_runtime = env.origin_runtime.empty() ? env.runtime : env.origin_runtime`,
 		`env.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, object, "origin_runtime", "originRuntime")`,
+		`env.type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name")`,
+		`env.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack")`,
 		`env.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, object)`,
 		`if (cause.runtime.empty())`,
 		`cause.runtime = env.runtime`,
 		`cause.origin_runtime = cause.runtime`,
 		`cause.origin_runtime = env.runtime`,
+		`cause.type = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "type", "name")`,
+		`cause.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "traceback", "stack")`,
 		`cause.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, cause_object)`,
 		`omnivm_v8_set_string_prop(isolate, context, cause, "origin_runtime", env.cause_chain[i].origin_runtime)`,
 		`const char* keys[] = {"details_json", "detailsJson"}`,

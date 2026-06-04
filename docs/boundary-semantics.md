@@ -116,7 +116,8 @@ Runtime error helpers expose that structured envelope directly: Python
 `toJSON()` all return copied data so callers can log or forward errors without
 mutating the live exception object. Parsers accept structured `details` objects
 and JSON-string detail fields such as `details_json`/`detailsJson`, including
-inside cause-chain entries. Text fallback parsers also treat
+inside cause-chain entries. Parsers also accept JavaScript-style `name`/`stack`
+aliases for the normalized `type`/`traceback` fields. Text fallback parsers treat
 `details_json:`/`detailsJson:` lines as metadata, so those lines do not appear
 as stack frames.
 

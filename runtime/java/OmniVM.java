@@ -339,9 +339,9 @@ public class OmniVM {
         ParsedRuntimeError parsed = new ParsedRuntimeError();
         parsed.runtime = nonEmptyJsonString(envelope.get("runtime"), safeString(fallbackRuntime));
         parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime);
-        parsed.type = jsonString(envelope.get("type"));
+        parsed.type = jsonString(jsonValue(envelope, "type", "name"));
         parsed.message = jsonString(envelope.get("message"));
-        parsed.traceback = jsonString(envelope.get("traceback"));
+        parsed.traceback = jsonString(jsonValue(envelope, "traceback", "stack"));
         if (parsed.runtime.isEmpty() && parsed.type.isEmpty() && parsed.message.isEmpty() && safeString(parsed.traceback).isEmpty()) {
             return null;
         }
@@ -424,9 +424,9 @@ public class OmniVM {
                 continue;
             }
             Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("type", jsonString(cause.get("type")));
+            entry.put("type", jsonString(jsonValue(cause, "type", "name")));
             entry.put("message", jsonString(cause.get("message")));
-            String traceback = jsonString(cause.get("traceback"));
+            String traceback = jsonString(jsonValue(cause, "traceback", "stack"));
             if (!traceback.isEmpty()) {
                 entry.put("traceback", traceback);
             }

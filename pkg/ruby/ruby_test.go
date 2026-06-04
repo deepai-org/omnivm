@@ -89,14 +89,14 @@ func TestRubyRuntimeErrorStructuredEnvelope(t *testing.T) {
 payload = {
   runtime: "javascript",
   origin_runtime: "python",
-  type: "ValueError",
+  name: "ValueError",
   message: "bad value",
-  traceback: "at parse (<anonymous>:1:2)",
+  stack: "at parse (<anonymous>:1:2)",
   stack_frames: ["at parse (<anonymous>:1:2)"],
   cause_chain: [{
-    type: "TypeError",
+    name: "TypeError",
     message: "inner",
-    traceback: "TypeError: inner\n    at cause (<anonymous>:2:4)",
+    stack: "TypeError: inner\n    at cause (<anonymous>:2:4)",
     stack_frames: ["at cause (<anonymous>:2:4)"],
     details: {code: "E_INNER", path: ["user", "age"]}
   }],
