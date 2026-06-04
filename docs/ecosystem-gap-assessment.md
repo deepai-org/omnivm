@@ -358,7 +358,8 @@ Python retained manifest proxies expose the same explicit operations as
 `omnivm_get`, `omnivm_set`, `omnivm_call`, `omnivm_len`, `omnivm_keys`,
 `omnivm_values`, `omnivm_items`, and `omnivm_contains`.
 Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
-`OmniVM.proxyCall`, `OmniVM.proxyLen`, `OmniVM.proxyIter`, and
+`OmniVM.proxyCall`, `OmniVM.proxyLen`, `OmniVM.proxyIter`,
+`OmniVM.proxyKeys`, `OmniVM.proxyValues`, `OmniVM.proxyItems`, and
 `OmniVM.proxyContains`; for runtime-owned `HandleProxy` values these helpers
 now force the remote handle operation before Java `Map` or reflection behavior
 can collide with keys such as `get`, `set`, `call`,

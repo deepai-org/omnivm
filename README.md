@@ -518,9 +518,10 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
-`OmniVM.proxyContains(proxy, key)` to force remote get/set/call/length,
-iteration, and membership operations when a remote key collides with Java proxy
-methods or `Map` methods.
+`OmniVM.proxyKeys(proxy)`, `OmniVM.proxyValues(proxy)`,
+`OmniVM.proxyItems(proxy)`, and `OmniVM.proxyContains(proxy, key)` to force
+remote get/set/call/length, iteration, and membership operations when a remote
+key collides with Java proxy methods or `Map` methods.
 
 ```bash
 # Run a single manifest

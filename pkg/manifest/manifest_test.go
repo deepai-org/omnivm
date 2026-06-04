@@ -5217,8 +5217,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, `Boolean.TRUE.equals(value.get("transfer"))`) || !contains(code, "HandleProxy.adopt(value.get(\"id\"))") {
 		t.Fatalf("Java runtime should adopt transfer handles for handle and stream proxies")
 	}
-	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyCallable") {
-		t.Fatalf("Java runtime should expose explicit proxy iter/contains/callable helpers")
+	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyCallable") {
+		t.Fatalf("Java runtime should expose explicit proxy iter/key/value/item/contains/callable helpers")
 	}
 }
 

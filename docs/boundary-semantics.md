@@ -547,8 +547,10 @@ Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 Java manifest proxies provide the static helpers
 `OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
 `OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,
-`OmniVM.proxyIter(proxy, mode)`, and `OmniVM.proxyContains(proxy, key)` for the
-same remote get/set/call/length/iteration/membership escape hatches.
+`OmniVM.proxyIter(proxy, mode)`, `OmniVM.proxyKeys(proxy)`,
+`OmniVM.proxyValues(proxy)`, `OmniVM.proxyItems(proxy)`, and
+`OmniVM.proxyContains(proxy, key)` for the same remote
+get/set/call/length/iteration/membership escape hatches.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:

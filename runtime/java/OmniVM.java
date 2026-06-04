@@ -878,6 +878,18 @@ public class OmniVM {
         return out;
     }
 
+    public static List<Object> proxyKeys(Object target) {
+        return proxyIter(target, "keys");
+    }
+
+    public static List<Object> proxyValues(Object target) {
+        return proxyIter(target, "values");
+    }
+
+    public static List<Object> proxyItems(Object target) {
+        return proxyIter(target, "items");
+    }
+
     public static boolean proxyContains(Object target, Object key) {
         if (target == null) {
             return false;
