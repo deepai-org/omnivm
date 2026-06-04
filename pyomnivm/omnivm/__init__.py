@@ -1511,26 +1511,43 @@ def proxy_close(value):
     return False
 
 
+def _manifest_stream_iterator_release(proxy):
+    try:
+        proxy.close()
+    except BaseException:
+        pass
+
+
 class _ManifestStreamIterator:
     def __init__(self, proxy):
         self._proxy = proxy
+        self._finalizer = weakref.finalize(self, _manifest_stream_iterator_release, proxy)
 
     def __iter__(self):
         return self
+
+    def _detach_finalizer(self):
+        finalizer = object.__getattribute__(self, "_finalizer")
+        if finalizer.alive:
+            finalizer.detach()
 
     def __next__(self):
         try:
             item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
         except BaseException:
+            self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise
         if item.get("done") is True:
+            self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise StopIteration
         return item.get("value")
 
     def close(self):
-        return self._proxy.close()
+        result = self._proxy.close()
+        self._detach_finalizer()
+        return result
 
     def __enter__(self):
         return self
