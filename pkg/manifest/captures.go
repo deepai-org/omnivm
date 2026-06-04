@@ -961,6 +961,7 @@ class __OmniVMStreamProxy:
         self._cache = []
         self._cursor = 0
         self._exhausted = False
+        self._closed = False
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -969,6 +970,16 @@ class __OmniVMStreamProxy:
                 globals()["__omnivm_retain_handle_id"](handle_id)
             import weakref as __w
             self._finalizer = __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id)
+
+    def _mark_closed(self):
+        if self._closed:
+            return False
+        self._closed = True
+        self._exhausted = True
+        finalizer = getattr(self, "_finalizer", None)
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
+        return True
 
     def _next_envelope(self):
         caller = globals()["__omnivm_bridge_module"]()
@@ -986,7 +997,7 @@ class __OmniVMStreamProxy:
             return False
         item = self._next_envelope()
         if item.get("done") is True:
-            self._exhausted = True
+            self._mark_closed()
             return False
         self._cache.append(globals()["__omnivm_materialize_capture"](item.get("value")))
         return True
@@ -1016,13 +1027,15 @@ class __OmniVMStreamProxy:
         return len(self) != 0
 
     def close(self):
-        try:
-            caller = globals()["__omnivm_bridge_module"]()
-            if caller is not None and hasattr(caller, "call"):
-                import json as __j
-                caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
-        except Exception:
-            pass
+        if self._closed:
+            return False
+        caller = globals()["__omnivm_bridge_module"]()
+        if caller is None or not hasattr(caller, "call"):
+            return False
+        import json as __j
+        caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
+        self._mark_closed()
+        return True
 
 def __omnivm_materialize_capture(value):
     if isinstance(value, dict) and (

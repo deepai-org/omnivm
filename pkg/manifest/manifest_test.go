@@ -5031,6 +5031,17 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __len__(self):") || !contains(code, "return len(self._materialize_all())") || !contains(code, "def __getitem__(self, key):") {
 		t.Fatalf("Python stream proxy should auto-materialize for len/index operations, got %q", code)
 	}
+	if !contains(code, "def _mark_closed(self):") ||
+		!contains(code, "if finalizer is not None and finalizer.alive:") ||
+		!contains(code, "finalizer.detach()") ||
+		!contains(code, "if self._closed:\n            return False") ||
+		!contains(code, `"op": "stream_cancel"`) ||
+		!contains(code, "self._mark_closed()\n        return True") {
+		t.Fatalf("Python stream proxy close should be explicit, idempotent, and detach finalizers after success, got %q", code)
+	}
+	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
+		t.Fatalf("Python stream close should not swallow user-initiated cancellation failures")
+	}
 }
 
 func TestInjectPythonCapturesUsesSafeBindingNames(t *testing.T) {
