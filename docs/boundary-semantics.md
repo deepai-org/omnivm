@@ -319,6 +319,9 @@ cancel path, so a normal `for` loop that breaks early uses `stream_cancel`
 instead of falling back to the handle finalizer release queue. They also
 separate owner `stream_next` from chunk proxy wrapping, so a failed chunk adopt
 or retain cancels the stream while preserving the wrapping error.
+JavaScript stream proxies that are adapted to Node `Readable` streams serialize
+pending owner pulls; a second `_read` while `iterator.next()` is unresolved does
+not issue another `stream_next`.
 Request/manifest scope cleanup and proxy finalizers remain fallback release
 paths.
 

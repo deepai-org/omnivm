@@ -6474,6 +6474,108 @@ nextStarted.then(function() {
 	}
 }
 
+func TestJSNodeReadableSerializesPendingPulls(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  call: function(_runtime, _payloadRaw) {
+    return JSON.stringify({__omnivm_result__: true, value: true});
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 92, runtime: "javascript", kind: "stream"});
+var active = 0;
+var maxConcurrent = 0;
+var resolves = [];
+stream[Symbol.asyncIterator] = function() {
+  return {
+    next: function() {
+      active++;
+      if (active > maxConcurrent) maxConcurrent = active;
+      return new Promise(function(resolve) {
+        resolves.push(function(value) {
+          active--;
+          resolve(value);
+        });
+      });
+    },
+    return: function(_reason) {
+      return Promise.resolve(true);
+    }
+  };
+};
+var readable = stream.toNodeReadable({objectMode: true});
+readable._read(0);
+readable._read(0);
+Promise.resolve().then(function() {
+  if (active !== 1 || maxConcurrent !== 1 || resolves.length !== 1) {
+    throw new Error("readable started concurrent owner pulls: active=" + active + " max=" + maxConcurrent + " pending=" + resolves.length);
+  }
+  resolves[0]({done: true});
+  setImmediate(function() {
+    if (active !== 0 || maxConcurrent !== 1) {
+      throw new Error("readable pull did not settle cleanly: active=" + active + " max=" + maxConcurrent);
+    }
+  });
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node readable pending-pull serialization check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSNodeReadableDestroysOnSynchronousNextError(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  call: function(_runtime, _payloadRaw) {
+    return JSON.stringify({__omnivm_result__: true, value: true});
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 93, runtime: "javascript", kind: "stream"});
+var returned = 0;
+stream[Symbol.asyncIterator] = function() {
+  return {
+    next: function() {
+      throw new Error("next boom");
+    },
+    return: function(_reason) {
+      returned++;
+      return Promise.resolve(true);
+    }
+  };
+};
+var readable = stream.toNodeReadable({objectMode: true});
+var errorMessage = "";
+readable.on("error", function(err) {
+  errorMessage = err && err.message;
+});
+readable._read(0);
+setImmediate(function() {
+  if (errorMessage !== "next boom") {
+    throw new Error("readable did not emit synchronous next error: " + errorMessage);
+  }
+  if (returned !== 1) {
+    throw new Error("readable destroy did not close iterator after next error: " + returned);
+  }
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node readable synchronous next error check failed: %v\n%s", err, out)
+	}
+}
+
 func TestJSRemoteStreamTerminalFallbackMarksClosed(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

@@ -1988,6 +1988,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       var source = this;
       var iterator = source[Symbol.asyncIterator]();
       var closed = false;
+      var reading = false;
       var closeIterator = function(reason) {
         if (closed) return Promise.resolve();
         closed = true;
@@ -2001,8 +2002,13 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       };
       var opts = Object.assign({}, options || {});
       opts.read = function() {
+        if (closed || reading) return;
+        reading = true;
         var target = this;
-        Promise.resolve(iterator.next()).then(function(item) {
+        Promise.resolve().then(function() {
+          return iterator.next();
+        }).then(function(item) {
+          reading = false;
           if (closed) return;
           if (item && item.done) {
             closed = true;
@@ -2011,6 +2017,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           }
           target.push(item ? item.value : undefined);
         }, function(err) {
+          reading = false;
           if (closed) return;
           target.destroy(err);
         });
