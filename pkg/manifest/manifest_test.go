@@ -5153,6 +5153,39 @@ func TestHandleCallStreamNextChannel(t *testing.T) {
 	if stats.HandleAccessesByKind["stream"] != 3 || stats.Live != 0 || stats.ExplicitReleases != 1 {
 		t.Fatalf("stream access/release stats = %+v, want 3 stream reads and release on EOF", stats)
 	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_next after EOF did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_next after EOF diagnostic missing %q: %s", want, got)
+			}
+		}
+	}
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_cancel after EOF did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_cancel after EOF diagnostic missing %q: %s", want, got)
+			}
+		}
+	}
+	beforeCleanup := e.handleTable.Stats(time.Now())
+	result, err = e.HandleCall(`{"op":"handle_release_finalizer","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("closed stream EOF handle_release_finalizer should remain idempotent: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("closed stream EOF handle_release_finalizer envelope = %#v, want false", env)
+	}
+	afterCleanup := e.handleTable.Stats(time.Now())
+	if afterCleanup.FinalizerQueued != beforeCleanup.FinalizerQueued || afterCleanup.FinalizerQueueLen != beforeCleanup.FinalizerQueueLen || afterCleanup.FinalizerReleases != beforeCleanup.FinalizerReleases {
+		t.Fatalf("closed stream EOF finalizer cleanup changed finalizer stats: before=%+v after=%+v", beforeCleanup, afterCleanup)
+	}
 }
 
 func TestHandleCallStreamNextNativeChannel(t *testing.T) {
