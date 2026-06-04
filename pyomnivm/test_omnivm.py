@@ -1535,6 +1535,64 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_keys(trap) == [0, 1]
         assert trap.dynamic_lookup_count == 0
 
+    def test_proxy_call_uses_declared_methods_without_dynamic_lookup(self):
+        class DeclaredMethod:
+            def accept(self, value):
+                return f"accepted-{value}"
+
+        class StaticMethod:
+            @staticmethod
+            def accept(value):
+                return f"static-{value}"
+
+        class ClassMethod:
+            @classmethod
+            def accept(cls, value):
+                return f"{cls.__name__}-{value}"
+
+        class InstanceMethod:
+            def __init__(self):
+                self.accept = lambda value: f"instance-{value}"
+
+        class DynamicMethodTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "accept":
+                    self.dynamic_lookup_count += 1
+                    return lambda value: f"dynamic-{value}"
+                raise AttributeError(name)
+
+        trap = DynamicMethodTrap()
+
+        assert omnivm_mod.proxy_call(DeclaredMethod(), "accept", args=("ok",)) == "accepted-ok"
+        assert omnivm_mod.proxy_call(StaticMethod(), "accept", args=("ok",)) == "static-ok"
+        assert omnivm_mod.proxy_call(ClassMethod(), "accept", args=("ok",)) == "ClassMethod-ok"
+        assert omnivm_mod.proxy_call(InstanceMethod(), "accept", args=("ok",)) == "instance-ok"
+        with self.assertRaises(AttributeError):
+            omnivm_mod.proxy_call(trap, "accept", args=("ok",))
+        assert trap.dynamic_lookup_count == 0
+
+    def test_proxy_call_ignores_non_callable_fields_and_properties(self):
+        class FieldCollision:
+            accept = "field"
+
+        class PropertyCollision:
+            property_accesses = 0
+
+            @property
+            def accept(self):
+                self.property_accesses += 1
+                return lambda value: f"property-{value}"
+
+        prop = PropertyCollision()
+
+        with self.assertRaises(TypeError):
+            omnivm_mod.proxy_call(FieldCollision(), "accept", args=("ok",))
+        with self.assertRaises(AttributeError):
+            omnivm_mod.proxy_call(prop, "accept", args=("ok",))
+        assert prop.property_accesses == 0
+
     def test_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

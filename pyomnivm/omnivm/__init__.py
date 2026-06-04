@@ -1558,7 +1558,14 @@ def proxy_call(value, key=None, args=(), kwargs=None):
         return value._method_call("" if key is None else str(key), call_args, call_kwargs)
     if key is None or key == "":
         return value(*call_args, **call_kwargs)
-    method = getattr(value, str(key))
+    method = _actual_public_method(value, str(key))
+    if method is None:
+        raw = inspect.getattr_static(value, str(key))
+        if not callable(raw):
+            if inspect.isdatadescriptor(raw):
+                raise AttributeError(str(key))
+            raise TypeError(f"{str(key)!r} is not callable")
+        raise AttributeError(str(key))
     return method(*call_args, **call_kwargs)
 
 
