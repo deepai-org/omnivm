@@ -148,26 +148,30 @@ func (s *SharedStore) SetExternalWithMetadata(name string, data unsafe.Pointer, 
 // under one release callback. Runtime adapters use this for Arrow C Data imports
 // where the producer has transferred lifetime control to OmniVM.
 func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Pointer, length int64, validity unsafe.Pointer, validityLength int64, meta BufferMetadata, release func() error) (*Buffer, error) {
-	if err := validateBufferMetadata(name, meta); err != nil {
+	fail := func(err error) (*Buffer, error) {
+		_ = callBufferRelease(release)
 		return nil, err
 	}
+	if err := validateBufferMetadata(name, meta); err != nil {
+		return fail(err)
+	}
 	if length < 0 {
-		return nil, fmt.Errorf("arrow: external buffer %q has negative length", name)
+		return fail(fmt.Errorf("arrow: external buffer %q has negative length", name))
 	}
 	if int64(int(length)) != length {
-		return nil, fmt.Errorf("arrow: external buffer %q length %d overflows int", name, length)
+		return fail(fmt.Errorf("arrow: external buffer %q length %d overflows int", name, length))
 	}
 	if length > 0 && data == nil {
-		return nil, fmt.Errorf("arrow: external buffer %q has nil data", name)
+		return fail(fmt.Errorf("arrow: external buffer %q has nil data", name))
 	}
 	if validityLength < 0 {
-		return nil, fmt.Errorf("arrow: external buffer %q has negative validity length", name)
+		return fail(fmt.Errorf("arrow: external buffer %q has negative validity length", name))
 	}
 	if int64(int(validityLength)) != validityLength {
-		return nil, fmt.Errorf("arrow: external buffer %q validity length %d overflows int", name, validityLength)
+		return fail(fmt.Errorf("arrow: external buffer %q validity length %d overflows int", name, validityLength))
 	}
 	if validityLength > 0 && validity == nil {
-		return nil, fmt.Errorf("arrow: external buffer %q has nil validity bitmap", name)
+		return fail(fmt.Errorf("arrow: external buffer %q has nil validity bitmap", name))
 	}
 
 	s.mu.Lock()

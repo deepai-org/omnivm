@@ -252,11 +252,18 @@ func TestSetWithMetadataRejectsNonHostMemorySpace(t *testing.T) {
 		t.Fatalf("SetWithMetadata non-host memory error = %v", err)
 	}
 	data := []byte{1}
+	released := 0
 	if _, err := s.SetExternalWithMetadata("gpu-external", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
 		Dtype:       DtypeBytes,
 		MemorySpace: "cuda",
-	}, nil); err == nil || !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+	}, func() error {
+		released++
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
 		t.Fatalf("SetExternalWithMetadata non-host memory error = %v", err)
+	}
+	if released != 1 {
+		t.Fatalf("rejected non-host external buffer release callback called %d times, want 1", released)
 	}
 	if status := s.Status("gpu"); status.State != "missing" || status.Live {
 		t.Fatalf("rejected non-host buffer should not be registered: %+v", status)
