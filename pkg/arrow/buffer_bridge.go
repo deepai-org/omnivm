@@ -99,7 +99,10 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 	if existing, ok := s.buffers[name]; ok {
 		existing.mu.Lock()
 		if existing.refs > 1 {
-			existing.refs--
+			existing.ownerRef = false
+			if existing.refs > 0 {
+				existing.refs--
+			}
 			refs := existing.refs
 			existing.mu.Unlock()
 			if refs > 0 {
@@ -111,6 +114,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 				Len:      len(data),
 				Validity: validity,
 				refs:     1,
+				ownerRef: true,
 			}
 			applyMetadataLocked(buf, meta)
 			s.buffers[name] = buf
@@ -125,6 +129,8 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		existing.ExternalValidity = nil
 		existing.ValidityLen = len(validity)
 		existing.refs = 1
+		existing.borrowRefs = 0
+		existing.ownerRef = true
 		existing.release = nil
 		applyMetadataLocked(existing, meta)
 		existing.mu.Unlock()
@@ -138,6 +144,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 		Len:      len(data),
 		Validity: validity,
 		refs:     1,
+		ownerRef: true,
 	}
 	applyMetadataLocked(buf, meta)
 	s.buffers[name] = buf
@@ -196,7 +203,10 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 	if existing, ok := s.buffers[name]; ok {
 		existing.mu.Lock()
 		if existing.refs > 1 {
-			existing.refs--
+			existing.ownerRef = false
+			if existing.refs > 0 {
+				existing.refs--
+			}
 			refs := existing.refs
 			existing.mu.Unlock()
 			if refs > 0 {
@@ -209,6 +219,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 				ExternalValidity: validity,
 				ValidityLen:      int(validityLength),
 				refs:             1,
+				ownerRef:         true,
 				release:          release,
 			}
 			applyMetadataLocked(buf, meta)
@@ -225,6 +236,8 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		existing.ExternalValidity = validity
 		existing.ValidityLen = int(validityLength)
 		existing.refs = 1
+		existing.borrowRefs = 0
+		existing.ownerRef = true
 		existing.release = release
 		applyMetadataLocked(existing, meta)
 		existing.mu.Unlock()
@@ -240,6 +253,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 		ExternalValidity: validity,
 		ValidityLen:      int(validityLength),
 		refs:             1,
+		ownerRef:         true,
 		release:          release,
 	}
 	applyMetadataLocked(buf, meta)

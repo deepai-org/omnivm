@@ -52,6 +52,8 @@ type Buffer struct {
 	Ownership         string
 	MemorySpace       string
 	refs              int
+	borrowRefs        int
+	ownerRef          bool
 	release           func() error
 	mu                sync.Mutex
 }
@@ -237,6 +239,7 @@ func (s *SharedStore) Allocate(name string, size int) (*Buffer, error) {
 		Data:        make([]byte, size),
 		Len:         size,
 		refs:        1,
+		ownerRef:    true,
 		Ownership:   "omnivm",
 		MemorySpace: "host",
 	}
@@ -285,6 +288,7 @@ func (s *SharedStore) borrow(name string, trackNameRelease bool) (*BorrowedBuffe
 
 	buf.mu.Lock()
 	buf.refs++
+	buf.borrowRefs++
 	lease := &BorrowedBuffer{
 		store:        s,
 		name:         name,
@@ -407,7 +411,7 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 		return nil
 	}
 
-	refs, release := decrementBufferRef(buf)
+	refs, release := decrementBorrowRef(buf)
 
 	if refs <= 0 {
 		if current, ok := s.buffers[name]; ok && current == buf {
@@ -421,15 +425,39 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 	return nil
 }
 
-func decrementBufferRef(buf *Buffer) (int, func() error) {
+func decrementBorrowRef(buf *Buffer) (int, func() error) {
 	buf.mu.Lock()
-	if buf.refs > 0 {
+	if buf.borrowRefs > 0 {
+		buf.borrowRefs--
+		if buf.refs > 0 {
+			buf.refs--
+		}
+	}
+	refs := buf.refs
+	release := takeBufferReleaseLocked(buf, refs)
+	buf.mu.Unlock()
+	return refs, release
+}
+
+func decrementOwnerRef(buf *Buffer) (int, func() error) {
+	buf.mu.Lock()
+	if buf.ownerRef {
+		buf.ownerRef = false
 		buf.refs--
 	}
 	refs := buf.refs
-	release := buf.release
+	release := takeBufferReleaseLocked(buf, refs)
 	buf.mu.Unlock()
 	return refs, release
+}
+
+func takeBufferReleaseLocked(buf *Buffer, refs int) func() error {
+	if refs > 0 {
+		return nil
+	}
+	release := buf.release
+	buf.release = nil
+	return release
 }
 
 // Free releases a named buffer.
@@ -446,7 +474,7 @@ func (s *SharedStore) Free(name string) error {
 		return fmt.Errorf("arrow: buffer %q not found", name)
 	}
 
-	refs, release := decrementBufferRef(buf)
+	refs, release := decrementOwnerRef(buf)
 	buf.mu.Lock()
 	releasedStatus := BufferStatus{
 		Name:        name,
@@ -504,9 +532,9 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			Ownership:   nonEmptyString(buf.Ownership, "omnivm"),
 			MemorySpace: nonEmptyString(buf.MemorySpace, "host"),
 		}
-		if buf.refs > 1 {
+		if buf.borrowRefs > 0 {
 			status.LeaseState = "borrowed"
-			status.ActiveBorrows = int64(buf.refs - 1)
+			status.ActiveBorrows = int64(buf.borrowRefs)
 			status.ActiveBorrowedBytes = status.ActiveBorrows * int64(buf.Len)
 		}
 		buf.mu.Unlock()
@@ -524,6 +552,7 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		}
 		buf.mu.Lock()
 		refs := buf.refs
+		borrowRefs := buf.borrowRefs
 		size := int64(buf.Len)
 		dtype := buf.Dtype
 		format := buf.Format
@@ -549,8 +578,8 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			status.Ownership = ownership
 			status.MemorySpace = memorySpace
 		}
-		status.ActiveBorrows += int64(refs)
-		status.ActiveBorrowedBytes += int64(refs) * size
+		status.ActiveBorrows += int64(borrowRefs)
+		status.ActiveBorrowedBytes += int64(borrowRefs) * size
 		status.DetachedBuffers++
 		status.DetachedBytes += int64(refs) * size
 	}
@@ -619,14 +648,14 @@ func (s *SharedStore) Stats() Stats {
 		size := int64(buf.Len)
 		dtype := buf.Dtype
 		format := buf.Format
-		refs := buf.refs
+		borrowRefs := buf.borrowRefs
 		buf.mu.Unlock()
 
 		stats.LiveBytes += size
-		if refs > 1 {
-			activeRefs := int64(refs - 1)
-			stats.ActiveBorrows += activeRefs
-			stats.ActiveBorrowedBytes += activeRefs * size
+		if borrowRefs > 0 {
+			activeBorrows := int64(borrowRefs)
+			stats.ActiveBorrows += activeBorrows
+			stats.ActiveBorrowedBytes += activeBorrows * size
 		}
 		stats.BuffersByDtype[strconv.FormatInt(int64(dtype), 10)]++
 		if format != "" {
@@ -651,15 +680,16 @@ func (s *SharedStore) Stats() Stats {
 		buf.mu.Lock()
 		size := int64(buf.Len)
 		refs := buf.refs
+		borrowRefs := buf.borrowRefs
 		buf.mu.Unlock()
 		if refs <= 0 {
 			continue
 		}
-		activeRefs := int64(refs)
-		stats.ActiveBorrows += activeRefs
-		stats.ActiveBorrowedBytes += activeRefs * size
+		activeBorrows := int64(borrowRefs)
+		stats.ActiveBorrows += activeBorrows
+		stats.ActiveBorrowedBytes += activeBorrows * size
 		stats.DetachedBuffers++
-		stats.DetachedBytes += activeRefs * size
+		stats.DetachedBytes += int64(refs) * size
 	}
 	return stats
 }
@@ -710,7 +740,16 @@ func (b *Buffer) Retain() {
 // Release decrements the direct reference count without running store-level
 // owner cleanup. Store users should prefer Free or BorrowedBuffer.Release.
 func (b *Buffer) Release() int {
-	refs, _ := decrementBufferRef(b)
+	b.mu.Lock()
+	floor := b.borrowRefs
+	if b.ownerRef {
+		floor++
+	}
+	if b.refs > floor {
+		b.refs--
+	}
+	refs := b.refs
+	b.mu.Unlock()
 	return refs
 }
 
