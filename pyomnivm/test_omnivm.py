@@ -1063,7 +1063,12 @@ class TestCallWithMockLib(unittest.TestCase):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
 
         requests = []
-        fields = {"close": "field-close", "length": 3}
+        fields = {
+            "close": "field-close",
+            "length": 3,
+            "__class__": "remote-class",
+            "__repr__": "remote-repr",
+        }
 
         def manifest_call(_module_id, payload):
             request = json.loads(payload.decode("utf-8"))
@@ -1088,11 +1093,16 @@ class TestCallWithMockLib(unittest.TestCase):
             if request.get("op") == "handle_len":
                 return envelope(7, "number")
             if request.get("op") == "handle_iter" and request.get("mode") == "keys":
-                return envelope(["close", "length"])
+                return envelope(["close", "length", "__class__", "__repr__"])
             if request.get("op") == "handle_iter" and request.get("mode") == "items":
-                return envelope([["close", fields["close"]], ["length", fields["length"]]])
+                return envelope([
+                    ["close", fields["close"]],
+                    ["length", fields["length"]],
+                    ["__class__", fields["__class__"]],
+                    ["__repr__", fields["__repr__"]],
+                ])
             if request.get("op") == "handle_iter" and request.get("mode") == "values":
-                return envelope([fields["close"], fields["length"]])
+                return envelope([fields["close"], fields["length"], fields["__class__"], fields["__repr__"]])
             if request.get("op") == "handle_contains":
                 return envelope(request["value"] in fields, "bool")
             if request.get("op") == "handle_release_explicit":
@@ -1104,14 +1114,23 @@ class TestCallWithMockLib(unittest.TestCase):
         proxy = omnivm_mod.manifest_call("demo", "tool")
 
         assert callable(proxy.close)
+        assert proxy.__class__ is omnivm_mod.ManifestProxy
+        assert repr(proxy).startswith("<omnivm.ManifestProxy ")
         assert omnivm_mod.proxy_get(proxy, "close") == "field-close"
+        assert omnivm_mod.proxy_get(proxy, "__class__") == "remote-class"
+        assert omnivm_mod.proxy_get(proxy, "__repr__") == "remote-repr"
         assert omnivm_mod.proxy_set(proxy, "close", "field-updated") is True
         assert omnivm_mod.proxy_get(proxy, "close") == "field-updated"
         assert omnivm_mod.proxy_call(proxy, "accept", args=("js",)) == "accepted-js"
         assert omnivm_mod.proxy_len(proxy) == 7
-        assert omnivm_mod.proxy_keys(proxy) == ["close", "length"]
-        assert omnivm_mod.proxy_items(proxy) == [["close", "field-updated"], ["length", 3]]
-        assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3]
+        assert omnivm_mod.proxy_keys(proxy) == ["close", "length", "__class__", "__repr__"]
+        assert omnivm_mod.proxy_items(proxy) == [
+            ["close", "field-updated"],
+            ["length", 3],
+            ["__class__", "remote-class"],
+            ["__repr__", "remote-repr"],
+        ]
+        assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3, "remote-class", "remote-repr"]
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
         assert omnivm_mod.proxy_close(proxy) is True
