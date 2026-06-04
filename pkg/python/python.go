@@ -3085,6 +3085,69 @@ static PyObject* omnivm_py_details_from_exception_group(PyObject* value) {
     return details;
 }
 
+static void omnivm_py_append_exception_cause_line(PyObject* value, char** out, size_t* len) {
+    if (!value) return;
+    PyObject* type_name = PyObject_GetAttrString((PyObject*)Py_TYPE(value), "__name__");
+    PyObject* message = PyObject_Str(value);
+    const char* type_utf8 = type_name ? PyUnicode_AsUTF8(type_name) : NULL;
+    const char* message_utf8 = message ? PyUnicode_AsUTF8(message) : NULL;
+    omnivm_py_append_text(out, len, "\nCaused by: ");
+    if (type_utf8 && type_utf8[0]) {
+        omnivm_py_append_text(out, len, type_utf8);
+        omnivm_py_append_text(out, len, ": ");
+    }
+    if (message_utf8 && message_utf8[0]) {
+        omnivm_py_append_text(out, len, message_utf8);
+    }
+    if (!type_name || !message) {
+        PyErr_Clear();
+    }
+    Py_XDECREF(type_name);
+    Py_XDECREF(message);
+}
+
+static void omnivm_py_append_exception_link_causes(PyObject* value, char** out, size_t* len, int depth) {
+    if (!value || depth >= 16) {
+        return;
+    }
+
+    PyObject* cause = PyObject_GetAttrString(value, "__cause__");
+    if (cause) {
+        if (cause != Py_None) {
+            omnivm_py_append_exception_cause_line(cause, out, len);
+            omnivm_py_append_exception_link_causes(cause, out, len, depth + 1);
+            Py_DECREF(cause);
+            return;
+        }
+        Py_DECREF(cause);
+    } else {
+        PyErr_Clear();
+    }
+
+    PyObject* suppress = PyObject_GetAttrString(value, "__suppress_context__");
+    int suppress_context = 0;
+    if (suppress) {
+        suppress_context = PyObject_IsTrue(suppress) == 1;
+        Py_DECREF(suppress);
+    } else {
+        PyErr_Clear();
+    }
+    if (suppress_context) {
+        return;
+    }
+
+    PyObject* context = PyObject_GetAttrString(value, "__context__");
+    if (context) {
+        if (context != Py_None) {
+            omnivm_py_append_exception_cause_line(context, out, len);
+            omnivm_py_append_exception_link_causes(context, out, len, depth + 1);
+        }
+        Py_DECREF(context);
+    } else {
+        PyErr_Clear();
+    }
+}
+
 static void omnivm_py_append_exception_group_causes(PyObject* value, char** out, size_t* len, int depth) {
     if (!value || depth >= OMNIVM_PY_EXCEPTION_GROUP_MAX_DEPTH || !PyObject_HasAttrString(value, "exceptions")) {
         return;
@@ -3111,23 +3174,7 @@ static void omnivm_py_append_exception_group_causes(PyObject* value, char** out,
             PyErr_Clear();
             continue;
         }
-        PyObject* type_name = PyObject_GetAttrString((PyObject*)Py_TYPE(child), "__name__");
-        PyObject* message = PyObject_Str(child);
-        const char* type_utf8 = type_name ? PyUnicode_AsUTF8(type_name) : NULL;
-        const char* message_utf8 = message ? PyUnicode_AsUTF8(message) : NULL;
-        omnivm_py_append_text(out, len, "\nCaused by: ");
-        if (type_utf8 && type_utf8[0]) {
-            omnivm_py_append_text(out, len, type_utf8);
-            omnivm_py_append_text(out, len, ": ");
-        }
-        if (message_utf8 && message_utf8[0]) {
-            omnivm_py_append_text(out, len, message_utf8);
-        }
-        if (!type_name || !message) {
-            PyErr_Clear();
-        }
-        Py_XDECREF(type_name);
-        Py_XDECREF(message);
+        omnivm_py_append_exception_cause_line(child, out, len);
         omnivm_py_append_exception_group_causes(child, out, len, depth + 1);
         Py_DECREF(child);
     }
@@ -3399,6 +3446,7 @@ static char* omnivm_py_fetch_traceback_error_inner() {
     if (result && value) {
         size_t len = strlen(result);
         omnivm_py_append_exception_group_causes(value, &result, &len, 0);
+        omnivm_py_append_exception_link_causes(value, &result, &len, 0);
         char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
         if (handle) {
             omnivm_py_append_text(&result, &len, "\nOriginal error handle: ");
