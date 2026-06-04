@@ -419,3 +419,71 @@ func TestImportCArrowArrayRejectsOversizedTransferWithoutLeakingBorrow(t *testin
 		t.Fatalf("failed oversized import should not register a target buffer: %+v", stats)
 	}
 }
+
+func TestImportCArrowArrayRejectsOversizedOffsetWithoutLeakingBorrow(t *testing.T) {
+	source := NewSharedStore()
+	src, err := source.SetWithMetadata("numbers", []byte{1, 0, 0, 0}, BufferMetadata{
+		Dtype:  DtypeI32,
+		Format: "i",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := source.BorrowCArrowArray("numbers")
+	if err != nil {
+		t.Fatalf("BorrowCArrowArray failed: %v", err)
+	}
+	defer view.Release()
+
+	const hugeArrowOffset = (1<<63-1)/4 + 1
+	view.Array.offset = hugeArrowOffset
+
+	target := NewSharedStore()
+	if err := target.ImportCArrowArray("oversized-offset", unsafe.Pointer(view.Schema), unsafe.Pointer(view.Array)); err == nil {
+		t.Fatal("expected oversized Arrow offset to fail")
+	}
+	src.mu.Lock()
+	refs := src.refs
+	src.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("failed oversized offset import leaked source borrow refs = %d, want 1", refs)
+	}
+	if stats := target.Stats(); stats.LiveBuffers != 0 || stats.ZeroCopyImports != 0 {
+		t.Fatalf("failed oversized offset import should not register a target buffer: %+v", stats)
+	}
+}
+
+func TestImportCArrowArrayRejectsValiditySpanOverflowWithoutLeakingBorrow(t *testing.T) {
+	source := NewSharedStore()
+	src, err := source.SetWithMetadata("bytes", []byte{1}, BufferMetadata{
+		Dtype:  DtypeU8,
+		Format: "C",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := source.BorrowCArrowArray("bytes")
+	if err != nil {
+		t.Fatalf("BorrowCArrowArray failed: %v", err)
+	}
+	defer view.Release()
+
+	validity := []byte{1}
+	view.Array.offset = 1<<63 - 1
+	view.Array.null_count = 1
+	view.setBufferPointer(0, unsafe.Pointer(&validity[0]))
+
+	target := NewSharedStore()
+	if err := target.ImportCArrowArray("validity-overflow", unsafe.Pointer(view.Schema), unsafe.Pointer(view.Array)); err == nil {
+		t.Fatal("expected Arrow validity span overflow to fail")
+	}
+	src.mu.Lock()
+	refs := src.refs
+	src.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("failed validity overflow import leaked source borrow refs = %d, want 1", refs)
+	}
+	if stats := target.Stats(); stats.LiveBuffers != 0 || stats.ZeroCopyImports != 0 {
+		t.Fatalf("failed validity overflow import should not register a target buffer: %+v", stats)
+	}
+}

@@ -382,8 +382,14 @@ func (s *SharedStore) ImportCArrowArray(name string, schemaPtr, arrayPtr unsafe.
 	if int64(array.length) > math.MaxInt64/int64(elemSize) {
 		return fmt.Errorf("arrow: Arrow array length %d overflows byte length for element size %d", int64(array.length), elemSize)
 	}
+	if int64(array.offset) > math.MaxInt64/int64(elemSize) {
+		return fmt.Errorf("arrow: Arrow array offset %d overflows byte offset for element size %d", int64(array.offset), elemSize)
+	}
 	byteLen := int64(array.length) * int64(elemSize)
 	offsetBytes := int64(array.offset) * int64(elemSize)
+	if array.null_count > 0 && int64(array.offset) > math.MaxInt64-int64(array.length) {
+		return fmt.Errorf("arrow: Arrow validity bitmap span overflows: offset=%d length=%d", int64(array.offset), int64(array.length))
+	}
 	validityBytes := arrowValidityByteLen(int64(array.offset), int64(array.length), int64(array.null_count))
 	if int64(int(validityBytes)) != validityBytes {
 		return fmt.Errorf("arrow: validity bitmap length %d overflows host int", validityBytes)
