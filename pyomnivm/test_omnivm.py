@@ -2216,6 +2216,19 @@ class TestCallWithMockLib(unittest.TestCase):
         assert owner.release() is False
         self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
 
+    def test_buffer_owner_close_helpers_are_idempotent(self):
+        self.mock_lib.OmniBufFree.return_value = 0
+        owner = omnivm_mod.buffer_owner("payload")
+        assert owner.close() is True
+        assert owner.close() is False
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
+        self.mock_lib.OmniBufFree.reset_mock()
+        owner = omnivm_mod.buffer_owner("other")
+        assert omnivm_mod.proxy_close(owner) is True
+        assert omnivm_mod.proxy_close(owner) is False
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"other")
+
     def test_buffer_owner_status_delegates_to_buffer_status(self):
         self.mock_lib.OmniBufStatus.return_value = b'{"name":"payload","lease_state":"owned"}'
         owner = omnivm_mod.buffer_owner("payload")

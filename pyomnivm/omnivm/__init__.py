@@ -2253,6 +2253,12 @@ class BufferOwner:
         self.released = True
         return True
 
+    def close(self):
+        return self.release()
+
+    def _omnivm_close(self):
+        return self.release()
+
     def status(self):
         return buffer_status(self.name)
 
