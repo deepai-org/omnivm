@@ -434,6 +434,41 @@ func TestParseError_StructuredJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseError_StructuredJSONEnvelopeParsesDetailsJSONFields(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":      "javascript",
+		"type":         "AggregateError",
+		"message":      "invalid",
+		"details_json": `[{"path":["user","age"],"code":"too_small"}]`,
+		"cause_chain": []interface{}{map[string]interface{}{
+			"type":        "TypeError",
+			"message":     "inner",
+			"detailsJson": "not json",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	details, ok := re.Details.([]interface{})
+	if !ok || len(details) != 1 {
+		t.Fatalf("Details = %#v, want parsed details_json array", re.Details)
+	}
+	first, ok := details[0].(map[string]interface{})
+	if !ok || first["code"] != "too_small" {
+		t.Fatalf("Details[0] = %#v, want parsed object", details[0])
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	if re.CauseChain[0].Details != "not json" {
+		t.Fatalf("cause details = %#v, want raw detailsJson string", re.CauseChain[0].Details)
+	}
+}
+
 func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":        "javascript",

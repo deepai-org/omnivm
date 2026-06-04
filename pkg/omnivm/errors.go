@@ -365,7 +365,7 @@ func parseStructuredErrorEnvelope(body, fallbackRuntime string) *RuntimeError {
 		CauseChain:          causeChainEnvelopeValue(firstEnvelopeValue(envelope, "cause_chain", "causeChain"), runtimeName),
 		BoundaryPath:        boundary,
 		OriginalErrorHandle: handle,
-		Details:             copyJSONValue(envelope["details"]),
+		Details:             detailsEnvelopeValue(envelope),
 	}
 }
 
@@ -440,6 +440,33 @@ func stringSliceEnvelopeValue(value interface{}, fallback []string) []string {
 	return out
 }
 
+func detailsEnvelopeValue(envelope map[string]interface{}) interface{} {
+	details, _ := detailsEnvelopeValueOK(envelope)
+	return details
+}
+
+func detailsEnvelopeValueOK(envelope map[string]interface{}) (interface{}, bool) {
+	if details, ok := envelope["details"]; ok {
+		return copyJSONValue(details), true
+	}
+	for _, key := range []string{"details_json", "detailsJson"} {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		text, ok := raw.(string)
+		if !ok {
+			return copyJSONValue(raw), true
+		}
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+			return text, true
+		}
+		return copyJSONValue(parsed), true
+	}
+	return nil, false
+}
+
 func causeChainEnvelopeValue(value interface{}, fallbackRuntime string) []RuntimeErrorCause {
 	items, ok := value.([]interface{})
 	if !ok {
@@ -481,8 +508,8 @@ func causeChainEnvelopeValue(value interface{}, fallbackRuntime string) []Runtim
 		if handle := stringEnvelopeValue(entry, "original_error_handle", "originalErrorHandle"); handle != "" {
 			cause.OriginalErrorHandle = handle
 		}
-		if details, ok := entry["details"]; ok {
-			cause.Details = copyJSONValue(details)
+		if details, ok := detailsEnvelopeValueOK(entry); ok {
+			cause.Details = details
 		}
 		out = append(out, cause)
 	}
