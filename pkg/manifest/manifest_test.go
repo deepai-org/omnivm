@@ -5461,8 +5461,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
 		!contains(code, "if self._closed:\n            return False") ||
 		!contains(code, `"op": "stream_cancel"`) ||
-		!contains(code, "self._mark_closed()\n        return True") {
-		t.Fatalf("Python stream proxy close should be explicit, idempotent, and detach finalizers after success, got %q", code)
+		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
+		!contains(code, "self._mark_closed()\n        return released") {
+		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)
 	}
 	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
 		t.Fatalf("Python stream close should not swallow user-initiated cancellation failures")
@@ -5516,9 +5517,11 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	}
 	if !contains(code, "var cancelRemote = function()") ||
 		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
+		!contains(code, "markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") {
-		t.Fatalf("JS stream proxy close/error handling should mark remote streams closed through explicit paths, got %q", code)
+		t.Fatalf("JS stream proxy close/error handling should return the manifest release result and mark remote streams closed through explicit paths, got %q", code)
 	}
 }
 
@@ -5746,8 +5749,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def __omnivm_mark_closed") ||
 		!contains(code, "rescue\n        __omnivm_mark_closed\n        raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
+		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "def omnivm_close\n    close\n  end") {
-		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers and mark pull errors closed, got %q", code)
+		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and mark pull errors closed, got %q", code)
 	}
 	if contains(code, "def close\n    return false if @__omnivm_closed == true\n    begin\n      OmniVM.call(\"__manifest\", JSON.generate({op: \"stream_cancel\"") {
 		t.Fatalf("Ruby stream close should not swallow user-initiated cancellation failures")

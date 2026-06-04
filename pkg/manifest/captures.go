@@ -1070,9 +1070,11 @@ class __OmniVMStreamProxy:
         if caller is None or not hasattr(caller, "call"):
             return False
         import json as __j
-        caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
+        raw = caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
+        env = __j.loads(raw)
+        released = isinstance(env, dict) and env.get("__omnivm_result__") is True and env.get("value") is True
         self._mark_closed()
-        return True
+        return released
 
 def __omnivm_materialize_capture(value):
     if isinstance(value, dict) and (
@@ -1771,8 +1773,11 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var cancelRemote = function() {
     if (remoteClosed) return false;
     if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
-    omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
-    return markRemoteClosed();
+    var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
+    var env = JSON.parse(raw);
+    var released = !!(env && env.__omnivm_result__ === true && env.value === true);
+    markRemoteClosed();
+    return released;
   };
   var closeRemote = function() {
     markRemoteClosed();
@@ -2648,8 +2653,11 @@ class OmniVMStreamProxy
 
   def close
     return false if @__omnivm_closed == true
-    OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
+    raw = OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
+    env = JSON.parse(raw)
+    released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
     __omnivm_mark_closed
+    released
   end
 
   def omnivm_close
