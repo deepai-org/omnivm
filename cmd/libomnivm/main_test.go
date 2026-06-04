@@ -76,6 +76,15 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 		if target["diagnostic"] == "" {
 			t.Fatalf("owner dispatch target %q omitted diagnostic: %+v", key, target)
 		}
+		if target["owner_kind"] == "" {
+			t.Fatalf("owner dispatch target %q omitted owner_kind: %+v", key, target)
+		}
+		if target["required_capability"] == "" {
+			t.Fatalf("owner dispatch target %q omitted required_capability: %+v", key, target)
+		}
+		if target["current_behavior"] == "" {
+			t.Fatalf("owner dispatch target %q omitted current_behavior: %+v", key, target)
+		}
 	}
 	if status["python_assert_host_thread"] != true {
 		t.Fatalf("Python host-thread assertion capability omitted: %+v", status)

@@ -561,7 +561,8 @@ thread dispatcher. The top-level `reason` field is part of that contract so
 framework startup checks can report why the build is diagnostic-only without
 parsing prose from an exception. The nested `owner_dispatch_targets` map breaks
 that down for `python_asyncio`, `javascript_event_loop`, `java_executor`, and
-`ruby_fiber_thread`, with `supported=false` and a diagnostic for each owner kind.
+`ruby_fiber_thread`, with `supported=false`, `owner_kind`,
+`required_capability`, `current_behavior`, and a diagnostic for each owner kind.
 `omnivm.owner_dispatch_target_status(target)` returns one target block, and
 `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
 target-specific fail-fast guard. `omnivm.assert_owner_dispatch_supported(label)`

@@ -1386,7 +1386,10 @@ class TestCallWithMockLib(unittest.TestCase):
             b'{"thread_affinity":{"mode":"diagnostic_only",'
             b'"owner_dispatch_supported":false,'
             b'"owner_dispatch_targets":{"java_executor":{'
-            b'"supported":false,"diagnostic":"executor caller-managed"}}}}'
+            b'"supported":false,"owner_kind":"java_executor",'
+            b'"required_capability":"resubmit callbacks to executor",'
+            b'"current_behavior":"caller-managed",'
+            b'"diagnostic":"executor caller-managed"}}}}'
         )
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.assert_owner_dispatch_target_supported("java_executor", "reactor startup")
@@ -1394,6 +1397,9 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "executor caller-managed" in str(ctx.exception)
         assert ctx.exception.boundary_path == "thread_affinity"
         assert ctx.exception.details["target"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["owner_kind"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["required_capability"] == "resubmit callbacks to executor"
+        assert ctx.exception.details["owner_dispatch_target"]["current_behavior"] == "caller-managed"
         assert ctx.exception.details["owner_dispatch_target"]["diagnostic"] == "executor caller-managed"
 
     def test_assert_owner_dispatch_target_supported_accepts_supported_target(self):
