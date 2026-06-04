@@ -268,6 +268,16 @@ func TestSetWithMetadataRejectsNonHostMemorySpace(t *testing.T) {
 	if status := s.Status("gpu"); status.State != "missing" || status.Live {
 		t.Fatalf("rejected non-host buffer should not be registered: %+v", status)
 	}
+
+	releaseErr := errors.New("producer release failed")
+	if _, err := s.SetExternalWithMetadata("gpu-release-error", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:       DtypeBytes,
+		MemorySpace: "cuda",
+	}, func() error {
+		return releaseErr
+	}); !errors.Is(err, releaseErr) || !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+		t.Fatalf("SetExternalWithMetadata release failure error = %v, want non-host rejection and release failure", err)
+	}
 }
 
 func TestBorrowZeroCopyLease(t *testing.T) {

@@ -16,6 +16,7 @@ typedef struct {
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -149,8 +150,7 @@ func (s *SharedStore) SetExternalWithMetadata(name string, data unsafe.Pointer, 
 // where the producer has transferred lifetime control to OmniVM.
 func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Pointer, length int64, validity unsafe.Pointer, validityLength int64, meta BufferMetadata, release func() error) (*Buffer, error) {
 	fail := func(err error) (*Buffer, error) {
-		_ = callBufferRelease(release)
-		return nil, err
+		return nil, errors.Join(err, callBufferRelease(release))
 	}
 	if err := validateBufferMetadata(name, meta); err != nil {
 		return fail(err)
