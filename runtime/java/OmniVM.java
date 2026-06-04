@@ -1865,18 +1865,30 @@ public class OmniVM {
         }
 
         private boolean isInternalDescriptorKey(Object key) {
-            if (!Boolean.TRUE.equals(value.get("__omnivm_resource__")) || key == null) {
+            if (!isDescriptorValue() || key == null) {
                 return false;
             }
             String text = String.valueOf(key);
             return "__omnivm_resource__".equals(text)
+                || "__omnivm_table__".equals(text)
+                || "__omnivm_job__".equals(text)
                 || "id".equals(text)
                 || "runtime".equals(text)
                 || "kind".equals(text)
                 || "closed".equals(text)
                 || "transfer".equals(text)
                 || "disposer".equals(text)
+                || "format".equals(text)
+                || "ownership".equals(text)
+                || "metadata".equals(text)
+                || "released".equals(text)
                 || "__omnivm_materialized__".equals(text);
+        }
+
+        private boolean isDescriptorValue() {
+            return Boolean.TRUE.equals(value.get("__omnivm_resource__"))
+                || Boolean.TRUE.equals(value.get("__omnivm_table__"))
+                || Boolean.TRUE.equals(value.get("__omnivm_job__"));
         }
 
         private boolean hasLocalValue(Object key) {

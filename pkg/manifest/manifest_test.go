@@ -7508,6 +7508,14 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	if !contains(code, "if (closed) {\n                subscription.cancel();\n                subscribed.countDown();\n                return;\n            }") {
 		t.Fatalf("Java Flow.Publisher iterator should cancel subscriptions that arrive after close")
 	}
+	if !contains(code, "private boolean isDescriptorValue()") ||
+		!contains(code, `Boolean.TRUE.equals(value.get("__omnivm_table__"))`) ||
+		!contains(code, `Boolean.TRUE.equals(value.get("__omnivm_job__"))`) ||
+		!contains(code, `"format".equals(text)`) ||
+		!contains(code, `"metadata".equals(text)`) ||
+		!contains(code, `"released".equals(text)`) {
+		t.Fatalf("Java HandleProxy should keep resource/table/job descriptor metadata out of user-visible map fields")
+	}
 	if !contains(code, "private final String originRuntime;") ||
 		!contains(code, "public String getOriginRuntime()") ||
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
