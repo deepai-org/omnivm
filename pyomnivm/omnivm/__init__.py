@@ -350,6 +350,8 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
                     value = cause.get(fallback)
                 if value:
                     item[key] = str(value)
+            if not item.get("runtime") and runtime_name:
+                item["runtime"] = runtime_name
             if "runtime" in item and not item.get("origin_runtime"):
                 item["origin_runtime"] = item["runtime"]
             cause_details = details_field(cause)

@@ -1443,6 +1443,7 @@ static int omnivm_ruby_init(void) {
         "        value = read_field.call(cause, key, fallback)\n"
         "        item[key.to_sym] = value.to_s if value\n"
         "      end\n"
+        "      item[:runtime] = runtime_name if !item[:runtime] && runtime_name && !runtime_name.to_s.empty?\n"
         "      item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]\n"
         "      cause_details = details_field.call(cause)\n"
         "      item[:details] = cause_details unless cause_details.nil?\n"

@@ -378,6 +378,27 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_cause_runtime_defaults_to_envelope_runtime(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "type": "Error",
+                    "message": "outer",
+                    "cause_chain": [{"type": "TypeError", "message": "inner"}],
+                }
+            ),
+            runtime="go",
+        )
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
+            }
+        ]
+
     def test_structured_envelope_normalizes_scalar_fields_to_strings(self):
         err = omnivm_mod.RuntimeError(
             json.dumps(
@@ -466,6 +487,8 @@ class TestRuntimeError(unittest.TestCase):
             {
                 "type": "TypeError",
                 "message": "inner",
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
                 "stack_frames": ["at cause (<anonymous>:2:4)"],
                 "details": {"items": [{"path": "cause.path"}]},
             }

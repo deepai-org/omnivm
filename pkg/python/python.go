@@ -169,6 +169,8 @@ static const char* omnivm_py_runtime_error_code =
 "                    value = cause.get(fallback)\n"
 "                if value:\n"
 "                    item[key] = str(value)\n"
+"            if not item.get('runtime') and runtime_name:\n"
+"                item['runtime'] = runtime_name\n"
 "            if item.get('runtime') and not item.get('origin_runtime'):\n"
 "                item['origin_runtime'] = item['runtime']\n"
 "            cause_details = details_field(cause)\n"
