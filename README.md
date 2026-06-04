@@ -524,7 +524,9 @@ release, and
 `proxy[omnivm.proxyLength]` as a collision-free property form for length when a
 remote object also has a data field named `length`. `toJSON` is reserved for
 proxy serialization; use `omnivm.proxyGet(proxy, "toJSON")` when the owner has
-a real field or method with that name.
+a real field or method with that name. JavaScript handle and stream proxies
+also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
+`omnivm.proxyClose(value)` honors those symbols through descriptor-safe lookup.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
@@ -536,7 +538,8 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
-`proxy.omnivm_close`.
+`proxy.omnivm_close`; generated snippets also provide
+`OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)`.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
