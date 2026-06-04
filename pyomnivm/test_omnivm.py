@@ -1209,6 +1209,45 @@ class TestCallWithMockLib(unittest.TestCase):
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert proxy.close() is False
 
+    def test_manifest_stream_iterator_detaches_on_next_error(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        request = object()
+        requests = []
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 50,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                raise RuntimeError("owner read failed")
+            if request_payload.get("op") in {"stream_cancel", "handle_release_finalizer"}:
+                raise AssertionError("terminal stream error should detach without later cleanup")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows", args=(request,))
+
+        iterator = iter(proxy)
+        with self.assertRaisesRegex(RuntimeError, "owner read failed"):
+            next(iterator)
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
+        assert proxy.close() is False
+        assert not any(request.get("op") == "stream_cancel" for request in requests)
+
     def test_manifest_stream_iterator_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

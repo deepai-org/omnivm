@@ -1483,7 +1483,11 @@ class _ManifestStreamIterator:
         return self
 
     def __next__(self):
-        item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
+        try:
+            item = self._proxy._op({"op": "stream_next", "id": self._proxy.__omnivm_handle_id__})
+        except BaseException:
+            self._proxy._detach_after_remote_close()
+            raise
         if item.get("done") is True:
             self._proxy._detach_after_remote_close()
             raise StopIteration
