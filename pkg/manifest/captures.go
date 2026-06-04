@@ -2470,7 +2470,8 @@ class OmniVMHandleProxy
     [
       "__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__",
       "id", "runtime", "kind", "closed", "transfer", "disposer",
-      "format", "ownership", "metadata", "released"
+      "format", "ownership", "metadata", "buffer", "released",
+      "done", "cancelled", "cancelReason", "payload", "result"
     ].include?(key.to_s)
   end
 

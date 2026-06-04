@@ -7633,7 +7633,8 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") ||
 		!contains(code, `@value["__omnivm_resource__"] == true || @value["__omnivm_table__"] == true || @value["__omnivm_job__"] == true`) ||
 		!contains(code, `"__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__"`) ||
-		!contains(code, `"format", "ownership", "metadata", "released"`) ||
+		!contains(code, `"format", "ownership", "metadata", "buffer", "released"`) ||
+		!contains(code, `"done", "cancelled", "cancelReason", "payload", "result"`) ||
 		!contains(code, "def __omnivm_local_value(key)") ||
 		!contains(code, "__omnivm_local_key?(key)") {
 		t.Fatalf("Ruby resource proxy should keep internal descriptor metadata out of user-visible fields, got %q", code)
@@ -7870,13 +7871,16 @@ class OmniVM
     return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
     return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
     if req["op"] == "handle_contains"
-      return JSON.generate({"__omnivm_result__" => true, "value" => req["value"] == "metadata"})
+      return JSON.generate({"__omnivm_result__" => true, "value" => ["metadata", "buffer"].include?(req["value"])})
     end
     if req["op"] == "handle_index"
       raise "manifest HandleCall: handle #{req["id"]} has no index #{req["value"]}"
     end
     if req["op"] == "handle_get" && req["key"] == "metadata"
       return JSON.generate({"__omnivm_result__" => true, "value" => {"remote" => true}})
+    end
+    if req["op"] == "handle_get" && req["key"] == "buffer"
+      return JSON.generate({"__omnivm_result__" => true, "value" => "remote-buffer"})
     end
     raise "unexpected manifest op #{req["op"]}"
   end
@@ -7889,15 +7893,19 @@ proxy = __omnivm_materialize_capture({
   "format" => "arrow_c_data",
   "ownership" => "borrowed",
   "metadata" => {"dtype" => 4},
+  "buffer" => "descriptor-buffer",
   "released" => false
 })
 raise "descriptor metadata shadowed remote field: #{proxy.metadata.inspect}" unless proxy.metadata == {"remote" => true}
+raise "descriptor buffer shadowed remote field: #{proxy.buffer.inspect}" unless proxy.buffer == "remote-buffer"
 raise "fetch metadata shadowed remote field" unless proxy.fetch("metadata") == {"remote" => true}
+raise "fetch buffer shadowed remote field" unless proxy.fetch("buffer") == "remote-buffer"
 if proxy.respond_to?(:format)
   raise "descriptor format should not be reported as a local method"
 end
 requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
 raise "metadata was not fetched remotely: #{requested.inspect}" unless requested.include?("metadata")
+raise "buffer was not fetched remotely: #{requested.inspect}" unless requested.include?("buffer")
 `
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
