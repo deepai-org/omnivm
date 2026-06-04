@@ -11255,6 +11255,7 @@ finally:
     sock.close()
 '''
     verify = r'''
+(() => {
 const state = globalThis.fastifyLifecycleState;
 const reply = globalThis.fastify_lifecycle_reply;
 if (!state.started) throw new Error('Fastify server never started');
@@ -11268,6 +11269,7 @@ if (reply.getHeader('X-Poly') !== 'fastify') throw new Error('bad Fastify reply 
 if (!state.events.includes('reply-finish')) {
   throw new Error('Fastify reply owner did not finish: ' + state.events.join('|'));
 }
+})();
 '''
     close_server = r'''
 if (globalThis.fastifyLifecycleApp && !globalThis.fastifyLifecycleState.closed) {
@@ -11322,6 +11324,221 @@ if (globalThis.fastifyLifecycleApp && !globalThis.fastifyLifecycleState.closed) 
         raise AssertionError(f"Fastify request/reply method calls were not recorded: before={before_handles}, after={handles}")
     if accesses.get("property", 0) <= before_accesses.get("property", 0):
         raise AssertionError(f"Fastify request/reply property access was not recorded: before={before_handles}, after={handles}")
+
+
+def test_manifest_fastify_server_client_abort_closes_response_owner():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    port = free_tcp_port()
+    setup = f'''
+const fastifyFactory = require('fastify');
+globalThis.fastifyAbortState = {{
+  started: false,
+  handler: false,
+  done: false,
+  closeRequested: false,
+  serverClosed: false,
+  events: []
+}};
+globalThis.fastify_abort_req = null;
+globalThis.fastify_abort_reply = null;
+const app = fastifyFactory({{logger: false}});
+globalThis.fastifyAbortApp = app;
+app.get('/fastify/server-abort', (request, reply) => {{
+  const state = globalThis.fastifyAbortState;
+  state.handler = true;
+  globalThis.fastify_abort_req = request;
+  globalThis.fastify_abort_reply = reply;
+  const marker = omnivm.call('python', "'fastify-abort-reentry'");
+  if (marker !== 'fastify-abort-reentry') state.events.push('bad-marker:' + String(marker));
+
+  let secondTimer = null;
+  request.raw.on('aborted', () => state.events.push('req-aborted'));
+  request.raw.on('close', () => state.events.push('req-close'));
+  reply.raw.on('close', () => {{
+    state.events.push('reply-close');
+    state.done = true;
+    if (secondTimer) clearTimeout(secondTimer);
+  }});
+  reply.raw.on('finish', () => state.events.push('reply-finish'));
+  reply.raw.on('error', (err) => state.events.push('reply-error:' + (err && err.name ? err.name : String(err))));
+
+  reply.code(200).header('X-Stream', 'fastify');
+  reply.hijack();
+  reply.raw.writeHead(200, {{'Content-Type': 'text/plain', 'X-Stream': 'fastify'}});
+  reply.raw.write('first\\n');
+  secondTimer = setTimeout(() => {{
+    state.events.push('second-timer-fired');
+    try {{
+      const ok = reply.raw.write('second\\n');
+      state.events.push('second-write:' + String(ok));
+    }} catch (err) {{
+      state.events.push('second-error:' + (err && err.name ? err.name : String(err)));
+    }}
+    try {{
+      reply.raw.end();
+    }} catch (err) {{
+      state.events.push('end-error:' + (err && err.name ? err.name : String(err)));
+    }}
+  }}, 250);
+}});
+await app.listen({{port: {port!r}, host: '127.0.0.1'}});
+globalThis.fastifyAbortState.started = true;
+'''
+    drive_client = f'''
+import socket
+import struct
+import time
+
+def pump_started():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.fastifyAbortState && globalThis.fastifyAbortState.started)"
+    ))
+
+def pump_done():
+    return bool(omnivm.call(
+        "javascript",
+        "Boolean(globalThis.fastifyAbortState && globalThis.fastifyAbortState.done)"
+    ))
+
+def events_text():
+    return str(omnivm.call(
+        "javascript",
+        "(globalThis.fastifyAbortState && globalThis.fastifyAbortState.events || []).join('|')"
+    ))
+
+try:
+    deadline = time.time() + 5
+    while not pump_started() and time.time() < deadline:
+        time.sleep(0.01)
+    if not pump_started():
+        raise AssertionError(f"Fastify abort server did not start: {{events_text()}}")
+
+    sock = socket.create_connection(("127.0.0.1", {port!r}), timeout=5)
+    try:
+        sock.settimeout(0.02)
+        sock.sendall(
+            b"GET /fastify/server-abort HTTP/1.1\\r\\n"
+            b"Host: 127.0.0.1\\r\\n"
+            b"X-Request-Id: fastify-abort-42\\r\\n"
+            b"Connection: close\\r\\n\\r\\n"
+        )
+        data = b""
+        deadline = time.time() + 5
+        while b"first" not in data and time.time() < deadline:
+            try:
+                chunk = sock.recv(1024)
+            except socket.timeout:
+                omnivm.call("javascript", "true")
+                continue
+            if not chunk:
+                break
+            data += chunk
+        if b"first" not in data:
+            omnivm.call("javascript", "globalThis.fastifyAbortState.events.push('client-missed-first')")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    finally:
+        sock.close()
+
+    deadline = time.time() + 5
+    while not pump_done() and time.time() < deadline:
+        time.sleep(0.01)
+    if not pump_done():
+        raise AssertionError(f"Fastify server did not observe client abort: {{events_text()}}")
+finally:
+    omnivm.call(
+        "javascript",
+        "(() => {{ "
+        "const state = globalThis.fastifyAbortState || {{events: []}}; "
+        "const app = globalThis.fastifyAbortApp; "
+        "if (app && !state.closeRequested) {{ "
+        "  state.closeRequested = true; "
+        "  app.close().then(() => {{ state.serverClosed = true; }}, (err) => {{ state.events.push('server-close-error:' + String(err && err.message || err)); }}); "
+        "}} "
+        "return true; "
+        "}})()",
+    )
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if bool(omnivm.call("javascript", "Boolean(globalThis.fastifyAbortState && globalThis.fastifyAbortState.serverClosed)")):
+            break
+        time.sleep(0.01)
+'''
+    verify = r'''
+(() => {
+const state = globalThis.fastifyAbortState;
+if (!state.started) throw new Error('Fastify abort server never started');
+if (!state.handler) throw new Error('Fastify abort handler never ran');
+if (state.events.some((event) => event.startsWith('bad-marker:'))) {
+  throw new Error('Fastify abort handler could not re-enter Python: ' + state.events.join('|'));
+}
+if (state.events.includes('client-missed-first')) {
+  throw new Error('Fastify abort client did not receive first chunk: ' + state.events.join('|'));
+}
+if (!state.events.includes('reply-close')) {
+  throw new Error('Fastify reply owner did not close after client abort: ' + state.events.join('|'));
+}
+if (!state.events.includes('req-close') && !state.events.includes('req-aborted')) {
+  throw new Error('Fastify request owner did not close/abort: ' + state.events.join('|'));
+}
+if (state.events.includes('second-timer-fired')) {
+  throw new Error('Fastify response timer was not cancelled after abort: ' + state.events.join('|'));
+}
+if (!state.serverClosed) {
+  throw new Error('Fastify abort test server did not close cleanly: ' + state.events.join('|'));
+}
+})();
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "javascript", "async": True, "code": setup},
+            {"op": "exec", "runtime": "python", "code": drive_client},
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {
+                    "fastify_abort_req": "fastify_abort_req",
+                    "fastify_abort_reply": "fastify_abort_reply",
+                },
+                "code": (
+                    "assert fastify_abort_req.method == 'GET', fastify_abort_req.method\n"
+                    "assert fastify_abort_req.url == '/fastify/server-abort', fastify_abort_req.url\n"
+                    "assert fastify_abort_req.headers['x-request-id'] == 'fastify-abort-42', fastify_abort_req.headers\n"
+                    "assert fastify_abort_reply.sent is True, fastify_abort_reply.sent\n"
+                    "assert fastify_abort_reply.statusCode == 200, fastify_abort_reply.statusCode\n"
+                    "assert fastify_abort_reply.getHeader('X-Stream') == 'fastify', fastify_abort_reply.getHeader('X-Stream')"
+                ),
+            },
+            {"op": "exec", "runtime": "javascript", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 2 and resource_capture_delta < 2:
+        raise AssertionError(f"Fastify abort request/reply did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Fastify abort request/reply crossed as streams: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Fastify abort request/reply should not claim bulk transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Fastify abort request/reply used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"Fastify abort request/reply method calls were not recorded: before={before_handles}, after={handles}")
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"Fastify abort request/reply property access was not recorded: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Fastify client abort leaked handles: before={before_handles}, after={handles}")
 
 
 def test_manifest_express_server_client_abort_closes_response_owner():
@@ -23895,6 +24112,7 @@ def main():
         check("Manifest Express response write after end reports owner error", test_manifest_express_response_write_after_end_reports_owner_error)
         check("Manifest Node http response write after end reports owner error", test_manifest_node_http_response_write_after_end_reports_owner_error)
         check("Manifest Fastify request reply lifecycle stays live", test_manifest_fastify_request_reply_lifecycle_stays_live)
+        check("Manifest Fastify server client abort closes response owner", test_manifest_fastify_server_client_abort_closes_response_owner)
         check("Manifest Express server client abort closes response owner", test_manifest_express_server_client_abort_closes_response_owner)
         check("Manifest model id property beats JS proxy metadata", test_manifest_model_id_property_beats_js_proxy_metadata)
         check("Manifest descriptor fields do not shadow runtime object fields", test_manifest_descriptor_fields_do_not_shadow_runtime_object_fields)
