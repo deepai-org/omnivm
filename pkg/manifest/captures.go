@@ -1314,6 +1314,28 @@ globalThis.__omnivm_proxy_handle_id = globalThis.__omnivm_proxy_handle_id || fun
   if (descriptor && descriptor.id != null) return descriptor.id;
   return obj && obj.id;
 };
+globalThis.__omnivm_actual_public_method = globalThis.__omnivm_actual_public_method || function(value, name) {
+  if (value == null) return null;
+  var cursor = Object(value);
+  var depth = 0;
+  while (cursor != null && depth++ < 64) {
+    var descriptor = null;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+    } catch (_descriptorError) {
+      return null;
+    }
+    if (descriptor) {
+      return typeof descriptor.value === 'function' ? descriptor.value.bind(value) : null;
+    }
+    try {
+      cursor = Object.getPrototypeOf(cursor);
+    } catch (_prototypeError) {
+      return null;
+    }
+  }
+  return null;
+};
 if (typeof omnivm !== 'undefined' && omnivm) {
   globalThis.__omnivm_proxy_length_symbol = globalThis.__omnivm_proxy_length_symbol ||
     (typeof Symbol !== 'undefined' ? Symbol.for("omnivm.proxy.length") : null);
@@ -1425,8 +1447,9 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       configurable: true,
       value: function(value) {
         if (value && typeof value.__omnivm_close === 'function') return value.__omnivm_close();
-        if (value && typeof value.close === 'function') {
-          value.close();
+        var close = globalThis.__omnivm_actual_public_method(value, "close");
+        if (close) {
+          close();
           return true;
         }
         return false;
