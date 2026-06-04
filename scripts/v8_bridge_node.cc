@@ -1019,12 +1019,14 @@ static v8::Local<v8::Value> omnivm_v8_json_clone_value(v8::Isolate* isolate,
     if (!value->IsObject()) {
         return value;
     }
-    v8::Local<v8::String> json;
-    if (!v8::JSON::Stringify(context, value).ToLocal(&json) || json.IsEmpty()) {
+    std::string json = omnivm_v8_json_stringify(isolate, context, value);
+    if (json.empty()) {
         return value;
     }
+    v8::Local<v8::String> json_text =
+        v8::String::NewFromUtf8(isolate, json.c_str()).ToLocalChecked();
     v8::Local<v8::Value> parsed;
-    if (!v8::JSON::Parse(context, json).ToLocal(&parsed) || parsed.IsEmpty()) {
+    if (!v8::JSON::Parse(context, json_text).ToLocal(&parsed) || parsed.IsEmpty()) {
         return value;
     }
     return parsed;

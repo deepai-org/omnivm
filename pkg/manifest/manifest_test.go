@@ -7684,6 +7684,7 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		"value->IsBigInt()",
 		`"[Circular]"`,
 		"v8::TryCatch try_catch(isolate)",
+		"std::string json = omnivm_v8_json_stringify(isolate, context, value)",
 		`value = omnivm_v8_json_clone_value(isolate, context, value)`,
 		`"toJSON"`,
 		`"origin_runtime"`,
