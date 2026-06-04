@@ -339,13 +339,13 @@ func callRuntime(rtName, code string) (string, error) {
 	if !initialized {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("call")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("call", threadID)
 	if err != nil {
 		return "", err
 	}
 	defer done()
 
-	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
 	defer pumpAfterHostCall(threadID)
 
@@ -503,13 +503,13 @@ func execRuntime(rtName, code string) (string, error) {
 	if !initialized {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("exec")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("exec", threadID)
 	if err != nil {
 		return "", err
 	}
 	defer done()
 
-	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
 	defer pumpAfterHostCall(threadID)
 
@@ -600,6 +600,7 @@ func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
 	return map[string]interface{}{
 		"mode":                     "diagnostic_only",
 		"host_thread_id":           hostThreadID,
+		"host_thread_required":     true,
 		"owner_dispatch_supported": false,
 		"owner_dispatch_targets": map[string]interface{}{
 			"python_asyncio": map[string]interface{}{
@@ -636,7 +637,8 @@ func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
 		"javascript_event_loop":     "cooperatively_pumped_at_host_boundaries",
 		"java_executor":             "caller_managed",
 		"ruby_vm_thread":            "single_vm_thread",
-		"reason":                    "c-shared mode runs direct calls on the calling host thread; OmniVM exposes affinity diagnostics but does not export a universal owner-loop/executor dispatcher.",
+		"foreign_thread_behavior":   "reject_runtime_calls",
+		"reason":                    "c-shared mode runs direct runtime calls only on the pinned host thread; OmniVM exposes affinity diagnostics but does not export a universal owner-loop/executor dispatcher.",
 	}
 }
 
@@ -732,12 +734,12 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 	if !initialized {
 		return C.CString("ERR:not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("manifest")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("manifest", threadID)
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
 	defer done()
-	threadID := int64(C.get_thread_id())
 
 	path := C.GoString(cPath)
 	data, err := os.ReadFile(path)
@@ -776,12 +778,12 @@ func OmniLoadManifestModule(cModuleID *C.char, cPath *C.char) *C.char {
 	if !initialized {
 		return C.CString("ERR:not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("load_manifest_module")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("load_manifest_module", threadID)
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
 	defer done()
-	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
 	defer pumpAfterHostCall(threadID)
 
@@ -838,12 +840,12 @@ func OmniManifestCall(cModuleID *C.char, cRequest *C.char) *C.char {
 	if !initialized {
 		return C.CString("ERR:not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("manifest_call")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("manifest_call", threadID)
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
 	defer done()
-	threadID := int64(C.get_thread_id())
 	pumpBeforeHostCall(threadID)
 	defer pumpAfterHostCall(threadID)
 
@@ -881,7 +883,8 @@ func OmniLoadPlugin(cRuntime *C.char, cPath *C.char) *C.char {
 	if !initialized {
 		return C.CString("ERR:not initialized — call OmniInit first")
 	}
-	done, err := beginExternalCall("load_plugin")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("load_plugin", threadID)
 	if err != nil {
 		return C.CString("ERR:" + err.Error())
 	}
@@ -1117,7 +1120,8 @@ func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, n
 		result.ToCValueRaw(unsafe.Pointer(&cv))
 		return cv
 	}
-	done, err := beginExternalCall("typed_call")
+	threadID := int64(C.get_thread_id())
+	done, err := beginRuntimeExternalCall("typed_call", threadID)
 	if err != nil {
 		result := polyglot.Error(err.Error())
 		var cv C.omni_value_t
@@ -1153,6 +1157,25 @@ func beginExternalCall(op string) (func(), error) {
 	}
 	activeCalls.Add(1)
 	return func() { activeCalls.Add(-1) }, nil
+}
+
+func beginRuntimeExternalCall(op string, threadID int64) (func(), error) {
+	if err := checkLifecycle(op); err != nil {
+		return func() {}, err
+	}
+	if err := requireHostThreadForRuntimeCall(op, threadID); err != nil {
+		return func() {}, err
+	}
+	activeCalls.Add(1)
+	return func() { activeCalls.Add(-1) }, nil
+}
+
+func requireHostThreadForRuntimeCall(op string, threadID int64) error {
+	if eng == nil || eng.GoldenThreadID == 0 || threadID == eng.GoldenThreadID {
+		return nil
+	}
+	lifecycleErrors.Add(1)
+	return fmt.Errorf("thread affinity violation: %s must run on OmniVM host thread %d, current thread %d; owner dispatch is unsupported in c-shared mode, so OmniVM will not route this call onto the host thread", op, eng.GoldenThreadID, threadID)
 }
 
 func checkLifecycle(op string) error {

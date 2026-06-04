@@ -556,13 +556,17 @@ integration or lifecycle callback is unexpectedly running on a foreign thread.
 `omnivm.owner_dispatch_status()` returns
 `omnivm.status()["thread_affinity"]`, a machine-readable capability block for
 startup checks. In c-shared mode the block currently reports
-`mode=diagnostic_only` and `owner_dispatch_supported=false`: OmniVM exposes
-host-thread/asyncio diagnostics and pumps async runtimes at host call
-boundaries, but it does not export a universal owner-loop, executor, or VM
-thread dispatcher. The top-level `reason` field is part of that contract so
-framework startup checks can report why the build is diagnostic-only without
-parsing prose from an exception. The nested `owner_dispatch_targets` map breaks
-that down for `python_asyncio`, `javascript_event_loop`, `java_executor`, and
+`mode=diagnostic_only`, `host_thread_required=true`,
+`foreign_thread_behavior=reject_runtime_calls`, and
+`owner_dispatch_supported=false`: OmniVM exposes host-thread/asyncio diagnostics
+and pumps async runtimes at host call boundaries, but it does not export a
+universal owner-loop, executor, or VM thread dispatcher. Because there is no
+owner dispatcher, c-shared runtime, manifest, plugin, and typed-call entrypoints
+fail before executing guest code when invoked from a non-host OS thread. The
+top-level `reason` field is part of that contract so framework startup checks
+can report why the build is diagnostic-only without parsing prose from an
+exception. The nested `owner_dispatch_targets` map breaks that down for
+`python_asyncio`, `javascript_event_loop`, `java_executor`, and
 `ruby_fiber_thread`, with `supported=false`, `owner_kind`,
 `required_capability`, `current_behavior`, and a diagnostic for each owner kind.
 `omnivm.owner_dispatch_target_status(target)` returns one target block, and

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -54,11 +55,17 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 	if status["host_thread_id"] != int64(42) {
 		t.Fatalf("thread affinity host thread = %v, want 42", status["host_thread_id"])
 	}
+	if status["host_thread_required"] != true {
+		t.Fatalf("thread affinity should require host-thread runtime entry: %+v", status)
+	}
 	if status["owner_dispatch_supported"] != false {
 		t.Fatalf("owner dispatch should be reported unsupported: %+v", status)
 	}
+	if status["foreign_thread_behavior"] != "reject_runtime_calls" {
+		t.Fatalf("thread affinity foreign-thread behavior = %v, want reject_runtime_calls", status["foreign_thread_behavior"])
+	}
 	reason, ok := status["reason"].(string)
-	if !ok || reason == "" {
+	if !ok || reason == "" || !strings.Contains(reason, "pinned host thread") {
 		t.Fatalf("owner dispatch status omitted unsupported reason: %+v", status)
 	}
 	targets, ok := status["owner_dispatch_targets"].(map[string]interface{})
@@ -91,6 +98,61 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 	}
 	if status["ruby_vm_thread"] != "single_vm_thread" {
 		t.Fatalf("Ruby VM thread boundary omitted: %+v", status)
+	}
+}
+
+func TestBeginRuntimeExternalCallRejectsForeignHostThread(t *testing.T) {
+	prevEng := eng
+	prevLifecycleErrors := lifecycleErrors.Load()
+	prevActiveCalls := activeCalls.Load()
+	defer func() {
+		eng = prevEng
+		lifecycleErrors.Store(prevLifecycleErrors)
+		activeCalls.Store(prevActiveCalls)
+	}()
+
+	eng = engine.New()
+	eng.GoldenThreadID = 42
+
+	done, err := beginRuntimeExternalCall("manifest_call", 99)
+	if err == nil {
+		done()
+		t.Fatal("beginRuntimeExternalCall accepted foreign host thread")
+	}
+	if !strings.Contains(err.Error(), "thread affinity violation") ||
+		!strings.Contains(err.Error(), "manifest_call must run on OmniVM host thread 42") ||
+		!strings.Contains(err.Error(), "owner dispatch is unsupported") {
+		t.Fatalf("foreign-thread runtime call error = %v", err)
+	}
+	if activeCalls.Load() != prevActiveCalls {
+		t.Fatalf("foreign-thread runtime call changed active calls: got %d want %d", activeCalls.Load(), prevActiveCalls)
+	}
+	if lifecycleErrors.Load() != prevLifecycleErrors+1 {
+		t.Fatalf("foreign-thread runtime call lifecycle errors = %d want %d", lifecycleErrors.Load(), prevLifecycleErrors+1)
+	}
+}
+
+func TestBeginRuntimeExternalCallAcceptsHostThread(t *testing.T) {
+	prevEng := eng
+	prevActiveCalls := activeCalls.Load()
+	defer func() {
+		eng = prevEng
+		activeCalls.Store(prevActiveCalls)
+	}()
+
+	eng = engine.New()
+	eng.GoldenThreadID = 42
+
+	done, err := beginRuntimeExternalCall("manifest_call", 42)
+	if err != nil {
+		t.Fatalf("beginRuntimeExternalCall host thread: %v", err)
+	}
+	if activeCalls.Load() != prevActiveCalls+1 {
+		t.Fatalf("host-thread runtime call active calls = %d want %d", activeCalls.Load(), prevActiveCalls+1)
+	}
+	done()
+	if activeCalls.Load() != prevActiveCalls {
+		t.Fatalf("host-thread runtime call active calls after done = %d want %d", activeCalls.Load(), prevActiveCalls)
 	}
 }
 
