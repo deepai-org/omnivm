@@ -4837,6 +4837,27 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
+	code, ok := runtimeRefJSStreamCloseStepCode(RuntimeRef{Runtime: "javascript", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
+	if !ok {
+		t.Fatal("runtimeRefJSStreamCloseStepCode unsupported")
+	}
+	for _, want := range []string{
+		"globalThis.__omnivm_close_ready = false",
+		"globalThis.__omnivm_close_error = undefined",
+		"__omnivm_close_step = __omnivm_iter.cancel()",
+		"__omnivm_close_step = __omnivm_stream_obj.cancel()",
+		"return __omnivm_close_step",
+		"__omnivm_iter.releaseLock",
+		"globalThis.__omnivm_close_ready = true",
+		"globalThis.__omnivm_close_error = __omnivm_err",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefJSStreamCloseStepCode missing %q in %q", want, code)
+		}
+	}
+}
+
 func TestHandleCallStreamNextChannel(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	ch := &ChanRef{ch: make(chan interface{}, 2)}

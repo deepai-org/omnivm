@@ -2259,6 +2259,32 @@ func (e *Executor) runtimeRefIsPythonAsyncStream(ref RuntimeRef) (bool, error) {
 
 func (e *Executor) closeRuntimeRefStream(id handles.ID, ref RuntimeRef) error {
 	stateVar := runtimeRefStableVar(id, "stream_state", "each")
+	if ref.Runtime == "javascript" {
+		readyVar := e.nextRuntimeRefVar(id, "stream_close_ready")
+		errVar := e.nextRuntimeRefVar(id, "stream_close_error")
+		code, ok := runtimeRefJSStreamCloseStepCode(ref, stateVar, readyVar, errVar)
+		if !ok {
+			return nil
+		}
+		rt, ok := e.runtimes[ref.Runtime]
+		if !ok {
+			return nil
+		}
+		result := rt.Execute(code)
+		if result.Err != nil {
+			return result.Err
+		}
+		if err := e.pumpUntilDone(func() bool {
+			check := rt.Eval(runtimeVarRef(ref.Runtime, readyVar))
+			return check.Value != nil && fmt.Sprintf("%v", check.Value) == "true"
+		}); err != nil {
+			return err
+		}
+		if err := e.asyncJSError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
+			return err
+		}
+		return nil
+	}
 	code, ok := runtimeRefStreamCloseCode(ref, stateVar)
 	if !ok {
 		return nil
@@ -2272,6 +2298,37 @@ func (e *Executor) closeRuntimeRefStream(id handles.ID, ref RuntimeRef) error {
 		return result.Err
 	}
 	return nil
+}
+
+func runtimeRefJSStreamCloseStepCode(ref RuntimeRef, stateVar, readyVar, errVar string) (string, bool) {
+	if ref.Runtime != "javascript" {
+		return "", false
+	}
+	base := runtimeVarRef(ref.Runtime, ref.VarName)
+	stateRef := runtimeVarRef(ref.Runtime, stateVar)
+	return fmt.Sprintf(`globalThis.%s = false;
+globalThis.%s = undefined;
+Promise.resolve((function() {
+  const __omnivm_stream_obj = %s;
+  const __omnivm_iter = %s;
+  let __omnivm_close_step;
+  if (__omnivm_iter && typeof __omnivm_iter.return === 'function') __omnivm_close_step = __omnivm_iter.return();
+  else if (__omnivm_iter && typeof __omnivm_iter.cancel === 'function') __omnivm_close_step = __omnivm_iter.cancel();
+  else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.return === 'function') __omnivm_close_step = __omnivm_stream_obj.return();
+  else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.cancel === 'function') __omnivm_close_step = __omnivm_stream_obj.cancel();
+  return __omnivm_close_step;
+})()).then(function() {
+  const __omnivm_iter = %s;
+  if (__omnivm_iter && typeof __omnivm_iter.releaseLock === 'function') {
+    try { __omnivm_iter.releaseLock(); } catch (__omnivm_release_err) {}
+  }
+  %s = undefined;
+}).then(function() {
+  globalThis.%s = true;
+}).catch(function(__omnivm_err) {
+  globalThis.%s = __omnivm_err && __omnivm_err.message ? __omnivm_err.message : String(__omnivm_err);
+  globalThis.%s = true;
+});`, readyVar, errVar, base, stateRef, stateRef, stateRef, readyVar, errVar, readyVar), true
 }
 
 func errOrNotOK(ok bool, err error) error {
