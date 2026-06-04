@@ -5741,9 +5741,11 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "@__omnivm_closed = false") ||
 		!contains(code, `JSON.generate({op: "handle_release_explicit", id: @value["id"]})`) ||
+		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "ObjectSpace.undefine_finalizer(self)") ||
-		!contains(code, "return false if @__omnivm_closed == true") {
-		t.Fatalf("Ruby explicit proxy close should be idempotent and unregister its finalizer after release, got %q", code)
+		!contains(code, "return false if @__omnivm_closed == true") ||
+		!contains(code, "released\n  end") {
+		t.Fatalf("Ruby explicit proxy close should be idempotent, return the manifest release result, and unregister its finalizer after release, got %q", code)
 	}
 	if !contains(code, "class OmniVMStreamProxy") ||
 		!contains(code, "def __omnivm_mark_closed") ||

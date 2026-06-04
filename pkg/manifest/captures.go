@@ -2376,13 +2376,15 @@ class OmniVMHandleProxy
 
   def omnivm_close
     return false if @__omnivm_closed == true
-    OmniVM.call("__manifest", JSON.generate({op: "handle_release_explicit", id: @value["id"]}))
+    raw = OmniVM.call("__manifest", JSON.generate({op: "handle_release_explicit", id: @value["id"]}))
+    env = JSON.parse(raw)
+    released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
     @__omnivm_closed = true
     begin
       ObjectSpace.undefine_finalizer(self)
     rescue
     end
-    true
+    released
   end
 
   def []=(key, value)
