@@ -2073,6 +2073,22 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod._release_handle_from_finalizer(123) is True
         self.mock_lib.OmniHandleReleaseFromFinalizer.assert_called_once_with(123)
 
+    def test_release_handle_from_finalizer_stays_quiet_without_runtime(self):
+        omnivm_mod._lib = None
+        assert omnivm_mod._release_handle_from_finalizer(123) is False
+
+    def test_release_handle_from_finalizer_stays_quiet_without_capability(self):
+        class OldLib:
+            pass
+
+        omnivm_mod._lib = OldLib()
+        assert omnivm_mod._release_handle_from_finalizer(123) is False
+
+    def test_release_handle_from_finalizer_stays_quiet_on_failure(self):
+        self.mock_lib.OmniHandleReleaseFromFinalizer.side_effect = RuntimeError("release failed")
+        assert omnivm_mod._release_handle_from_finalizer(123) is False
+        self.mock_lib.OmniHandleReleaseFromFinalizer.assert_called_once_with(123)
+
     def test_record_handle_access_returns_chatty_flag(self):
         self.mock_lib.OmniHandleAccess.return_value = 1
         assert omnivm_mod._record_handle_access(123, "index", 16) is True

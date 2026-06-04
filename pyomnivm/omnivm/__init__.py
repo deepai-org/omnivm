@@ -2186,11 +2186,12 @@ def _escape_handle(handle_id):
 
 
 def _release_handle_from_finalizer(handle_id):
-    if _lib is None:
-        raise RuntimeError("omnivm not initialized - call init_runtimes() first")
-    if not hasattr(_lib, "OmniHandleReleaseFromFinalizer"):
-        raise RuntimeError("libomnivm does not expose OmniHandleReleaseFromFinalizer")
-    return _lib.OmniHandleReleaseFromFinalizer(int(handle_id)) == 0
+    try:
+        if _lib is None or not hasattr(_lib, "OmniHandleReleaseFromFinalizer"):
+            return False
+        return _lib.OmniHandleReleaseFromFinalizer(int(handle_id)) == 0
+    except BaseException:
+        return False
 
 
 def _record_handle_access(handle_id, kind="access", chatty_threshold=0):
