@@ -1348,6 +1348,19 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       }
     });
   }
+  if (typeof omnivm.proxyClose !== 'function') {
+    Object.defineProperty(omnivm, "proxyClose", {
+      configurable: true,
+      value: function(value) {
+        if (value && typeof value.__omnivm_close === 'function') return value.__omnivm_close();
+        if (value && typeof value.close === 'function') {
+          value.close();
+          return true;
+        }
+        return false;
+      }
+    });
+  }
 }
 globalThis.__omnivm_arg_refs = globalThis.__omnivm_arg_refs || {};
 globalThis.__omnivm_arg_ref_counter = globalThis.__omnivm_arg_ref_counter || 0;
@@ -1497,6 +1510,13 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var bridgeContains = function(key) {
     return !!bridge({op: "handle_contains", value: globalThis.__omnivm_encode_arg(key)});
   };
+  var releaseProxyLease = function() {
+    var handleId = globalThis.__omnivm_proxy_handle_id(target);
+    if (handleId == null || target.__omnivm_closed__ === true) return false;
+    target.__omnivm_closed__ = true;
+    globalThis.__omnivm_record_handle_release_finalizer(handleId);
+    return true;
+  };
   var proxy = new Proxy(target, {
     get: function(obj, prop, receiver) {
       if (prop === "__omnivm_get") return function(key, defaultValue) { return bridgeGet(key, defaultValue); };
@@ -1505,6 +1525,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
       if (prop === "__omnivm_iter") return function(mode) { return bridgeIter(mode); };
       if (prop === "__omnivm_contains") return function(key) { return bridgeContains(key); };
+      if (prop === "__omnivm_close") return releaseProxyLease;
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
@@ -1746,6 +1767,12 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         });
       };
       return new streamModule.Readable(opts);
+    },
+    __omnivm_close: function() {
+      if (this.__omnivm_closed__ === true) return false;
+      this.__omnivm_closed__ = true;
+      globalThis.__omnivm_record_handle_release_finalizer(value.id);
+      return true;
     },
     [Symbol.iterator]: function() {
       var owner = this;
@@ -2232,6 +2259,13 @@ class OmniVMHandleProxy
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_contains", id: @value["id"], value: __omnivm_encode_arg(key)}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? !!env["value"] : false
+  end
+
+  def omnivm_close
+    return false if @__omnivm_closed == true
+    @__omnivm_closed = true
+    OmniVM.call("__manifest", JSON.generate({op: "handle_release_finalizer", id: @value["id"]}))
+    true
   end
 
   def []=(key, value)

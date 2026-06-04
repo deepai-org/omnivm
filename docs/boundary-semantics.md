@@ -531,26 +531,28 @@ proxies. When user code needs an unambiguous operation, it can use
 `omnivm.proxyGet(proxy, key)`, `omnivm.proxySet(proxy, key, value)`,
 `omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`,
 `omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
-`omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`, or the
-collision-free symbol property `proxy[omnivm.proxyLength]`; data fields remain
-available through `omnivm.proxyGet(proxy, "length")`.
+`omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`,
+`omnivm.proxyClose(proxy)`, or the collision-free symbol property
+`proxy[omnivm.proxyLength]`; data fields remain available through
+`omnivm.proxyGet(proxy, "length")`.
 Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`.
+`omnivm.proxy_contains(proxy, key)`, and `omnivm.proxy_close(proxy)`.
 Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
-`proxy.omnivm_items`, and `proxy.omnivm_contains(key)`.
+`proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
+`proxy.omnivm_close`.
 Java manifest proxies provide the static helpers
 `OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
 `OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,
 `OmniVM.proxyIter(proxy, mode)`, `OmniVM.proxyKeys(proxy)`,
 `OmniVM.proxyValues(proxy)`, `OmniVM.proxyItems(proxy)`, and
-`OmniVM.proxyContains(proxy, key)` for the same remote
-get/set/call/length/iteration/membership escape hatches.
+`OmniVM.proxyContains(proxy, key)`, and `OmniVM.proxyClose(proxy)` for the same
+remote get/set/call/length/iteration/membership/proxy-release escape hatches.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:

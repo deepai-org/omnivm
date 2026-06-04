@@ -502,7 +502,8 @@ field mutation, `omnivm.proxyCall(proxy, key, args)` for explicit remote method
 calls, `omnivm.proxyLen(proxy)` for explicit collection length,
 `omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
 `omnivm.proxyItems(proxy)`, and `omnivm.proxyContains(proxy, key)` for explicit
-collection metadata, and
+collection metadata, `omnivm.proxyClose(proxy)` for explicit proxy lease
+release, and
 `proxy[omnivm.proxyLength]` as a collision-free property form for length when a
 remote object also has a data field named `length`.
 Python retained manifest proxies expose the same escape hatches as
@@ -510,18 +511,20 @@ Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`.
+`omnivm.proxy_contains(proxy, key)`, and `omnivm.proxy_close(proxy)`.
 Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
-`proxy.omnivm_items`, and `proxy.omnivm_contains(key)`.
+`proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
+`proxy.omnivm_close`.
 Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
 `OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
 `OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
 `OmniVM.proxyKeys(proxy)`, `OmniVM.proxyValues(proxy)`,
-`OmniVM.proxyItems(proxy)`, and `OmniVM.proxyContains(proxy, key)` to force
-remote get/set/call/length, iteration, and membership operations when a remote
-key collides with Java proxy methods or `Map` methods.
+`OmniVM.proxyItems(proxy)`, `OmniVM.proxyContains(proxy, key)`, and
+`OmniVM.proxyClose(proxy)` to force remote get/set/call/length, iteration,
+membership, and proxy-release operations when a remote key collides with Java
+proxy methods or `Map` methods.
 
 ```bash
 # Run a single manifest

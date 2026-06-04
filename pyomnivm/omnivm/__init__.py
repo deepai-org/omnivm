@@ -56,6 +56,7 @@ __all__ = [
     "proxy_values",
     "proxy_items",
     "proxy_contains",
+    "proxy_close",
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
@@ -1257,6 +1258,18 @@ def proxy_contains(value, key):
         finally:
             _release_manifest_args(retained_keys)
     return key in value
+
+
+def proxy_close(value):
+    """Release a proxy lease without colliding with a data field named close."""
+    if isinstance(value, ManifestProxy):
+        value.close()
+        return True
+    close = getattr(value, "close", None)
+    if callable(close):
+        close()
+        return True
+    return False
 
 
 class _ManifestStreamIterator:

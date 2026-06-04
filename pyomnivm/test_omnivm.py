@@ -694,7 +694,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3]
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
-        proxy.close()
+        assert omnivm_mod.proxy_close(proxy) is True
+        assert requests[-1] == {"op": "handle_release_finalizer", "id": 43}
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):

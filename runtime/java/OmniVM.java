@@ -916,6 +916,39 @@ public class OmniVM {
         return proxyGet(target, String.valueOf(key)) != null;
     }
 
+    public static boolean proxyClose(Object target) {
+        if (target == null) {
+            return false;
+        }
+        if (target instanceof HandleProxy proxy) {
+            proxy.releaseFromFinalizer();
+            return true;
+        }
+        if (target instanceof StreamProxy proxy) {
+            proxy.releaseFromFinalizer();
+            return true;
+        }
+        if (target instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+                return true;
+            } catch (Exception err) {
+                throw new RuntimeException("proxy close failed", err);
+            }
+        }
+        for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
+            if (method.getName().equals("close") && method.getParameterCount() == 0) {
+                try {
+                    invokeProxyMethod(method, target);
+                    return true;
+                } catch (ReflectiveOperationException err) {
+                    throw new RuntimeException("proxy close failed", err);
+                }
+            }
+        }
+        return false;
+    }
+
     public static boolean proxyCallable(Object target, Object keyValue) {
         String key = proxyKey(keyValue);
         if (target == null) {
