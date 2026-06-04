@@ -426,10 +426,11 @@ Implementation requirements:
   buffer with dtype, Arrow format, shape, memory-space, and release callback
   metadata, then the host imports that memory into the shared Arrow store.
   Non-host returned buffers are rejected until an explicit device-aware bridge
-  exists. Parameters receive borrowed table buffers through the same
-  dtype/format descriptor plus memory-space, ownership, and read-only metadata
-  for the duration of the call. The rule is based on value shape and element
-  type, not producer package names.
+  exists; rejected owned-buffer descriptors still invoke the producer release
+  callback so failed decode cannot leak plugin-owned memory. Parameters receive
+  borrowed table buffers through the same dtype/format descriptor plus
+  memory-space, ownership, and read-only metadata for the duration of the call.
+  The rule is based on value shape and element type, not producer package names.
 
 Runtime adapters should target generic protocols instead of named-library
 branches:

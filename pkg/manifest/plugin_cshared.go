@@ -77,6 +77,8 @@ type cSharedArgLease struct {
 	lease *arrow.BorrowedBuffer
 }
 
+var releaseCSharedGoPluginBufferFunc = releaseCSharedGoPluginBuffer
+
 type cSharedObjectProxy struct {
 	handle   cSharedPluginHandle
 	objectID string
@@ -601,7 +603,17 @@ func cSharedDtypeString(dtype int32) (string, bool) {
 	}
 }
 
-func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvelope) (*cSharedOwnedBuffer, error) {
+func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvelope) (buf *cSharedOwnedBuffer, err error) {
+	releaseRejectedBuffer := env.BufferID != ""
+	defer func() {
+		if err == nil || !releaseRejectedBuffer {
+			return
+		}
+		if releaseErr := releaseCSharedGoPluginBufferFunc(handle, env.BufferID); releaseErr != nil {
+			err = fmt.Errorf("%w; additionally failed to release rejected Go c-shared owned buffer %q: %v", err, env.BufferID, releaseErr)
+		}
+	}()
+
 	dtype, format, elemSize, ok := cSharedArrowDtype(env.Dtype)
 	if !ok {
 		return nil, fmt.Errorf("decode Go c-shared owned buffer: unknown dtype %q", env.Dtype)
@@ -642,7 +654,7 @@ func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvel
 		}
 		ptr = unsafe.Pointer(uintptr(addr))
 	}
-	buf := &cSharedOwnedBuffer{
+	buf = &cSharedOwnedBuffer{
 		ptr:         ptr,
 		bytesLen:    env.BytesLen,
 		elements:    env.Elements,
@@ -658,11 +670,12 @@ func decodeCSharedOwnedBuffer(handle cSharedPluginHandle, env cSharedPluginEnvel
 		buf.release = func() error {
 			var err error
 			buf.once.Do(func() {
-				err = releaseCSharedGoPluginBuffer(handle, bufferID)
+				err = releaseCSharedGoPluginBufferFunc(handle, bufferID)
 			})
 			return err
 		}
 	}
+	releaseRejectedBuffer = false
 	return buf, nil
 }
 

@@ -119,6 +119,70 @@ func TestGoCSharedOwnedBufferCarriesHostMemorySpace(t *testing.T) {
 	}
 }
 
+func TestGoCSharedOwnedBufferReleasesProducerBufferOnDecodeFailure(t *testing.T) {
+	prev := releaseCSharedGoPluginBufferFunc
+	t.Cleanup(func() { releaseCSharedGoPluginBufferFunc = prev })
+
+	var released []string
+	var gotHandle cSharedPluginHandle
+	releaseCSharedGoPluginBufferFunc = func(handle cSharedPluginHandle, bufferID string) error {
+		gotHandle = handle
+		released = append(released, bufferID)
+		return nil
+	}
+
+	_, err := decodeCSharedOwnedBuffer(77, cSharedPluginEnvelope{
+		OK:          true,
+		Boundary:    "owned_buffer",
+		Dtype:       "u8",
+		Format:      "C",
+		MemorySpace: "cuda",
+		BytesLen:    0,
+		Elements:    0,
+		BufferID:    "producer-buffer-1",
+	})
+	if err == nil {
+		t.Fatal("decodeCSharedOwnedBuffer accepted rejected producer buffer")
+	}
+	if !strings.Contains(err.Error(), `memory_space "cuda" is not host-accessible`) {
+		t.Fatalf("decodeCSharedOwnedBuffer error = %v", err)
+	}
+	if gotHandle != 77 || len(released) != 1 || released[0] != "producer-buffer-1" {
+		t.Fatalf("rejected producer buffer release = handle %d ids %#v, want handle 77 id producer-buffer-1", gotHandle, released)
+	}
+}
+
+func TestGoCSharedOwnedBufferReportsReleaseFailureOnDecodeFailure(t *testing.T) {
+	prev := releaseCSharedGoPluginBufferFunc
+	t.Cleanup(func() { releaseCSharedGoPluginBufferFunc = prev })
+
+	releaseCSharedGoPluginBufferFunc = func(handle cSharedPluginHandle, bufferID string) error {
+		return fmt.Errorf("release %s failed", bufferID)
+	}
+
+	_, err := decodeCSharedOwnedBuffer(77, cSharedPluginEnvelope{
+		OK:       true,
+		Boundary: "owned_buffer",
+		Dtype:    "u8",
+		Format:   "C",
+		BytesLen: -1,
+		Elements: 0,
+		BufferID: "producer-buffer-2",
+	})
+	if err == nil {
+		t.Fatal("decodeCSharedOwnedBuffer accepted invalid producer buffer")
+	}
+	for _, want := range []string{
+		"negative length",
+		`failed to release rejected Go c-shared owned buffer "producer-buffer-2"`,
+		"release producer-buffer-2 failed",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("decode/release error missing %q: %v", want, err)
+		}
+	}
+}
+
 func TestGoCSharedSourceFallbackCompilesGenericFunction(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")
