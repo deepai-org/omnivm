@@ -6994,8 +6994,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, `parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback))`) ||
 		!contains(code, `parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"))`) ||
 		!contains(code, "String wrappedBoundary = parsed.boundaryPath") ||
+		!contains(code, `wrappedBoundary = String.join(" > ", boundaryParts)`) ||
 		!contains(code, "envelope = parseStructuredErrorEnvelope(text, parsed.runtime, wrappedBoundary)") {
 		t.Fatalf("Java runtime error envelope should preserve structured origin_runtime and accept JS camelCase fields")
+	}
+	if contains(code, `wrappedBoundary = String.join(" -> ", boundaryParts)`) {
+		t.Fatalf("Java runtime error envelope should use normalized boundary separator")
 	}
 	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", new ArrayList<>(stackFrames))`) {
 		t.Fatalf("Java runtime error envelope should expose normalized stack frames")

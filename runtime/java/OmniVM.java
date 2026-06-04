@@ -282,7 +282,7 @@ public class OmniVM {
 
         String wrappedBoundary = parsed.boundaryPath;
         if (!boundaryParts.isEmpty()) {
-            wrappedBoundary = String.join(" -> ", boundaryParts);
+            wrappedBoundary = String.join(" > ", boundaryParts);
         } else if (!parsed.runtime.isEmpty() && !parsed.runtime.equals(safeString(fallbackRuntime))) {
             wrappedBoundary = "call[" + parsed.runtime + "]";
         } else if (wrappedBoundary.isEmpty() && !parsed.runtime.isEmpty()) {
