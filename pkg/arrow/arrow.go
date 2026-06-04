@@ -737,9 +737,10 @@ func (b *Buffer) Retain() {
 	b.mu.Unlock()
 }
 
-// Release decrements the direct reference count without running store-level
-// owner cleanup. Store users should prefer Free or BorrowedBuffer.Release.
+// Release decrements a direct reference. Store users should prefer Free or
+// BorrowedBuffer.Release so release failures can be reported in diagnostics.
 func (b *Buffer) Release() int {
+	var release func() error
 	b.mu.Lock()
 	floor := b.borrowRefs
 	if b.ownerRef {
@@ -749,7 +750,11 @@ func (b *Buffer) Release() int {
 		b.refs--
 	}
 	refs := b.refs
+	if refs <= 0 {
+		release = takeBufferReleaseLocked(b, refs)
+	}
 	b.mu.Unlock()
+	_ = callBufferRelease(release)
 	return refs
 }
 

@@ -276,6 +276,43 @@ func TestDirectReleaseDoesNotConsumeActiveBorrow(t *testing.T) {
 	}
 }
 
+func TestDirectRetainReleasesProducerAfterOwnerFree(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3}
+	releases := 0
+	buf, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf.Retain()
+	if err := s.Free("payload"); err != nil {
+		t.Fatalf("Free with direct retain failed: %v", err)
+	}
+	if releases != 0 {
+		t.Fatalf("producer release ran before direct release: %d", releases)
+	}
+	if status := s.Status("payload"); status.State != "released_detached" || status.DetachedBuffers != 1 || status.ActiveBorrows != 0 {
+		t.Fatalf("status with direct retained detached buffer = %+v, want detached without active borrow", status)
+	}
+
+	if refs := buf.Release(); refs != 0 {
+		t.Fatalf("direct Release refs=%d, want 0", refs)
+	}
+	if releases != 1 {
+		t.Fatalf("producer release callback called %d times, want once after direct release", releases)
+	}
+	if status := s.Status("payload"); status.State != "released" || status.DetachedBuffers != 0 {
+		t.Fatalf("status after direct release = %+v, want released without detached refs", status)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewSharedStore()
 
