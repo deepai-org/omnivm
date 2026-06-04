@@ -26601,6 +26601,89 @@ def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
         raise AssertionError(f"Kotlin Job cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_guava_listenable_future_cancel_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "omnivm.OmniVM.setCaptureObject(\"guava_future_js\", com.google.common.util.concurrent.SettableFuture.create()); "
+                    "omnivm.OmniVM.setCaptureObject(\"guava_future_py\", com.google.common.util.concurrent.SettableFuture.create()); "
+                    "omnivm.OmniVM.setCaptureObject(\"guava_future_ruby\", com.google.common.util.concurrent.SettableFuture.create());"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"guava_future_js": "guava_future_js"},
+                "code": (
+                    "if (guava_future_js.isDone) throw new Error('Guava future should start pending in JS'); "
+                    "if (guava_future_js.isCancelled) throw new Error('Guava future should not start cancelled in JS'); "
+                    "if (guava_future_js.cancel(true) !== true) throw new Error('Guava future cancel returned false in JS'); "
+                    "if (!guava_future_js.isCancelled) throw new Error('Guava future did not report cancelled in JS'); "
+                    "if (!guava_future_js.isDone) throw new Error('Guava future did not report done in JS after cancel');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"guava_future_py": "guava_future_py"},
+                "code": (
+                    "assert guava_future_py.isDone is False\n"
+                    "assert guava_future_py.isCancelled is False\n"
+                    "assert guava_future_py.cancel(True) is True\n"
+                    "assert guava_future_py.isCancelled is True\n"
+                    "assert guava_future_py.isDone is True"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"guava_future_ruby": "guava_future_ruby"},
+                "code": (
+                    "raise 'Guava future should start pending in Ruby' if guava_future_ruby.isDone\n"
+                    "raise 'Guava future should not start cancelled in Ruby' if guava_future_ruby.isCancelled\n"
+                    "raise 'Guava future cancel returned false in Ruby' unless guava_future_ruby.cancel(true) == true\n"
+                    "raise 'Guava future did not report cancelled in Ruby' unless guava_future_ruby.isCancelled == true\n"
+                    "raise 'Guava future did not report done in Ruby after cancel' unless guava_future_ruby.isDone == true"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "for (String name : new String[]{\"guava_future_js\", \"guava_future_py\", \"guava_future_ruby\"}) { "
+                    "Object raw = omnivm.OmniVM.getCapture(name); "
+                    "if (!(raw instanceof com.google.common.util.concurrent.ListenableFuture)) throw new RuntimeException(name + \" capture lost Guava ListenableFuture type: \" + raw); "
+                    "com.google.common.util.concurrent.ListenableFuture<?> future = (com.google.common.util.concurrent.ListenableFuture<?>) raw; "
+                    "if (!future.isCancelled()) throw new RuntimeException(name + \" did not stay cancelled in Java\"); "
+                    "if (!future.isDone()) throw new RuntimeException(name + \" did not stay done in Java\"); "
+                    "}"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < 3:
+        raise AssertionError(f"Guava futures did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Guava futures used JSON fallback: before={before_boundary}, after={boundary}")
+    call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+    if call_count < before_call_count + 15:
+        raise AssertionError(f"Guava future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+
+
 def test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe():
     result = omnivm.call(
         "java",
@@ -28062,6 +28145,7 @@ def main():
         check("Manifest Python Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_python_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Ruby Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_ruby_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
+        check("Manifest Java Guava ListenableFuture cancellation status crosses runtimes", test_manifest_java_guava_listenable_future_cancel_status_crosses_runtimes)
         check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
         check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
         check("Java Kotlin coroutine callback affinity is diagnostic or safe", test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe)
