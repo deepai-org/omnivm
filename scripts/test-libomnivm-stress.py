@@ -8787,6 +8787,139 @@ for name, result in (
         raise AssertionError(f"SQLAlchemy large Result streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_sqlalchemy_result_owner_close_errors_cross_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import os
+import tempfile
+import uuid
+import sqlalchemy as sa
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-sqlalchemy-stale-" + uuid.uuid4().hex + ".sqlite3")
+engine = sa.create_engine("sqlite:///" + db_path, future=True)
+metadata = sa.MetaData()
+orders = sa.Table(
+    "orders",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String),
+)
+metadata.create_all(engine)
+with engine.begin() as conn:
+    conn.execute(orders.insert(), [{"id": 1, "name": "ada"}])
+
+class OwnerClosedSQLAlchemyResult:
+    def __init__(self, label):
+        self.label = label
+        self.conn = engine.connect()
+        self.result = self.conn.execute(sa.select(orders).order_by(orders.c.id)).mappings()
+        self.iterator = iter(self.result)
+        self.rows_pulled = 0
+        self.close_calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.iterator)
+        self.rows_pulled += 1
+        return dict(row)
+
+    def close_owner(self):
+        self.result.close()
+        self.conn.close()
+
+    def close(self):
+        self.close_calls += 1
+        if not self.result.closed:
+            self.result.close()
+        if not self.conn.closed:
+            self.conn.close()
+
+sa_stale_js = OwnerClosedSQLAlchemyResult("javascript")
+sa_stale_ruby = OwnerClosedSQLAlchemyResult("ruby")
+sa_stale_java = OwnerClosedSQLAlchemyResult("java")
+for stale_result in (sa_stale_js, sa_stale_ruby, sa_stale_java):
+    stale_result.close_owner()
+'''
+    verify = r'''
+for name, result in (
+    ("javascript", sa_stale_js),
+    ("ruby", sa_stale_ruby),
+    ("java", sa_stale_java),
+):
+    if result.rows_pulled != 0:
+        raise AssertionError(f"{name} stale SQLAlchemy result pulled rows after owner close: {result.rows_pulled}")
+    if not result.result.closed:
+        raise AssertionError(f"{name} stale SQLAlchemy result is no longer marked closed")
+    if not result.conn.closed:
+        raise AssertionError(f"{name} stale SQLAlchemy connection is no longer marked closed")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"sa_stale_js": "sa_stale_js"},
+                "code": (
+                    "let message = ''; "
+                    "try { Array.from(sa_stale_js); } "
+                    "catch (err) { message = String(err && err.message || err); } "
+                    "if (!message) throw new Error('closed SQLAlchemy JS result did not throw'); "
+                    "if (!/closed|result|cursor|database/i.test(message)) throw new Error('closed SQLAlchemy JS result lost owner error: ' + message);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"sa_stale_ruby": "sa_stale_ruby"},
+                "code": (
+                    "message = nil; "
+                    "begin; sa_stale_ruby.to_a; rescue => e; message = e.message; end; "
+                    "raise 'closed SQLAlchemy Ruby result did not throw' if message.nil? || message.empty?; "
+                    "raise \"closed SQLAlchemy Ruby result lost owner error #{message}\" unless message.match?(/closed|result|cursor|database/i)"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"sa_stale_java": "sa_stale_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"sa_stale_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"closed SQLAlchemy result should cross as stream proxy: \" + raw); "
+                    "String message = \"\"; "
+                    "try { ((omnivm.OmniVM.StreamProxy) raw).toList(); } "
+                    "catch (RuntimeException err) { message = String.valueOf(err.getMessage()); } "
+                    "if (message.isEmpty()) throw new RuntimeException(\"closed SQLAlchemy Java result did not throw\"); "
+                    "String lower = message.toLowerCase(java.util.Locale.ROOT); "
+                    "if (!(lower.contains(\"closed\") || lower.contains(\"result\") || lower.contains(\"cursor\") || lower.contains(\"database\"))) throw new RuntimeException(\"closed SQLAlchemy Java result lost owner error: \" + message);"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"closed SQLAlchemy Results did not cross as stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"closed SQLAlchemy Result used JSON fallback: before={before_boundary}, after={boundary}")
+    stream_accesses = handles.get("handle_accesses_by_kind", {}).get("stream", 0)
+    before_stream_accesses = before_handles.get("handle_accesses_by_kind", {}).get("stream", 0)
+    if stream_accesses < before_stream_accesses + 3:
+        raise AssertionError(f"closed SQLAlchemy Result did not exercise stream access: before={before_handles}, after={handles}")
+
+
 def test_manifest_sqlalchemy_orm_yield_per_is_lazy_and_cancellable():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -29327,6 +29460,7 @@ def main():
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
+        check("Manifest SQLAlchemy Result owner close errors cross runtimes", test_manifest_sqlalchemy_result_owner_close_errors_cross_runtimes)
         check("Manifest SQLAlchemy ORM yield_per is lazy and cancellable", test_manifest_sqlalchemy_orm_yield_per_is_lazy_and_cancellable)
         check("Manifest SQLAlchemy lazy relationship collection stays live", test_manifest_sqlalchemy_lazy_relationship_collection_stays_live)
         check("Manifest SQLAlchemy Result partitions are lazy and cancellable", test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable)
