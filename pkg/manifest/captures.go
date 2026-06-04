@@ -1599,8 +1599,15 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var isFunctionIntrinsic = function(prop) {
     return prop === 'length' || prop === 'name' || prop === 'prototype' || prop === 'caller' || prop === 'arguments';
   };
+  var isInternalDescriptorProp = function(prop) {
+    if (!descriptor || typeof prop !== 'string') return false;
+    return prop === "__omnivm_resource__" || prop === "__omnivm_table__" || prop === "__omnivm_job__" || prop === "__omnivm_materialized__" ||
+      prop === "id" || prop === "runtime" || prop === "kind" || prop === "closed" || prop === "transfer" || prop === "disposer" ||
+      prop === "format" || prop === "ownership" || prop === "metadata" || prop === "buffer" || prop === "released" ||
+      prop === "done" || prop === "cancelled" || prop === "cancelReason" || prop === "payload" || prop === "result";
+  };
   var hasLocalProp = function(obj, prop) {
-    return Object.prototype.hasOwnProperty.call(obj, prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
+    return Object.prototype.hasOwnProperty.call(obj, prop) && !isInternalDescriptorProp(prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
     return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
@@ -1862,7 +1869,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
       if (typeof Symbol !== 'undefined' && Symbol.asyncDispose && prop === Symbol.asyncDispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
       var local = Object.getOwnPropertyDescriptor(obj, prop);
-      if (local) return local;
+      if (local && !isInternalDescriptorProp(prop)) return local;
       if (typeof prop === 'string' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           if (bridge({op: "handle_contains", value: prop})) {
@@ -1872,6 +1879,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
         }
       }
+      if (local) return local;
       return undefined;
     },
     ownKeys: function(obj) {

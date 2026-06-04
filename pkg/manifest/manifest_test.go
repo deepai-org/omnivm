@@ -6354,6 +6354,13 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, "__omnivm_make_handle_proxy") || !contains(code, `op: "handle_access"`) {
 		t.Fatalf("JS materializer should wrap table descriptors with handle telemetry, got %q", code)
 	}
+	if !contains(code, "var isInternalDescriptorProp = function(prop)") ||
+		!contains(code, `prop === "format" || prop === "ownership" || prop === "metadata" || prop === "buffer" || prop === "released"`) ||
+		!contains(code, `prop === "done" || prop === "cancelled" || prop === "cancelReason" || prop === "payload" || prop === "result"`) ||
+		!contains(code, "&& !isInternalDescriptorProp(prop)") ||
+		!contains(code, "if (local && !isInternalDescriptorProp(prop)) return local;") {
+		t.Fatalf("JS materializer should keep descriptor schema fields remote-first on table/job proxies, got %q", code)
+	}
 	if !contains(code, "chatty cross-runtime proxy access detected") {
 		t.Fatalf("JS materializer should warn on chatty proxy access, got %q", code)
 	}
@@ -6633,6 +6640,79 @@ if (omnivm.calls.some(function(call) { return call.op === "handle_call" && (call
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSCaptureTableDescriptorFieldsPreferRemoteFields(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  calls: [],
+  fields: {
+    id: "remote-id",
+    runtime: "remote-runtime",
+    format: "remote-format",
+    metadata: {remote: true},
+    buffer: "remote-buffer"
+  },
+  call: function(name, raw) {
+    if (name !== "__manifest") throw new Error("unexpected bridge name " + name);
+    var payload = JSON.parse(raw);
+    this.calls.push(payload);
+    if (payload.op === "handle_access") {
+      return JSON.stringify({__omnivm_result__: true, value: {chatty: false}});
+    }
+    if (payload.op === "handle_retain") {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (payload.op === "handle_contains") {
+      return JSON.stringify({__omnivm_result__: true, value: Object.prototype.hasOwnProperty.call(this.fields, payload.value)});
+    }
+    if (payload.op === "handle_get") {
+      if (Object.prototype.hasOwnProperty.call(this.fields, payload.key)) {
+        return JSON.stringify({__omnivm_result__: true, value: this.fields[payload.key]});
+      }
+      throw new Error("table has no property " + payload.key);
+    }
+    throw new Error("unexpected op " + payload.op);
+  }
+};
+` + code + `
+var proxy = globalThis.__omnivm_materialize_capture({
+  __omnivm_table__: true,
+  id: 81,
+  runtime: "python",
+  format: "arrow_c_data",
+  ownership: "borrowed",
+  metadata: {dtype: 4},
+  buffer: "descriptor-buffer",
+  released: false
+});
+if (proxy.id !== "remote-id") throw new Error("id was not remote-first: " + String(proxy.id));
+if (proxy.runtime !== "remote-runtime") throw new Error("runtime was not remote-first: " + String(proxy.runtime));
+if (proxy.format !== "remote-format") throw new Error("format was not remote-first: " + String(proxy.format));
+if (!proxy.metadata || proxy.metadata.remote !== true) throw new Error("metadata was not remote-first: " + JSON.stringify(proxy.metadata));
+if (proxy.buffer !== "remote-buffer") throw new Error("buffer was not remote-first: " + String(proxy.buffer));
+var descriptor = proxy.toJSON();
+if (!descriptor || descriptor.metadata.dtype !== 4 || descriptor.format !== "arrow_c_data" || descriptor.buffer !== "descriptor-buffer") {
+  throw new Error("local descriptor toJSON changed: " + JSON.stringify(descriptor));
+}
+var metadataDescriptor = Object.getOwnPropertyDescriptor(proxy, "metadata");
+if (!metadataDescriptor || metadataDescriptor.enumerable !== true) {
+  throw new Error("remote metadata descriptor missing: " + JSON.stringify(metadataDescriptor));
+}
+var requested = omnivm.calls.filter(function(call) { return call.op === "handle_get"; }).map(function(call) { return call.key; });
+["id", "runtime", "format", "metadata", "buffer"].forEach(function(key) {
+  if (requested.indexOf(key) < 0) throw new Error("missing remote lookup for " + key + ": " + requested.join(","));
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node table descriptor field collision check failed: %v\n%s", err, out)
 	}
 }
 
