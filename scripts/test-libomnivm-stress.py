@@ -3554,6 +3554,94 @@ class NestedArrowCapsuleArray:
         raise AssertionError(f"nested Arrow capsule capture used JSON fallback: before={before}, after={after}")
 
 
+def test_manifest_python_string_arrow_capsule_capture_uses_proxy():
+    before = omnivm.status().get("boundary", {})
+    setup = r'''
+import ctypes
+class ArrowSchema(ctypes.Structure):
+    pass
+class ArrowArray(ctypes.Structure):
+    pass
+ArrowSchemaRelease = ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowSchema))
+ArrowArrayRelease = ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowArray))
+ArrowSchema._fields_ = [
+    ("format", ctypes.c_char_p), ("name", ctypes.c_char_p), ("metadata", ctypes.c_char_p),
+    ("flags", ctypes.c_int64), ("n_children", ctypes.c_int64), ("children", ctypes.c_void_p),
+    ("dictionary", ctypes.c_void_p), ("release", ctypes.c_void_p), ("private_data", ctypes.c_void_p),
+]
+ArrowArray._fields_ = [
+    ("length", ctypes.c_int64), ("null_count", ctypes.c_int64), ("offset", ctypes.c_int64),
+    ("n_buffers", ctypes.c_int64), ("n_children", ctypes.c_int64), ("buffers", ctypes.POINTER(ctypes.c_void_p)),
+    ("children", ctypes.c_void_p), ("dictionary", ctypes.c_void_p), ("release", ctypes.c_void_p),
+    ("private_data", ctypes.c_void_p),
+]
+PyCapsule_New = ctypes.pythonapi.PyCapsule_New
+PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+PyCapsule_New.restype = ctypes.py_object
+schema_release = ArrowSchemaRelease(lambda schema: None)
+array_release = ArrowArrayRelease(lambda array: None)
+class StringArrowCapsuleArray:
+    def __init__(self):
+        self.kind = "string-arrow-capsule"
+        self.label = "owner-live"
+        self.offsets = (ctypes.c_int32 * 3)(0, 3, 6)
+        self.data = ctypes.create_string_buffer(b"abcdef")
+        self.schema = ArrowSchema()
+        self.array = ArrowArray()
+        self.buffers = (ctypes.c_void_p * 3)()
+        self.schema.format = b"u"
+        self.schema.release = ctypes.cast(schema_release, ctypes.c_void_p).value
+        self.array.length = 2
+        self.array.null_count = 0
+        self.array.offset = 0
+        self.array.n_buffers = 3
+        self.array.buffers = self.buffers
+        self.array.release = ctypes.cast(array_release, ctypes.c_void_p).value
+        self.buffers[0] = None
+        self.buffers[1] = ctypes.cast(self.offsets, ctypes.c_void_p).value
+        self.buffers[2] = ctypes.cast(self.data, ctypes.c_void_p).value
+    def __arrow_c_array__(self, requested_schema=None):
+        return (
+            PyCapsule_New(ctypes.addressof(self.schema), b"arrow_schema", None),
+            PyCapsule_New(ctypes.addressof(self.array), b"arrow_array", None),
+        )
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {"op": "eval", "runtime": "python", "bind": "payload", "code": "StringArrowCapsuleArray()"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "if (payload.kind !== 'string-arrow-capsule' || payload.label !== 'owner-live') "
+                    "throw new Error('string Arrow capsule should remain a live proxy');"
+                ),
+                "captures": {"payload": "payload"},
+            },
+        ],
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after = omnivm.status().get("boundary", {})
+    if after.get("resource_proxy_captures", 0) < 1:
+        raise AssertionError(f"string Arrow capsule did not remain a resource proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != 0:
+        raise AssertionError(f"string Arrow capsule should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != 0:
+        raise AssertionError(f"string Arrow capsule should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"string Arrow capsule capture used JSON fallback: before={before}, after={after}")
+
+
 def test_manifest_python_arrow_stream_capture_uses_arrow():
     before = omnivm.status().get("boundary", {})
     setup = r'''
@@ -24641,6 +24729,7 @@ def main():
         check("Manifest Python Arrow PyCapsule capture uses Arrow", test_manifest_python_arrow_capsule_capture_uses_arrow)
         check("Manifest Python nullable Arrow PyCapsule capture uses Arrow", test_manifest_python_nullable_arrow_capsule_capture_uses_arrow)
         check("Manifest Python nested Arrow PyCapsule capture uses proxy", test_manifest_python_nested_arrow_capsule_capture_uses_proxy)
+        check("Manifest Python string Arrow PyCapsule capture uses proxy", test_manifest_python_string_arrow_capsule_capture_uses_proxy)
         check("Manifest Python Arrow stream capture uses Arrow", test_manifest_python_arrow_stream_capture_uses_arrow)
         check("Manifest Python multi-chunk Arrow stream capture uses proxy", test_manifest_python_multichunk_arrow_stream_capture_uses_proxy)
         check("Manifest Python dictionary Arrow stream capture uses proxy", test_manifest_python_dictionary_arrow_stream_capture_uses_proxy)
