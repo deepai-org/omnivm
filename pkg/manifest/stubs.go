@@ -1092,10 +1092,7 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if err != nil {
 			return "", err
 		}
-		if _, err := e.handleEntry(id); err != nil {
-			return "", err
-		}
-		if err := e.ensureHandleTable().ReleaseAllRefs(id); err != nil {
+		if err := e.handleStreamCancel(id); err != nil {
 			return "", err
 		}
 		return marshalResult(true)
@@ -2067,6 +2064,13 @@ func (e *Executor) handleContains(id handles.ID, key interface{}) (bool, bool, e
 		return e.runtimeRefContains(ref, key)
 	}
 	return genericContains(entry.Value, key)
+}
+
+func (e *Executor) handleStreamCancel(id handles.ID) error {
+	if _, err := e.handleEntry(id); err != nil {
+		return err
+	}
+	return e.ensureHandleTable().ReleaseAllRefs(id)
 }
 
 func (e *Executor) handleStreamNext(id handles.ID) (interface{}, bool, bool, error) {

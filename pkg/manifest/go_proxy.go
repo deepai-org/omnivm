@@ -468,11 +468,12 @@ type GoStreamProxy struct {
 	id     handles.ID
 	table  *handles.Table
 	next   func(handles.ID) (interface{}, bool, bool, error)
+	cancel func(handles.ID) error
 	closed bool
 }
 
-func newGoStreamProxy(id handles.ID, table *handles.Table, next func(handles.ID) (interface{}, bool, bool, error)) *GoStreamProxy {
-	proxy := &GoStreamProxy{id: id, table: table, next: next}
+func newGoStreamProxy(id handles.ID, table *handles.Table, next func(handles.ID) (interface{}, bool, bool, error), cancel func(handles.ID) error) *GoStreamProxy {
+	proxy := &GoStreamProxy{id: id, table: table, next: next, cancel: cancel}
 	if table != nil && id != 0 {
 		_ = table.Retain(id)
 		runtime.SetFinalizer(proxy, func(p *GoStreamProxy) {
@@ -531,6 +532,9 @@ func (p *GoStreamProxy) Close() error {
 	runtime.SetFinalizer(p, nil)
 	if p.table == nil || p.id == 0 {
 		return nil
+	}
+	if p.cancel != nil {
+		return p.cancel(p.id)
 	}
 	return p.table.ReleaseAllRefs(p.id)
 }
@@ -666,6 +670,8 @@ func (e *Executor) goStreamProxyForID(id handles.ID) *GoStreamProxy {
 			return value, done, ok, err
 		}
 		return e.normalizeGoArg(value), false, true, nil
+	}, func(id handles.ID) error {
+		return e.handleStreamCancel(id)
 	})
 }
 

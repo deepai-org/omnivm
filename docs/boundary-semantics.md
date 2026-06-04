@@ -325,7 +325,10 @@ protocol on EOF, read error, cancellation, or scope/finalizer release: Python an
 `close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
 Go stream proxies expose `Next()` and `ValuesWithError()` when callers need the
 terminal owner error; the older `Recv()` and `Values()` helpers remain
-EOF-shaped compatibility wrappers.
+EOF-shaped compatibility wrappers. The first explicit `Close()` on a Go stream
+proxy whose owner was already closed by another path reports the same
+owner-side lifecycle diagnostic as `stream_cancel`; repeated local `Close()`
+calls remain idempotent.
 Java `StreamProxy` marks itself released before rethrowing terminal owner stream
 errors, so later `cancel()` or Cleaner cleanup stays idempotent.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can

@@ -2216,6 +2216,44 @@ func TestGoStreamProxyCloseCancelsWithoutDraining(t *testing.T) {
 	}
 }
 
+func TestGoStreamProxyCloseReportsExternallyClosedOwner(t *testing.T) {
+	e, _ := makeExecutor("go")
+	ch := &ChanRef{ch: make(chan interface{}, 1)}
+	ch.ch <- "first"
+	id, err := e.channelStreamHandle(ch)
+	if err != nil {
+		t.Fatalf("channelStreamHandle: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "channel")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "channel")))
+	}
+	if _, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err != nil {
+		t.Fatalf("HandleCall stream_cancel: %v", err)
+	}
+	err = stream.Close()
+	if err == nil {
+		t.Fatal("Go stream proxy Close after owner cancel did not fail")
+	}
+	got := err.Error()
+	for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Go stream proxy stale Close diagnostic missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "unknown handle") {
+		t.Fatalf("Go stream proxy stale Close used generic handle-table diagnostic: %s", got)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second stale Go stream proxy Close should be idempotent: %v", err)
+	}
+	stream.ReleaseFromFinalizer()
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go stream proxy stale close stats = %+v, want one external explicit release and no finalizer queue", stats)
+	}
+}
+
 func TestGoStreamProxyNextReportsOwnerReadError(t *testing.T) {
 	e, _ := makeExecutor("go")
 	reader := &errorAfterChunkReader{chunk: "first"}
