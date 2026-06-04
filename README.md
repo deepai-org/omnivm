@@ -341,7 +341,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.set_buffer(name, data, dtype=0)` | Publish bytes-like data into the shared buffer store |
 | `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |
 | `omnivm.buffer_owner(name[, data], dtype=0)` | Context object for named buffer ownership; publishes optional data on entry, exposes `owner.status()`, and releases the owner name on exit |
-| `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`state`, `lease_state`, and `memory_space`, currently `host` for zero-copy buffers) |
+| `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`state`, `lease_state`, shape/stride/nullability metadata, and `memory_space`, currently `host` for zero-copy buffers) |
 
 Guard failures such as `assert_owner_dispatch_supported()`,
 `assert_owner_dispatch_target_supported()`, `assert_host_thread()`, and

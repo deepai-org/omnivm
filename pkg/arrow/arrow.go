@@ -116,24 +116,30 @@ type Stats struct {
 
 // BufferStatus is a per-name lifecycle diagnostic for native memory leases.
 type BufferStatus struct {
-	Name                string `json:"name"`
-	State               string `json:"state"`
-	LeaseState          string `json:"lease_state,omitempty"`
-	Live                bool   `json:"live"`
-	Released            bool   `json:"released"`
-	Len                 int64  `json:"len,omitempty"`
-	Dtype               int32  `json:"dtype,omitempty"`
-	Format              string `json:"format,omitempty"`
-	ReadOnly            bool   `json:"read_only,omitempty"`
-	Ownership           string `json:"ownership,omitempty"`
-	MemorySpace         string `json:"memory_space,omitempty"`
-	ActiveBorrows       int64  `json:"active_borrows,omitempty"`
-	ActiveBorrowedBytes int64  `json:"active_borrowed_bytes,omitempty"`
-	ActiveNamedBorrows  int64  `json:"active_named_borrows,omitempty"`
-	NamedBorrowQueue    int    `json:"named_borrow_queue,omitempty"`
-	DetachedBuffers     int    `json:"detached_buffers,omitempty"`
-	DetachedBytes       int64  `json:"detached_bytes,omitempty"`
-	ReleaseError        string `json:"release_error,omitempty"`
+	Name                string  `json:"name"`
+	State               string  `json:"state"`
+	LeaseState          string  `json:"lease_state,omitempty"`
+	Live                bool    `json:"live"`
+	Released            bool    `json:"released"`
+	Len                 int64   `json:"len,omitempty"`
+	Dtype               int32   `json:"dtype,omitempty"`
+	Format              string  `json:"format,omitempty"`
+	Shape               []int64 `json:"shape,omitempty"`
+	Strides             []int64 `json:"strides,omitempty"`
+	Offset              int64   `json:"offset,omitempty"`
+	NullCount           int64   `json:"null_count,omitempty"`
+	ValidityBytes       int64   `json:"validity_bytes,omitempty"`
+	ValidityBitOffset   int64   `json:"validity_bit_offset,omitempty"`
+	ReadOnly            bool    `json:"read_only,omitempty"`
+	Ownership           string  `json:"ownership,omitempty"`
+	MemorySpace         string  `json:"memory_space,omitempty"`
+	ActiveBorrows       int64   `json:"active_borrows,omitempty"`
+	ActiveBorrowedBytes int64   `json:"active_borrowed_bytes,omitempty"`
+	ActiveNamedBorrows  int64   `json:"active_named_borrows,omitempty"`
+	NamedBorrowQueue    int     `json:"named_borrow_queue,omitempty"`
+	DetachedBuffers     int     `json:"detached_buffers,omitempty"`
+	DetachedBytes       int64   `json:"detached_bytes,omitempty"`
+	ReleaseError        string  `json:"release_error,omitempty"`
 }
 
 // SharedStore manages named Arrow buffers accessible to all runtimes.
@@ -585,16 +591,22 @@ func (s *SharedStore) Free(name string) error {
 	refs, release := decrementOwnerRef(buf)
 	buf.mu.Lock()
 	releasedStatus := BufferStatus{
-		Name:        name,
-		State:       "released",
-		LeaseState:  "released",
-		Released:    true,
-		Len:         int64(buf.Len),
-		Dtype:       buf.Dtype,
-		Format:      buf.Format,
-		ReadOnly:    buf.ReadOnly,
-		Ownership:   nonEmptyString(buf.Ownership, "omnivm"),
-		MemorySpace: nonEmptyString(buf.MemorySpace, "host"),
+		Name:              name,
+		State:             "released",
+		LeaseState:        "released",
+		Released:          true,
+		Len:               int64(buf.Len),
+		Dtype:             buf.Dtype,
+		Format:            buf.Format,
+		Shape:             append([]int64(nil), buf.Shape...),
+		Strides:           append([]int64(nil), buf.Strides...),
+		Offset:            buf.Offset,
+		NullCount:         buf.NullCount,
+		ValidityBytes:     int64(buf.ValidityLen),
+		ValidityBitOffset: buf.ValidityBitOffset,
+		ReadOnly:          buf.ReadOnly,
+		Ownership:         nonEmptyString(buf.Ownership, "omnivm"),
+		MemorySpace:       nonEmptyString(buf.MemorySpace, "host"),
 	}
 	buf.mu.Unlock()
 
@@ -629,16 +641,22 @@ func (s *SharedStore) Status(name string) BufferStatus {
 	if buf, ok := s.buffers[name]; ok {
 		buf.mu.Lock()
 		status = BufferStatus{
-			Name:        name,
-			State:       "live",
-			LeaseState:  "owned",
-			Live:        true,
-			Len:         int64(buf.Len),
-			Dtype:       buf.Dtype,
-			Format:      buf.Format,
-			ReadOnly:    buf.ReadOnly,
-			Ownership:   nonEmptyString(buf.Ownership, "omnivm"),
-			MemorySpace: nonEmptyString(buf.MemorySpace, "host"),
+			Name:              name,
+			State:             "live",
+			LeaseState:        "owned",
+			Live:              true,
+			Len:               int64(buf.Len),
+			Dtype:             buf.Dtype,
+			Format:            buf.Format,
+			Shape:             append([]int64(nil), buf.Shape...),
+			Strides:           append([]int64(nil), buf.Strides...),
+			Offset:            buf.Offset,
+			NullCount:         buf.NullCount,
+			ValidityBytes:     int64(buf.ValidityLen),
+			ValidityBitOffset: buf.ValidityBitOffset,
+			ReadOnly:          buf.ReadOnly,
+			Ownership:         nonEmptyString(buf.Ownership, "omnivm"),
+			MemorySpace:       nonEmptyString(buf.MemorySpace, "host"),
 		}
 		if buf.borrowRefs > 0 {
 			status.LeaseState = "borrowed"
@@ -664,6 +682,12 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		size := int64(buf.Len)
 		dtype := buf.Dtype
 		format := buf.Format
+		shape := append([]int64(nil), buf.Shape...)
+		strides := append([]int64(nil), buf.Strides...)
+		offset := buf.Offset
+		nullCount := buf.NullCount
+		validityBytes := int64(buf.ValidityLen)
+		validityBitOffset := buf.ValidityBitOffset
 		readOnly := buf.ReadOnly
 		ownership := nonEmptyString(buf.Ownership, "omnivm")
 		memorySpace := nonEmptyString(buf.MemorySpace, "host")
@@ -678,10 +702,16 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			status.LeaseState = "detached"
 			status.Released = true
 		}
-		if status.Len == 0 {
+		if !statusHasBufferMetadata(status) {
 			status.Len = size
 			status.Dtype = dtype
 			status.Format = format
+			status.Shape = shape
+			status.Strides = strides
+			status.Offset = offset
+			status.NullCount = nullCount
+			status.ValidityBytes = validityBytes
+			status.ValidityBitOffset = validityBitOffset
 			status.ReadOnly = readOnly
 			status.Ownership = ownership
 			status.MemorySpace = memorySpace
@@ -696,6 +726,19 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		status.NamedBorrowQueue = queueLen
 	}
 	return status
+}
+
+func statusHasBufferMetadata(status BufferStatus) bool {
+	return status.Live ||
+		status.MemorySpace != "" ||
+		status.Ownership != "" ||
+		status.Format != "" ||
+		len(status.Shape) > 0 ||
+		len(status.Strides) > 0 ||
+		status.Offset != 0 ||
+		status.NullCount != 0 ||
+		status.ValidityBytes != 0 ||
+		status.ValidityBitOffset != 0
 }
 
 // List returns the names of all buffers in the store.
