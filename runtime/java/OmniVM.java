@@ -1392,9 +1392,15 @@ public class OmniVM {
 
         @Override
         public int size() {
-            Object length = bridgeOp("{\"op\":\"handle_len\",\"id\":" + jsonScalar(value.get("id")) + "}");
-            if (length instanceof Number) {
-                return ((Number) length).intValue();
+            try {
+                Object length = bridgeOp("{\"op\":\"handle_len\",\"id\":" + jsonScalar(value.get("id")) + "}");
+                if (length instanceof Number) {
+                    return ((Number) length).intValue();
+                }
+            } catch (RuntimeException err) {
+                if (!String.valueOf(err.getMessage()).contains("has no length")) {
+                    throw err;
+                }
             }
             record("property");
             return value.size();
@@ -1786,7 +1792,10 @@ public class OmniVM {
 
     @SuppressWarnings("unchecked")
     private static Object materializeStreamChunk(Object value) {
-        if (!(value instanceof HandleProxy) && value instanceof Map<?, ?> rawMap && Boolean.TRUE.equals(rawMap.get("__omnivm_table__"))) {
+        if (value instanceof HandleProxy || value instanceof StreamProxy) {
+            return value;
+        }
+        if (value instanceof Map<?, ?> rawMap && Boolean.TRUE.equals(rawMap.get("__omnivm_table__"))) {
             Map<String, Object> table = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
                 table.put(String.valueOf(entry.getKey()), entry.getValue());

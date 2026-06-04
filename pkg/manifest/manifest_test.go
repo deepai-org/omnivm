@@ -4064,6 +4064,18 @@ func TestRuntimePrimitiveSnapshotExprProbesCallableShape(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonLenExprSkipsUnsizedObjects(t *testing.T) {
+	expr, ok := runtimeRefLenExpr(RuntimeRef{Runtime: "python", VarName: "row"})
+	if !ok {
+		t.Fatal("python len expression should be available")
+	}
+	for _, want := range []string{"hasattr(__o, '__len__')", "len(__o)", "else None"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("python len expression missing %q in %q", want, expr)
+		}
+	}
+}
+
 func TestRuntimeRefRubyStreamProbeTreatsHTTPMessagesAsResources(t *testing.T) {
 	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "ruby", VarName: "response"})
 	if !ok {
@@ -5103,6 +5115,24 @@ func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	}
 	if contains(code, "if (value.containsKey(key)) {\n                return value.get(key);\n            }\n            Map<?, ?> report = record(\"property\");") {
 		t.Fatalf("Java get should not return descriptor fields before consulting the handle bridge")
+	}
+}
+
+func TestJavaRuntimeDoesNotRematerializeStreamChunkProxies(t *testing.T) {
+	var data []byte
+	var err error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	code := string(data)
+	if !contains(code, "if (value instanceof HandleProxy || value instanceof StreamProxy)") || !contains(code, "return value;") {
+		t.Fatalf("Java stream chunks should return already-materialized proxies before Map fallback")
 	}
 }
 
@@ -7465,6 +7495,17 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
 		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
+	}
+	if !strings.Contains(pythonProp, "else None") || !strings.Contains(pythonProp, "__o[int(__k)]") {
+		t.Fatalf("python property lookup should avoid unconditional item access on unscriptable objects, got %q", pythonProp)
+	}
+
+	pythonIndex, ok, err := runtimeRefIndexExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "0")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIndexExpr python: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(pythonIndex, "__o[int(__k)]") || !strings.Contains(pythonIndex, "else None") || strings.Contains(pythonIndex, "else __o[__k]") {
+		t.Fatalf("python index lookup should only index mappings or bounded sequences, got %q", pythonIndex)
 	}
 
 	pythonHeadersProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "request"}, "headers")

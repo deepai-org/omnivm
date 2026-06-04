@@ -2931,10 +2931,7 @@ func runtimeRefPropertyExpr(ref RuntimeRef, key string) (string, bool, error) {
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
-		if pythonHTTPMessageAttributeKey(key) {
-			return fmt.Sprintf("(lambda __o, __k: (getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else (None if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else __o[__k]))))))(%s, %s)", pythonHTTPMessageProbeExpr("__o"), base, keyLit), true, nil
-		}
-		return fmt.Sprintf("(lambda __o, __k: (__o[__k] if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o else (getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else (None if isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) else __o[__k])))))(%s, %s)", base, keyLit), true, nil
+		return pythonRuntimeRefLookupExpr(base, keyLit, pythonHTTPMessageAttributeKey(key)), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)) ? __o[__k] : (__o.respond_to?(__k) ? __o.public_send(__k) : __o[__k]); end)", base, keyLit), true, nil
 	case "java":
@@ -2960,8 +2957,10 @@ func runtimeRefIndexExpr(ref RuntimeRef, key interface{}) (string, bool, error) 
 		return "", false, err
 	}
 	switch ref.Runtime {
-	case "javascript", "python", "ruby":
+	case "javascript", "ruby":
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
+	case "python":
+		return pythonRuntimeRefLookupExpr(base, keyLit, false), true, nil
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxyIndex(%s, %s)", base, keyLit), true, nil
 	default:
@@ -2982,14 +2981,27 @@ func runtimeRefIndexExprWithBuilder(ref RuntimeRef, key interface{}, builder *ru
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	var expr string
 	switch ref.Runtime {
-	case "javascript", "python", "ruby":
+	case "javascript", "ruby":
 		expr = fmt.Sprintf("(%s)[%s]", base, keyLit)
+	case "python":
+		expr = pythonRuntimeRefLookupExpr(base, keyLit, false)
 	case "java":
 		expr = fmt.Sprintf("omnivm.OmniVM.proxyIndex(%s, %s)", base, keyLit)
 	default:
 		return "", false, nil
 	}
 	return expr, true, nil
+}
+
+func pythonRuntimeRefLookupExpr(base, keyLit string, preferHTTPAttribute bool) string {
+	mappingType := "__import__('collections.abc', fromlist=['Mapping']).Mapping"
+	sequenceLookup := fmt.Sprintf("((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, %s) and int(__k) >= 0 and int(__k) < len(__o))", mappingType)
+	attrLookup := "(getattr(__o, __k) if isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {}) else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else None))"
+	lookup := fmt.Sprintf("(__o[__k] if isinstance(__o, %s) and __k in __o else (__o[int(__k)] if %s else %s))", mappingType, sequenceLookup, attrLookup)
+	if preferHTTPAttribute {
+		lookup = fmt.Sprintf("(getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else %s)", pythonHTTPMessageProbeExpr("__o"), lookup)
+	}
+	return fmt.Sprintf("(lambda __o, __k: %s)(%s, %s)", lookup, base, keyLit)
 }
 
 func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, error) {
@@ -3512,7 +3524,7 @@ func runtimeRefLenExpr(ref RuntimeRef) (string, bool) {
 	case "javascript":
 		return fmt.Sprintf("(%s).length", base), true
 	case "python":
-		return fmt.Sprintf("len(%s)", base), true
+		return fmt.Sprintf("(lambda __o: (len(__o) if hasattr(__o, '__len__') else None))(%s)", base), true
 	case "ruby":
 		return fmt.Sprintf("(%s).length", base), true
 	case "java":

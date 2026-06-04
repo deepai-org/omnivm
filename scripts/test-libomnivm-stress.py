@@ -8319,6 +8319,222 @@ for name, result in (
         raise AssertionError(f"SQLAlchemy large Result streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_sqlalchemy_orm_yield_per_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import os
+import tempfile
+import uuid
+import sqlalchemy as sa
+from sqlalchemy.orm import Session, declarative_base
+
+orm_yield_db_path = os.path.join(tempfile.gettempdir(), "omnivm-sqlalchemy-orm-yield-" + uuid.uuid4().hex + ".sqlite3")
+orm_yield_engine = sa.create_engine("sqlite:///" + orm_yield_db_path, future=True)
+ORMYieldBase = declarative_base()
+
+class ORMYieldOrder(ORMYieldBase):
+    __tablename__ = "orm_yield_orders"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    name = sa.Column(sa.String)
+    items = sa.Column(sa.String)
+    keys = sa.Column(sa.String)
+    count = sa.Column(sa.Integer)
+    then = sa.Column(sa.String)
+    length = sa.Column(sa.Integer)
+    get = sa.Column(sa.String)
+    close = sa.Column(sa.String)
+
+    def summary(self):
+        return f"{self.name}:{self.items}:{self.count}"
+
+ORMYieldBase.metadata.create_all(orm_yield_engine)
+with Session(orm_yield_engine) as seed_session:
+    seed_session.add_all(
+        [
+            ORMYieldOrder(
+                id=idx,
+                name=f"user-{idx:04d}",
+                items="field-items",
+                keys="field-keys",
+                count=idx,
+                then="field-then",
+                length=2,
+                get="field-get",
+                close="field-close",
+            )
+            for idx in range(1, 501)
+        ]
+    )
+    seed_session.commit()
+
+class TrackingSQLAlchemyORMYield:
+    def __init__(self, label):
+        self.label = label
+        self.yield_per = 25
+        self.total_rows = 500
+        self.session = Session(orm_yield_engine)
+        stmt = (
+            sa.select(ORMYieldOrder)
+            .order_by(ORMYieldOrder.id)
+            .execution_options(stream_results=True, yield_per=self.yield_per)
+        )
+        self.result = self.session.scalars(stmt)
+        self.iterator = iter(self.result)
+        self.rows_pulled = 0
+        self.identity_size_after_pull = 0
+        self.identity_size_before_session_close = None
+        self.result_closed = False
+        self.session_identity_empty = False
+        self.session_in_transaction_after_close = None
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.iterator)
+        self.rows_pulled += 1
+        self.identity_size_after_pull = len(self.session.identity_map)
+        return row
+
+    def close(self):
+        self.closed = True
+        self.result.close()
+        self.result_closed = bool(getattr(self.result, "closed", False))
+        self.identity_size_before_session_close = len(self.session.identity_map)
+        self.session.close()
+        self.session_identity_empty = len(self.session.identity_map) == 0
+        self.session_in_transaction_after_close = bool(self.session.in_transaction())
+
+sa_orm_yield_js = TrackingSQLAlchemyORMYield("javascript")
+sa_orm_yield_ruby = TrackingSQLAlchemyORMYield("ruby")
+sa_orm_yield_java = TrackingSQLAlchemyORMYield("java")
+'''
+    verify = r'''
+for name, result in (
+    ("javascript", sa_orm_yield_js),
+    ("ruby", sa_orm_yield_ruby),
+    ("java", sa_orm_yield_java),
+):
+    if result.rows_pulled != 1:
+        raise AssertionError(f"{name} SQLAlchemy ORM yield_per pulled {result.rows_pulled} rows instead of one")
+    if result.identity_size_after_pull <= 0:
+        raise AssertionError(f"{name} SQLAlchemy ORM yield_per did not materialize an identity-map row")
+    if result.identity_size_after_pull > result.yield_per:
+        raise AssertionError(
+            f"{name} SQLAlchemy ORM yield_per over-fetched identity map: "
+            f"{result.identity_size_after_pull} > {result.yield_per}"
+        )
+    if result.identity_size_after_pull >= result.total_rows:
+        raise AssertionError(f"{name} SQLAlchemy ORM yield_per drained all rows")
+    if not result.closed:
+        raise AssertionError(f"{name} SQLAlchemy ORM yield_per stream owner was not closed")
+    if not result.result_closed:
+        raise AssertionError(f"{name} SQLAlchemy ORM ScalarResult did not close")
+    if not result.session_identity_empty:
+        raise AssertionError(
+            f"{name} SQLAlchemy ORM Session identity map stayed populated: "
+            f"{result.identity_size_before_session_close}"
+        )
+    if result.session_in_transaction_after_close:
+        raise AssertionError(f"{name} SQLAlchemy ORM Session stayed in a transaction after close")
+orm_yield_engine.dispose()
+try:
+    os.unlink(orm_yield_db_path)
+except FileNotFoundError:
+    pass
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"sa_orm_yield_js": "sa_orm_yield_js"},
+                "code": (
+                    "const it = sa_orm_yield_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('SQLAlchemy ORM yield_per stream was empty'); "
+                    "const row = first.value; "
+                    "if (row.name !== 'user-0001') throw new Error('bad SQLAlchemy ORM yield_per JS name: ' + row.name); "
+                    "if (row.items !== 'field-items' || row.keys !== 'field-keys' || String(row.count) !== '1' || row.then !== 'field-then' || String(row.length) !== '2' || row.get !== 'field-get' || row.close !== 'field-close') throw new Error('SQLAlchemy ORM yield_per JS collision fields lost: ' + JSON.stringify(row)); "
+                    "if (row.summary() !== 'user-0001:field-items:1') throw new Error('SQLAlchemy ORM yield_per JS method lost: ' + row.summary()); "
+                    "if (sa_orm_yield_js.cancel('client-stop') !== true) throw new Error('SQLAlchemy ORM yield_per JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"sa_orm_yield_ruby": "sa_orm_yield_ruby"},
+                "code": (
+                    "row = sa_orm_yield_ruby.first; "
+                    "raise 'SQLAlchemy ORM yield_per stream was empty' if row.nil?; "
+                    "raise \"bad SQLAlchemy ORM yield_per Ruby name #{row.name}\" unless row.name == 'user-0001'; "
+                    "raise 'SQLAlchemy ORM yield_per Ruby collision fields lost' unless row.items == 'field-items' && row.keys == 'field-keys' && row.count.to_s == '1' && row.then == 'field-then' && row.length.to_s == '2' && row.get == 'field-get' && row.close == 'field-close'; "
+                    "raise \"SQLAlchemy ORM yield_per Ruby method lost #{row.summary.call}\" unless row.summary.call == 'user-0001:field-items:1'; "
+                    "sa_orm_yield_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"sa_orm_yield_java": "sa_orm_yield_java"},
+                "code": (
+                    "Object rawStream = omnivm.OmniVM.getCapture(\"sa_orm_yield_java\"); "
+                    "if (!(rawStream instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"SQLAlchemy ORM yield_per should cross as stream proxy: \" + rawStream); "
+                    "omnivm.OmniVM.StreamProxy stream = (omnivm.OmniVM.StreamProxy) rawStream; "
+                    "java.util.Iterator<Object> it = stream.iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"SQLAlchemy ORM yield_per stream was empty\"); "
+                    "Object rawRow = it.next(); "
+                    "if (!(rawRow instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"SQLAlchemy ORM yield_per row should cross as HandleProxy: \" + rawRow); "
+                    "omnivm.OmniVM.HandleProxy row = (omnivm.OmniVM.HandleProxy) rawRow; "
+                    "if (!\"user-0001\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad SQLAlchemy ORM yield_per Java name: \" + row.get(\"name\")); "
+                    "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java items lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java keys lost\"); "
+                    "if (!\"1\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java count lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java then lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java length lost\"); "
+                    "if (!\"field-get\".equals(String.valueOf(row.get(\"get\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java get lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java close lost\"); "
+                    "if (!\"user-0001:field-items:1\".equals(String.valueOf(row.call(\"summary\")))) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java method lost: \" + row.call(\"summary\")); "
+                    "if (!stream.cancel()) throw new RuntimeException(\"SQLAlchemy ORM yield_per Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"SQLAlchemy ORM yield_per did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 3 and resource_capture_delta < 3:
+        raise AssertionError(f"SQLAlchemy ORM yield_per rows did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"SQLAlchemy ORM yield_per used JSON fallback: before={before_boundary}, after={boundary}")
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
+        raise AssertionError(f"SQLAlchemy ORM yield_per streams did not release: before={before_handles}, after={handles}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"SQLAlchemy ORM yield_per row property access was not recorded: before={before_handles}, after={handles}")
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"SQLAlchemy ORM yield_per row method calls were not recorded: before={before_handles}, after={handles}")
+
+
 def test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -26809,6 +27025,7 @@ def main():
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
+        check("Manifest SQLAlchemy ORM yield_per is lazy and cancellable", test_manifest_sqlalchemy_orm_yield_per_is_lazy_and_cancellable)
         check("Manifest SQLAlchemy Result partitions are lazy and cancellable", test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
