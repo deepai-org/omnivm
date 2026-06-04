@@ -618,6 +618,33 @@ static void omnivm_v8_copy_prop(v8::Isolate* isolate,
     ).ToChecked();
 }
 
+static void omnivm_v8_copy_prop_fallback(v8::Isolate* isolate,
+                                         v8::Local<v8::Context> context,
+                                         v8::Local<v8::Object> source,
+                                         v8::Local<v8::Object> target,
+                                         const char* preferred_key,
+                                         const char* fallback_key,
+                                         const char* target_key) {
+    v8::Local<v8::Value> value;
+    if (!source->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, preferred_key).ToLocalChecked()
+        ).ToLocal(&value) ||
+        value->IsUndefined()) {
+        if (!source->Get(
+                context,
+                v8::String::NewFromUtf8(isolate, fallback_key).ToLocalChecked()
+            ).ToLocal(&value)) {
+            value = v8::Null(isolate);
+        }
+    }
+    target->Set(
+        context,
+        v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
+        value
+    ).ToChecked();
+}
+
 static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::Value>& info) {
     v8::Isolate* isolate = info.GetIsolate();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
@@ -625,14 +652,14 @@ static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::V
     if (!info.This().IsEmpty() && info.This()->IsObject()) {
         v8::Local<v8::Object> error = info.This();
         omnivm_v8_copy_prop(isolate, context, error, out, "runtime", "runtime");
-        omnivm_v8_copy_prop(isolate, context, error, out, "origin_runtime", "origin_runtime");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "origin_runtime", "originRuntime", "origin_runtime");
         omnivm_v8_copy_prop(isolate, context, error, out, "type", "type");
         omnivm_v8_copy_prop(isolate, context, error, out, "message", "message");
         omnivm_v8_copy_prop(isolate, context, error, out, "traceback", "traceback");
-        omnivm_v8_copy_prop(isolate, context, error, out, "stack_frames", "stack_frames");
-        omnivm_v8_copy_prop(isolate, context, error, out, "causeChain", "cause_chain");
-        omnivm_v8_copy_prop(isolate, context, error, out, "boundaryPath", "boundary_path");
-        omnivm_v8_copy_prop(isolate, context, error, out, "originalErrorHandle", "original_error_handle");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "stack_frames", "stackFrames", "stack_frames");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "cause_chain", "causeChain", "cause_chain");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path");
+        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "original_error_handle", "originalErrorHandle", "original_error_handle");
         omnivm_v8_copy_prop(isolate, context, error, out, "details", "details");
     }
     info.GetReturnValue().Set(out);

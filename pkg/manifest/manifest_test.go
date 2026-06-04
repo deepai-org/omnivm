@@ -6042,9 +6042,16 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 			t.Fatalf("V8 runtime error JSON envelope missing %q", want)
 		}
 	}
-	if !contains(code, `omnivm_v8_copy_prop(isolate, context, error, out, "causeChain", "cause_chain")`) ||
-		!contains(code, `omnivm_v8_copy_prop(isolate, context, error, out, "boundaryPath", "boundary_path")`) {
-		t.Fatalf("V8 runtime error toJSON should normalize camelCase fields to snake_case")
+	for _, want := range []string{
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "origin_runtime", "originRuntime", "origin_runtime")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "stack_frames", "stackFrames", "stack_frames")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "cause_chain", "causeChain", "cause_chain")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "boundary_path", "boundaryPath", "boundary_path")`,
+		`omnivm_v8_copy_prop_fallback(isolate, context, error, out, "original_error_handle", "originalErrorHandle", "original_error_handle")`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("V8 runtime error toJSON should normalize snake_case and camelCase fields, missing %q", want)
+		}
 	}
 	if contains(code, `v8::String::NewFromUtf8Literal(isolate, "errors"),`) {
 		t.Fatalf("V8 runtime error details should preserve non-object JSON instead of wrapping arrays")
