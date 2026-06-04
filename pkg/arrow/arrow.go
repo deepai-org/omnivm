@@ -72,23 +72,24 @@ type BorrowedBuffer struct {
 
 // Stats is a process-level snapshot for bulk data diagnostics.
 type Stats struct {
-	LiveBuffers       int            `json:"live_buffers"`
-	LiveBytes         int64          `json:"live_bytes"`
-	BuffersByDtype    map[string]int `json:"buffers_by_dtype"`
-	BuffersByFormat   map[string]int `json:"buffers_by_format"`
-	Allocations       int64          `json:"allocations"`
-	Sets              int64          `json:"sets"`
-	Gets              int64          `json:"gets"`
-	Releases          int64          `json:"releases"`
-	CopiedBytes       int64          `json:"copied_bytes"`
-	ZeroCopyBorrows   int64          `json:"zero_copy_borrows"`
-	ZeroCopyImports   int64          `json:"zero_copy_imports"`
-	ActiveBorrows     int64          `json:"active_borrows"`
-	DeferredDrops     int64          `json:"deferred_release_drops"`
-	DeferredQueueLen  int            `json:"deferred_release_queue_len"`
-	DeferredOverflow  int            `json:"deferred_release_overflow_names"`
-	LargestBufferName string         `json:"largest_buffer_name,omitempty"`
-	LargestBufferSize int64          `json:"largest_buffer_size"`
+	LiveBuffers         int            `json:"live_buffers"`
+	LiveBytes           int64          `json:"live_bytes"`
+	BuffersByDtype      map[string]int `json:"buffers_by_dtype"`
+	BuffersByFormat     map[string]int `json:"buffers_by_format"`
+	Allocations         int64          `json:"allocations"`
+	Sets                int64          `json:"sets"`
+	Gets                int64          `json:"gets"`
+	Releases            int64          `json:"releases"`
+	CopiedBytes         int64          `json:"copied_bytes"`
+	ZeroCopyBorrows     int64          `json:"zero_copy_borrows"`
+	ZeroCopyImports     int64          `json:"zero_copy_imports"`
+	ActiveBorrows       int64          `json:"active_borrows"`
+	ActiveBorrowedBytes int64          `json:"active_borrowed_bytes"`
+	DeferredDrops       int64          `json:"deferred_release_drops"`
+	DeferredQueueLen    int            `json:"deferred_release_queue_len"`
+	DeferredOverflow    int            `json:"deferred_release_overflow_names"`
+	LargestBufferName   string         `json:"largest_buffer_name,omitempty"`
+	LargestBufferSize   int64          `json:"largest_buffer_size"`
 }
 
 // SharedStore manages named Arrow buffers accessible to all runtimes.
@@ -363,7 +364,9 @@ func (s *SharedStore) Stats() Stats {
 
 		stats.LiveBytes += size
 		if refs > 1 {
-			stats.ActiveBorrows += int64(refs - 1)
+			activeRefs := int64(refs - 1)
+			stats.ActiveBorrows += activeRefs
+			stats.ActiveBorrowedBytes += activeRefs * size
 		}
 		stats.BuffersByDtype[strconv.FormatInt(int64(dtype), 10)]++
 		if format != "" {

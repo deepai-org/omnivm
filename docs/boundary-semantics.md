@@ -578,6 +578,7 @@ The shared Arrow data plane exposes generic bulk-data diagnostics under
 - `copied_bytes`;
 - `zero_copy_borrows`;
 - `active_borrows`;
+- `active_borrowed_bytes`;
 - `deferred_release_drops`;
 - `largest_buffer_name`;
 - `largest_buffer_size`.
