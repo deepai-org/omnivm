@@ -1664,6 +1664,81 @@ static void OmnivmCallTypedCallback(const v8::FunctionCallbackInfo<v8::Value>& i
     }
 }
 
+static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
+                                          v8::Local<v8::Context> context) {
+    const char* source = R"JS(
+(function() {
+  if (typeof globalThis.__omnivm_actual_public_method !== 'function') {
+    Object.defineProperty(globalThis, "__omnivm_actual_public_method", {
+      configurable: true,
+      value: function(value, name) {
+        if (value == null) return null;
+        var cursor = Object(value);
+        var depth = 0;
+        while (cursor != null && depth++ < 64) {
+          var descriptor = null;
+          try {
+            descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+          } catch (_descriptorError) {
+            return null;
+          }
+          if (descriptor) {
+            return typeof descriptor.value === 'function' ? descriptor.value.bind(value) : null;
+          }
+          cursor = Object.getPrototypeOf(cursor);
+        }
+        return null;
+      }
+    });
+  }
+  if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm && typeof globalThis.omnivm.proxyClose !== 'function') {
+    Object.defineProperty(globalThis.omnivm, "proxyClose", {
+      configurable: true,
+      value: function(value) {
+        var omnivmClose = null;
+        try {
+          omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close");
+        } catch (_omnivmCloseLookupError) {}
+        if (typeof omnivmClose === 'function') return omnivmClose.call(value);
+        if (typeof Symbol !== 'undefined') {
+          var symbolDispose = null;
+          try {
+            symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null;
+          } catch (_symbolDisposeLookupError) {}
+          if (typeof symbolDispose === 'function') {
+            var symbolDisposeResult = symbolDispose.call(value);
+            return symbolDisposeResult === undefined ? true : symbolDisposeResult;
+          }
+          var symbolAsyncDispose = null;
+          try {
+            symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null;
+          } catch (_symbolAsyncDisposeLookupError) {}
+          if (typeof symbolAsyncDispose === 'function') {
+            var symbolAsyncDisposeResult = symbolAsyncDispose.call(value);
+            return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult;
+          }
+        }
+        var close = globalThis.__omnivm_actual_public_method(value, "close");
+        if (close) {
+          var result = close.call(value);
+          return result === undefined ? true : result;
+        }
+        return false;
+      }
+    });
+  }
+})();
+)JS";
+    v8::Local<v8::String> src =
+        v8::String::NewFromUtf8(isolate, source).ToLocalChecked();
+    v8::Local<v8::Script> script;
+    if (!v8::Script::Compile(context, src).ToLocal(&script)) {
+        return;
+    }
+    v8::Local<v8::Value> ignored;
+    (void)script->Run(context).ToLocal(&ignored);
+}
+
 // Register globalThis.omnivm.call() on the given context
 static void register_omnivm_bridge(v8::Isolate* isolate,
                                     v8::Local<v8::Context> context) {
@@ -1699,6 +1774,7 @@ static void register_omnivm_bridge(v8::Isolate* isolate,
     global->Set(context,
         v8::String::NewFromUtf8Literal(isolate, "omnivm"),
         omnivm_obj).Check();
+    register_omnivm_proxy_helpers(isolate, context);
 }
 
 extern "C" {

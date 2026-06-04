@@ -7812,6 +7812,41 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/v8_bridge_node.cc")
+	if err != nil {
+		t.Fatalf("read V8 bridge: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"static void register_omnivm_proxy_helpers",
+		`Object.defineProperty(globalThis, "__omnivm_actual_public_method"`,
+		"Object.getOwnPropertyDescriptor(cursor, name)",
+		`Object.defineProperty(globalThis.omnivm, "proxyClose"`,
+		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,
+		"return omnivmClose.call(value)",
+		"symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null",
+		"symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null",
+		"return symbolDisposeResult === undefined ? true : symbolDisposeResult",
+		"return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult",
+		`var close = globalThis.__omnivm_actual_public_method(value, "close")`,
+		"return result === undefined ? true : result",
+		"register_omnivm_proxy_helpers(isolate, context)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("V8 bridge should expose core collision-safe proxyClose helper, missing %q", want)
+		}
+	}
+	if contains(code, "typeof value.close === 'function'") ||
+		contains(code, "value.close();") ||
+		contains(code, "typeof value.__omnivm_close === 'function'") ||
+		contains(code, "value && value.__omnivm_close") ||
+		contains(code, "value[Symbol.dispose]") ||
+		contains(code, "value[Symbol.asyncDispose]") {
+		t.Fatalf("V8 core proxyClose helper should not invoke dynamic close property lookup")
+	}
+}
+
 func TestJavaRuntimeKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	var data []byte
 	var err error
