@@ -6094,7 +6094,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](item.get(\"value\"))") ||
 		!contains(code, "self._cache.append(materialized)") ||
-		!contains(code, "try:\n                    self.close()\n                except Exception:\n                    self._mark_closed()\n                raise") ||
+		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
+		!contains(code, "f\"OmniVM stream close failed during chunk materialization cleanup: {close_exc}\"") ||
 		!contains(code, "def __iter__(self):\n        def __omnivm_iter():") ||
 		!contains(code, "finally:\n                if not self._closed:") ||
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
@@ -6437,7 +6438,7 @@ class Bridge:
         if req["op"] == "stream_next":
             return json.dumps({"__omnivm_result__": True, "value": {"done": False, "value": {"bad": True}}})
         if req["op"] == "stream_cancel":
-            return json.dumps({"__omnivm_result__": True, "value": True})
+            raise RuntimeError("cancel failed")
         raise RuntimeError("unexpected manifest op " + req["op"])
 ` + code + `
 omnivm = Bridge
@@ -6450,6 +6451,9 @@ try:
 except RuntimeError as exc:
     if "chunk boom" not in str(exc):
         raise
+    cleanup = cleanup_errors(exc)
+    if len(cleanup) != 1 or str(cleanup[0]) != "cancel failed":
+        raise RuntimeError("cleanup error missing: " + repr(cleanup))
 else:
     raise RuntimeError("chunk materialization error was not raised")
 if not stream._closed:

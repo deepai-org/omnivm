@@ -1116,10 +1116,15 @@ class __OmniVMStreamProxy:
                 return False
             try:
                 materialized = globals()["__omnivm_materialize_capture"](self._local_values[len(self._cache)])
-            except Exception:
+            except Exception as err:
                 try:
                     self.close()
-                except Exception:
+                except Exception as close_exc:
+                    _omnivm_record_cleanup_error(
+                        err,
+                        close_exc,
+                        f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
+                    )
                     self._mark_closed()
                 raise
             self._cache.append(materialized)
@@ -1134,10 +1139,15 @@ class __OmniVMStreamProxy:
             return False
         try:
             materialized = globals()["__omnivm_materialize_capture"](item.get("value"))
-        except Exception:
+        except Exception as err:
             try:
                 self.close()
-            except Exception:
+            except Exception as close_exc:
+                _omnivm_record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
+                )
                 self._mark_closed()
             raise
         self._cache.append(materialized)
