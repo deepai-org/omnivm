@@ -249,7 +249,7 @@ static const char* omnivm_py_runtime_error_code =
 "            if _is_error_type_candidate(candidate):\n"
 "                cause_type = candidate\n"
 "                cause_message = tail\n"
-"        cause_chain.append({'type': cause_type, 'message': cause_message})\n"
+"        cause_chain.append({'type': cause_type, 'message': cause_message, 'runtime': source_runtime, 'origin_runtime': source_runtime})\n"
 "    return {'runtime': source_runtime, 'origin_runtime': source_runtime, 'type': err_type, 'message': detail, 'traceback': traceback, 'stack_frames': _runtime_error_stack_frames(traceback), 'cause_chain': cause_chain, 'boundary_path': ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path), 'original_error_handle': original_error_handle, 'details': _parse_runtime_error_details(body)}\n"
 ;
 

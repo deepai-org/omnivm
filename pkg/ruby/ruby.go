@@ -1537,7 +1537,7 @@ static int omnivm_ruby_init(void) {
         "          cause_message = tail\n"
         "        end\n"
         "      end\n"
-        "      causes << {type: cause_type, message: cause_message}\n"
+        "      causes << {type: cause_type, message: cause_message, runtime: source_runtime, origin_runtime: source_runtime}\n"
         "    end\n"
         "    {runtime: source_runtime, origin_runtime: source_runtime, type: err_type, message: detail, traceback: traceback, stack_frames: OmniVM.__runtime_error_stack_frames(traceback), cause_chain: causes, boundary_path: wrapped_boundary, original_error_handle: original_error_handle, details: OmniVM.__parse_runtime_error_details(body)}\n"
         "  end\n"

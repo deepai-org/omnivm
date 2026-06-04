@@ -58,7 +58,12 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == "java.lang.RuntimeException"
         assert err.message == "outer"
         assert err.cause_chain == [
-            {"type": "java.lang.IllegalArgumentException", "message": "inner"}
+            {
+                "type": "java.lang.IllegalArgumentException",
+                "message": "inner",
+                "runtime": "java",
+                "origin_runtime": "java",
+            }
         ]
         assert err.stack_frames == [
             "at OmniVMEval.run(OmniVMEval.java:3)",
@@ -77,7 +82,12 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == "Error"
         assert err.message == "outer"
         assert err.cause_chain == [
-            {"type": "TypeError", "message": "inner"}
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
+            }
         ]
 
     def test_traceback_parser_ignores_metadata_lines(self):
@@ -283,7 +293,14 @@ class TestRuntimeError(unittest.TestCase):
             "message": "outer",
             "traceback": "    at <anonymous>:1:7\nCaused by: TypeError: inner",
             "stack_frames": ["at <anonymous>:1:7"],
-            "cause_chain": [{"type": "TypeError", "message": "inner"}],
+            "cause_chain": [
+                {
+                    "type": "TypeError",
+                    "message": "inner",
+                    "runtime": "javascript",
+                    "origin_runtime": "javascript",
+                }
+            ],
             "boundary_path": "call[javascript]",
             "original_error_handle": None,
             "details": None,
@@ -465,7 +482,12 @@ class TestRuntimeError(unittest.TestCase):
         assert err.type == ""
         assert err.message == "outer layer: inner layer"
         assert err.cause_chain == [
-            {"type": "", "message": "inner layer"}
+            {
+                "type": "",
+                "message": "inner layer",
+                "runtime": "go",
+                "origin_runtime": "go",
+            }
         ]
 
     def test_parses_manifest_runtime_error_boundary_path(self):

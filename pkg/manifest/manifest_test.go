@@ -7079,6 +7079,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"cause_stack_frames = cause.get('stackFrames')",
 		"for key, fallback in (('runtime', 'runtime'), ('origin_runtime', 'originRuntime'), ('boundary_path', 'boundaryPath'), ('original_error_handle', 'originalErrorHandle')):",
 		"if item.get('runtime') and not item.get('origin_runtime'):",
+		"cause_chain.append({'type': cause_type, 'message': cause_message, 'runtime': source_runtime, 'origin_runtime': source_runtime})",
 		"'details': details_field(envelope)",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
@@ -7118,6 +7119,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
 		`boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path)`,
+		"causes << {type: cause_type, message: cause_message, runtime: source_runtime, origin_runtime: source_runtime}",
 		`details: details_field.call(envelope)`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {

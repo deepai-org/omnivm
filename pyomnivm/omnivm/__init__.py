@@ -254,7 +254,14 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
                 if _is_error_type_candidate(candidate):
                     cause_type = candidate
                     cause_message = tail
-            cause_chain.append({"type": cause_type, "message": cause_message})
+            cause_chain.append(
+                {
+                    "type": cause_type,
+                    "message": cause_message,
+                    "runtime": source_runtime,
+                    "origin_runtime": source_runtime,
+                }
+            )
 
     return {
         "runtime": source_runtime,
