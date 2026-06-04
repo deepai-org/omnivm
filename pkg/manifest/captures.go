@@ -615,9 +615,18 @@ def __omnivm_actual_public_method(value, name):
         raw = __inspect.getattr_static(value, name)
     except Exception:
         return None
+    if isinstance(raw, (staticmethod, classmethod)):
+        try:
+            method = raw.__get__(value, type(value))
+        except Exception:
+            return None
+        return method if callable(method) else None
     if not callable(raw):
         return None
-    method = getattr(value, name, None)
+    try:
+        method = getattr(value, name)
+    except Exception:
+        return None
     return method if callable(method) else None
 
 class __OmniVMHandleProxy:
