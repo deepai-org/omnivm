@@ -2003,6 +2003,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       opts.read = function() {
         var target = this;
         Promise.resolve(iterator.next()).then(function(item) {
+          if (closed) return;
           if (item && item.done) {
             closed = true;
             target.push(null);
@@ -2010,6 +2011,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           }
           target.push(item ? item.value : undefined);
         }, function(err) {
+          if (closed) return;
           target.destroy(err);
         });
       };
