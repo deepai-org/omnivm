@@ -1590,6 +1590,93 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       value: function(value) { return omnivm.proxyClose(value); }
     });
   }
+  globalThis.__omnivm_buffer_owner_unset = globalThis.__omnivm_buffer_owner_unset || {};
+  if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
+    Object.defineProperty(globalThis, "__omnivm_BufferOwner", {
+      configurable: true,
+      value: function(name, data, dtype) {
+        this.name = String(name);
+        this.__omnivm_data = data;
+        this.__omnivm_dtype = dtype == null ? 0 : dtype;
+        this.released = false;
+        this.__omnivm_entered = false;
+      }
+    });
+    globalThis.__omnivm_BufferOwner.prototype.enter = function() {
+      if (this.__omnivm_entered) return this;
+      if (this.__omnivm_data !== globalThis.__omnivm_buffer_owner_unset) {
+        omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype);
+      }
+      this.__omnivm_entered = true;
+      return this;
+    };
+    globalThis.__omnivm_BufferOwner.prototype.release = function() {
+      if (this.released === true) return false;
+      omnivm.releaseBuffer(this.name);
+      this.released = true;
+      return true;
+    };
+    globalThis.__omnivm_BufferOwner.prototype.close = function() {
+      return this.release();
+    };
+    if (typeof Symbol !== 'undefined' && Symbol.dispose) {
+      globalThis.__omnivm_BufferOwner.prototype[Symbol.dispose] = function() {
+        return this.release();
+      };
+    }
+    if (typeof Symbol !== 'undefined' && Symbol.asyncDispose) {
+      globalThis.__omnivm_BufferOwner.prototype[Symbol.asyncDispose] = function() {
+        return this.release();
+      };
+    }
+  }
+  if (typeof omnivm.bufferOwner !== 'function') {
+    Object.defineProperty(omnivm, "bufferOwner", {
+      configurable: true,
+      value: function(name, data, dtype, body) {
+        var unset = globalThis.__omnivm_buffer_owner_unset;
+        var ownerData = unset;
+        var ownerDtype = 0;
+        var callback = null;
+        if (arguments.length >= 2 && typeof data !== 'function') {
+          ownerData = data;
+        }
+        if (typeof data === 'function') {
+          callback = data;
+        } else if (typeof dtype === 'function') {
+          callback = dtype;
+        } else if (typeof body === 'function') {
+          callback = body;
+        }
+        if (typeof dtype !== 'function' && dtype != null) ownerDtype = dtype;
+        var owner = new globalThis.__omnivm_BufferOwner(name, ownerData, ownerDtype).enter();
+        if (callback === null) return owner;
+        var finishSuccess = function(value) {
+          owner.release();
+          return value;
+        };
+        var finishError = function(bodyError) {
+          try {
+            owner.release();
+          } catch (cleanupError) {
+            try {
+              bodyError.omnivmCleanupErrors = (bodyError.omnivmCleanupErrors || []).concat([cleanupError]);
+            } catch (_cleanupRecordError) {}
+          }
+          throw bodyError;
+        };
+        try {
+          var result = callback(owner);
+          if (typeof Promise !== 'undefined' && result instanceof Promise) {
+            return result.then(finishSuccess, finishError);
+          }
+          return finishSuccess(result);
+        } catch (bodyError) {
+          return finishError(bodyError);
+        }
+      }
+    });
+  }
 }
 globalThis.__omnivm_arg_refs = globalThis.__omnivm_arg_refs || {};
 globalThis.__omnivm_arg_ref_counter = globalThis.__omnivm_arg_ref_counter || 0;

@@ -530,7 +530,9 @@ proxy serialization; use `omnivm.proxyGet(proxy, "toJSON")` when the owner has
 a real field or method with that name. JavaScript handle and stream proxies
 also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
 `omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor those symbols
-through descriptor-safe lookup.
+through descriptor-safe lookup. Embedded JavaScript also provides
+`omnivm.bufferOwner(name[, data], dtype[, callback])` for scoped named-buffer
+ownership with idempotent release.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and

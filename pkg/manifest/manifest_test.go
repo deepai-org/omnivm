@@ -6633,7 +6633,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop))`) || !contains(code, `return bridge({op: "handle_index", value: Number(prop)});`) {
 		t.Fatalf("JS materializer should route numeric properties on indexed proxies through handle_index before handle_get, got %q", code)
 	}
-	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyClose") || !contains(code, "omnivm.omnivmClose") || !contains(code, "__omnivm_close") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
+	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyClose") || !contains(code, "omnivm.omnivmClose") || !contains(code, "__omnivm_close") || !contains(code, "omnivm.bufferOwner") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
 		t.Fatalf("JS materializer should expose proxy-safe get/set/call/len/iter/contains/close helpers and length symbol for collision cases, got %q", code)
 	}
 	if !contains(code, "globalThis.__omnivm_actual_public_method") ||
@@ -6666,6 +6666,23 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, `Symbol.dispose && prop === Symbol.dispose) return {value: releaseProxyLease`) ||
 		!contains(code, `Symbol.asyncDispose && prop === Symbol.asyncDispose) return {value: releaseProxyLease`) {
 		t.Fatalf("JS materializer should expose lifecycle close hooks through descriptors for collision-safe proxyClose lookup, got %q", code)
+	}
+	for _, want := range []string{
+		"globalThis.__omnivm_BufferOwner",
+		"Object.defineProperty(omnivm, \"bufferOwner\"",
+		"omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
+		"omnivm.releaseBuffer(this.name)",
+		"if (this.released === true) return false",
+		"var finishSuccess = function(value)",
+		"var result = callback(owner)",
+		"result instanceof Promise",
+		"return result.then(finishSuccess, finishError)",
+		"bodyError.omnivmCleanupErrors",
+		"return finishSuccess(result)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("JS bufferOwner helper contract missing %q", want)
+		}
 	}
 	if !contains(code, `return value.__omnivm_get(key, defaultValue, true);`) ||
 		!contains(code, `return function(key, defaultValue, remoteFirst) { return bridgeGet(key, defaultValue, remoteFirst === true); };`) ||
@@ -6767,6 +6784,78 @@ if (symbolAsyncDisposeResult !== symbolAsyncDisposePromise) throw new Error("Sym
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node proxyClose return preservation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSCaptureBufferOwnerScopesAndReleases(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  events: [],
+  setBuffer: function(name, data, dtype) {
+    this.events.push(["set", name, data, dtype]);
+  },
+  releaseBuffer: function(name) {
+    this.events.push(["release", name]);
+  }
+};
+` + code + `
+var owner = omnivm.bufferOwner("payload", "abc", 7);
+if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7]])) throw new Error("set event mismatch: " + JSON.stringify(omnivm.events));
+if (owner.release() !== true) throw new Error("release did not return true");
+if (owner.release() !== false) throw new Error("second release was not idempotent");
+if (owner.released !== true) throw new Error("released flag mismatch");
+
+var beforeBlock = omnivm.events.slice();
+var blockResult = omnivm.bufferOwner("block", function(scoped) {
+  if (scoped.name !== "block") throw new Error("block owner name mismatch");
+  return "body-result";
+});
+if (blockResult !== "body-result") throw new Error("block result mismatch: " + blockResult);
+var expectedBlock = beforeBlock.concat([["release", "block"]]);
+if (JSON.stringify(omnivm.events) !== JSON.stringify(expectedBlock)) throw new Error("block release mismatch: " + JSON.stringify(omnivm.events));
+
+var thenFieldResult = {then: "data-field"};
+var thenFieldOwnerResult = omnivm.bufferOwner("then-field", function() {
+  return thenFieldResult;
+});
+if (thenFieldOwnerResult !== thenFieldResult) throw new Error("then data field was treated as a Promise");
+
+var beforePromise = omnivm.events.slice();
+var promiseResult = omnivm.bufferOwner("async", function(scoped) {
+  return Promise.resolve(scoped.name + "-result");
+});
+if (!(promiseResult instanceof Promise)) throw new Error("Promise callback did not return a Promise");
+promiseResult.then(function(value) {
+  if (value !== "async-result") throw new Error("Promise value mismatch: " + value);
+  var expectedPromise = beforePromise.concat([["release", "async"]]);
+  if (JSON.stringify(omnivm.events) !== JSON.stringify(expectedPromise)) throw new Error("Promise release mismatch: " + JSON.stringify(omnivm.events));
+
+  omnivm.releaseBuffer = function(name) {
+    this.events.push(["release-fail", name]);
+    throw new Error("release failed");
+  };
+  try {
+    omnivm.bufferOwner("failing", function() {
+      throw new Error("body failed");
+    });
+    throw new Error("body exception was not raised");
+  } catch (err) {
+    if (err.message !== "body failed") throw new Error("body exception was masked: " + err.message);
+    if (!err.omnivmCleanupErrors || err.omnivmCleanupErrors[0].message !== "release failed") throw new Error("cleanup error was not retained");
+  }
+}).catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node bufferOwner scope check failed: %v\n%s", err, out)
 	}
 }
 
@@ -9506,6 +9595,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"Object.getOwnPropertyDescriptor(cursor, name)",
 		`Object.defineProperty(globalThis.omnivm, "proxyClose"`,
 		`Object.defineProperty(globalThis.omnivm, "omnivmClose"`,
+		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
+		"globalThis.__omnivm_BufferOwner",
 		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,
 		"return omnivmClose.call(value)",
 		"return globalThis.omnivm.proxyClose(value)",
@@ -9515,6 +9606,11 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult",
 		`var close = globalThis.__omnivm_actual_public_method(value, "close")`,
 		"return result === undefined ? true : result",
+		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
+		"globalThis.omnivm.releaseBuffer(this.name)",
+		"result instanceof Promise",
+		"return result.then(finishSuccess, finishError)",
+		"bodyError.omnivmCleanupErrors",
 		"register_omnivm_proxy_helpers(isolate, context)",
 	} {
 		if !contains(code, want) {
