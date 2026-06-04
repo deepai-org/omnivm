@@ -667,6 +667,14 @@ class TestCallWithMockLib(unittest.TestCase):
                 return envelope("accepted-" + request["args"][0])
             if request.get("op") == "handle_len":
                 return envelope(7, "number")
+            if request.get("op") == "handle_iter" and request.get("mode") == "keys":
+                return envelope(["close", "length"])
+            if request.get("op") == "handle_iter" and request.get("mode") == "items":
+                return envelope([["close", fields["close"]], ["length", fields["length"]]])
+            if request.get("op") == "handle_iter" and request.get("mode") == "values":
+                return envelope([fields["close"], fields["length"]])
+            if request.get("op") == "handle_contains":
+                return envelope(request["value"] in fields, "bool")
             if request.get("op") == "handle_release_finalizer":
                 return envelope(True, "bool")
             raise AssertionError(request)
@@ -681,6 +689,11 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_get(proxy, "close") == "field-updated"
         assert omnivm_mod.proxy_call(proxy, "accept", args=("js",)) == "accepted-js"
         assert omnivm_mod.proxy_len(proxy) == 7
+        assert omnivm_mod.proxy_keys(proxy) == ["close", "length"]
+        assert omnivm_mod.proxy_items(proxy) == [["close", "field-updated"], ["length", 3]]
+        assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3]
+        assert omnivm_mod.proxy_contains(proxy, "close") is True
+        assert omnivm_mod.proxy_contains(proxy, "missing") is False
         proxy.close()
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):

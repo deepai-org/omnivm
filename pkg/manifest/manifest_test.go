@@ -5023,8 +5023,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop))`) || !contains(code, `return bridge({op: "handle_index", value: Number(prop)});`) {
 		t.Fatalf("JS materializer should route numeric properties on indexed proxies through handle_index before handle_get, got %q", code)
 	}
-	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
-		t.Fatalf("JS materializer should expose proxy-safe get/set/call/len helpers and length symbol for collision cases, got %q", code)
+	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
+		t.Fatalf("JS materializer should expose proxy-safe get/set/call/len/iter/contains helpers and length symbol for collision cases, got %q", code)
 	}
 	if !contains(code, `prop === globalThis.__omnivm_proxy_length_symbol`) {
 		t.Fatalf("JS materializer should expose collection length through a collision-free symbol, got %q", code)
@@ -5138,8 +5138,8 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `op: "handle_get"`) {
 		t.Fatalf("Ruby materializer should fetch handle properties, got %q", code)
 	}
-	if !contains(code, "def omnivm_get(key)") || !contains(code, "def omnivm_set(key, value)") || !contains(code, "def omnivm_call(key, *args)") || !contains(code, "def omnivm_len") {
-		t.Fatalf("Ruby materializer should expose explicit proxy get/set/call/len helpers for collision cases, got %q", code)
+	if !contains(code, "def omnivm_get(key)") || !contains(code, "def omnivm_set(key, value)") || !contains(code, "def omnivm_call(key, *args)") || !contains(code, "def omnivm_len") || !contains(code, "def omnivm_iter(mode = \"values\")") || !contains(code, "def omnivm_keys") || !contains(code, "def omnivm_values") || !contains(code, "def omnivm_items") || !contains(code, "def omnivm_contains(key)") {
+		t.Fatalf("Ruby materializer should expose explicit proxy get/set/call/len/iter/contains helpers for collision cases, got %q", code)
 	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("Ruby materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
@@ -5216,6 +5216,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	if !contains(code, `Boolean.TRUE.equals(value.get("transfer"))`) || !contains(code, "HandleProxy.adopt(value.get(\"id\"))") {
 		t.Fatalf("Java runtime should adopt transfer handles for handle and stream proxies")
+	}
+	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyCallable") {
+		t.Fatalf("Java runtime should expose explicit proxy iter/contains/callable helpers")
 	}
 }
 

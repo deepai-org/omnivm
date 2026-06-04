@@ -51,6 +51,11 @@ __all__ = [
     "proxy_set",
     "proxy_call",
     "proxy_len",
+    "proxy_iter",
+    "proxy_keys",
+    "proxy_values",
+    "proxy_items",
+    "proxy_contains",
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
@@ -1202,6 +1207,56 @@ def proxy_len(value):
     if isinstance(value, ManifestProxy):
         return int(value._op({"op": "handle_len", "id": value.__omnivm_handle_id__}))
     return len(value)
+
+
+def proxy_iter(value, mode="values"):
+    """Return remote keys/items/values without colliding with proxy methods."""
+    mode = str(mode or "values")
+    if mode not in ("keys", "items", "values"):
+        raise ValueError("proxy_iter mode must be 'keys', 'items', or 'values'")
+    if isinstance(value, ManifestProxy):
+        return value._op({"op": "handle_iter", "id": value.__omnivm_handle_id__, "mode": mode})
+    if mode == "keys":
+        if hasattr(value, "keys"):
+            return list(value.keys())
+        return list(range(len(value)))
+    if mode == "items":
+        if hasattr(value, "items"):
+            return list(value.items())
+        return list(enumerate(value))
+    if hasattr(value, "values"):
+        return list(value.values())
+    return list(value)
+
+
+def proxy_keys(value):
+    """Return remote keys without colliding with a data field named keys."""
+    return proxy_iter(value, "keys")
+
+
+def proxy_values(value):
+    """Return remote values without colliding with a data field named values."""
+    return proxy_iter(value, "values")
+
+
+def proxy_items(value):
+    """Return remote items without colliding with a data field named items."""
+    return proxy_iter(value, "items")
+
+
+def proxy_contains(value, key):
+    """Test remote membership without colliding with local proxy methods."""
+    if isinstance(value, ManifestProxy):
+        retained_keys = []
+        try:
+            return bool(value._op({
+                "op": "handle_contains",
+                "id": value.__omnivm_handle_id__,
+                "value": value._arg(key, retained_keys),
+            }))
+        finally:
+            _release_manifest_args(retained_keys)
+    return key in value
 
 
 class _ManifestStreamIterator:

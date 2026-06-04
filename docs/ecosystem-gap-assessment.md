@@ -345,17 +345,23 @@ remote index access before generic property lookup.
 JavaScript keeps remote `.get` behavior natural when a library object exposes a
 real method or field named `get`, and also exposes
 `omnivm.proxyGet(proxy, key)`, `omnivm.proxySet(proxy, key, value)`,
-`omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`, and the
+`omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`,
+`omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
+`omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`, and the
 collision-free symbol property `proxy[omnivm.proxyLength]` so users can
-explicitly choose data-key access, mutation, method calls, or collection length
-when method names or `.length` would be ambiguous. Python retained manifest
-proxies expose the same explicit operations as `omnivm.proxy_get`,
-`omnivm.proxy_set`, `omnivm.proxy_call`, and `omnivm.proxy_len`; Ruby proxies
-expose `omnivm_get`, `omnivm_set`, `omnivm_call`, and `omnivm_len`.
+explicitly choose data-key access, mutation, method calls, collection length,
+iteration, or membership when method names or `.length` would be ambiguous.
+Python retained manifest proxies expose the same explicit operations as
+`omnivm.proxy_get`, `omnivm.proxy_set`, `omnivm.proxy_call`,
+`omnivm.proxy_len`, `omnivm.proxy_keys`, `omnivm.proxy_values`,
+`omnivm.proxy_items`, and `omnivm.proxy_contains`; Ruby proxies expose
+`omnivm_get`, `omnivm_set`, `omnivm_call`, `omnivm_len`, `omnivm_keys`,
+`omnivm_values`, `omnivm_items`, and `omnivm_contains`.
 Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
-`OmniVM.proxyCall`, and `OmniVM.proxyLen`; for runtime-owned `HandleProxy`
-values these helpers now force the remote handle operation before Java `Map` or
-reflection behavior can collide with keys such as `get`, `set`, `call`,
+`OmniVM.proxyCall`, `OmniVM.proxyLen`, `OmniVM.proxyIter`, and
+`OmniVM.proxyContains`; for runtime-owned `HandleProxy` values these helpers
+now force the remote handle operation before Java `Map` or reflection behavior
+can collide with keys such as `get`, `set`, `call`,
 `close`, or `length`.
 
 ### Error Fidelity
