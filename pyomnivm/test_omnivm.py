@@ -331,6 +331,30 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_structured_envelope_normalizes_scalar_fields_to_strings(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": 7,
+                    "originRuntime": 8,
+                    "type": 409,
+                    "message": {"error": "bad"},
+                    "traceback": ["frame"],
+                    "boundaryPath": 10,
+                    "originalErrorHandle": 11,
+                }
+            ),
+            runtime="javascript",
+            boundary_path="call[javascript]",
+        )
+        assert err.runtime == "7"
+        assert err.origin_runtime == "8"
+        assert err.type == "409"
+        assert err.message == "{'error': 'bad'}"
+        assert err.traceback == "['frame']"
+        assert err.boundary_path == "10"
+        assert err.original_error_handle == "11"
+
     def test_details_override_supplies_structured_guard_context(self):
         details = {"thread_affinity": {"owner_dispatch_supported": False}}
         err = omnivm_mod.RuntimeError(

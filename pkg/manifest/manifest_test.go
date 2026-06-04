@@ -6250,7 +6250,11 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"def field(preferred, fallback):",
-		"origin_runtime = field('origin_runtime', 'originRuntime') or runtime_name",
+		"def text_field(value, fallback=''):",
+		"runtime_name = text_field(envelope.get('runtime'), runtime)",
+		"origin_runtime = text_field(field('origin_runtime', 'originRuntime'), runtime_name)",
+		"err_type = text_field(envelope.get('type'))",
+		"detail = text_field(envelope.get('message'))",
 		"stack_frames = field('stack_frames', 'stackFrames')",
 		"cause_chain = field('cause_chain', 'causeChain')",
 		"cause_stack_frames = cause.get('stackFrames')",

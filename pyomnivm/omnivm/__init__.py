@@ -280,11 +280,13 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
     def field(preferred, fallback):
         value = envelope.get(preferred)
         return envelope.get(fallback) if value is None else value
-    runtime_name = envelope.get("runtime") or runtime
-    origin_runtime = field("origin_runtime", "originRuntime") or runtime_name
-    err_type = envelope.get("type") or ""
-    message = envelope.get("message") or ""
-    traceback = envelope.get("traceback") or ""
+    def text_field(value, fallback=""):
+        return str(value) if value is not None else fallback
+    runtime_name = text_field(envelope.get("runtime"), runtime)
+    origin_runtime = text_field(field("origin_runtime", "originRuntime"), runtime_name)
+    err_type = text_field(envelope.get("type"))
+    message = text_field(envelope.get("message"))
+    traceback = text_field(envelope.get("traceback"))
     if not any((runtime_name, err_type, message, traceback)):
         return None
     stack_frames = field("stack_frames", "stackFrames")
@@ -338,8 +340,8 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         "traceback": traceback,
         "stack_frames": stack_frames,
         "cause_chain": cause_chain,
-        "boundary_path": field("boundary_path", "boundaryPath") or boundary_path,
-        "original_error_handle": field("original_error_handle", "originalErrorHandle"),
+        "boundary_path": text_field(field("boundary_path", "boundaryPath"), boundary_path),
+        "original_error_handle": text_field(field("original_error_handle", "originalErrorHandle"), None),
         "details": _copy_json_value(envelope.get("details")),
     }
 
