@@ -69,7 +69,7 @@ func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
 		"message":               "outer",
 		"traceback":             "    at <anonymous>:1:7\nCaused by: TypeError: inner",
 		"stack_frames":          []string{"at <anonymous>:1:7"},
-		"cause_chain":           []map[string]interface{}{{"type": "TypeError", "message": "inner", "stack_frames": []string{"at cause:1:1"}, "details": map[string]interface{}{"code": "E_INNER"}}},
+		"cause_chain":           []map[string]interface{}{{"type": "TypeError", "message": "inner", "stack_frames": []string{"at cause:1:1"}, "runtime": "javascript", "origin_runtime": "javascript", "details": map[string]interface{}{"code": "E_INNER"}}},
 		"boundary_path":         "call[javascript]",
 		"original_error_handle": "js-error-42",
 		"details":               map[string]interface{}{"code": "E_JS"},
@@ -310,6 +310,9 @@ func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
 	if re.CauseChain[0].Type != "java.lang.IllegalArgumentException" || re.CauseChain[0].Message != "inner" {
 		t.Errorf("CauseChain[0] = %#v, want java.lang.IllegalArgumentException: inner", re.CauseChain[0])
 	}
+	if re.CauseChain[0].Runtime != "java" || re.CauseChain[0].OriginRuntime != "java" {
+		t.Errorf("CauseChain[0] runtime/origin = %#v, want java/java", re.CauseChain[0])
+	}
 }
 
 func TestParseError_PythonTracebackIgnoresMetadataLines(t *testing.T) {
@@ -419,7 +422,7 @@ func TestParseError_StructuredJSONEnvelope(t *testing.T) {
 	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
 		t.Fatalf("StackFrames = %#v", re.StackFrames)
 	}
-	if len(re.CauseChain) != 1 || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
+	if len(re.CauseChain) != 1 || re.CauseChain[0].Runtime != "javascript" || re.CauseChain[0].OriginRuntime != "javascript" || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
 		t.Fatalf("CauseChain = %#v", re.CauseChain)
 	}
 	if re.BoundaryPath != "call[javascript] > callback[python]" || re.OriginalErrorHandle != "js-error-7" {
@@ -587,7 +590,7 @@ func TestParseError_WrappedStructuredJSONEnvelopePreservesFields(t *testing.T) {
 	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
 		t.Fatalf("StackFrames = %#v", re.StackFrames)
 	}
-	if len(re.CauseChain) != 1 || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
+	if len(re.CauseChain) != 1 || re.CauseChain[0].Runtime != "javascript" || re.CauseChain[0].OriginRuntime != "javascript" || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
 		t.Fatalf("CauseChain = %#v", re.CauseChain)
 	}
 	if details, ok := re.Details.([]interface{}); !ok || len(details) != 1 {

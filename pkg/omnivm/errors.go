@@ -68,9 +68,13 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 			"type":    cause.Type,
 			"message": cause.Message,
 		}
+		causeRuntime := cause.Runtime
+		if causeRuntime == "" {
+			causeRuntime = e.Runtime
+		}
 		causeOrigin := cause.OriginRuntime
 		if causeOrigin == "" {
-			causeOrigin = cause.Runtime
+			causeOrigin = causeRuntime
 		}
 		if cause.Traceback != "" {
 			item["traceback"] = cause.Traceback
@@ -78,8 +82,8 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		if cause.StackFrames != nil {
 			item["stack_frames"] = append([]string(nil), cause.StackFrames...)
 		}
-		if cause.Runtime != "" {
-			item["runtime"] = cause.Runtime
+		if causeRuntime != "" {
+			item["runtime"] = causeRuntime
 		}
 		if causeOrigin != "" {
 			item["origin_runtime"] = causeOrigin
@@ -310,7 +314,7 @@ func ParseError(runtime, s string) *RuntimeError {
 		Message:             message,
 		Traceback:           traceback,
 		StackFrames:         stackFrames(traceback),
-		CauseChain:          parseCauseChain(body),
+		CauseChain:          parseCauseChain(body, sourceRuntime),
 		BoundaryPath:        boundaryPath(boundaryParts, sourceRuntime),
 		OriginalErrorHandle: extractOriginalErrorHandle(body),
 		Details:             parseDetails(body),
@@ -358,7 +362,7 @@ func parseStructuredErrorEnvelope(body, fallbackRuntime string) *RuntimeError {
 		Message:             message,
 		Traceback:           traceback,
 		StackFrames:         stringSliceEnvelopeValue(firstEnvelopeValue(envelope, "stack_frames", "stackFrames"), stackFrames(traceback)),
-		CauseChain:          causeChainEnvelopeValue(firstEnvelopeValue(envelope, "cause_chain", "causeChain")),
+		CauseChain:          causeChainEnvelopeValue(firstEnvelopeValue(envelope, "cause_chain", "causeChain"), runtimeName),
 		BoundaryPath:        boundary,
 		OriginalErrorHandle: handle,
 		Details:             copyJSONValue(envelope["details"]),
@@ -399,11 +403,12 @@ func stringSliceEnvelopeValue(value interface{}, fallback []string) []string {
 	return out
 }
 
-func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
+func causeChainEnvelopeValue(value interface{}, fallbackRuntime string) []RuntimeErrorCause {
 	items, ok := value.([]interface{})
 	if !ok {
 		return nil
 	}
+	fallbackRuntime = normalizeRuntime(fallbackRuntime)
 	out := make([]RuntimeErrorCause, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]interface{})
@@ -413,6 +418,9 @@ func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
 		cause := RuntimeErrorCause{}
 		if runtimeName := stringEnvelopeValue(entry, "runtime"); runtimeName != "" {
 			cause.Runtime = normalizeRuntime(runtimeName)
+		}
+		if cause.Runtime == "" {
+			cause.Runtime = fallbackRuntime
 		}
 		if originRuntime := stringEnvelopeValue(entry, "origin_runtime", "originRuntime"); originRuntime != "" {
 			cause.OriginRuntime = normalizeRuntime(originRuntime)
@@ -521,15 +529,16 @@ func stripRuntimeRefAssignPrefix(text string, runtime *string) (string, bool) {
 	return strings.TrimSpace(rest[close+3:]), true
 }
 
-func parseCauseChain(text string) []RuntimeErrorCause {
+func parseCauseChain(text, runtime string) []RuntimeErrorCause {
 	var causes []RuntimeErrorCause
+	runtime = normalizeRuntime(runtime)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "Caused by: ") {
 			continue
 		}
 		detail := strings.TrimSpace(strings.TrimPrefix(line, "Caused by: "))
-		cause := RuntimeErrorCause{Message: detail}
+		cause := RuntimeErrorCause{Runtime: runtime, OriginRuntime: runtime, Message: detail}
 		if idx := strings.Index(detail, ": "); idx >= 0 && isErrorTypeCandidate(detail[:idx]) {
 			cause.Type = detail[:idx]
 			cause.Message = detail[idx+2:]
