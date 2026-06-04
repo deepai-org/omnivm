@@ -520,7 +520,9 @@ calls, `omnivm.proxyLen(proxy)` for explicit collection length,
 collection metadata, `omnivm.proxyClose(proxy)` for explicit proxy lease
 release, and
 `proxy[omnivm.proxyLength]` as a collision-free property form for length when a
-remote object also has a data field named `length`.
+remote object also has a data field named `length`. `toJSON` is reserved for
+proxy serialization; use `omnivm.proxyGet(proxy, "toJSON")` when the owner has
+a real field or method with that name.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and

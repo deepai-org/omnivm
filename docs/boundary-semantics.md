@@ -574,7 +574,9 @@ proxies. When user code needs an unambiguous operation, it can use
 `omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`,
 `omnivm.proxyClose(proxy)`, or the collision-free symbol property
 `proxy[omnivm.proxyLength]`; data fields remain available through
-`omnivm.proxyGet(proxy, "length")`.
+`omnivm.proxyGet(proxy, "length")`. `toJSON` is local proxy bookkeeping for
+`JSON.stringify(proxy)`, so a remote field or method named `toJSON` should be
+read with `omnivm.proxyGet(proxy, "toJSON")`.
 Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
