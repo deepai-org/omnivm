@@ -7213,6 +7213,63 @@ func TestInjectRubyCapturesUsesSafeBindingNames(t *testing.T) {
 	}
 }
 
+func TestRubyHandleProxyLifecycleNameCollisionsPreferRemoteFields(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  @@fields = {
+    "close" => "remote-close-field",
+    "dispose" => "remote-dispose-field"
+  }
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_release_explicit"
+    if req["op"] == "handle_get" && @@fields.key?(req["key"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["key"]]})
+    end
+    if req["op"] == "handle_call" && ["close", "dispose"].include?(req["key"])
+      raise "lifecycle helper called remote #{req["key"]} field"
+    end
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 80, "runtime" => "python", "kind" => "object"})
+raise "close was not remote-first: #{proxy.close.inspect}" unless proxy.close == "remote-close-field"
+raise "dispose was not remote-first: #{proxy.dispose.inspect}" unless proxy.dispose == "remote-dispose-field"
+raise "omnivm_get did not recover remote close" unless proxy.omnivm_get("close") == "remote-close-field"
+raise "omnivm_get did not recover remote dispose" unless proxy.omnivm_get("dispose") == "remote-dispose-field"
+raise "proxy_close did not release the proxy" unless OmniVM.proxy_close(proxy) == true
+raise "proxy_close was not idempotent after release" unless OmniVM.proxy_close(proxy) == false
+requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
+["close", "dispose"].each do |key|
+  raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
+end
+releases = OmniVM.requests.select { |req| req["op"] == "handle_release_explicit" }
+raise "explicit release mismatch: #{releases.inspect}" unless releases.length == 1 && releases[0]["id"] == 80
+if OmniVM.requests.any? { |req| req["op"] == "handle_call" && ["close", "dispose"].include?(req["key"]) }
+  raise "lifecycle close dispatched to a remote lifecycle-named field"
+end
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestRubyLocalStreamClosesOnEarlyBreak(t *testing.T) {
 	ruby, err := exec.LookPath("ruby")
 	if err != nil {

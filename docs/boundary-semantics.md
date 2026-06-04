@@ -676,7 +676,10 @@ Ruby manifest proxies provide `proxy.omnivm_get(key)`,
 `OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)` as collision-safe close
 helpers. Natural Ruby reads for owner fields named `then`, `class`, `inspect`,
 `hash`, `to_s`, `to_h`, `to_a`, or `to_json` prefer the owner field when it is
-present; the `omnivm_*` helpers remain the explicit escape hatch.
+present; handle-proxy owner fields named `close` or `dispose` are also ordinary
+fields, and lifecycle release uses `proxy.omnivm_close`,
+`OmniVM.proxy_close(proxy)`, or `omnivm_close(proxy)`. The `omnivm_*` helpers
+remain the explicit escape hatch.
 The close helpers are idempotent. For ordinary handle proxies they release the
 proxy lease; for stream/channel proxies they cancel the lazy stream owner. In
 runtimes with explicit finalizer unregistration, close also detaches the
