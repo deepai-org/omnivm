@@ -27,6 +27,7 @@ Usage:
 import atexit
 import ctypes
 import ctypes.util
+import inspect
 import json
 import os
 import re
@@ -1444,14 +1445,31 @@ def proxy_contains(value, key):
     return key in value
 
 
+def _actual_public_method(value, name):
+    if value is None:
+        return None
+    try:
+        raw = inspect.getattr_static(value, name)
+    except Exception:
+        return None
+    try:
+        if isinstance(raw, (staticmethod, classmethod)):
+            raw = raw.__get__(value, type(value))
+        elif hasattr(raw, "__get__"):
+            raw = raw.__get__(value, type(value))
+    except Exception:
+        return None
+    return raw if callable(raw) else None
+
+
 def proxy_close(value):
     """Release a proxy lease without colliding with a data field named close."""
     if isinstance(value, ManifestProxy):
         return value.close()
-    close = getattr(value, "close", None)
+    close = _actual_public_method(value, "close")
     if callable(close):
-        close()
-        return True
+        result = close()
+        return True if result is None else result
     return False
 
 

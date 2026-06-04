@@ -1052,6 +1052,36 @@ class TestCallWithMockLib(unittest.TestCase):
         assert proxy.close() is False
         assert releases == 2
 
+    def test_proxy_close_preserves_public_close_result_without_dynamic_lookup(self):
+        class FalseCloser:
+            def close(self):
+                return False
+
+        class TextCloser:
+            def close(self):
+                return "closed"
+
+        class NoneCloser:
+            def close(self):
+                return None
+
+        class DynamicCloseTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "close":
+                    self.dynamic_lookup_count += 1
+                    return lambda: "dynamic-close"
+                raise AttributeError(name)
+
+        trap = DynamicCloseTrap()
+
+        assert omnivm_mod.proxy_close(FalseCloser()) is False
+        assert omnivm_mod.proxy_close(TextCloser()) == "closed"
+        assert omnivm_mod.proxy_close(NoneCloser()) is True
+        assert omnivm_mod.proxy_close(trap) is False
+        assert trap.dynamic_lookup_count == 0
+
     def test_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
