@@ -323,6 +323,8 @@ stream handle at EOF or owner read error.
 Closeable stream sources are closed through their host
 protocol on EOF, read error, cancellation, or scope/finalizer release: Python and Ruby
 `close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
+Go stream proxies expose `Next()` when callers need the terminal owner error;
+the older `Recv()` helper remains an EOF-shaped compatibility wrapper.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can
 become Arrow/shared-buffer table descriptors without a user-visible helper.
 

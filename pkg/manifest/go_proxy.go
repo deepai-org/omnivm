@@ -482,17 +482,24 @@ func newGoStreamProxy(id handles.ID, table *handles.Table, next func(handles.ID)
 	return proxy
 }
 
-func (p *GoStreamProxy) Recv() (interface{}, bool) {
+// Next returns the next stream value, whether a value was produced, and any
+// owner-side read error. EOF and closed streams return ok=false with nil error.
+func (p *GoStreamProxy) Next() (interface{}, bool, error) {
 	if p == nil || p.closed || p.next == nil || p.id == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	value, done, ok, err := p.next(p.id)
 	if err != nil || !ok || done {
 		p.closed = true
 		runtime.SetFinalizer(p, nil)
-		return nil, false
+		return nil, false, err
 	}
-	return value, true
+	return value, true, nil
+}
+
+func (p *GoStreamProxy) Recv() (interface{}, bool) {
+	value, ok, _ := p.Next()
+	return value, ok
 }
 
 func (p *GoStreamProxy) Values() []interface{} {

@@ -2216,6 +2216,46 @@ func TestGoStreamProxyCloseCancelsWithoutDraining(t *testing.T) {
 	}
 }
 
+func TestGoStreamProxyNextReportsOwnerReadError(t *testing.T) {
+	e, _ := makeExecutor("go")
+	reader := &errorAfterChunkReader{chunk: "first"}
+	id, err := e.genericStreamHandle("go", reader)
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "reader")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "reader")))
+	}
+	value, ok, err := stream.Next()
+	if err != nil || !ok || value == nil {
+		t.Fatalf("stream Next first = (%#v, %v, %v), want value,true,nil", value, ok, err)
+	}
+	if proxy, ok := value.(*GoHandleProxy); ok {
+		if err := proxy.Close(); err != nil {
+			t.Fatalf("close first chunk proxy: %v", err)
+		}
+	}
+	value, ok, err = stream.Next()
+	if err == nil || !strings.Contains(err.Error(), "owner read failed") || ok || value != nil {
+		t.Fatalf("stream Next error = (%#v, %v, %v), want nil,false,owner read failure", value, ok, err)
+	}
+	if !reader.closed {
+		t.Fatal("reader was not closed after Go stream proxy read error")
+	}
+	if value, ok := stream.Recv(); ok || value != nil {
+		t.Fatalf("stream Recv after read error = (%#v, %v), want nil,false", value, ok)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("stream Close after read error: %v", err)
+	}
+	stream.ReleaseFromFinalizer()
+	stats := e.handleTable.Stats(time.Now())
+	if stats.HandleAccessesByKind["stream"] != 2 || stats.Live != 0 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go stream proxy read error stats = %+v, want two reads, no live handles, no finalizer queue", stats)
+	}
+}
+
 func TestGoHandleProxyKeepsResourceDescriptorFieldsPrivate(t *testing.T) {
 	table := handles.NewTable()
 	id, err := table.Register(map[string]interface{}{
