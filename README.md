@@ -283,7 +283,7 @@ except omnivm.RuntimeError as exc:
     )
 ```
 
-`RuntimeError.to_dict()` returns a JSON-serializable envelope with `runtime`,
+`RuntimeError.to_dict()` and its `as_dict()` alias return a JSON-serializable envelope with `runtime`,
 `origin_runtime`, `type`, `message`, `traceback`, `stack_frames`, `cause_chain`,
 `boundary_path`, and `original_error_handle`. The handle is only populated when
 the source runtime reports one; callers should treat it as optional diagnostic
@@ -331,7 +331,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
 | `omnivm.shutdown()` | Tear down runtimes (optional — process exit works too) |
-| `omnivm.RuntimeError.to_dict()` | Return a structured runtime error envelope for logging, middleware, and JSON diagnostics |
+| `omnivm.RuntimeError.to_dict()` / `as_dict()` | Return a structured runtime error envelope for logging, middleware, and JSON diagnostics |
 | `omnivm.get_buffer(name)` | Return a borrowed shared buffer view, or `None` when the name is absent |
 | `omnivm.set_buffer(name, data, dtype=0)` | Publish bytes-like data into the shared buffer store |
 | `omnivm.release_buffer(name)` | Explicitly release a named shared buffer owner |

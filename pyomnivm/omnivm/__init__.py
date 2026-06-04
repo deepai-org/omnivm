@@ -121,6 +121,10 @@ class RuntimeError(_builtins.RuntimeError):
             "details": _copy_json_value(self.details),
         }
 
+    def as_dict(self):
+        """Alias for to_dict(), matching common Python error-envelope APIs."""
+        return self.to_dict()
+
 
 def _copy_json_value(value):
     if isinstance(value, dict):

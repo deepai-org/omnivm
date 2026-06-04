@@ -187,6 +187,20 @@ class TestRuntimeError(unittest.TestCase):
             "details": None,
         }
 
+    def test_as_dict_alias_returns_structured_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            "python: ValueError: bad\n"
+            "Traceback (most recent call last):\n"
+            "  File \"app.py\", line 1, in <module>\n"
+            "Details: {\"field\":\"age\"}",
+            runtime="python",
+            boundary_path="call[python]",
+        )
+        assert err.as_dict() == err.to_dict()
+        envelope = err.as_dict()
+        envelope["details"]["field"] = "changed"
+        assert err.details == {"field": "age"}
+
     def test_to_dict_copies_mutable_envelope_values(self):
         err = omnivm_mod.RuntimeError(
             "javascript: Error: outer\n"
