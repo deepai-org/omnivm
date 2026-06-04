@@ -5,6 +5,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.jar.*;
@@ -34,6 +35,15 @@ public class OmniVMRunner {
     private static volatile URLClassLoader sharedClasspathLoader = null;
     private static final File persistentClassDir =
         new File(System.getProperty("java.io.tmpdir"), "omnivm-java-classes");
+
+    private static final class FormattedJavaError extends RuntimeException {
+        private final String formatted;
+
+        FormattedJavaError(String formatted) {
+            super(formatted);
+            this.formatted = formatted;
+        }
+    }
 
     // ---- File Execution (called from JNI for "omnivm run") ----
     // stdout/stderr are NOT redirected — they go to the real process streams.
@@ -440,6 +450,9 @@ public class OmniVMRunner {
      */
     public static String eval(String code) {
         Object result = evalObject(code);
+        if (result instanceof FormattedJavaError e) {
+            return "JavaError: " + e.formatted;
+        }
         if (result instanceof Throwable t) {
             return "JavaError: " + formatThrowable(t);
         }
@@ -488,7 +501,7 @@ public class OmniVMRunner {
             if (!success) {
                 String executed = execute(code);
                 if (executed != null && executed.startsWith("JavaError: ")) {
-                    return new RuntimeException(executed.substring("JavaError: ".length()));
+                    return new FormattedJavaError(executed.substring("JavaError: ".length()));
                 }
                 return executed;
             }
@@ -658,7 +671,55 @@ public class OmniVMRunner {
         }
         StringWriter sw = new StringWriter();
         throwable.printStackTrace(new PrintWriter(sw));
-        return sw.toString().trim();
+        String text = sw.toString().trim();
+        String handle = originalErrorHandle(throwable);
+        if (handle != null && !handle.isEmpty()) {
+            text += "\nOriginal error handle: " + handle;
+        }
+        return text;
+    }
+
+    private static String originalErrorHandle(Throwable throwable) {
+        String handle = originalErrorHandleFromMethod(throwable, "getOriginalErrorHandle");
+        if (handle != null && !handle.isEmpty()) {
+            return handle;
+        }
+        handle = originalErrorHandleFromMethod(throwable, "originalErrorHandle");
+        if (handle != null && !handle.isEmpty()) {
+            return handle;
+        }
+        handle = originalErrorHandleFromField(throwable, "originalErrorHandle");
+        if (handle != null && !handle.isEmpty()) {
+            return handle;
+        }
+        return originalErrorHandleFromField(throwable, "original_error_handle");
+    }
+
+    private static String originalErrorHandleFromMethod(Throwable throwable, String name) {
+        try {
+            Method method = throwable.getClass().getMethod(name);
+            if (method.getParameterCount() != 0) {
+                return "";
+            }
+            Object value = method.invoke(throwable);
+            return value == null ? "" : String.valueOf(value);
+        } catch (ReflectiveOperationException | SecurityException ignored) {
+            return "";
+        }
+    }
+
+    private static String originalErrorHandleFromField(Throwable throwable, String name) {
+        for (Class<?> current = throwable.getClass(); current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(name);
+                field.setAccessible(true);
+                Object value = field.get(throwable);
+                return value == null ? "" : String.valueOf(value);
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                // Try the next superclass.
+            }
+        }
+        return "";
     }
 
     private static void persistCompiledClasses(String entryClassName, List<InMemoryClassFile> classes) {
