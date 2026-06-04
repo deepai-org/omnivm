@@ -121,6 +121,16 @@ raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == expected_caus
 raise "boundary #{err.boundary_path.inspect}" unless err.boundary_path == "call[javascript] > callback[python]"
 raise "handle #{err.original_error_handle.inspect}" unless err.original_error_handle == "py-error-7"
 raise "details #{err.details.inspect}" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+stack_reader = err.stack_frames
+stack_reader[0] = "changed"
+cause_reader = err.cause_chain
+cause_reader[0][:message] = "changed"
+cause_reader[0][:details]["code"] = "changed"
+details_reader = err.details
+details_reader[0]["code"] = "changed"
+raise "stack reader leaked" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
+raise "cause reader leaked" unless err.cause_chain == expected_cause
+raise "details reader leaked" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
 copy = err.to_h
 copy[:stack_frames][0] = "changed"
 copy[:cause_chain][0][:message] = "changed"

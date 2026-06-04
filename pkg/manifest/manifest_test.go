@@ -7523,6 +7523,21 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 			t.Fatalf("embedded Ruby RuntimeError should preserve nested cause envelope fields, missing %q", want)
 		}
 	}
+	for _, want := range []string{
+		"def stack_frames",
+		"OmniVM.__copy_json_value(@stack_frames)",
+		"def cause_chain",
+		"OmniVM.__copy_json_value(@cause_chain)",
+		"def details",
+		"OmniVM.__copy_json_value(@details)",
+	} {
+		if !contains(files["../../pkg/ruby/ruby.go"], want) {
+			t.Fatalf("embedded Ruby RuntimeError readers should copy mutable structured values, missing %q", want)
+		}
+	}
+	if contains(files["../../pkg/ruby/ruby.go"], "attr_reader :runtime, :origin_runtime, :type, :traceback, :stack_frames, :cause_chain") {
+		t.Fatalf("embedded Ruby RuntimeError should not expose mutable structured fields through attr_reader")
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "def as_json(*_args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "JSON.generate(to_h, *args)") {
