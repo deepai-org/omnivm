@@ -2122,10 +2122,17 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var closeRemote = function() {
     markRemoteClosed(false);
   };
-  var cancelRemoteQuiet = function() {
+  var recordCleanupError = function(error, cleanupError) {
+    if (!error || !cleanupError) return;
+    try {
+      error.omnivmCleanupErrors = (error.omnivmCleanupErrors || []).concat([cleanupError]);
+    } catch (_cleanupRecordError) {}
+  };
+  var cancelRemoteQuiet = function(error) {
     try {
       if (cancelRemote() !== true) markRemoteClosed(false);
     } catch (_cancelErr) {
+      recordCleanupError(error, _cancelErr);
       markRemoteClosed(false);
     }
   };
@@ -2158,7 +2165,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
       }
     } catch (_e) {
-      cancelRemoteQuiet();
+      cancelRemoteQuiet(_e);
       throw _e;
     }
     closeRemote();

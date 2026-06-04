@@ -6576,9 +6576,12 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
-		!contains(code, "var cancelRemoteQuiet = function()") ||
+		!contains(code, "var recordCleanupError = function(error, cleanupError)") ||
+		!contains(code, "error.omnivmCleanupErrors = (error.omnivmCleanupErrors || []).concat([cleanupError]);") ||
+		!contains(code, "var cancelRemoteQuiet = function(error)") ||
 		!contains(code, "if (cancelRemote() !== true) markRemoteClosed(false);") ||
-		!contains(code, "catch (_e) {\n      cancelRemoteQuiet();\n      throw _e;\n    }") ||
+		!contains(code, "recordCleanupError(error, _cancelErr);") ||
+		!contains(code, "catch (_e) {\n      cancelRemoteQuiet(_e);\n      throw _e;\n    }") ||
 		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "if (closed) return;") ||
 		!contains(code, "var unregisterCloseListener = null") ||
@@ -7320,7 +7323,7 @@ globalThis.omnivm = {
     requests.push(payload);
     if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
     if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: true, value: {done: false, value: {bad: true}}});
-    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") throw new Error("cancel failed");
     throw new Error("unexpected manifest op " + payload.op);
   }
 };
@@ -7333,6 +7336,12 @@ try {
   stream[Symbol.iterator]().next();
 } catch (err) {
   if (!String(err && err.message).includes("chunk boom")) throw err;
+  var cleanupErrors = omnivm.cleanupErrors(err);
+  if (!cleanupErrors || cleanupErrors.length !== 1 || cleanupErrors[0].message !== "cancel failed") {
+    throw new Error("cleanup error missing: " + JSON.stringify(cleanupErrors && cleanupErrors.map(function(item) { return item.message; })));
+  }
+  cleanupErrors.length = 0;
+  if (omnivm.cleanupErrors(err)[0].message !== "cancel failed") throw new Error("cleanupErrors returned internal storage");
 }
 if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed after materialization error");
 if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
