@@ -7278,6 +7278,38 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 	}
 }
 
+func TestLibOmniVMThreadAffinityStatusReportsUnsupportedOwnerDispatch(t *testing.T) {
+	data, err := os.ReadFile("../../cmd/libomnivm/main.go")
+	if err != nil {
+		t.Fatalf("read libomnivm source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		`"mode":                     "diagnostic_only"`,
+		`"host_thread_required":     true`,
+		`"owner_dispatch_supported": false`,
+		`"foreign_thread_behavior":   "reject_runtime_calls"`,
+		`"python_asyncio": map[string]interface{}{`,
+		`"narrow_capabilities": []string{"python_async_stream_pull", "python_async_stream_close"}`,
+		`"diagnostic":          "Python async streams have narrow pump-owned pull/close paths, but general callbacks are not migrated back to the owner loop"`,
+		`"javascript_event_loop": map[string]interface{}{`,
+		`"java_executor": map[string]interface{}{`,
+		`"ruby_fiber_thread": map[string]interface{}{`,
+		`"current_behavior":    "Ruby runs on the single VM thread with native Ruby thread scheduling disabled"`,
+		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"`,
+		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("libomnivm thread affinity status should expose diagnostic-only owner dispatch boundary, missing %q", want)
+		}
+	}
+	if contains(code, `"owner_dispatch_supported": true`) ||
+		contains(code, `"supported":           true`) ||
+		contains(code, "go threadAffinityStatus") {
+		t.Fatalf("libomnivm thread affinity status should not claim universal owner dispatch or add helper threads")
+	}
+}
+
 func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{
