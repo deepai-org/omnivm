@@ -755,6 +755,23 @@ static VALUE call_exception_error_details_json(VALUE exception) {
     return rb_obj_as_string(value);
 }
 
+static VALUE call_exception_cause_chain_text(VALUE exception) {
+    ID mod_id = rb_intern("OmniVM");
+    if (!rb_const_defined(rb_cObject, mod_id)) {
+        return Qnil;
+    }
+    VALUE mod = rb_const_get(rb_cObject, mod_id);
+    ID method = rb_intern("__error_cause_chain_text");
+    if (!rb_respond_to(mod, method)) {
+        return Qnil;
+    }
+    VALUE value = rb_funcall(mod, method, 1, exception);
+    if (value == Qnil) {
+        return Qnil;
+    }
+    return rb_obj_as_string(value);
+}
+
 // Safe helper to extract exception message using rb_protect.
 // Catches any secondary exceptions during message extraction (e.g., rb_exc_raise
 // in rb_funcall which crashes on ARM64 when JVM is active).
@@ -767,6 +784,7 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     const char* traceback_cstr = NULL;
     const char* handle_cstr = NULL;
     const char* details_cstr = NULL;
+    const char* causes_cstr = NULL;
 
     VALUE bridge_text = rb_protect(call_exception_omnivm_bridge_error_text, exception, &inner_state);
     if (!inner_state && bridge_text != Qnil) {
@@ -829,9 +847,18 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         rb_set_errinfo(Qnil); // Clear secondary error
     }
 
+    inner_state = 0;
+    VALUE causes = rb_protect(call_exception_cause_chain_text, exception, &inner_state);
+    if (!inner_state && causes != Qnil) {
+        causes_cstr = StringValueCStr(causes);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
     size_t len = strlen("RubyError: ") + strlen(klass_cstr) + strlen(": ") + strlen(msg_cstr) + 1;
     if (frame_cstr) len += strlen(" (at )") + strlen(frame_cstr);
     if (traceback_cstr) len += strlen("\n") + strlen(traceback_cstr);
+    if (causes_cstr) len += strlen("\n") + strlen(causes_cstr);
     if (details_cstr) len += strlen("\nDetails: ") + strlen(details_cstr);
     if (handle_cstr) len += strlen("\nOriginal error handle: ") + strlen(handle_cstr);
     char* err = (char*)malloc(len);
@@ -843,6 +870,10 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         snprintf(err, len, "RubyError: %s: %s\n%s", klass_cstr, msg_cstr, traceback_cstr);
     } else {
         snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
+    }
+    if (causes_cstr) {
+        strcat(err, "\n");
+        strcat(err, causes_cstr);
     }
     if (handle_cstr) {
         if (details_cstr) {
@@ -1396,6 +1427,23 @@ static int omnivm_ruby_init(void) {
         "    value = __error_details_value(error)\n"
         "    return nil if value.nil?\n"
         "    JSON.generate(value)\n"
+        "  rescue Exception\n"
+        "    nil\n"
+        "  end\n"
+        "  def self.__error_cause_chain_text(error)\n"
+        "    lines = []\n"
+        "    seen = {}\n"
+        "    cause = error.respond_to?(:cause) ? error.cause : nil\n"
+        "    while cause && lines.length < 16\n"
+        "      oid = cause.object_id\n"
+        "      break if seen[oid]\n"
+        "      seen[oid] = true\n"
+        "      type = cause.class.name.to_s\n"
+        "      message = cause.respond_to?(:message) ? cause.message.to_s : cause.to_s\n"
+        "      lines << \"Caused by: #{type}: #{message}\"\n"
+        "      cause = cause.respond_to?(:cause) ? cause.cause : nil\n"
+        "    end\n"
+        "    lines.empty? ? nil : lines.join(\"\\n\")\n"
         "  rescue Exception\n"
         "    nil\n"
         "  end\n"

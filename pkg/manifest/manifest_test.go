@@ -8224,6 +8224,30 @@ func TestPythonNativeRuntimeErrorFormatterAcceptsNameStackAliases(t *testing.T) 
 	}
 }
 
+func TestRubyNativeErrorFormatterPreservesCauseChain(t *testing.T) {
+	data, err := os.ReadFile("../../pkg/ruby/ruby.go")
+	if err != nil {
+		t.Fatalf("read Ruby runtime source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"static VALUE call_exception_cause_chain_text(VALUE exception)",
+		`ID method = rb_intern("__error_cause_chain_text")`,
+		"const char* causes_cstr = NULL",
+		"VALUE causes = rb_protect(call_exception_cause_chain_text, exception, &inner_state)",
+		`if (causes_cstr) len += strlen("\n") + strlen(causes_cstr)`,
+		"if (causes_cstr) {\n        strcat(err, \"\\n\");\n        strcat(err, causes_cstr);\n    }",
+		"def self.__error_cause_chain_text(error)",
+		"while cause && lines.length < 16",
+		"break if seen[oid]",
+		`lines << \"Caused by: #{type}: #{message}\"`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Ruby native error formatter should preserve bounded cause chains, missing %q", want)
+		}
+	}
+}
+
 func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	data, err := os.ReadFile("../../scripts/v8_bridge_node.cc")
 	if err != nil {
