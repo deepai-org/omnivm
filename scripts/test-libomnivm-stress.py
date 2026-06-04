@@ -4853,6 +4853,54 @@ def test_manifest_python_dlpack_capture_uses_arrow():
         raise AssertionError(f"DLPack capture used JSON fallback: before={before}, after={after}")
 
 
+def test_manifest_jax_cpu_tensor_capture_uses_arrow():
+    before = omnivm.status().get("boundary", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "jax_payload",
+                "code": "__import__('jax').numpy.arange(6, dtype=__import__('jax').numpy.int32).reshape((2, 3))",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "const meta = jax_payload.metadata || {}; "
+                    "if (meta.arrow_format !== 'i') throw new Error('bad JAX dtype metadata: ' + JSON.stringify(meta)); "
+                    "if (!Array.isArray(meta.shape) || meta.shape.length !== 2 || meta.shape[0] !== 2 || meta.shape[1] !== 3) throw new Error('bad JAX shape: ' + JSON.stringify(meta)); "
+                    "if (!Array.isArray(meta.strides) || meta.strides.length !== 2 || meta.strides[0] !== 12 || meta.strides[1] !== 4) throw new Error('bad JAX strides: ' + JSON.stringify(meta)); "
+                    "if (jax_payload.length !== 2 || omnivm.proxyLen(jax_payload) !== 2) throw new Error('bad JAX table length: ' + jax_payload.length); "
+                    "const row0 = jax_payload[0]; const row1 = jax_payload[1]; "
+                    "if (!Array.isArray(row0) || row0[0] !== 0 || row0[1] !== 1 || row0[2] !== 2) throw new Error('bad JAX row0: ' + JSON.stringify(row0)); "
+                    "if (!Array.isArray(row1) || row1[0] !== 3 || row1[1] !== 4 || row1[2] !== 5) throw new Error('bad JAX row1: ' + JSON.stringify(row1));"
+                ),
+                "captures": {"jax_payload": "jax_payload"},
+            },
+        ],
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+        path = f.name
+    try:
+        omnivm.run_manifest(path)
+    finally:
+        os.unlink(path)
+
+    after = omnivm.status().get("boundary", {})
+    if after.get("table_proxy_captures", 0) == 0:
+        raise AssertionError(f"JAX CPU tensor capture did not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) == 0:
+        raise AssertionError(f"JAX CPU tensor capture did not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("resource_proxy_captures", 0) != before.get("resource_proxy_captures", 0):
+        raise AssertionError(f"JAX CPU tensor capture crossed as a resource proxy: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"JAX CPU tensor capture used JSON fallback: before={before}, after={after}")
+
+
 def test_manifest_python_non_cpu_dlpack_capture_uses_proxy():
     before = omnivm.status().get("boundary", {})
     setup = r'''
@@ -28357,6 +28405,7 @@ def main():
         check("Manifest Python strided array-interface capture uses Arrow", test_manifest_python_strided_array_interface_capture_uses_arrow)
         check("Manifest Python negative-strided array-interface capture uses Arrow", test_manifest_python_negative_strided_array_interface_capture_uses_arrow)
         check("Manifest Python DLPack capture uses Arrow", test_manifest_python_dlpack_capture_uses_arrow)
+        check("Manifest JAX CPU tensor capture uses Arrow", test_manifest_jax_cpu_tensor_capture_uses_arrow)
         check("Manifest Python non-CPU DLPack capture uses proxy", test_manifest_python_non_cpu_dlpack_capture_uses_proxy)
         check("Manifest Python dataframe interchange capture uses Arrow", test_manifest_python_dataframe_interchange_capture_uses_arrow)
         check("Manifest Python nullable dataframe interchange capture uses Arrow", test_manifest_python_nullable_dataframe_interchange_capture_uses_arrow)
