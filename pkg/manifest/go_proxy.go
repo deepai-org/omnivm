@@ -475,11 +475,14 @@ func (p *GoHandleProxy) materialize(value interface{}) interface{} {
 // partial consumption, and queues release through the handle table when the
 // proxy is finalized.
 type GoStreamProxy struct {
-	id     handles.ID
-	table  *handles.Table
-	next   func(handles.ID) (interface{}, bool, bool, error)
-	cancel func(handles.ID) error
-	closed bool
+	id          handles.ID
+	table       *handles.Table
+	next        func(handles.ID) (interface{}, bool, bool, error)
+	cancel      func(handles.ID) error
+	normalize   func(interface{}) interface{}
+	localValues []interface{}
+	localIndex  int
+	closed      bool
 }
 
 func newGoStreamProxy(id handles.ID, table *handles.Table, next func(handles.ID) (interface{}, bool, bool, error), cancel func(handles.ID) error) *GoStreamProxy {
@@ -493,10 +496,29 @@ func newGoStreamProxy(id handles.ID, table *handles.Table, next func(handles.ID)
 	return proxy
 }
 
+func newGoLocalStreamProxy(values []interface{}, normalize func(interface{}) interface{}) *GoStreamProxy {
+	return &GoStreamProxy{localValues: values, normalize: normalize}
+}
+
 // Next returns the next stream value, whether a value was produced, and any
 // owner-side read error. EOF and closed streams return ok=false with nil error.
 func (p *GoStreamProxy) Next() (interface{}, bool, error) {
-	if p == nil || p.closed || p.next == nil || p.id == 0 {
+	if p == nil || p.closed {
+		return nil, false, nil
+	}
+	if p.localValues != nil {
+		if p.localIndex >= len(p.localValues) {
+			p.closed = true
+			return nil, false, nil
+		}
+		value := p.localValues[p.localIndex]
+		p.localIndex++
+		if p.normalize != nil {
+			value = p.normalize(value)
+		}
+		return value, true, nil
+	}
+	if p.next == nil || p.id == 0 {
 		return nil, false, nil
 	}
 	value, done, ok, err := p.next(p.id)
@@ -536,6 +558,11 @@ func (p *GoStreamProxy) ValuesWithError() ([]interface{}, error) {
 // underlying stream handle. It is safe to call more than once.
 func (p *GoStreamProxy) Close() error {
 	if p == nil || p.closed {
+		return nil
+	}
+	if p.localValues != nil {
+		p.closed = true
+		runtime.SetFinalizer(p, nil)
 		return nil
 	}
 	if p.table == nil || p.id == 0 {
@@ -611,6 +638,9 @@ func (e *Executor) normalizeGoArg(arg interface{}) interface{} {
 		}, nil, nil, nil, nil, nil, nil, nil, e.normalizeGoArg, nil, nil)
 	case map[string]interface{}:
 		if isGoStreamDescriptor(v) {
+			if values, ok := goStreamDescriptorValues(v); ok {
+				return newGoLocalStreamProxy(values, e.normalizeGoArg)
+			}
 			id, err := bridgeHandleID(v["id"])
 			if err != nil {
 				return v
@@ -699,6 +729,11 @@ func (e *Executor) recordProxyMaterialization() {
 
 func isGoStreamDescriptor(value map[string]interface{}) bool {
 	return value["__omnivm_stream__"] == true || value["__omnivm_channel__"] == true
+}
+
+func goStreamDescriptorValues(value map[string]interface{}) ([]interface{}, bool) {
+	values, ok := value["values"].([]interface{})
+	return values, ok
 }
 
 func isGoHandleDescriptor(value map[string]interface{}) bool {

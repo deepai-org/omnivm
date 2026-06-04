@@ -2201,6 +2201,38 @@ func TestNormalizeGoArgMaterializesStreamDescriptor(t *testing.T) {
 	}
 }
 
+func TestNormalizeGoArgMaterializesLocalStreamValues(t *testing.T) {
+	e, _ := makeExecutor("go")
+	stream, ok := e.normalizeGoArg(map[string]interface{}{
+		"__omnivm_stream__": true,
+		"values": []interface{}{
+			"first",
+			map[string]interface{}{"nested": "second"},
+		},
+	}).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg local stream = %T, want *GoStreamProxy", e.normalizeGoArg(map[string]interface{}{"__omnivm_stream__": true, "values": []interface{}{}}))
+	}
+	if value, ok := stream.Recv(); !ok || value != "first" {
+		t.Fatalf("local stream first = (%#v, %v), want first,true", value, ok)
+	}
+	value, ok := stream.Recv()
+	nested, isMap := value.(map[string]interface{})
+	if !ok || !isMap || nested["nested"] != "second" {
+		t.Fatalf("local stream second = (%#v, %v), want nested map", value, ok)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("local stream Close: %v", err)
+	}
+	if value, ok := stream.Recv(); ok || value != nil {
+		t.Fatalf("local stream after Close = (%#v, %v), want nil,false", value, ok)
+	}
+	stats := e.ensureHandleTable().Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 0 || stats.FinalizerQueued != 0 {
+		t.Fatalf("local stream should not touch handle table: %+v", stats)
+	}
+}
+
 func TestGoStreamProxyCloseCancelsWithoutDraining(t *testing.T) {
 	e, _ := makeExecutor("go")
 	ch := &ChanRef{ch: make(chan interface{}, 2)}
