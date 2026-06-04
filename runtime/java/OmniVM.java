@@ -408,6 +408,9 @@ public class OmniVM {
                 entry.put("runtime", runtime);
             }
             String originRuntime = jsonString(jsonValue(cause, "origin_runtime", "originRuntime"));
+            if (originRuntime.isEmpty()) {
+                originRuntime = runtime;
+            }
             if (!originRuntime.isEmpty()) {
                 entry.put("origin_runtime", originRuntime);
             }

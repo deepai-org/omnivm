@@ -68,6 +68,10 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 			"type":    cause.Type,
 			"message": cause.Message,
 		}
+		causeOrigin := cause.OriginRuntime
+		if causeOrigin == "" {
+			causeOrigin = cause.Runtime
+		}
 		if cause.Traceback != "" {
 			item["traceback"] = cause.Traceback
 		}
@@ -77,8 +81,8 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		if cause.Runtime != "" {
 			item["runtime"] = cause.Runtime
 		}
-		if cause.OriginRuntime != "" {
-			item["origin_runtime"] = cause.OriginRuntime
+		if causeOrigin != "" {
+			item["origin_runtime"] = causeOrigin
 		}
 		if cause.BoundaryPath != "" {
 			item["boundary_path"] = cause.BoundaryPath
@@ -412,6 +416,9 @@ func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
 		}
 		if originRuntime := stringEnvelopeValue(entry, "origin_runtime", "originRuntime"); originRuntime != "" {
 			cause.OriginRuntime = normalizeRuntime(originRuntime)
+		}
+		if cause.OriginRuntime == "" {
+			cause.OriginRuntime = cause.Runtime
 		}
 		if causeType := stringEnvelopeValue(entry, "type"); causeType != "" {
 			cause.Type = causeType

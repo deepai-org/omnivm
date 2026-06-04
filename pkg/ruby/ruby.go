@@ -1417,6 +1417,7 @@ static int omnivm_ruby_init(void) {
         "        value = cause.key?(key) ? cause[key] : cause[fallback]\n"
         "        item[key.to_sym] = value.to_s if value\n"
         "      end\n"
+        "      item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]\n"
         "      item[:details] = __copy_json_value(cause[\"details\"]) if cause.key?(\"details\")\n"
         "      out << item\n"
         "    end\n"

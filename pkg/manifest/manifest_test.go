@@ -6121,6 +6121,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`entry.put("traceback", traceback)`,
 		`entry.put("stack_frames", stackFrames)`,
 		`String originRuntime = jsonString(jsonValue(cause, "origin_runtime", "originRuntime"))`,
+		`originRuntime = runtime`,
 		`String boundaryPath = jsonString(jsonValue(cause, "boundary_path", "boundaryPath"))`,
 		`String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"))`,
 		`entry.put("details", RuntimeError.copyJsonValue(cause.get("details")))`,
@@ -6158,6 +6159,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"cause_chain = field('cause_chain', 'causeChain')",
 		"cause_stack_frames = cause.get('stackFrames')",
 		"for key, fallback in (('runtime', 'runtime'), ('origin_runtime', 'originRuntime'), ('boundary_path', 'boundaryPath'), ('original_error_handle', 'originalErrorHandle')):",
+		"if item.get('runtime') and not item.get('origin_runtime'):",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError should accept JS camelCase envelope fields, missing %q", want)
@@ -6191,6 +6193,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`cause_traceback = cause[\"traceback\"]`,
 		`cause_stack_frames = cause.key?(\"stack_frames\") ? cause[\"stack_frames\"] : cause[\"stackFrames\"]`,
 		"item[:stack_frames] = cause_stack_frames.dup",
+		`item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]`,
 		`item[:details] = __copy_json_value(cause[\"details\"])`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
@@ -6317,6 +6320,7 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`if (!omnivm_v8_parse_runtime_error_envelope_text(isolate, context, err_msg, runtime_hint, envelope))`,
 		`std::string origin_runtime = env.origin_runtime.empty() ? env.runtime : env.origin_runtime`,
 		`env.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, object, "origin_runtime", "originRuntime")`,
+		`cause.origin_runtime = cause.runtime`,
 		`cause.details_json = omnivm_v8_json_stringify_prop(isolate, context, cause_object, "details")`,
 		`omnivm_v8_set_string_prop(isolate, context, cause, "origin_runtime", env.cause_chain[i].origin_runtime)`,
 	} {

@@ -405,6 +405,9 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         OmniRuntimeErrorCause cause;
         cause.runtime = omnivm_v8_get_string_prop(isolate, context, cause_object, "runtime");
         cause.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "origin_runtime", "originRuntime");
+        if (cause.origin_runtime.empty()) {
+            cause.origin_runtime = cause.runtime;
+        }
         cause.type = omnivm_v8_get_string_prop(isolate, context, cause_object, "type");
         cause.message = omnivm_v8_get_string_prop(isolate, context, cause_object, "message");
         cause.traceback = omnivm_v8_get_string_prop(isolate, context, cause_object, "traceback");

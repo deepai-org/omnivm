@@ -155,6 +155,24 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	}
 }
 
+func TestRuntimeError_ToMapDefaultsCauseOriginRuntime(t *testing.T) {
+	e := &RuntimeError{
+		Runtime: "javascript",
+		CauseChain: []RuntimeErrorCause{{
+			Runtime: "java",
+			Type:    "IllegalStateException",
+			Message: "inner",
+		}},
+	}
+	causes, ok := e.ToMap()["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 {
+		t.Fatalf("cause_chain = %#v, want one mapped cause", e.ToMap()["cause_chain"])
+	}
+	if causes[0]["runtime"] != "java" || causes[0]["origin_runtime"] != "java" {
+		t.Fatalf("mapped cause runtime/origin_runtime = %#v", causes[0])
+	}
+}
+
 func TestParseError_Simple(t *testing.T) {
 	re := ParseError("python", "ERR:SyntaxError: invalid syntax")
 	if re == nil {
@@ -341,6 +359,34 @@ Details: [{"path":["user","age"],"code":"too_small"}]`)
 	envelope["details"].([]interface{})[0] = "changed"
 	if _, ok := re.Details.([]interface{})[0].(map[string]interface{}); !ok {
 		t.Fatalf("ToMap exposed Details array backing storage: %#v", re.Details)
+	}
+}
+
+func TestParseError_StructuredCauseDefaultsOriginRuntime(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime": "javascript",
+		"type":    "Error",
+		"message": "outer",
+		"cause_chain": []interface{}{map[string]interface{}{
+			"runtime": "java",
+			"type":    "IllegalStateException",
+			"message": "inner",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("javascript", "ERR:"+string(raw))
+	if re == nil || len(re.CauseChain) != 1 {
+		t.Fatalf("parsed cause chain = %#v", re)
+	}
+	cause := re.CauseChain[0]
+	if cause.Runtime != "java" || cause.OriginRuntime != "java" {
+		t.Fatalf("cause runtime/origin runtime = %#v", cause)
+	}
+	causes, ok := re.ToMap()["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 || causes[0]["origin_runtime"] != "java" {
+		t.Fatalf("normalized cause chain = %#v", re.ToMap()["cause_chain"])
 	}
 }
 

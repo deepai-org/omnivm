@@ -153,6 +153,8 @@ static const char* omnivm_py_runtime_error_code =
 "                    value = cause.get(fallback)\n"
 "                if value:\n"
 "                    item[key] = str(value)\n"
+"            if item.get('runtime') and not item.get('origin_runtime'):\n"
+"                item['origin_runtime'] = item['runtime']\n"
 "            if 'details' in cause:\n"
 "                item['details'] = _copy_json_value(cause.get('details'))\n"
 "            parsed_causes.append(item)\n"
