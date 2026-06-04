@@ -96,8 +96,8 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	if e.CauseChain[0].Message != "bad" {
 		t.Fatalf("ToMap exposed CauseChain backing storage: %#v", e.CauseChain)
 	}
-	if e.Details["code"] != "E_PY" {
-		t.Fatalf("ToMap exposed Details backing storage: %#v", e.Details)
+	if e.Details.(map[string]interface{})["code"] != "E_PY" {
+		t.Fatalf("ToMap exposed Details map backing storage: %#v", e.Details)
 	}
 }
 
@@ -263,9 +263,30 @@ func TestParseError_PythonTracebackIgnoresMetadataLines(t *testing.T) {
 	if re.Details == nil {
 		t.Fatal("expected parsed details")
 	}
-	errors, ok := re.Details["errors"].([]interface{})
+	details, ok := re.Details.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Details = %T, want object", re.Details)
+	}
+	errors, ok := details["errors"].([]interface{})
 	if !ok || len(errors) != 1 {
-		t.Fatalf("Details[errors] = %#v, want one error", re.Details["errors"])
+		t.Fatalf("Details[errors] = %#v, want one error", details["errors"])
+	}
+}
+
+func TestParseError_DetailsPreservesNonObjectJSON(t *testing.T) {
+	re := ParseError("javascript", `ERR:javascript: AggregateError: invalid
+Details: [{"path":["user","age"],"code":"too_small"}]`)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	details, ok := re.Details.([]interface{})
+	if !ok || len(details) != 1 {
+		t.Fatalf("Details = %#v, want one-element array", re.Details)
+	}
+	envelope := re.ToMap()
+	envelope["details"].([]interface{})[0] = "changed"
+	if _, ok := re.Details.([]interface{})[0].(map[string]interface{}); !ok {
+		t.Fatalf("ToMap exposed Details array backing storage: %#v", re.Details)
 	}
 }
 

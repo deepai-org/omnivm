@@ -19,7 +19,7 @@ type RuntimeError struct {
 	CauseChain          []RuntimeErrorCause // nested causes from languages that expose them
 	BoundaryPath        string              // call/manifest boundary path, if available
 	OriginalErrorHandle string              // source-runtime handle marker, if one was reported
-	Details             map[string]interface{}
+	Details             interface{}
 }
 
 type RuntimeErrorCause struct {
@@ -75,19 +75,26 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		"cause_chain":           causes,
 		"boundary_path":         e.BoundaryPath,
 		"original_error_handle": e.OriginalErrorHandle,
-		"details":               copyDetails(e.Details),
+		"details":               copyJSONValue(e.Details),
 	}
 }
 
-func copyDetails(details map[string]interface{}) map[string]interface{} {
-	if details == nil {
+func copyJSONValue(value interface{}) interface{} {
+	if value == nil {
 		return nil
 	}
-	copied := make(map[string]interface{}, len(details))
-	for key, value := range details {
-		copied[key] = value
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		copied := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			copied[key] = item
+		}
+		return copied
+	case []interface{}:
+		return append([]interface{}(nil), typed...)
+	default:
+		return typed
 	}
-	return copied
 }
 
 // ParseError parses a bridge error into a structured RuntimeError.
@@ -266,13 +273,13 @@ func parseCauseChain(text string) []RuntimeErrorCause {
 	return causes
 }
 
-func parseDetails(text string) map[string]interface{} {
+func parseDetails(text string) interface{} {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "Details: ") {
 			continue
 		}
-		var details map[string]interface{}
+		var details interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "Details: "))), &details); err == nil {
 			return details
 		}
