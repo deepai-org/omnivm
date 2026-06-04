@@ -2487,6 +2487,11 @@ class OmniVMHandleProxy
     super
   end
 
+  def hash
+    return __omnivm_data_key_value("hash") if __omnivm_data_key?("hash")
+    super
+  end
+
   def to_s
     return __omnivm_data_key_value("to_s") if __omnivm_data_key?("to_s")
     super

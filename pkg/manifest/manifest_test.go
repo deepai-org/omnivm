@@ -5733,6 +5733,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "def class") || !contains(code, `__omnivm_data_key_value("class")`) ||
 		!contains(code, "def inspect") || !contains(code, `__omnivm_data_key_value("inspect")`) ||
+		!contains(code, "def hash") || !contains(code, `__omnivm_data_key_value("hash")`) ||
 		!contains(code, "def to_s") || !contains(code, `__omnivm_data_key_value("to_s")`) {
 		t.Fatalf("Ruby materializer should let remote identity-name fields beat local Object methods, got %q", code)
 	}
