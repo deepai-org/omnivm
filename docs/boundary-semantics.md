@@ -182,6 +182,13 @@ queue automatically when the golden host thread is idle; nested runtime bridge
 calls only enqueue.
 The finalizer queue has a fixed in-memory spill limit for distinct handle ids;
 overflow is counted under handle diagnostics instead of growing without bound.
+Stale proxy operations that are initiated by user code, such as get, set, call,
+retain, adopt, access, stream next/cancel, and reference creation, must report
+the owner-side lifecycle error with runtime/kind context. Cleanup-only paths are
+different: `handle_release_finalizer` returns `false` for an already released
+handle without queueing work, and `handle_drop_reference` is an idempotent
+no-op when either side of the edge is already gone. This keeps GC/finalizer and
+scope cleanup races quiet without hiding ordinary stale-proxy use.
 
 ### Cross-Runtime Cycles
 

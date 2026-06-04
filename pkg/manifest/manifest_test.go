@@ -7452,6 +7452,65 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 	}
 }
 
+func TestClosedProxyCleanupOpsRemainIdempotent(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/closed-cleanup"}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "arg",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/arg-cleanup"}},
+	}); err != nil {
+		t.Fatalf("resource arg open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	argVal, _ := e.getBinding("arg")
+	argRef := argVal.(*ResourceRef)
+	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "req"}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+	before := e.handleTable.Stats(time.Now())
+
+	result, err := e.HandleCall(`{"op":"handle_release_finalizer","id":` + strconv.FormatUint(uint64(ref.ID), 10) + `}`)
+	if err != nil {
+		t.Fatalf("closed handle_release_finalizer should remain idempotent: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("closed handle_release_finalizer envelope = %#v, want false", env)
+	}
+	after := e.handleTable.Stats(time.Now())
+	if after.FinalizerQueued != before.FinalizerQueued || after.FinalizerQueueLen != before.FinalizerQueueLen || after.FinalizerReleases != before.FinalizerReleases {
+		t.Fatalf("closed finalizer cleanup changed finalizer stats: before=%+v after=%+v", before, after)
+	}
+
+	for _, call := range []string{
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, ref.ID, argRef.ID),
+		fmt.Sprintf(`{"op":"handle_drop_reference","from":%d,"to":%d}`, argRef.ID, ref.ID),
+	} {
+		result, err := e.HandleCall(call)
+		if err != nil {
+			t.Fatalf("closed handle_drop_reference cleanup %s should remain idempotent: %v", call, err)
+		}
+		env := decodeResultEnvelopeForTest(t, result)
+		if env.Kind != "bool" || env.Value != true {
+			t.Fatalf("closed handle_drop_reference envelope = %#v, want true", env)
+		}
+	}
+}
+
 func TestAdapterConformanceCoversRuntimeAndFrameworkShapes(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript", "java", "ruby")
 
