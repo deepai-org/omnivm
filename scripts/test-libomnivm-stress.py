@@ -10224,6 +10224,227 @@ raise "Rails request was not captured" unless $rails_server_req
         raise AssertionError(f"Rack/Rails socket abort leaked handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_rack_webrick_server_client_abort_stays_live():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r"""
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+rack_webrick_abort_events = []
+rack_webrick_client_proc = None
+rack_webrick_client_log = tempfile.NamedTemporaryFile(prefix="omnivm-rack-webrick-client-", delete=False).name
+
+def rack_webrick_start_client(port):
+    global rack_webrick_client_proc
+    code = r'''
+import socket
+import struct
+import sys
+import time
+
+port = int(sys.argv[1])
+log_path = sys.argv[2]
+event = "client-error"
+sock = None
+try:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    sock.sendall(
+        b"GET /rack/webrick-abort?mode=poly HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"X-Request-Id: rack-webrick-abort-42\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    data = b""
+    deadline = time.time() + 5
+    while b"first" not in data and time.time() < deadline:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    event = "client-saw-first" if b"first" in data else "client-missed-first"
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+except BaseException as exc:
+    event = "client-error:" + type(exc).__name__ + ":" + str(exc)
+finally:
+    try:
+        if sock is not None:
+            sock.close()
+    except BaseException:
+        pass
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(event)
+'''
+    rack_webrick_client_proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(int(port)), rack_webrick_client_log],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return True
+"""
+    run_server = r'''
+require 'rack/request'
+require 'rackup/handler/webrick'
+
+$rack_webrick_state = {events: []}
+$rack_webrick_req = nil
+
+response_writer = proc do |io|
+  $rack_webrick_state[:events] << 'writer-started'
+  begin
+    io.write("first\n")
+    io.flush if io.respond_to?(:flush)
+    256.times do
+      io.write("x" * 65_536)
+      io.flush if io.respond_to?(:flush)
+    end
+    $rack_webrick_state[:events] << 'writer-finished'
+  rescue => e
+    $rack_webrick_state[:events] << "write-aborted:#{e.class}"
+    raise
+  ensure
+    $rack_webrick_state[:events] << 'writer-cleanup'
+  end
+end
+
+app = ->(env) do
+  $rack_webrick_state[:events] << 'app-called'
+  $rack_webrick_req = Rack::Request.new(env)
+  marker = OmniVM.call(
+    'javascript',
+    "omnivm.call('ruby', '$rack_webrick_req.request_method') + ':' + " \
+    "omnivm.call('ruby', '$rack_webrick_req.path_info')"
+  )
+  $rack_webrick_state[:events] << "marker:#{marker}"
+  [200, {'Content-Type' => 'text/plain'}, response_writer]
+end
+
+server = Rackup::Handler::WEBrick::Server.new(
+  app,
+  BindAddress: '127.0.0.1',
+  Port: 0,
+  RequestTimeout: 0,
+  Logger: WEBrick::Log.new($stderr, WEBrick::Log::FATAL),
+  AccessLog: []
+)
+sock = nil
+begin
+  port = server.listeners.first.addr[1]
+  server.instance_variable_set(:@status, :Running)
+  OmniVM.call('python', "rack_webrick_start_client(#{port})")
+  sock = server.listeners.first.accept
+  $rack_webrick_state[:events] << 'socket-accepted'
+  if IO.select([sock], nil, nil, 5)
+    begin
+      $rack_webrick_state[:events] << "socket-peek:#{sock.recv(4, Socket::MSG_PEEK).inspect}"
+    rescue => e
+      $rack_webrick_state[:events] << "socket-peek-error:#{e.class}"
+    end
+  else
+    $rack_webrick_state[:events] << 'socket-no-data'
+  end
+  req = server.send(:create_request, server.config)
+  res = server.send(:create_response, server.config)
+  begin
+    req.parse(sock)
+    res.request_method = req.request_method
+    res.request_uri = req.request_uri
+    res.request_http_version = req.http_version
+    res.keep_alive = req.keep_alive?
+    server.service(req, res)
+    res.send_response(sock)
+    $rack_webrick_state[:events] << 'response-send-returned'
+  rescue => e
+    $rack_webrick_state[:events] << "response-send-aborted:#{e.class}:#{e.message}:#{Array(e.backtrace).first}"
+  end
+ensure
+  begin
+    sock.close if sock && !sock.closed?
+  rescue
+  end
+  begin
+    server.shutdown
+  rescue
+  end
+end
+'''
+    verify = r'''
+events = $rack_webrick_state[:events]
+raise "Rack WEBrick app did not run: #{events.join('|')}" unless events.include?('app-called')
+raise "Rack WEBrick writer did not start: #{events.join('|')}" unless events.include?('writer-started')
+raise "Rack WEBrick writer cleanup did not run: #{events.join('|')}" unless events.include?('writer-cleanup')
+raise "Rack WEBrick request was not captured" unless $rack_webrick_req
+raise "Rack WEBrick request marker failed: #{events.join('|')}" unless events.include?('marker:GET:/rack/webrick-abort')
+if events.include?('writer-finished')
+  raise "Rack WEBrick writer finished despite client abort: #{events.join('|')}"
+end
+unless events.any? { |event| event.start_with?('write-aborted:') || event.start_with?('response-send-aborted:') }
+  raise "Rack WEBrick server did not observe a client abort: #{events.join('|')}"
+end
+'''
+    verify_python = r'''
+if rack_webrick_client_proc is not None:
+    stdout, stderr = rack_webrick_client_proc.communicate(timeout=5)
+    if rack_webrick_client_proc.returncode != 0:
+        raise AssertionError(f"Rack WEBrick abort client exited {rack_webrick_client_proc.returncode}: stdout={stdout!r} stderr={stderr!r}")
+try:
+    with open(rack_webrick_client_log, "r", encoding="utf-8") as f:
+        rack_webrick_abort_events.append(f.read())
+finally:
+    try:
+        os.unlink(rack_webrick_client_log)
+    except FileNotFoundError:
+        pass
+if "client-missed-first" in rack_webrick_abort_events:
+    raise AssertionError(f"Rack WEBrick abort client did not see first response bytes: {rack_webrick_abort_events!r}")
+if "client-saw-first" not in rack_webrick_abort_events:
+    raise AssertionError(f"Rack WEBrick abort client did not record response bytes: {rack_webrick_abort_events!r}")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {"op": "exec", "runtime": "ruby", "code": run_server},
+            {"op": "exec", "runtime": "ruby", "code": verify},
+            {"op": "exec", "runtime": "python", "code": verify_python},
+            {"op": "eval", "runtime": "ruby", "bind": "rack_webrick_req", "code": "$rack_webrick_req"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rack_webrick_req": "rack_webrick_req"},
+                "code": (
+                    "if (rack_webrick_req.request_method !== 'GET') throw new Error('bad Rack WEBrick method: ' + rack_webrick_req.request_method); "
+                    "if (rack_webrick_req.path_info !== '/rack/webrick-abort') throw new Error('bad Rack WEBrick path: ' + rack_webrick_req.path_info); "
+                    "if (rack_webrick_req.query_string !== 'mode=poly') throw new Error('bad Rack WEBrick query: ' + rack_webrick_req.query_string); "
+                    "if (rack_webrick_req.get_header('HTTP_X_REQUEST_ID') !== 'rack-webrick-abort-42') throw new Error('bad Rack WEBrick header');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Rack WEBrick request did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Rack WEBrick request crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Rack WEBrick request used JSON fallback: before={before_boundary}, after={boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("call", 0) <= before_handles.get("handle_accesses_by_kind", {}).get("call", 0):
+        raise AssertionError(f"Rack WEBrick request proxy did not record method calls: before={before_handles}, after={handles}")
+    if handles.get("live", 0) > before_handles.get("live", 0):
+        raise AssertionError(f"Rack WEBrick abort leaked handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_java_http_message_shape_capture_uses_proxy_not_stream():
     java_msg_expr = (
         "((java.util.function.Supplier<Object>)(() -> { "
@@ -22356,10 +22577,11 @@ def test_ruby_bootstrap_core_surface():
         "[1, 2, 3].last(2).join(','), "
         "Dir['/tmp'].is_a?(Array).to_s, "
         "Time.new(2000, 1, 1, 0, 0, 0).yday.to_s, "
-        "GC.stat({}).is_a?(Hash).to_s"
+        "GC.stat({}).is_a?(Hash).to_s, "
+        "nil.to_i.to_s"
         "]; checks.join('|')",
     )
-    if got != "0,1,2|-1|2,3|true|1|true":
+    if got != "0,1,2|-1|2,3|true|1|true|0":
         raise AssertionError(f"Ruby bootstrap surface mismatch: {got}")
 
 
@@ -22672,6 +22894,7 @@ def main():
         check("Manifest Rails ActionDispatch request/response capture uses proxy not stream", test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream)
         check("Manifest Rails ActionDispatch response stream writer stays live after close", test_manifest_rails_actiondispatch_response_stream_writer_stays_live_after_close)
         check("Manifest Rack Rails socket abort closes response body owner", test_manifest_rack_rails_socket_abort_closes_response_body_owner)
+        check("Manifest Rack WEBrick server client abort stays live", test_manifest_rack_webrick_server_client_abort_stays_live)
         check("Manifest Java HTTP message shape capture uses proxy not stream", test_manifest_java_http_message_shape_capture_uses_proxy_not_stream)
         check("Manifest OkHttp request capture uses proxy not JSON", test_manifest_okhttp_request_capture_uses_proxy_not_json)
         check("Manifest OkHttp response body stream early cancel releases owner", test_manifest_okhttp_response_body_stream_early_cancel_releases_owner)
