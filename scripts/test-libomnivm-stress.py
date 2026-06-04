@@ -17521,7 +17521,7 @@ def test_javascript_native_activerecord_error_fields_cross_runtime_call():
         raise AssertionError(f"JS ActiveRecord error should not invent original handle: {envelope}")
 
 
-def test_ruby_java_native_validation_library_error_fields_cross_runtime_calls():
+def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
     pydantic_source = (
         "from pydantic import BaseModel, Field\n"
         "class User(BaseModel):\n"
@@ -17533,6 +17533,28 @@ def test_ruby_java_native_validation_library_error_fields_cross_runtime_calls():
         "(() => { const { z } = require('zod'); "
         "return z.object({age:z.number().min(1), name:z.string()}).parse({age:0}); })();"
     )
+    sqlalchemy_source = (
+        "from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine\n"
+        "engine = create_engine('sqlite:///:memory:')\n"
+        "metadata = MetaData()\n"
+        "users = Table('users', metadata, Column('id', Integer, primary_key=True), Column('name', String, unique=True))\n"
+        "metadata.create_all(engine)\n"
+        "with engine.begin() as conn:\n"
+        "    conn.execute(users.insert().values(name='ada'))\n"
+        "    conn.execute(users.insert().values(name='ada'))\n"
+    )
+    django_form_source = (
+        "from django.conf import settings\n"
+        "if not settings.configured: settings.configure(USE_I18N=False, SECRET_KEY='x')\n"
+        "from django import forms\n"
+        "from django.core.exceptions import ValidationError\n"
+        "class Signup(forms.Form):\n"
+        "    age=forms.IntegerField(min_value=1)\n"
+        "    name=forms.CharField(required=True)\n"
+        "form=Signup({'age':'0'})\n"
+        "raise ValidationError(form.errors.as_json())\n"
+    )
+    active_record_source = "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)"
 
     ruby_result = omnivm.call(
         "ruby",
@@ -17573,11 +17595,47 @@ rescue OmniVM::RuntimeError => e
     e.to_dict[:boundary_path]
   ].join("|")
 end
+begin
+  OmniVM.call("python", {json.dumps(sqlalchemy_source)})
+rescue OmniVM::RuntimeError => e
+  detail = e.message.to_s + "\\n" + e.traceback.to_s
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    detail.include?("UNIQUE constraint failed"),
+    detail.include?("users.name"),
+    detail.include?("INSERT INTO users"),
+    e.traceback.to_s.include?("Traceback"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
+begin
+  OmniVM.call("python", {json.dumps(django_form_source)})
+rescue OmniVM::RuntimeError => e
+  detail = e.message.to_s + "\\n" + e.traceback.to_s
+  out << [
+    e.is_a?(OmniVM::RuntimeError),
+    e.runtime,
+    e.type,
+    detail.include?("age"),
+    detail.include?("min_value"),
+    detail.include?("required"),
+    e.traceback.to_s.include?("ValidationError"),
+    e.boundary_path,
+    e.original_error_handle.nil?,
+    e.to_h[:type],
+    e.to_dict[:boundary_path]
+  ].join("|")
+end
 out.join("\\n")
 '''
     )
     ruby_lines = ruby_result.splitlines()
-    if len(ruby_lines) != 2:
+    if len(ruby_lines) != 4:
         raise AssertionError(f"unexpected Ruby validation error field result: {ruby_result}")
     ruby_pydantic = ruby_lines[0].split("|")
     want_ruby_pydantic = [
@@ -17611,6 +17669,38 @@ out.join("\\n")
     ]
     if ruby_zod != want_ruby_zod:
         raise AssertionError(f"Ruby Zod error fields lost structure: {ruby_zod!r}")
+    ruby_sqlalchemy = ruby_lines[2].split("|")
+    want_ruby_sqlalchemy = [
+        "true",
+        "python",
+        "IntegrityError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "IntegrityError",
+        "call[python]",
+    ]
+    if ruby_sqlalchemy != want_ruby_sqlalchemy:
+        raise AssertionError(f"Ruby SQLAlchemy error fields lost structure: {ruby_sqlalchemy!r}")
+    ruby_django = ruby_lines[3].split("|")
+    want_ruby_django = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if ruby_django != want_ruby_django:
+        raise AssertionError(f"Ruby Django form error fields lost structure: {ruby_django!r}")
 
     java_result = omnivm.call(
         "java",
@@ -17655,12 +17745,67 @@ out.join("\\n")
             String.valueOf(envelope.get("boundary_path"))
         ));
     }}
+    try {{
+        omnivm.OmniVM.call("python", {json.dumps(sqlalchemy_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("UNIQUE constraint failed")),
+            Boolean.toString(detail.contains("users.name")),
+            Boolean.toString(detail.contains("INSERT INTO users")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("Traceback")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    try {{
+        omnivm.OmniVM.call("python", {json.dumps(django_form_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("age")),
+            Boolean.toString(detail.contains("min_value")),
+            Boolean.toString(detail.contains("required")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("ValidationError")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
+    try {{
+        omnivm.OmniVM.call("ruby", {json.dumps(active_record_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        String detail = String.valueOf(e.getMessage()) + "\\n" + String.valueOf(e.getTraceback());
+        out.add(String.join("|",
+            Boolean.toString(e instanceof RuntimeException),
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(detail.contains("Record invalid")),
+            Boolean.toString(String.valueOf(e.getTraceback()).contains("ActiveRecord::RecordInvalid")),
+            e.getBoundaryPath(),
+            Boolean.toString(e.getOriginalErrorHandle() == null),
+            String.valueOf(envelope.get("type")),
+            String.valueOf(envelope.get("boundary_path"))
+        ));
+    }}
     return String.join("\\n", out);
 }})).call()
 '''
     )
     java_lines = java_result.splitlines()
-    if len(java_lines) != 2:
+    if len(java_lines) != 5:
         raise AssertionError(f"unexpected Java validation error field result: {java_result}")
     java_pydantic = java_lines[0].split("|")
     want_java_pydantic = [
@@ -17694,6 +17839,52 @@ out.join("\\n")
     ]
     if java_zod != want_java_zod:
         raise AssertionError(f"Java Zod error fields lost structure: {java_zod!r}")
+    java_sqlalchemy = java_lines[2].split("|")
+    want_java_sqlalchemy = [
+        "true",
+        "python",
+        "IntegrityError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "IntegrityError",
+        "call[python]",
+    ]
+    if java_sqlalchemy != want_java_sqlalchemy:
+        raise AssertionError(f"Java SQLAlchemy error fields lost structure: {java_sqlalchemy!r}")
+    java_django = java_lines[3].split("|")
+    want_java_django = [
+        "true",
+        "python",
+        "ValidationError",
+        "true",
+        "true",
+        "true",
+        "true",
+        "call[python]",
+        "true",
+        "ValidationError",
+        "call[python]",
+    ]
+    if java_django != want_java_django:
+        raise AssertionError(f"Java Django form error fields lost structure: {java_django!r}")
+    java_active_record = java_lines[4].split("|")
+    want_java_active_record = [
+        "true",
+        "ruby",
+        "ActiveRecord::RecordInvalid",
+        "true",
+        "true",
+        "call[ruby]",
+        "true",
+        "ActiveRecord::RecordInvalid",
+        "call[ruby]",
+    ]
+    if java_active_record != want_java_active_record:
+        raise AssertionError(f"Java ActiveRecord error fields lost structure: {java_active_record!r}")
 
 
 def test_javascript_native_runtime_error_fields_cross_runtime_calls():
@@ -27680,7 +27871,7 @@ def main():
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
-        check("Ruby and Java native validation library error fields cross runtime calls", test_ruby_java_native_validation_library_error_fields_cross_runtime_calls)
+        check("Ruby and Java native ecosystem library error fields cross runtime calls", test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
         check("Ruby native RuntimeError fields cross runtime calls", test_ruby_native_runtime_error_fields_cross_runtime_calls)
