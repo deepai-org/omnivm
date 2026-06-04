@@ -6713,11 +6713,17 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"origin_runtime = text_field(field('origin_runtime', 'originRuntime'), runtime_name)",
 		"err_type = text_field(envelope.get('type'))",
 		"detail = text_field(envelope.get('message'))",
+		"def details_field(source):",
+		"raw_details = source.get('details_json')",
+		"raw_details = source.get('detailsJson')",
+		"return __omnivm_json.loads(raw_details)",
+		"return raw_details",
 		"stack_frames = field('stack_frames', 'stackFrames')",
 		"cause_chain = field('cause_chain', 'causeChain')",
 		"cause_stack_frames = cause.get('stackFrames')",
 		"for key, fallback in (('runtime', 'runtime'), ('origin_runtime', 'originRuntime'), ('boundary_path', 'boundaryPath'), ('original_error_handle', 'originalErrorHandle')):",
 		"if item.get('runtime') and not item.get('origin_runtime'):",
+		"'details': details_field(envelope)",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError should accept JS camelCase envelope fields, missing %q", want)
@@ -6726,7 +6732,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	for _, want := range []string{
 		"cause_traceback = cause.get('traceback')",
 		"item['stack_frames'] = list(cause_stack_frames)",
-		"item['details'] = _copy_json_value(cause.get('details'))",
+		"cause_details = details_field(cause)",
+		"item['details'] = cause_details",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError should preserve nested cause envelope fields, missing %q", want)
