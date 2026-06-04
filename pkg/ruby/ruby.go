@@ -1372,7 +1372,6 @@ static int omnivm_ruby_init(void) {
         "    require 'json' unless defined?(JSON)\n"
         "    value = __error_details_value(error)\n"
         "    return nil if value.nil?\n"
-        "    value = {errors: value} if value.is_a?(Array)\n"
         "    JSON.generate(value)\n"
         "  rescue Exception\n"
         "    nil\n"

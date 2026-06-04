@@ -7609,6 +7609,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	if contains(files["../../pkg/ruby/ruby.go"], "attr_reader :runtime, :origin_runtime, :type, :traceback, :stack_frames, :cause_chain") {
 		t.Fatalf("embedded Ruby RuntimeError should not expose mutable structured fields through attr_reader")
 	}
+	if contains(files["../../pkg/ruby/ruby.go"], "value = {errors: value} if value.is_a?(Array)") {
+		t.Fatalf("embedded Ruby error details should preserve non-object JSON instead of wrapping arrays")
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "def as_json(*_args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "JSON.generate(to_h, *args)") {
