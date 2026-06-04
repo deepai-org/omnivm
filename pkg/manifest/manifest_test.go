@@ -812,7 +812,7 @@ func TestByteSliceCaptureBecomesArrowTableHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrapWithCaptures: %v", err)
 	}
-	if !strings.Contains(code, `"__omnivm_table__":true`) || !strings.Contains(code, `"arrow_c_data"`) || !strings.Contains(code, `"buffer"`) {
+	if !strings.Contains(code, `"__omnivm_table__":true`) || !strings.Contains(code, `"arrow_c_data"`) || !strings.Contains(code, `"buffer"`) || !strings.Contains(code, `"memory_space":"host"`) {
 		t.Fatalf("byte slice capture should inject an Arrow table descriptor, got %q", code)
 	}
 	stats := e.BoundaryStats()
@@ -830,6 +830,9 @@ func TestByteSliceCaptureBecomesArrowTableHandle(t *testing.T) {
 	}
 	if tableID == 0 {
 		t.Fatalf("byte slice capture did not register a table handle")
+	}
+	if meta := e.tables[tableID].Metadata; meta == nil || meta.MemorySpace != "host" {
+		t.Fatalf("byte slice table metadata memory_space = %+v, want host", meta)
 	}
 	result, err := e.HandleCall(`{"op":"handle_len","id":` + strconv.FormatUint(uint64(tableID), 10) + `}`)
 	if err != nil {
@@ -1473,6 +1476,18 @@ func TestResourceCloseRunsFromFinallyBody(t *testing.T) {
 
 func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
+	name := "test_table_export_release_memory_space"
+	_ = arrow.GlobalStore().Free(name)
+	if _, err := arrow.GlobalStore().SetWithMetadata(name, []byte{1, 2, 3, 4}, arrow.BufferMetadata{
+		Dtype:     arrow.DtypeF64,
+		Format:    "g",
+		Shape:     []int64{2},
+		ReadOnly:  true,
+		Ownership: "producer",
+	}); err != nil {
+		t.Fatalf("SetWithMetadata: %v", err)
+	}
+	defer arrow.GlobalStore().Free(name)
 	e.setBinding("orders", RuntimeRef{Runtime: "python", VarName: "orders", Value: "arrow-array"})
 	dtype := int32(4)
 	nullCount := int64(0)
@@ -1488,6 +1503,7 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		Metadata: &TableMetadata{
 			Dtype:       &dtype,
 			ArrowFormat: "g",
+			Buffer:      name,
 			Shape:       []int64{10, 3},
 			Strides:     []int64{24, 8},
 			NullCount:   &nullCount,
@@ -1515,6 +1531,9 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	if len(ref.Metadata.Shape) != 2 || ref.Metadata.Shape[0] != 10 || len(ref.Metadata.Strides) != 2 || ref.Metadata.Strides[1] != 8 {
 		t.Fatalf("table shape/stride metadata not preserved: %+v", ref.Metadata)
 	}
+	if ref.Metadata.MemorySpace != "host" {
+		t.Fatalf("table memory_space = %q, want host", ref.Metadata.MemorySpace)
+	}
 	if stats := e.handleTable.Stats(time.Now()); stats.Live != 1 {
 		t.Fatalf("table export should register one live handle, stats=%+v", stats)
 	}
@@ -1525,7 +1544,7 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	if !strings.Contains(jsonVal, `"__omnivm_table__":true`) {
 		t.Fatalf("table proxy missing marker: %s", jsonVal)
 	}
-	if !strings.Contains(jsonVal, `"metadata"`) || !strings.Contains(jsonVal, `"arrow_format":"g"`) {
+	if !strings.Contains(jsonVal, `"metadata"`) || !strings.Contains(jsonVal, `"arrow_format":"g"`) || !strings.Contains(jsonVal, `"memory_space":"host"`) {
 		t.Fatalf("table proxy missing metadata: %s", jsonVal)
 	}
 	valueJSON, err := marshalForCapture(*ref)
@@ -6343,7 +6362,7 @@ func TestResolveRuntimeRefCaptureExportsBufferProtocolAsArrowTable(t *testing.T)
 	if err != nil {
 		t.Fatalf("resolveRuntimeRefCapture: %v", err)
 	}
-	if !strings.Contains(jsonVal, `"__omnivm_table__":true`) || !strings.Contains(jsonVal, `"arrow_c_data"`) || !strings.Contains(jsonVal, `"buffer"`) {
+	if !strings.Contains(jsonVal, `"__omnivm_table__":true`) || !strings.Contains(jsonVal, `"arrow_c_data"`) || !strings.Contains(jsonVal, `"buffer"`) || !strings.Contains(jsonVal, `"memory_space":"host"`) {
 		t.Fatalf("buffer-protocol RuntimeRef should cross as Arrow table descriptor, got %s", jsonVal)
 	}
 	if len(mocks["python"].exports) != 1 {
@@ -6362,7 +6381,7 @@ func TestResolveRuntimeRefCaptureExportsBufferProtocolAsArrowTable(t *testing.T)
 		t.Fatalf("buffer-protocol capture did not register table handle")
 	}
 	table := e.tables[tableID]
-	if table.Metadata == nil || len(table.Metadata.Shape) != 2 || table.Metadata.Shape[0] != 3 || table.Metadata.Shape[1] != 2 || len(table.Metadata.Strides) != 2 || table.Metadata.Strides[0] != 2 || table.Metadata.Strides[1] != 1 || !table.Metadata.ReadOnly {
+	if table.Metadata == nil || len(table.Metadata.Shape) != 2 || table.Metadata.Shape[0] != 3 || table.Metadata.Shape[1] != 2 || len(table.Metadata.Strides) != 2 || table.Metadata.Strides[0] != 2 || table.Metadata.Strides[1] != 1 || !table.Metadata.ReadOnly || table.Metadata.MemorySpace != "host" {
 		t.Fatalf("buffer-protocol table metadata not preserved: %+v", table.Metadata)
 	}
 	result, err := e.HandleCall(`{"op":"handle_len","id":` + strconv.FormatUint(uint64(tableID), 10) + `}`)

@@ -1761,6 +1761,7 @@ func (e *Executor) opTable(op *Op) (interface{}, error) {
 			Release:   op.Release,
 			Metadata:  cloneTableMetadata(op.Metadata),
 		}
+		fillTableMetadataMemorySpace(ref.Metadata)
 		if op.Value != nil {
 			val, err := e.resolveValueExpr(op.Value)
 			if err != nil {
@@ -2687,15 +2688,17 @@ func (e *Executor) autoBulkTableRefForCapture(val interface{}) (*TableRef, bool,
 		ReadOnly:  true,
 		Ownership: "producer",
 	}
+	var buf *arrow.Buffer
 	var err error
 	if view.ptr != nil || view.bytes == nil {
-		_, err = arrow.GlobalStore().SetExternalWithMetadata(name, view.ptr, view.bytesLen, meta, view.release)
+		buf, err = arrow.GlobalStore().SetExternalWithMetadata(name, view.ptr, view.bytesLen, meta, view.release)
 	} else {
-		_, err = arrow.GlobalStore().SetWithMetadata(name, view.bytes, meta)
+		buf, err = arrow.GlobalStore().SetWithMetadata(name, view.bytes, meta)
 	}
 	if err != nil {
 		return nil, true, err
 	}
+	storedMeta := buf.Metadata()
 	ref := &TableRef{
 		Runtime:   "go",
 		Format:    "arrow_c_data",
@@ -2707,6 +2710,7 @@ func (e *Executor) autoBulkTableRefForCapture(val interface{}) (*TableRef, bool,
 			Shape:       view.shapeOrDefault(),
 			Strides:     append([]int64(nil), view.strides...),
 			ReadOnly:    true,
+			MemorySpace: storedMeta.MemorySpace,
 		},
 		Value: name,
 	}
@@ -3188,6 +3192,8 @@ func marshalTableProxy(ref *TableRef) (string, error) {
 }
 
 func tableProxyValue(ref *TableRef) map[string]interface{} {
+	metadata := cloneTableMetadata(ref.Metadata)
+	fillTableMetadataMemorySpace(metadata)
 	value := map[string]interface{}{
 		"__omnivm_table__": true,
 		"id":               ref.ID,
@@ -3195,7 +3201,7 @@ func tableProxyValue(ref *TableRef) map[string]interface{} {
 		"format":           ref.Format,
 		"ownership":        ref.Ownership,
 		"release":          ref.Release,
-		"metadata":         ref.Metadata,
+		"metadata":         metadata,
 		"released":         ref.Released,
 	}
 	if name, ok := ref.Value.(string); ok && name != "" {
@@ -3226,6 +3232,15 @@ func cloneTableMetadata(meta *TableMetadata) *TableMetadata {
 		clone.NullCount = &nullCount
 	}
 	return &clone
+}
+
+func fillTableMetadataMemorySpace(meta *TableMetadata) {
+	if meta == nil || meta.MemorySpace != "" || meta.Buffer == "" {
+		return
+	}
+	if status := arrow.GlobalStore().Status(meta.Buffer); status.MemorySpace != "" {
+		meta.MemorySpace = status.MemorySpace
+	}
 }
 
 func marshalJobProxy(job *JobHandle) (string, error) {

@@ -3081,6 +3081,7 @@ func (e *Executor) runtimeRefBulkTableCaptureJSON(binding, targetRuntime string,
 			Offset:      exported.Offset,
 			NullCount:   nullCount,
 			ReadOnly:    exported.ReadOnly,
+			MemorySpace: arrow.GlobalStore().Status(exported.Name).MemorySpace,
 		},
 		Value: exported.Name,
 	}

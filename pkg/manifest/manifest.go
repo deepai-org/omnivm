@@ -62,6 +62,7 @@ type TableMetadata struct {
 	Offset      int64   `json:"offset,omitempty"`
 	NullCount   *int64  `json:"null_count,omitempty"`
 	ReadOnly    bool    `json:"read_only"`
+	MemorySpace string  `json:"memory_space,omitempty"`
 }
 
 // CallableShape carries compiler- or runtime-probed callable boundary evidence.

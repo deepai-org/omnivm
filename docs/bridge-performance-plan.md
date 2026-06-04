@@ -218,8 +218,8 @@ The manifest compiler emits Arrow/share-memory bridge intent and OmniVM skips
 serialization entirely, passing Arrow schema/array handles through the data path.
 The user still writes ordinary `.poly`; this is a lowered boundary decision.
 Manifest table handles carry generic metadata (`dtype`, `arrow_format`, shape,
-strides, null count, and read-only state) so target runtimes can import the view
-without guessing from runtime-specific objects.
+strides, null count, read-only state, and `memory_space`) so target runtimes can
+import the view without guessing from runtime-specific objects.
 
 ---
 
