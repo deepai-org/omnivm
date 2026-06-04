@@ -6051,10 +6051,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "public String getOriginRuntime()") ||
 		!contains(code, `out.put("origin_runtime", originRuntime)`) ||
 		!contains(code, "ParsedRuntimeError envelope = parseStructuredErrorEnvelope") ||
-		!contains(code, `parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime)`) ||
+		!contains(code, `parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime)`) ||
+		!contains(code, `parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback))`) ||
+		!contains(code, `parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"))`) ||
 		!contains(code, "String wrappedBoundary = parsed.boundaryPath") ||
 		!contains(code, "envelope = parseStructuredErrorEnvelope(text, parsed.runtime, wrappedBoundary)") {
-		t.Fatalf("Java runtime error envelope should preserve structured origin_runtime")
+		t.Fatalf("Java runtime error envelope should preserve structured origin_runtime and accept JS camelCase fields")
 	}
 	if !contains(code, "public List<String> getStackFrames()") || !contains(code, `out.put("stack_frames", new ArrayList<>(stackFrames))`) {
 		t.Fatalf("Java runtime error envelope should expose normalized stack frames")
@@ -6072,10 +6074,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")))`,
 		"private static List<String> stringListJsonValue",
 		"private static List<Map<String, Object>> causeChainJsonValue",
+		`private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey)`,
 		`entry.put("traceback", traceback)`,
 		`entry.put("stack_frames", stackFrames)`,
+		`String originRuntime = jsonString(jsonValue(cause, "origin_runtime", "originRuntime"))`,
+		`String boundaryPath = jsonString(jsonValue(cause, "boundary_path", "boundaryPath"))`,
+		`String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"))`,
 		`entry.put("details", RuntimeError.copyJsonValue(cause.get("details")))`,
-		`List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)

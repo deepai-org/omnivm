@@ -331,21 +331,29 @@ public class OmniVM {
         }
         ParsedRuntimeError parsed = new ParsedRuntimeError();
         parsed.runtime = nonEmptyJsonString(envelope.get("runtime"), safeString(fallbackRuntime));
-        parsed.originRuntime = nonEmptyJsonString(envelope.get("origin_runtime"), parsed.runtime);
+        parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime);
         parsed.type = jsonString(envelope.get("type"));
         parsed.message = jsonString(envelope.get("message"));
         parsed.traceback = jsonString(envelope.get("traceback"));
         if (parsed.runtime.isEmpty() && parsed.type.isEmpty() && parsed.message.isEmpty() && safeString(parsed.traceback).isEmpty()) {
             return null;
         }
-        parsed.boundaryPath = nonEmptyJsonString(envelope.get("boundary_path"), safeString(fallbackBoundary));
-        parsed.originalErrorHandle = emptyToNull(jsonString(envelope.get("original_error_handle")));
+        parsed.boundaryPath = nonEmptyJsonString(jsonValue(envelope, "boundary_path", "boundaryPath"), safeString(fallbackBoundary));
+        parsed.originalErrorHandle = emptyToNull(jsonString(jsonValue(envelope, "original_error_handle", "originalErrorHandle")));
         if (envelope.containsKey("details")) {
             parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
         }
-        parsed.stackFrames = stringListJsonValue(envelope.get("stack_frames"), parseStackFrames(parsed.traceback));
-        parsed.causeChain = causeChainJsonValue(envelope.get("cause_chain"));
+        parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback));
+        parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"));
         return parsed;
+    }
+
+    private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey) {
+        Object preferred = value.get(preferredKey);
+        if (preferred != null) {
+            return preferred;
+        }
+        return value.get(fallbackKey);
     }
 
     private static String jsonString(Object value) {
@@ -391,15 +399,25 @@ public class OmniVM {
             if (!traceback.isEmpty()) {
                 entry.put("traceback", traceback);
             }
-            List<String> stackFrames = stringListJsonValue(cause.get("stack_frames"), parseStackFrames(traceback));
+            List<String> stackFrames = stringListJsonValue(jsonValue(cause, "stack_frames", "stackFrames"), parseStackFrames(traceback));
             if (!stackFrames.isEmpty()) {
                 entry.put("stack_frames", stackFrames);
             }
-            for (String key : List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")) {
-                String text = jsonString(cause.get(key));
-                if (!text.isEmpty()) {
-                    entry.put(key, text);
-                }
+            String runtime = jsonString(cause.get("runtime"));
+            if (!runtime.isEmpty()) {
+                entry.put("runtime", runtime);
+            }
+            String originRuntime = jsonString(jsonValue(cause, "origin_runtime", "originRuntime"));
+            if (!originRuntime.isEmpty()) {
+                entry.put("origin_runtime", originRuntime);
+            }
+            String boundaryPath = jsonString(jsonValue(cause, "boundary_path", "boundaryPath"));
+            if (!boundaryPath.isEmpty()) {
+                entry.put("boundary_path", boundaryPath);
+            }
+            String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"));
+            if (!originalErrorHandle.isEmpty()) {
+                entry.put("original_error_handle", originalErrorHandle);
             }
             if (cause.containsKey("details")) {
                 entry.put("details", RuntimeError.copyJsonValue(cause.get("details")));
