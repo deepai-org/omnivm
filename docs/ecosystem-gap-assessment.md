@@ -371,7 +371,9 @@ lease release when method names or `.length` would be ambiguous.
 Python retained manifest proxies expose the same explicit operations as
 `omnivm.proxy_get`, `omnivm.proxy_set`, `omnivm.proxy_call`,
 `omnivm.proxy_len`, `omnivm.proxy_keys`, `omnivm.proxy_values`,
-`omnivm.proxy_items`, `omnivm.proxy_contains`, and `omnivm.proxy_close`; Ruby proxies expose
+`omnivm.proxy_items`, `omnivm.proxy_contains`, and `omnivm.proxy_close`.
+Generated Python manifest snippets also receive `omnivm_close(value)` for
+collision-safe explicit handle release or stream cancellation. Ruby proxies expose
 `omnivm_get`, `omnivm_set`, `omnivm_call`, `omnivm_len`, `omnivm_keys`,
 `omnivm_values`, `omnivm_items`, `omnivm_contains`, and `omnivm_close`.
 Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
