@@ -1548,6 +1548,7 @@ static void OmnivmSetBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& i
 // omnivm.releaseBuffer(name)
 static void OmnivmReleaseBufferCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
     v8::Isolate* isolate = info.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
     if (info.Length() < 1 || !info[0]->IsString()) {
         isolate->ThrowException(v8::Exception::TypeError(
             v8::String::NewFromUtf8Literal(isolate, "releaseBuffer requires a string name")));
@@ -1557,8 +1558,32 @@ static void OmnivmReleaseBufferCallback(const v8::FunctionCallbackInfo<v8::Value
 
     v8::String::Utf8Value name(isolate, info[0]);
     if (g_buf_free(*name) != 0) {
-        isolate->ThrowException(v8::Exception::Error(
-            v8::String::NewFromUtf8Literal(isolate, "releaseBuffer failed")));
+        std::string status_json;
+        if (g_buf_status) {
+            char* raw_status = g_buf_status(*name);
+            if (raw_status) {
+                status_json = raw_status;
+                if (g_bridge_free) g_bridge_free(raw_status);
+            }
+        }
+        std::string message = "releaseBuffer failed";
+        if (!status_json.empty()) {
+            message += ": ";
+            message += status_json;
+        }
+        v8::Local<v8::Value> error = v8::Exception::Error(
+            v8::String::NewFromUtf8(isolate, message.c_str()).ToLocalChecked());
+        if (!status_json.empty() && error->IsObject()) {
+            v8::Local<v8::Value> parsed_status;
+            v8::Local<v8::String> json =
+                v8::String::NewFromUtf8(isolate, status_json.c_str()).ToLocalChecked();
+            if (v8::JSON::Parse(context, json).ToLocal(&parsed_status)) {
+                error.As<v8::Object>()->Set(context,
+                    v8::String::NewFromUtf8Literal(isolate, "omnivmBufferStatus"),
+                    parsed_status).Check();
+            }
+        }
+        isolate->ThrowException(error);
     }
 }
 

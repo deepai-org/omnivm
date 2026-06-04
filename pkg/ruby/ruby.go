@@ -2211,7 +2211,18 @@ static VALUE rb_omnivm_release_buffer(VALUE self, VALUE rb_name) {
     }
     const char* name = StringValueCStr(rb_name);
     if (g_buf_free(name) != 0) {
-        rb_raise(rb_eRuntimeError, "OmniVM.release_buffer failed");
+        VALUE message = rb_str_new_cstr("OmniVM.release_buffer failed");
+        if (g_buf_status) {
+            char* raw = g_buf_status(name);
+            if (raw && raw[0] != '\0') {
+                rb_str_cat2(message, ": ");
+                rb_str_cat2(message, raw);
+            }
+            if (raw && g_bridge_free) {
+                g_bridge_free(raw);
+            }
+        }
+        rb_exc_raise(rb_exc_new_str(rb_eRuntimeError, message));
     }
     return Qnil;
 }

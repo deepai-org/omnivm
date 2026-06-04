@@ -9440,11 +9440,17 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/python/python.go"], "g_buf_free(name)") || !contains(files["../../pkg/python/python.go"], "g_buf_release(name)") {
 		t.Fatalf("embedded Python should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
 	}
+	if !contains(files["../../pkg/python/python.go"], "g_buf_status(name)") || !contains(files["../../pkg/python/python.go"], `PyErr_Format(PyExc_RuntimeError, "omnivm.release_buffer failed: %s", raw)`) {
+		t.Fatalf("embedded Python explicit release_buffer should include buffer status diagnostics on release failure")
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_free(name)") || !contains(files["../../pkg/ruby/ruby.go"], "g_buf_release(name)") {
 		t.Fatalf("embedded Ruby should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
 	}
 	if !contains(files["../../pkg/ruby/ruby.go"], `rb_raise(rb_eRuntimeError, "omnivm buffer bridge not initialized")`) {
 		t.Fatalf("embedded Ruby explicit release_buffer should diagnose a missing buffer-free callback")
+	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_status(name)") || !contains(files["../../pkg/ruby/ruby.go"], `rb_str_cat2(message, ": ")`) {
+		t.Fatalf("embedded Ruby explicit release_buffer should include buffer status diagnostics on release failure")
 	}
 	for _, want := range []string{
 		"class BufferOwner",
@@ -9474,11 +9480,17 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../scripts/v8_bridge_node.cc"], "g_buf_status(*name)") || !contains(files["../../scripts/v8_bridge_node.cc"], `"bufferStatus"`) {
 		t.Fatalf("V8 bridge should expose bufferStatus through the shared buffer status callback")
 	}
+	if !contains(files["../../scripts/v8_bridge_node.cc"], "omnivmBufferStatus") || !contains(files["../../scripts/v8_bridge_node.cc"], `message += status_json`) {
+		t.Fatalf("V8 releaseBuffer failure should include parsed buffer status diagnostics")
+	}
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
 		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
 	}
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_status(name)") || !contains(files["../../scripts/jvm_docker.go"], "nativeBufferStatus") {
 		t.Fatalf("JVM bridge should expose bufferStatus through the shared buffer status callback")
+	}
+	if !contains(files["../../scripts/jvm_docker.go"], "OmniVM.releaseBuffer failed: %s") || !contains(files["../../scripts/jvm_docker.go"], "snprintf(msg, msg_len") {
+		t.Fatalf("JVM releaseBuffer failure should include buffer status diagnostics")
 	}
 	javaRuntime, err := os.ReadFile("../../runtime/java/OmniVM.java")
 	if err != nil {

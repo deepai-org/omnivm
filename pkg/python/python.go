@@ -3642,6 +3642,19 @@ static PyObject* py_omnivm_release_buffer(PyObject* self, PyObject* args) {
     }
 
     if (g_buf_free(name) != 0) {
+        if (g_buf_status) {
+            char* raw = g_buf_status(name);
+            if (raw && raw[0] != '\0') {
+                PyErr_Format(PyExc_RuntimeError, "omnivm.release_buffer failed: %s", raw);
+                if (g_bridge_free) {
+                    g_bridge_free(raw);
+                }
+                return NULL;
+            }
+            if (raw && g_bridge_free) {
+                g_bridge_free(raw);
+            }
+        }
         PyErr_SetString(PyExc_RuntimeError, "omnivm.release_buffer failed");
         return NULL;
     }

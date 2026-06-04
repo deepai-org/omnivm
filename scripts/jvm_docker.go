@@ -315,7 +315,23 @@ static void JNICALL Java_omnivm_OmniVM_nativeReleaseBuffer(JNIEnv* env, jclass c
     if (g_buf_free(name) != 0) {
         jclass exc = (*env)->FindClass(env, "java/lang/RuntimeException");
         if (exc) {
-            (*env)->ThrowNew(env, exc, "OmniVM.releaseBuffer failed");
+            char* raw = g_buf_status ? g_buf_status(name) : NULL;
+            if (raw && raw[0] != '\0') {
+                size_t msg_len = strlen("OmniVM.releaseBuffer failed: ") + strlen(raw) + 1;
+                char* msg = (char*)malloc(msg_len);
+                if (msg) {
+                    snprintf(msg, msg_len, "OmniVM.releaseBuffer failed: %s", raw);
+                    (*env)->ThrowNew(env, exc, msg);
+                    free(msg);
+                } else {
+                    (*env)->ThrowNew(env, exc, "OmniVM.releaseBuffer failed");
+                }
+            } else {
+                (*env)->ThrowNew(env, exc, "OmniVM.releaseBuffer failed");
+            }
+            if (raw && g_bridge_free) {
+                g_bridge_free(raw);
+            }
         }
     }
     (*env)->ReleaseStringUTFChars(env, j_name, name);
