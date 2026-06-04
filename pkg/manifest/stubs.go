@@ -2364,6 +2364,9 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 	if ref.Runtime != "java" {
 		return false, nil
 	}
+	if javaZeroArgCommandMethod(key) {
+		return false, nil
+	}
 	expr, ok, err := runtimeRefJavaZeroArgMethodExpr(ref, key)
 	if err != nil || !ok {
 		return false, err
@@ -2374,6 +2377,10 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 	}
 	zeroArg, _ := value.(bool)
 	return zeroArg, nil
+}
+
+func javaZeroArgCommandMethod(key string) bool {
+	return rubyZeroArgCommandMethod(key)
 }
 
 func (e *Executor) runtimeRefTargetCallable(ref RuntimeRef) (bool, error) {

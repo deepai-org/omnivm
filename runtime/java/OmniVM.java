@@ -1325,7 +1325,12 @@ public class OmniVM {
                     return localValue(key);
                 }
             }
-            return bridgeGet(String.valueOf(key));
+            String textKey = String.valueOf(key);
+            Object value = bridgeGet(textKey);
+            if (isZeroArgCallableDescriptor(value)) {
+                return call(textKey);
+            }
+            return value;
         }
 
         private boolean isIndexedDescriptor() {
@@ -1524,6 +1529,13 @@ public class OmniVM {
                 return null;
             }
             return bridgeOp("{\"op\":\"handle_get\",\"id\":" + jsonScalar(id) + ",\"key\":\"" + jsonEscape(key) + "\"}");
+        }
+
+        private boolean isZeroArgCallableDescriptor(Object value) {
+            if (!(value instanceof Map<?, ?> map)) {
+                return false;
+            }
+            return Boolean.TRUE.equals(map.get("__omnivm_callable__")) && Boolean.TRUE.equals(map.get("zeroArg"));
         }
 
         @SuppressWarnings("unchecked")

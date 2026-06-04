@@ -4757,6 +4757,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `"op": "handle_get"`) {
 		t.Fatalf("Python materializer should fetch handle properties, got %q", code)
 	}
+	if !contains(code, `value.get("zeroArg") is True`) || !contains(code, `return self._bridge_call(key, (), {})`) {
+		t.Fatalf("Python materializer should invoke zero-arg callable descriptors as property access, got %q", code)
+	}
 	if !contains(code, `"op": "handle_index"`) || !contains(code, `"op": "handle_set"`) || !contains(code, `"op": "handle_call"`) || !contains(code, `"op": "handle_len"`) || !contains(code, `"op": "handle_iter"`) || !contains(code, `"op": "handle_contains"`) {
 		t.Fatalf("Python materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
 	}
@@ -4897,6 +4900,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, `if (prop === 'then'`) || !contains(code, `typeof thenValue === 'function' ? undefined : thenValue`) {
 		t.Fatalf("JS materializer should prevent callable remote then fields from becoming JS thenables, got %q", code)
+	}
+	if !contains(code, `env.value.zeroArg === true`) || !contains(code, `return bridge({op: "handle_call", key: env.value.key, args: []});`) {
+		t.Fatalf("JS materializer should invoke zero-arg callable descriptors as property access, got %q", code)
+	}
+	if !contains(code, `preserveCallable`) || !contains(code, `bridge({op: "handle_get", key: "then"}, {preserveCallable: true})`) {
+		t.Fatalf("JS materializer should preserve callable then descriptors for Promise safety, got %q", code)
 	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("JS materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
@@ -7433,6 +7442,16 @@ func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 	want := map[string]interface{}{"__omnivm_callable__": true, "key": "isClosed", "zeroArg": true}
 	if env.Kind != "json" || !jsonEqual(env.Value, want) {
 		t.Fatalf("live Java zero-arg method descriptor = %#v, want %#v", env, want)
+	}
+
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get close: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	want = map[string]interface{}{"__omnivm_callable__": true, "key": "close"}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java command method descriptor = %#v, want %#v", env, want)
 	}
 }
 

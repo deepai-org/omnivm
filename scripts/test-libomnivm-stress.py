@@ -21817,6 +21817,79 @@ dataclass_collision = CollisionDataclass(
         raise AssertionError(f"dataclass collision model did not record mutation access: before={before_handles}, after={handles}")
 
 
+def test_manifest_java_zero_arg_methods_stay_natural_in_guest_proxies():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    java_status_expr = (
+        "((java.util.function.Supplier<Object>)(() -> new Object() { "
+        "public String status() { return \"open\"; } "
+        "public int count() { return 3; } "
+        "public boolean isClosed() { return false; } "
+        "public String close() { return \"closed-by-command\"; } "
+        "})).get()"
+    )
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "eval", "runtime": "java", "bind": "java_status", "code": java_status_expr},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"java_status": "java_status"},
+                "code": (
+                    "if (java_status.status !== 'open') throw new Error('Java status() should read as a JS property: ' + java_status.status); "
+                    "if (java_status.count !== 3) throw new Error('Java count() should read as a JS property: ' + java_status.count); "
+                    "if (java_status.isClosed !== false) throw new Error('Java isClosed() should read as a JS property: ' + java_status.isClosed); "
+                    "if (typeof java_status.close !== 'function') throw new Error('Java close() command should stay explicit: ' + java_status.close); "
+                    "if (java_status.close() !== 'closed-by-command') throw new Error('Java close() explicit call failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"java_status": "java_status"},
+                "code": (
+                    "assert java_status.status == 'open', java_status.status\n"
+                    "assert java_status.count == 3, java_status.count\n"
+                    "assert java_status.isClosed is False, java_status.isClosed\n"
+                    "assert callable(java_status.close), java_status.close\n"
+                    "assert java_status.close() == 'closed-by-command'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"java_status": "java_status"},
+                "code": (
+                    "raise \"bad Java status property #{java_status.status.inspect}\" unless java_status.status == 'open'; "
+                    "raise \"bad Java count property #{java_status.count.inspect}\" unless java_status.count == 3; "
+                    "raise \"bad Java isClosed property #{java_status.isClosed.inspect}\" unless java_status.isClosed == false; "
+                    "close_cmd = java_status.close; "
+                    "raise \"Java close command should stay callable #{close_cmd.inspect}\" unless close_cmd.respond_to?(:call); "
+                    "raise \"Java close command call failed\" unless close_cmd.call == 'closed-by-command'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Java zero-arg object did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java zero-arg object used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"Java zero-arg object did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"Java zero-arg object did not record explicit command call: before={before_handles}, after={handles}")
+
+
 def test_manifest_js_sequence_length_set_resizes_mutable_sources():
     java_values_expr = (
         "((java.util.function.Supplier<java.util.ArrayList<String>>)(() -> { "
@@ -24647,6 +24720,7 @@ def main():
         check("Manifest Pydantic model collision fields stay natural", test_manifest_pydantic_model_collision_fields_stay_natural)
         check("Manifest attrs model collision fields stay natural", test_manifest_attrs_model_collision_fields_stay_natural)
         check("Manifest dataclass model collision fields stay natural", test_manifest_dataclass_model_collision_fields_stay_natural)
+        check("Manifest Java zero arg methods stay natural in guest proxies", test_manifest_java_zero_arg_methods_stay_natural_in_guest_proxies)
         check("Manifest JS collision fields stay data fields", test_manifest_js_collision_fields_stay_data_fields)
         check("Manifest JS sequence length set resizes mutable sources", test_manifest_js_sequence_length_set_resizes_mutable_sources)
         check("Manifest JS fixed-size length set rejects Java array and ByteBuffer", test_manifest_js_fixed_size_length_set_rejects_java_array_and_bytebuffer)

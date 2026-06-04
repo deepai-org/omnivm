@@ -699,6 +699,8 @@ class __OmniVMHandleProxy:
     def _materialize_bridge_value(self, value):
         if isinstance(value, dict) and value.get("__omnivm_callable__") is True:
             key = value.get("key")
+            if value.get("zeroArg") is True:
+                return self._bridge_call(key, (), {})
             return lambda *args, **kwargs: self._bridge_call(key, args, kwargs)
         if isinstance(value, dict) and (
             value.get("__omnivm_resource__") is True
@@ -1254,11 +1256,14 @@ globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(valu
 };
 globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy || function(target, jsonShape) {
   if (typeof Proxy === 'undefined') return target;
-  var decode = function(raw) {
+  var decode = function(raw, options) {
     try {
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true) {
         if (env.value && env.value.__omnivm_callable__ === true) {
+          if (env.value.zeroArg === true && !(options && options.preserveCallable)) {
+            return bridge({op: "handle_call", key: env.value.key, args: []});
+          }
           return function() {
             return bridge({op: "handle_call", key: env.value.key, args: Array.prototype.slice.call(arguments).map(globalThis.__omnivm_encode_arg)});
           };
@@ -1271,9 +1276,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     } catch (_e) {}
     return raw;
   };
-  var bridge = function(payload) {
+  var bridge = function(payload, options) {
     payload.id = globalThis.__omnivm_proxy_handle_id(target);
-    return decode(omnivm.call("__manifest", JSON.stringify(payload)));
+    return decode(omnivm.call("__manifest", JSON.stringify(payload)), options);
   };
   var descriptor = target && (target.__omnivm_descriptor__ || target);
   var isRuntimeRefFunctionTarget = function() {
@@ -1349,7 +1354,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (prop === "__omnivm_len") return function(defaultValue) { return bridgeLen(defaultValue); };
       if (prop === 'then' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
-          var thenValue = bridge({op: "handle_get", key: "then"});
+          var thenValue = bridge({op: "handle_get", key: "then"}, {preserveCallable: true});
           return typeof thenValue === 'function' ? undefined : thenValue;
         } catch (_thenError) {
           return Reflect.get(obj, prop, receiver);
