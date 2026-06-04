@@ -1914,45 +1914,47 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       if (idx >= 0) closeListeners.splice(idx, 1);
     };
   };
-  var markRemoteClosed = function() {
+  var markRemoteClosed = function(notifyAdapters) {
     if (remoteClosed) return false;
     remoteClosed = true;
     if (stream) stream.__omnivm_closed__ = true;
     if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function' && stream) {
       globalThis.__omnivm_handle_finalizers.unregister(stream);
     }
-    var listeners = closeListeners.slice();
-    closeListeners.length = 0;
-    for (var i = 0; i < listeners.length; i++) {
-      try { listeners[i](); } catch (_listenerError) {}
+    if (notifyAdapters === true) {
+      var listeners = closeListeners.slice();
+      closeListeners.length = 0;
+      for (var i = 0; i < listeners.length; i++) {
+        try { listeners[i](); } catch (_listenerError) {}
+      }
     }
     return true;
   };
   var cancelRemote = function() {
     if (remoteClosed) return false;
-    if (localValues) return markRemoteClosed();
+    if (localValues) return markRemoteClosed(true);
     if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
     var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
     var env = JSON.parse(raw);
     var released = !!(env && env.__omnivm_result__ === true && env.value === true);
-    if (released === true) markRemoteClosed();
+    if (released === true) markRemoteClosed(true);
     return released;
   };
   var closeRemote = function() {
-    markRemoteClosed();
+    markRemoteClosed(false);
   };
   var cancelRemoteQuiet = function() {
     try {
-      if (cancelRemote() !== true) markRemoteClosed();
+      if (cancelRemote() !== true) markRemoteClosed(false);
     } catch (_cancelErr) {
-      markRemoteClosed();
+      markRemoteClosed(false);
     }
   };
   var nextValue = function() {
     if (localValues) {
       if (remoteClosed) return {done: true};
       if (localIndex >= localValues.length) {
-        markRemoteClosed();
+        markRemoteClosed(false);
         return {done: true};
       }
       return {done: false, value: localValues[localIndex++]};

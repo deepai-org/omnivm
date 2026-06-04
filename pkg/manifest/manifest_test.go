@@ -6153,18 +6153,19 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		t.Error("should support explicit stream cancellation")
 	}
 	if !contains(code, "var cancelRemote = function()") ||
-		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "var markRemoteClosed = function(notifyAdapters)") ||
 		!contains(code, "var closeListeners = []") ||
 		!contains(code, "var addCloseListener = function(listener)") ||
 		!contains(code, "var listeners = closeListeners.slice()") ||
-		!contains(code, "if (localValues) return markRemoteClosed();") ||
+		!contains(code, "if (notifyAdapters === true)") ||
+		!contains(code, "if (localValues) return markRemoteClosed(true);") ||
 		!contains(code, "if (remoteClosed) return {done: true};") ||
-		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed();\n        return {done: true};\n      }") ||
+		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed(false);\n        return {done: true};\n      }") ||
 		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
-		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
+		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
 		!contains(code, "var cancelRemoteQuiet = function()") ||
-		!contains(code, "if (cancelRemote() !== true) markRemoteClosed();") ||
+		!contains(code, "if (cancelRemote() !== true) markRemoteClosed(false);") ||
 		!contains(code, "catch (_e) {\n      cancelRemoteQuiet();\n      throw _e;\n    }") ||
 		!contains(code, "closeRemote();\n    return {done: true};") ||
 		!contains(code, "if (closed) return;") ||
@@ -6682,6 +6683,53 @@ nextStarted.then(function() {
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node readable destroy late-chunk check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSNodeReadablePushesNullAtSourceEOF(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") throw new Error("EOF should not cancel remote stream");
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 95, runtime: "javascript", kind: "stream", values: ["a"]});
+var readable = stream.toNodeReadable({objectMode: true});
+var pushed = [];
+var originalPush = readable.push;
+readable.push = function(value) {
+  pushed.push(value);
+  return originalPush.call(this, value);
+};
+var timer = setTimeout(function() {
+  throw new Error("readable did not end after source EOF; pushed=" + JSON.stringify(pushed));
+}, 100);
+readable.on("end", function() {
+  clearTimeout(timer);
+  if (pushed.length !== 2 || pushed[0] !== "a" || pushed[1] !== null) {
+    throw new Error("readable EOF push sequence mismatch: " + JSON.stringify(pushed));
+  }
+  if (requests.some(function(req) { return req.op === "stream_cancel"; })) {
+    throw new Error("source EOF called remote stream_cancel");
+  }
+});
+readable.resume();
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node readable EOF check failed: %v\n%s", err, out)
 	}
 }
 
