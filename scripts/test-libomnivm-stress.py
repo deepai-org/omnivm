@@ -498,6 +498,44 @@ _lib_t9b_loop.run_until_complete(_lib_t9b_main())
     py_exec("_lib_t9b_loop.close()")
 
 
+def test_anyio_task_group_cross_runtime_cancellation():
+    py_exec(
+        """
+import anyio
+_lib_t9c_cancelled = False
+_lib_t9c_errors = []
+_lib_t9c_after = None
+
+async def _lib_t9c_sleeper():
+    global _lib_t9c_cancelled
+    try:
+        await anyio.sleep(60)
+    except anyio.get_cancelled_exc_class():
+        _lib_t9c_cancelled = True
+        raise
+
+async def _lib_t9c_bridge_fail():
+    await anyio.sleep(0)
+    omnivm.call("javascript", "throw new Error('anyio taskgroup bridge failure')")
+
+async def _lib_t9c_main():
+    global _lib_t9c_errors, _lib_t9c_after
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_lib_t9c_sleeper)
+            tg.start_soon(_lib_t9c_bridge_fail)
+    except* Exception as eg:
+        _lib_t9c_errors = [type(e).__name__ + ":" + str(e) for e in eg.exceptions]
+    _lib_t9c_after = omnivm.call("javascript", "'after-anyio-taskgroup'")
+
+anyio.run(_lib_t9c_main)
+"""
+    )
+    expect(py("_lib_t9c_cancelled"), "True")
+    expect_contains(py("';'.join(_lib_t9c_errors)"), "anyio taskgroup bridge failure")
+    expect(py("_lib_t9c_after"), "after-anyio-taskgroup")
+
+
 def test_exception_through_suspended_generator():
     py_exec(
         """
@@ -25510,6 +25548,7 @@ def main():
         check("Python generator consumed cross-runtime (100 iterations)", test_python_generator_consumed_cross_runtime)
         check("Re-entrant async: Py loop -> JS -> back into Py", test_reentrant_async_python_js_python)
         check("Asyncio TaskGroup cross-runtime cancellation", test_asyncio_taskgroup_cross_runtime_cancellation)
+        check("AnyIO task group cross-runtime cancellation", test_anyio_task_group_cross_runtime_cancellation)
         check("Exception through suspended Python generator", test_exception_through_suspended_generator)
         check("Object pinning and GC interaction", test_object_pinning_and_gc)
         check("Interleaved multiple live generators", test_interleaved_live_generators)
