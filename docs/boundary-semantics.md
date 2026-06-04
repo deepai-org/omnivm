@@ -337,7 +337,10 @@ owner-side lifecycle diagnostic as `stream_cancel`; failed or stale user
 `Close()` calls keep reporting an error until an owner release or cancellation
 succeeds.
 Java `StreamProxy` marks itself released before rethrowing terminal owner stream
-errors, so later `cancel()` or Cleaner cleanup stays idempotent.
+errors, so later `cancel()` or Cleaner cleanup stays idempotent. Java callers
+that want deterministic early-cancellation around stream operations can use
+`StreamProxy.stream()` in a try-with-resources block; the returned
+`java.util.stream.Stream` attaches `onClose` to the proxy's `close` path.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can
 become Arrow/shared-buffer table descriptors without a user-visible helper.
 
