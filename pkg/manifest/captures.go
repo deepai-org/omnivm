@@ -1004,6 +1004,8 @@ class __OmniVMMappingHandleProxy(__OmniVMHandleProxy, dict):
 class __OmniVMStreamProxy:
     def __init__(self, value):
         self._value = value
+        values = value.get("values") if isinstance(value, dict) else None
+        self._local_values = values if isinstance(values, list) else None
         self._cache = []
         self._cursor = 0
         self._exhausted = False
@@ -1041,6 +1043,12 @@ class __OmniVMStreamProxy:
     def _pull_next(self):
         if self._exhausted:
             return False
+        if self._local_values is not None:
+            if len(self._cache) >= len(self._local_values):
+                self._mark_closed()
+                return False
+            self._cache.append(globals()["__omnivm_materialize_capture"](self._local_values[len(self._cache)]))
+            return True
         try:
             item = self._next_envelope()
         except Exception:
@@ -1079,6 +1087,8 @@ class __OmniVMStreamProxy:
     def close(self):
         if self._closed:
             return False
+        if self._local_values is not None:
+            return self._mark_closed()
         caller = globals()["__omnivm_bridge_module"]()
         if caller is None or not hasattr(caller, "call"):
             return False
@@ -2720,6 +2730,7 @@ class OmniVMStreamProxy
 
   def initialize(value)
     @value = value
+    @local_values = value["values"].is_a?(Array) ? value["values"] : nil
     @__omnivm_closed = false
     id = @value["id"]
     if !id.nil?
@@ -2740,6 +2751,14 @@ class OmniVMStreamProxy
 
   def each
     return enum_for(:each) unless block_given?
+    if @local_values
+      @local_values.each do |item|
+        break if @__omnivm_closed == true
+        yield __omnivm_materialize_capture(item)
+      end
+      __omnivm_mark_closed
+      return
+    end
     loop do
       begin
         raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
@@ -2759,6 +2778,7 @@ class OmniVMStreamProxy
 
   def close
     return false if @__omnivm_closed == true
+    return __omnivm_mark_closed if @local_values
     raw = OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
     env = JSON.parse(raw)
     released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true

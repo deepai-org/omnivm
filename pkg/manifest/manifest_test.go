@@ -5649,10 +5649,14 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python stream proxy should auto-materialize for len/index operations, got %q", code)
 	}
 	if !contains(code, "def _mark_closed(self):") ||
+		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
+		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
+		!contains(code, "self._cache.append(globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)]))") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
 		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
 		!contains(code, "if self._closed:\n            return False") ||
+		!contains(code, "if self._local_values is not None:\n            return self._mark_closed()") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
 		!contains(code, "if released:\n            self._mark_closed()\n        return released") {
@@ -6007,6 +6011,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby explicit proxy close should be idempotent, return the manifest release result, and unregister its finalizer after release, got %q", code)
 	}
 	if !contains(code, "class OmniVMStreamProxy") ||
+		!contains(code, `@local_values = value["values"].is_a?(Array) ? value["values"] : nil`) ||
+		!contains(code, "if @local_values\n      @local_values.each do |item|") ||
+		!contains(code, "yield __omnivm_materialize_capture(item)") ||
+		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
 		!contains(code, "rescue\n        __omnivm_mark_closed\n        raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
