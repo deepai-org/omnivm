@@ -92,6 +92,8 @@ func TestPythonRuntimeErrorPreludeStructuredEnvelopeSource(t *testing.T) {
 		"self.stack_frames = parsed['stack_frames']",
 		"'origin_runtime': self.origin_runtime",
 		"'stack_frames': _copy_json_value(self.stack_frames)",
+		"def as_dict(self):",
+		"return self.to_dict()",
 		"def _parse_runtime_error_envelope",
 		"if body.startswith('ERR:')",
 		"origin_runtime = envelope.get('origin_runtime') or runtime_name",

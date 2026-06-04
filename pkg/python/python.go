@@ -77,6 +77,8 @@ static const char* omnivm_py_runtime_error_code =
 "        self.details = parsed['details']\n"
 "    def to_dict(self):\n"
 "        return {'runtime': self.runtime, 'origin_runtime': self.origin_runtime, 'type': self.type, 'message': self.message, 'traceback': self.traceback, 'stack_frames': _copy_json_value(self.stack_frames), 'cause_chain': _copy_json_value(self.cause_chain), 'boundary_path': self.boundary_path, 'original_error_handle': self.original_error_handle, 'details': _copy_json_value(self.details)}\n"
+"    def as_dict(self):\n"
+"        return self.to_dict()\n"
 "def _copy_json_value(value):\n"
 "    if isinstance(value, dict):\n"
 "        return {key: _copy_json_value(item) for key, item in value.items()}\n"
