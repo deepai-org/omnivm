@@ -54,6 +54,7 @@ __all__ = [
     "set_task_timeout",
     "host_thread_id",
     "affinity_status",
+    "owner_dispatch_status",
     "assert_host_thread",
     "watchdog_capabilities",
     "worker_tainted",
@@ -1272,6 +1273,23 @@ def affinity_status():
             "loop_id": id(loop),
             "closed": loop.is_closed(),
         }
+    return info
+
+
+def owner_dispatch_status():
+    """
+    Return the process-level owner-dispatch capability contract.
+
+    This is the machine-readable companion to affinity_status(): it tells app
+    integrations whether OmniVM can move callbacks back to owner schedulers, and
+    which runtime-specific affinity diagnostics are available.
+    """
+    info = status().get("thread_affinity")
+    if not isinstance(info, dict):
+        raise RuntimeError(
+            "libomnivm status omitted thread_affinity capability",
+            boundary_path="thread_affinity",
+        )
     return info
 
 

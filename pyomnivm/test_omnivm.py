@@ -294,6 +294,10 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.affinity_status()
 
+    def test_owner_dispatch_status_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.owner_dispatch_status()
+
     def test_assert_host_thread_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.assert_host_thread()
@@ -847,6 +851,24 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.assert_host_thread("callback")
         assert "callback: thread affinity violation" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "thread_affinity"
+
+    def test_owner_dispatch_status_reports_capability_contract(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"host_thread_id":12345,"owner_dispatch_supported":false,'
+            b'"python_assert_host_thread":true}}'
+        )
+        info = omnivm_mod.owner_dispatch_status()
+        assert info["mode"] == "diagnostic_only"
+        assert info["host_thread_id"] == 12345
+        assert info["owner_dispatch_supported"] is False
+        assert info["python_assert_host_thread"] is True
+
+    def test_owner_dispatch_status_requires_status_capability(self):
+        self.mock_lib.OmniStatus.return_value = b'{"initialized":true}'
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.owner_dispatch_status()
         assert ctx.exception.boundary_path == "thread_affinity"
 
     def test_watchdog_capabilities_parses_matrix(self):

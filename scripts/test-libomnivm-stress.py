@@ -15728,6 +15728,17 @@ def test_status_observability():
         raise AssertionError("fresh worker reported a timeout runtime")
     if "go=deadline" not in status["watchdog_capabilities"]:
         raise AssertionError("status omitted Go deadline capability")
+    thread_affinity = status.get("thread_affinity")
+    if not isinstance(thread_affinity, dict):
+        raise AssertionError(f"status omitted thread affinity capability boundary: {status}")
+    if thread_affinity.get("mode") != "diagnostic_only":
+        raise AssertionError(f"status reported unexpected thread affinity mode: {thread_affinity}")
+    if thread_affinity.get("owner_dispatch_supported") is not False:
+        raise AssertionError(f"status should report universal owner dispatch unsupported: {thread_affinity}")
+    if thread_affinity.get("host_thread_id") != omnivm.host_thread_id():
+        raise AssertionError(f"thread affinity status host thread mismatch: {thread_affinity}")
+    if thread_affinity.get("python_assert_host_thread") is not True:
+        raise AssertionError(f"status omitted Python host-thread guard capability: {thread_affinity}")
     ruby_threading = status.get("ruby_threading")
     if not isinstance(ruby_threading, dict):
         raise AssertionError(f"status omitted Ruby threading capability boundary: {status}")

@@ -46,6 +46,25 @@ func TestDrainFinalizerReleasesOnHostBoundary(t *testing.T) {
 	}
 }
 
+func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
+	status := threadAffinityStatus(42)
+	if status["mode"] != "diagnostic_only" {
+		t.Fatalf("thread affinity mode = %v, want diagnostic_only", status["mode"])
+	}
+	if status["host_thread_id"] != int64(42) {
+		t.Fatalf("thread affinity host thread = %v, want 42", status["host_thread_id"])
+	}
+	if status["owner_dispatch_supported"] != false {
+		t.Fatalf("owner dispatch should be reported unsupported: %+v", status)
+	}
+	if status["python_assert_host_thread"] != true {
+		t.Fatalf("Python host-thread assertion capability omitted: %+v", status)
+	}
+	if status["ruby_vm_thread"] != "single_vm_thread" {
+		t.Fatalf("Ruby VM thread boundary omitted: %+v", status)
+	}
+}
+
 func TestDrainFinalizerReleasesSkipsActiveRuntime(t *testing.T) {
 	prevEng := eng
 	defer func() {

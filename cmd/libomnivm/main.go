@@ -593,6 +593,20 @@ func OmniWatchdogCapabilities() *C.char {
 	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline")
 }
 
+func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
+	return map[string]interface{}{
+		"mode":                      "diagnostic_only",
+		"host_thread_id":            hostThreadID,
+		"owner_dispatch_supported":  false,
+		"python_assert_host_thread": true,
+		"python_asyncio_loop":       "observable_when_running",
+		"javascript_event_loop":     "cooperatively_pumped_at_host_boundaries",
+		"java_executor":             "caller_managed",
+		"ruby_vm_thread":            "single_vm_thread",
+		"reason":                    "c-shared mode runs direct calls on the calling host thread; OmniVM exposes affinity diagnostics but does not export a universal owner-loop/executor dispatcher.",
+	}
+}
+
 //export OmniWorkerTainted
 func OmniWorkerTainted() C.int {
 	if workerTainted.Load() {
@@ -636,6 +650,7 @@ func OmniStatus() *C.char {
 		"lifecycle_errors":            lifecycleErrors.Load(),
 		"shutdown_while_active_count": shutdownWhileActiveCount.Load(),
 		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline",
+		"thread_affinity":             threadAffinityStatus(int64(C.get_thread_id())),
 		"ruby_threading": map[string]interface{}{
 			"mode":                     "single_vm_thread",
 			"native_threads_supported": false,
@@ -650,6 +665,7 @@ func OmniStatus() *C.char {
 	}
 	if eng != nil {
 		status["golden_thread_id"] = eng.GoldenThreadID
+		status["thread_affinity"] = threadAffinityStatus(eng.GoldenThreadID)
 		if eng.Handles != nil {
 			status["handles"] = eng.Handles.Stats(time.Now())
 		}

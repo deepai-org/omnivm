@@ -513,6 +513,13 @@ libomnivm host thread id, whether the call is on the host thread, and any
 currently running asyncio loop id. `omnivm.assert_host_thread(label)` raises a
 structured `RuntimeError` with boundary path `thread_affinity` when a framework
 integration or lifecycle callback is unexpectedly running on a foreign thread.
+`omnivm.owner_dispatch_status()` returns
+`omnivm.status()["thread_affinity"]`, a machine-readable capability block for
+startup checks. In c-shared mode the block currently reports
+`mode=diagnostic_only` and `owner_dispatch_supported=false`: OmniVM exposes
+host-thread/asyncio diagnostics and pumps async runtimes at host call
+boundaries, but it does not export a universal owner-loop, executor, or VM
+thread dispatcher.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table

@@ -162,6 +162,12 @@ libomnivm host thread, current native thread, and active asyncio loop, or
 `thread_affinity` boundary diagnostic when a lifecycle hook or callback runs on
 an unexpected foreign thread. This is a guardrail for framework integration; it
 does not pretend to provide universal owner-executor dispatch.
+`omnivm.status()["thread_affinity"]` and
+`omnivm.owner_dispatch_status()` now expose that boundary as a startup-check
+contract: `mode=diagnostic_only`, `owner_dispatch_supported=false`, the pinned
+host thread id, and the per-runtime diagnostics/dispatch limitations. Apps that
+require callback migration onto a framework-owned loop, executor, or Ruby VM
+thread can reject the in-process integration before serving traffic.
 
 The remaining risk is framework-owned scheduling. Starlette ASGI app-call
 disconnect, Uvicorn event-loop re-entry during streaming response cancellation,
