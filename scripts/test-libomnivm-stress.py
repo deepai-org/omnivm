@@ -18700,6 +18700,60 @@ def test_javascript_native_activerecord_error_fields_cross_runtime_call():
         raise AssertionError(f"JS ActiveRecord error should not invent original handle: {envelope}")
 
 
+def test_javascript_native_activerecord_validation_details_cross_runtime_call():
+    ruby_source = r'''
+require 'active_record'
+require 'active_model'
+class OmniVMErrorUser
+  include ActiveModel::Model
+  attr_accessor :age, :name
+  validates :age, numericality: {greater_than: 0}
+  validates :name, presence: true
+end
+record = OmniVMErrorUser.new(age: 0)
+record.validate
+raise ActiveRecord::RecordInvalid.new(record)
+'''
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("ruby", {json.dumps(ruby_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      boundaryPath: err.boundaryPath,
+      details: err.details
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missing"):
+        raise AssertionError("JS ActiveRecord validation path did not raise")
+    if not envelope.get("isError"):
+        raise AssertionError(f"JS catch did not receive a native Error for ActiveRecord validation failure: {envelope}")
+    if envelope.get("runtime") != "ruby":
+        raise AssertionError(f"JS ActiveRecord validation runtime lost: {envelope}")
+    if envelope.get("type") != "ActiveRecord::RecordInvalid":
+        raise AssertionError(f"JS ActiveRecord validation type lost: {envelope}")
+    if envelope.get("boundaryPath") != "call[ruby]":
+        raise AssertionError(f"JS ActiveRecord validation boundary path lost: {envelope}")
+    details = envelope.get("details")
+    if not isinstance(details, dict) or "errors" not in details:
+        raise AssertionError(f"JS ActiveRecord validation structured details lost: {envelope}")
+    details_text = json.dumps(details, sort_keys=True)
+    for part in ("age", "greater_than", "name", "blank", "full_messages"):
+        if part not in details_text:
+            raise AssertionError(f"JS ActiveRecord validation structured detail {part!r} lost: {envelope}")
+
+
 def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
     pydantic_source = (
         "from pydantic import BaseModel, Field\n"
@@ -29734,6 +29788,7 @@ def main():
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
         check("JavaScript native Python to_dict error details cross runtime call", test_javascript_native_python_to_dict_error_details_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
+        check("JavaScript native ActiveRecord validation details cross runtime call", test_javascript_native_activerecord_validation_details_cross_runtime_call)
         check("Ruby and Java native ecosystem library error fields cross runtime calls", test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)

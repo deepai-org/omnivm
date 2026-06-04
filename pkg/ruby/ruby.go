@@ -734,6 +734,23 @@ static VALUE call_exception_original_error_handle(VALUE exception) {
     return rb_obj_as_string(value);
 }
 
+static VALUE call_exception_error_details_json(VALUE exception) {
+    ID mod_id = rb_intern("OmniVM");
+    if (!rb_const_defined(rb_cObject, mod_id)) {
+        return Qnil;
+    }
+    VALUE mod = rb_const_get(rb_cObject, mod_id);
+    ID method = rb_intern("__error_details_json");
+    if (!rb_respond_to(mod, method)) {
+        return Qnil;
+    }
+    VALUE value = rb_funcall(mod, method, 1, exception);
+    if (value == Qnil) {
+        return Qnil;
+    }
+    return rb_obj_as_string(value);
+}
+
 // Safe helper to extract exception message using rb_protect.
 // Catches any secondary exceptions during message extraction (e.g., rb_exc_raise
 // in rb_funcall which crashes on ARM64 when JVM is active).
@@ -745,6 +762,7 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
     const char* frame_cstr = NULL;
     const char* traceback_cstr = NULL;
     const char* handle_cstr = NULL;
+    const char* details_cstr = NULL;
 
     VALUE bridge_text = rb_protect(call_exception_omnivm_bridge_error_text, exception, &inner_state);
     if (!inner_state && bridge_text != Qnil) {
@@ -799,9 +817,18 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         rb_set_errinfo(Qnil); // Clear secondary error
     }
 
+    inner_state = 0;
+    VALUE details = rb_protect(call_exception_error_details_json, exception, &inner_state);
+    if (!inner_state && details != Qnil) {
+        details_cstr = StringValueCStr(details);
+    } else if (inner_state) {
+        rb_set_errinfo(Qnil); // Clear secondary error
+    }
+
     size_t len = strlen("RubyError: ") + strlen(klass_cstr) + strlen(": ") + strlen(msg_cstr) + 1;
     if (frame_cstr) len += strlen(" (at )") + strlen(frame_cstr);
     if (traceback_cstr) len += strlen("\n") + strlen(traceback_cstr);
+    if (details_cstr) len += strlen("\nDetails: ") + strlen(details_cstr);
     if (handle_cstr) len += strlen("\nOriginal error handle: ") + strlen(handle_cstr);
     char* err = (char*)malloc(len);
     if (frame_cstr && traceback_cstr) {
@@ -814,8 +841,15 @@ static char* omnivm_ruby_safe_error_msg(VALUE exception) {
         snprintf(err, len, "RubyError: %s: %s", klass_cstr, msg_cstr);
     }
     if (handle_cstr) {
+        if (details_cstr) {
+            strcat(err, "\nDetails: ");
+            strcat(err, details_cstr);
+        }
         strcat(err, "\nOriginal error handle: ");
         strcat(err, handle_cstr);
+    } else if (details_cstr) {
+        strcat(err, "\nDetails: ");
+        strcat(err, details_cstr);
     }
     return err;
 }
@@ -1276,6 +1310,51 @@ static int omnivm_ruby_init(void) {
         "      text << \"\\nOriginal error handle: #{@original_error_handle}\" if @original_error_handle && !@original_error_handle.empty?\n"
         "      text\n"
         "    end\n"
+        "  end\n"
+        "  def self.__method_without_required_args?(object, name)\n"
+        "    return false unless object.respond_to?(name)\n"
+        "    arity = object.method(name).arity\n"
+        "    arity == 0 || arity == -1\n"
+        "  rescue StandardError\n"
+        "    false\n"
+        "  end\n"
+        "  def self.__active_model_errors_details(errors)\n"
+        "    out = {}\n"
+        "    out[:errors] = errors.details if __method_without_required_args?(errors, :details)\n"
+        "    out[:messages] = errors.to_hash if __method_without_required_args?(errors, :to_hash)\n"
+        "    out[:full_messages] = errors.full_messages if __method_without_required_args?(errors, :full_messages)\n"
+        "    out.empty? ? nil : out\n"
+        "  rescue StandardError\n"
+        "    nil\n"
+        "  end\n"
+        "  def self.__error_details_value(error)\n"
+        "    return error.details if __method_without_required_args?(error, :details) && !error.details.nil?\n"
+        "    [:record, :model].each do |holder|\n"
+        "      if __method_without_required_args?(error, holder) && (record = error.public_send(holder)) && record.respond_to?(:errors)\n"
+        "        details = __active_model_errors_details(record.errors)\n"
+        "        return details if details\n"
+        "      end\n"
+        "    end\n"
+        "    if __method_without_required_args?(error, :errors)\n"
+        "      errors = error.errors\n"
+        "      details = __active_model_errors_details(errors)\n"
+        "      return details if details\n"
+        "      return({errors: errors}) unless errors.nil?\n"
+        "    end\n"
+        "    return error.to_hash if __method_without_required_args?(error, :to_hash) && !error.to_hash.nil?\n"
+        "    return error.to_h if __method_without_required_args?(error, :to_h) && !error.to_h.nil?\n"
+        "    nil\n"
+        "  rescue StandardError\n"
+        "    nil\n"
+        "  end\n"
+        "  def self.__error_details_json(error)\n"
+        "    require 'json' unless defined?(JSON)\n"
+        "    value = __error_details_value(error)\n"
+        "    return nil if value.nil?\n"
+        "    value = {errors: value} if value.is_a?(Array)\n"
+        "    JSON.generate(value)\n"
+        "  rescue Exception\n"
+        "    nil\n"
         "  end\n"
         "  def self.__runtime_error_from_bridge(message, runtime)\n"
         "    RuntimeError.new(message, runtime: runtime, boundary_path: runtime && \"call[#{runtime}]\")\n"
