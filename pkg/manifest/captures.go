@@ -1556,6 +1556,12 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       }
     });
   }
+  if (typeof omnivm.omnivmClose !== 'function') {
+    Object.defineProperty(omnivm, "omnivmClose", {
+      configurable: true,
+      value: function(value) { return omnivm.proxyClose(value); }
+    });
+  }
 }
 globalThis.__omnivm_arg_refs = globalThis.__omnivm_arg_refs || {};
 globalThis.__omnivm_arg_ref_counter = globalThis.__omnivm_arg_ref_counter || 0;

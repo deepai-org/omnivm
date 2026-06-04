@@ -519,14 +519,15 @@ field mutation, `omnivm.proxyCall(proxy, key, args)` for explicit remote method
 calls, `omnivm.proxyLen(proxy)` for explicit collection length,
 `omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
 `omnivm.proxyItems(proxy)`, and `omnivm.proxyContains(proxy, key)` for explicit
-collection metadata, `omnivm.proxyClose(proxy)` for explicit proxy lease
-release, and
+collection metadata, `omnivm.proxyClose(proxy)` or
+`omnivm.omnivmClose(proxy)` for explicit proxy lease release, and
 `proxy[omnivm.proxyLength]` as a collision-free property form for length when a
 remote object also has a data field named `length`. `toJSON` is reserved for
 proxy serialization; use `omnivm.proxyGet(proxy, "toJSON")` when the owner has
 a real field or method with that name. JavaScript handle and stream proxies
 also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
-`omnivm.proxyClose(value)` honors those symbols through descriptor-safe lookup.
+`omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor those symbols
+through descriptor-safe lookup.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and

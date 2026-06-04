@@ -1780,6 +1780,12 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       }
     });
   }
+  if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm && typeof globalThis.omnivm.omnivmClose !== 'function') {
+    Object.defineProperty(globalThis.omnivm, "omnivmClose", {
+      configurable: true,
+      value: function(value) { return globalThis.omnivm.proxyClose(value); }
+    });
+  }
 })();
 )JS";
     v8::Local<v8::String> src =

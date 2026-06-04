@@ -638,7 +638,8 @@ proxies. When user code needs an unambiguous operation, it can use
 `omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`,
 `omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
 `omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`,
-`omnivm.proxyClose(proxy)`, or the collision-free symbol property
+`omnivm.proxyClose(proxy)`, `omnivm.omnivmClose(proxy)`, or the
+collision-free symbol property
 `proxy[omnivm.proxyLength]`; data fields remain available through
 `omnivm.proxyGet(proxy, "length")`. `toJSON` is local proxy bookkeeping for
 `JSON.stringify(proxy)`, so a remote field or method named `toJSON` should be
@@ -648,11 +649,12 @@ use `omnivm.proxyGet(proxy, "then")` or `omnivm.proxyCall(proxy, "then", args)`
 for the owner field or method. Non-callable remote `then` fields remain
 naturally readable. JavaScript handle and stream proxies also expose
 `Symbol.dispose` and `Symbol.asyncDispose` when the runtime supports them, and
-`omnivm.proxyClose(value)` honors both symbols before falling back to a
-descriptor-safe public `close` method. Remote data fields named `close` or
-`dispose` remain ordinary fields on handle proxies; lifecycle release uses
-`omnivm.proxyClose(value)`, `__omnivm_close`, or the disposal symbols instead
-of calling those remote fields.
+`omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor both symbols
+before falling back to a descriptor-safe public `close` method. Remote data
+fields named `close` or `dispose` remain ordinary fields on handle proxies;
+lifecycle release uses
+`omnivm.proxyClose(value)`, `omnivm.omnivmClose(value)`, `__omnivm_close`, or
+the disposal symbols instead of calling those remote fields.
 Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and

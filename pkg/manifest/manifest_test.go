@@ -6464,7 +6464,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop))`) || !contains(code, `return bridge({op: "handle_index", value: Number(prop)});`) {
 		t.Fatalf("JS materializer should route numeric properties on indexed proxies through handle_index before handle_get, got %q", code)
 	}
-	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyClose") || !contains(code, "__omnivm_close") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
+	if !contains(code, "omnivm.proxyGet") || !contains(code, "__omnivm_get") || !contains(code, "omnivm.proxySet") || !contains(code, "__omnivm_set") || !contains(code, "omnivm.proxyCall") || !contains(code, "__omnivm_call") || !contains(code, "omnivm.proxyLen") || !contains(code, "__omnivm_len") || !contains(code, "omnivm.proxyIter") || !contains(code, "__omnivm_iter") || !contains(code, "omnivm.proxyKeys") || !contains(code, "omnivm.proxyValues") || !contains(code, "omnivm.proxyItems") || !contains(code, "omnivm.proxyContains") || !contains(code, "__omnivm_contains") || !contains(code, "omnivm.proxyClose") || !contains(code, "omnivm.omnivmClose") || !contains(code, "__omnivm_close") || !contains(code, "omnivm.proxyLength") || !contains(code, `Symbol.for("omnivm.proxy.length")`) {
 		t.Fatalf("JS materializer should expose proxy-safe get/set/call/len/iter/contains/close helpers and length symbol for collision cases, got %q", code)
 	}
 	if !contains(code, "globalThis.__omnivm_actual_public_method") ||
@@ -6478,6 +6478,10 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, "var result = close.call(value);\n          return result === undefined ? true : result") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
+	}
+	if !contains(code, `Object.defineProperty(omnivm, "omnivmClose"`) ||
+		!contains(code, `value: function(value) { return omnivm.proxyClose(value); }`) {
+		t.Fatalf("JS materializer should expose omnivmClose as an alias for proxyClose, got %q", code)
 	}
 	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value && value.__omnivm_close") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
 		t.Fatalf("JS proxyClose should not invoke dynamic close property lookup")
@@ -6568,6 +6572,8 @@ var falseResult = omnivm.proxyClose({close: function() { falseClosed++; return f
 if (falseResult !== false || falseClosed !== 1) throw new Error("false close result was not preserved");
 var textResult = omnivm.proxyClose({close: function() { return "closed"; }});
 if (textResult !== "closed") throw new Error("string close result was not preserved: " + textResult);
+var aliasResult = omnivm.omnivmClose({close: function() { return "alias-closed"; }});
+if (aliasResult !== "alias-closed") throw new Error("omnivmClose alias did not preserve close result: " + aliasResult);
 var receiverTarget = {closed: false, close: function() { this.closed = true; return this === receiverTarget; }};
 var receiverResult = omnivm.proxyClose(receiverTarget);
 if (receiverResult !== true || receiverTarget.closed !== true) throw new Error("close receiver was not preserved");
@@ -9248,8 +9254,10 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`Object.defineProperty(globalThis, "__omnivm_actual_public_method"`,
 		"Object.getOwnPropertyDescriptor(cursor, name)",
 		`Object.defineProperty(globalThis.omnivm, "proxyClose"`,
+		`Object.defineProperty(globalThis.omnivm, "omnivmClose"`,
 		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,
 		"return omnivmClose.call(value)",
+		"return globalThis.omnivm.proxyClose(value)",
 		"symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null",
 		"symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null",
 		"return symbolDisposeResult === undefined ? true : symbolDisposeResult",
