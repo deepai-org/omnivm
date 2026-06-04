@@ -18603,6 +18603,51 @@ def test_javascript_native_django_form_error_fields_cross_runtime_call():
             raise AssertionError(f"JS Django form structured detail {part!r} lost: {envelope}")
 
 
+def test_javascript_native_python_to_dict_error_details_cross_runtime_call():
+    python_source = (
+        "class ApiError(Exception):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('api request failed')\n"
+        "    def to_dict(self):\n"
+        "        return {'code': 'E_RATE_LIMIT', 'status': 429, 'retry_after': 3, 'path': ['api', 'users']}\n"
+        "raise ApiError()\n"
+    )
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("python", {json.dumps(python_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      boundaryPath: err.boundaryPath,
+      details: err.details
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missing"):
+        raise AssertionError("JS Python to_dict error path did not raise")
+    if not envelope.get("isError"):
+        raise AssertionError(f"JS catch did not receive native Error for Python to_dict failure: {envelope}")
+    if envelope.get("runtime") != "python" or envelope.get("type") != "ApiError":
+        raise AssertionError(f"JS Python to_dict error runtime/type lost: {envelope}")
+    if envelope.get("message") != "api request failed":
+        raise AssertionError(f"JS Python to_dict message lost: {envelope}")
+    if envelope.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS Python to_dict boundary path lost: {envelope}")
+    details = envelope.get("details")
+    if details != {"code": "E_RATE_LIMIT", "status": 429, "retry_after": 3, "path": ["api", "users"]}:
+        raise AssertionError(f"JS Python to_dict structured details lost: {envelope}")
+
+
 def test_javascript_native_activerecord_error_fields_cross_runtime_call():
     ruby_source = "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)"
     result = omnivm.call(
@@ -29568,6 +29613,7 @@ def main():
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
+        check("JavaScript native Python to_dict error details cross runtime call", test_javascript_native_python_to_dict_error_details_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
         check("Ruby and Java native ecosystem library error fields cross runtime calls", test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)

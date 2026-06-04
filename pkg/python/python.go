@@ -2635,6 +2635,22 @@ static PyObject* omnivm_py_details_from_db_error(PyObject* value) {
     return details;
 }
 
+static PyObject* omnivm_py_details_from_noarg_method(PyObject* value, const char* name, int parse_json) {
+    PyObject* details = omnivm_py_call_noarg_method(value, name);
+    if (!details) return NULL;
+    if (details == Py_None) {
+        Py_DECREF(details);
+        return NULL;
+    }
+    if (!parse_json) return details;
+    PyObject* parsed = omnivm_py_json_loads(details);
+    if (parsed) {
+        Py_DECREF(details);
+        return parsed;
+    }
+    return details;
+}
+
 static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     if (!value) return NULL;
 
@@ -2645,7 +2661,19 @@ static PyObject* omnivm_py_get_validation_details(PyObject* value) {
         PyErr_Clear();
     }
 
-    PyObject* details = omnivm_py_call_noarg_method(value, "errors");
+    PyObject* details = omnivm_py_details_from_noarg_method(value, "to_dict", 0);
+    if (details) return details;
+
+    details = omnivm_py_details_from_noarg_method(value, "as_dict", 0);
+    if (details) return details;
+
+    details = omnivm_py_details_from_noarg_method(value, "to_json", 1);
+    if (details) return details;
+
+    details = omnivm_py_details_from_noarg_method(value, "json", 1);
+    if (details) return details;
+
+    details = omnivm_py_call_noarg_method(value, "errors");
     if (details) return details;
 
     details = omnivm_py_call_noarg_method(value, "normalized_messages");
