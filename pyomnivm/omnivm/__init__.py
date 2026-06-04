@@ -1881,15 +1881,41 @@ def owner_dispatch_status():
     return info
 
 
+_OWNER_DISPATCH_TARGET_ALIASES = {
+    "asyncio": "python_asyncio",
+    "python": "python_asyncio",
+    "python_async_loop": "python_asyncio",
+    "javascript": "javascript_event_loop",
+    "js": "javascript_event_loop",
+    "node": "javascript_event_loop",
+    "nodejs": "javascript_event_loop",
+    "event_loop": "javascript_event_loop",
+    "java": "java_executor",
+    "jvm": "java_executor",
+    "executor": "java_executor",
+    "ruby": "ruby_fiber_thread",
+    "fiber": "ruby_fiber_thread",
+    "thread": "ruby_fiber_thread",
+    "ruby_thread": "ruby_fiber_thread",
+}
+
+
+def _owner_dispatch_target_name(target):
+    target_name = str(target)
+    return _OWNER_DISPATCH_TARGET_ALIASES.get(target_name, target_name)
+
+
 def owner_dispatch_target_status(target):
     """
     Return the owner-dispatch capability block for one owner kind.
 
     Known target names are reported by owner_dispatch_status()["owner_dispatch_targets"],
     such as "python_asyncio", "javascript_event_loop", "java_executor", and
-    "ruby_fiber_thread".
+    "ruby_fiber_thread". Common aliases such as "asyncio", "js", "java", and
+    "ruby" are normalized to those canonical target names.
     """
-    target_name = str(target)
+    requested_target = str(target)
+    target_name = _owner_dispatch_target_name(requested_target)
     dispatch_info = owner_dispatch_status()
     targets = dispatch_info.get("owner_dispatch_targets")
     if not isinstance(targets, dict):
@@ -1909,6 +1935,7 @@ def owner_dispatch_target_status(target):
             boundary_path="thread_affinity",
             details={
                 "target": target_name,
+                "requested_target": requested_target,
                 "known_targets": known_targets,
                 "owner_dispatch_targets": targets,
             },
@@ -1944,7 +1971,8 @@ def assert_owner_dispatch_target_supported(target, label=""):
     example "python_asyncio" for ASGI callbacks or "java_executor" for Java
     executor callbacks.
     """
-    target_name = str(target)
+    requested_target = str(target)
+    target_name = _owner_dispatch_target_name(requested_target)
     info = owner_dispatch_target_status(target_name)
     if info.get("supported") is True:
         return True
@@ -1953,7 +1981,11 @@ def assert_owner_dispatch_target_supported(target, label=""):
     raise RuntimeError(
         f"{prefix}owner dispatch target {target_name} unsupported: {diagnostic}",
         boundary_path="thread_affinity",
-        details={"target": target_name, "owner_dispatch_target": info},
+        details={
+            "target": target_name,
+            "requested_target": requested_target,
+            "owner_dispatch_target": info,
+        },
     )
 
 

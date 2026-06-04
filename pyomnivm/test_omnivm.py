@@ -2461,6 +2461,20 @@ class TestCallWithMockLib(unittest.TestCase):
         assert info["supported"] is False
         assert info["diagnostic"] == "loop not owned"
 
+    def test_owner_dispatch_target_status_accepts_common_aliases(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"python_asyncio":{"supported":false},'
+            b'"javascript_event_loop":{"supported":false},'
+            b'"java_executor":{"supported":false},'
+            b'"ruby_fiber_thread":{"supported":false}}}}'
+        )
+        assert omnivm_mod.owner_dispatch_target_status("asyncio") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("js") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("java") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("ruby") == {"supported": False}
+
     def test_owner_dispatch_target_status_requires_known_target(self):
         self.mock_lib.OmniStatus.return_value = (
             b'{"thread_affinity":{"mode":"diagnostic_only",'
@@ -2474,6 +2488,18 @@ class TestCallWithMockLib(unittest.TestCase):
         assert ctx.exception.details["target"] == "python_asyncio"
         assert ctx.exception.details["known_targets"] == ["java_executor"]
         assert ctx.exception.details["owner_dispatch_targets"] == {"java_executor": {"supported": False}}
+
+    def test_owner_dispatch_target_status_unknown_alias_reports_requested_target(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"java_executor":{"supported":false}}}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.owner_dispatch_target_status("asyncio")
+        assert "owner dispatch target 'python_asyncio'" in str(ctx.exception)
+        assert ctx.exception.details["target"] == "python_asyncio"
+        assert ctx.exception.details["requested_target"] == "asyncio"
 
     def test_assert_owner_dispatch_target_supported_reports_diagnostic(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -2495,6 +2521,19 @@ class TestCallWithMockLib(unittest.TestCase):
         assert ctx.exception.details["owner_dispatch_target"]["required_capability"] == "resubmit callbacks to executor"
         assert ctx.exception.details["owner_dispatch_target"]["current_behavior"] == "caller-managed"
         assert ctx.exception.details["owner_dispatch_target"]["diagnostic"] == "executor caller-managed"
+
+    def test_assert_owner_dispatch_target_supported_reports_alias_diagnostic(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"owner_dispatch_targets":{"java_executor":{'
+            b'"supported":false,"diagnostic":"executor caller-managed"}}}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.assert_owner_dispatch_target_supported("java", "reactor startup")
+        assert "reactor startup: owner dispatch target java_executor unsupported" in str(ctx.exception)
+        assert ctx.exception.details["target"] == "java_executor"
+        assert ctx.exception.details["requested_target"] == "java"
 
     def test_assert_owner_dispatch_target_supported_accepts_supported_target(self):
         self.mock_lib.OmniStatus.return_value = (
