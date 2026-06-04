@@ -450,6 +450,64 @@ func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
 	}
 }
 
+func TestReplaceExternalWithActiveBorrowReportsDetachedLease(t *testing.T) {
+	s := NewSharedStore()
+	oldData := []byte{1, 2, 3}
+	newData := []byte{9, 8}
+	releases := 0
+	old, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&oldData[0]), int64(len(oldData)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&newData[0]), int64(len(newData)), BufferMetadata{
+		Dtype:     DtypeU8,
+		Ownership: "producer",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement == old {
+		t.Fatal("external replacement reused a buffer with an active borrow")
+	}
+	if releases != 0 {
+		t.Fatalf("external replacement called old release callback before borrow release: %d", releases)
+	}
+	if lease.Data != unsafe.Pointer(&oldData[0]) || lease.Len != int64(len(oldData)) {
+		t.Fatalf("borrowed external lease changed after replacement: data=%v len=%d", lease.Data, lease.Len)
+	}
+
+	stats := s.Stats()
+	if stats.DetachedBuffers != 1 || stats.DetachedBytes != 3 || stats.ActiveBorrows != 1 || stats.ActiveBorrowedBytes != 3 {
+		t.Fatalf("external replacement should report detached active borrow: %+v", stats)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.LeaseState != "borrowed" || status.DetachedBuffers != 1 || status.DetachedBytes != 3 || status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 3 || status.Len != 2 || status.Dtype != DtypeU8 || status.Ownership != "producer" {
+		t.Fatalf("external replacement status hid detached borrow: %+v", status)
+	}
+
+	if err := lease.ReleaseWithError(); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 1 {
+		t.Fatalf("external old release callback called %d times, want 1", releases)
+	}
+	stats = s.Stats()
+	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
+		t.Fatalf("external detached borrow stats did not clear after release: %+v", stats)
+	}
+}
+
 func TestBufferStatusReportsDetachedBorrowAfterNameReuse(t *testing.T) {
 	s := NewSharedStore()
 	if _, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes); err != nil {

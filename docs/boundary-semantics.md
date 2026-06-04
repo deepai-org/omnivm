@@ -696,7 +696,10 @@ Explicit named buffer release tombstones the public name immediately. Active
 borrowed views keep the backing memory alive until their own borrow release or
 finalizer arrives, and those unnamed leases remain visible through
 `active_borrows`, `active_borrowed_bytes`, `detached_buffers`, and
-`detached_bytes`.
+`detached_bytes`. Replacing a named buffer while borrowed uses the same
+detached-lease accounting for both OmniVM-owned byte slices and producer-owned
+external/Arrow memory; the old producer release callback runs only after the
+last displaced borrow is released.
 Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
 use `ReleaseWithError()`.
