@@ -8535,6 +8535,214 @@ except FileNotFoundError:
         raise AssertionError(f"SQLAlchemy ORM yield_per row method calls were not recorded: before={before_handles}, after={handles}")
 
 
+def test_manifest_sqlalchemy_lazy_relationship_collection_stays_live():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import os
+import tempfile
+import uuid
+import sqlalchemy as sa
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import Session, declarative_base, relationship
+
+relationship_db_path = os.path.join(tempfile.gettempdir(), "omnivm-sqlalchemy-relationship-" + uuid.uuid4().hex + ".sqlite3")
+relationship_engine = sa.create_engine("sqlite:///" + relationship_db_path, future=True)
+RelationshipBase = declarative_base()
+
+class RelationshipParent(RelationshipBase):
+    __tablename__ = "relationship_parents"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    name = sa.Column(sa.String)
+    orders = relationship("RelationshipOrder", back_populates="parent", lazy="select", order_by="RelationshipOrder.id")
+
+class RelationshipOrder(RelationshipBase):
+    __tablename__ = "relationship_orders"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    parent_id = sa.Column(sa.Integer, sa.ForeignKey("relationship_parents.id"))
+    name = sa.Column(sa.String)
+    items = sa.Column(sa.String)
+    keys = sa.Column(sa.String)
+    count = sa.Column(sa.Integer)
+    then = sa.Column(sa.String)
+    length = sa.Column(sa.Integer)
+    get = sa.Column(sa.String)
+    close = sa.Column(sa.String)
+    parent = relationship("RelationshipParent", back_populates="orders")
+
+    def summary(self):
+        return f"{self.name}:{self.items}:{self.count}"
+
+RelationshipBase.metadata.create_all(relationship_engine)
+with Session(relationship_engine) as seed_session:
+    parent = RelationshipParent(id=1, name="owner")
+    parent.orders = [
+        RelationshipOrder(
+            id=idx,
+            name=f"order-{idx:04d}",
+            items="field-items",
+            keys="field-keys",
+            count=idx,
+            then="field-then",
+            length=2,
+            get="field-get",
+            close="field-close",
+        )
+        for idx in range(1, 121)
+    ]
+    seed_session.add(parent)
+    seed_session.commit()
+
+relationship_session = Session(relationship_engine)
+relationship_parent = relationship_session.get(RelationshipParent, 1)
+relationship_unloaded_before = "orders" in sa_inspect(relationship_parent).unloaded
+relationship_collection_loaded_after_js = False
+relationship_collection_loaded_after_ruby = False
+relationship_collection_loaded_after_java = False
+relationship_identity_size_after_load = 0
+relationship_session_closed = False
+'''
+    verify = r'''
+relationship_collection_loaded_after_java = "orders" not in sa_inspect(relationship_parent).unloaded
+relationship_identity_size_after_load = len(relationship_session.identity_map)
+if not relationship_unloaded_before:
+    raise AssertionError("SQLAlchemy relationship was loaded before foreign access")
+if not relationship_collection_loaded_after_js:
+    raise AssertionError("SQLAlchemy relationship did not load after JS access")
+if not relationship_collection_loaded_after_ruby:
+    raise AssertionError("SQLAlchemy relationship was not still loaded after Ruby access")
+if not relationship_collection_loaded_after_java:
+    raise AssertionError("SQLAlchemy relationship was not still loaded after Java access")
+if relationship_identity_size_after_load < 121:
+    raise AssertionError(f"SQLAlchemy relationship identity map too small after load: {relationship_identity_size_after_load}")
+orders = relationship_parent.orders
+if len(orders) != 120:
+    raise AssertionError(f"SQLAlchemy relationship length = {len(orders)}, want 120")
+first = orders[0]
+if first.items != "js-items" or first.keys != "ruby-keys" or first.count != 42 or first.get != "java-get" or first.close != "ruby-close":
+    raise AssertionError(
+        f"SQLAlchemy relationship child mutations lost: "
+        f"{first.items!r}, {first.keys!r}, {first.count!r}, {first.get!r}, {first.close!r}"
+    )
+relationship_session.close()
+relationship_session_closed = not relationship_session.in_transaction() and len(relationship_session.identity_map) == 0
+relationship_engine.dispose()
+try:
+    os.unlink(relationship_db_path)
+except FileNotFoundError:
+    pass
+if not relationship_session_closed:
+    raise AssertionError("SQLAlchemy relationship owner session did not close cleanly")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"relationship_parent": "relationship_parent"},
+                "code": (
+                    "const orders = relationship_parent.orders; "
+                    "if (orders.length !== 120) throw new Error('bad relationship length: ' + orders.length); "
+                    "const first = orders[0]; "
+                    "if (first.name !== 'order-0001') throw new Error('bad relationship child name: ' + first.name); "
+                    "if (first.items !== 'field-items' || first.keys !== 'field-keys' || String(first.count) !== '1' || first.then !== 'field-then' || String(first.length) !== '2' || first.get !== 'field-get' || first.close !== 'field-close') throw new Error('relationship child collision fields lost: ' + JSON.stringify(first)); "
+                    "if (first.summary() !== 'order-0001:field-items:1') throw new Error('relationship child method lost: ' + first.summary()); "
+                    "first.items = 'js-items'; "
+                    "first.then = 'js-then';"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "relationship_collection_loaded_after_js = 'orders' not in sa_inspect(relationship_parent).unloaded",
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"relationship_parent": "relationship_parent"},
+                "code": (
+                    "orders = relationship_parent.orders; "
+                    "raise \"bad relationship Ruby length #{orders.length}\" unless orders.length == 120; "
+                    "first = orders[0]; "
+                    "raise \"bad relationship Ruby child #{first.name}\" unless first.name == 'order-0001'; "
+                    "raise 'relationship Ruby collision fields lost' unless first.items == 'js-items' && first.keys == 'field-keys' && first.count.to_s == '1' && first.then == 'js-then' && first.length.to_s == '2' && first.get == 'field-get' && first.close == 'field-close'; "
+                    "raise \"relationship Ruby method lost #{first.summary.call}\" unless first.summary.call == 'order-0001:js-items:1'; "
+                    "first.keys = 'ruby-keys'; "
+                    "first.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": "relationship_collection_loaded_after_ruby = 'orders' not in sa_inspect(relationship_parent).unloaded",
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"relationship_parent": "relationship_parent"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy parent = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"relationship_parent\"); "
+                    "Object rawOrders = parent.get(\"orders\"); "
+                    "if (!(rawOrders instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"relationship orders should cross as HandleProxy: \" + rawOrders); "
+                    "omnivm.OmniVM.HandleProxy orders = (omnivm.OmniVM.HandleProxy) rawOrders; "
+                    "if (orders.size() != 120) throw new RuntimeException(\"bad Java relationship length: \" + orders.size()); "
+                    "Object rawFirst = orders.get(0); "
+                    "if (!(rawFirst instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"relationship child should cross as HandleProxy: \" + rawFirst); "
+                    "omnivm.OmniVM.HandleProxy first = (omnivm.OmniVM.HandleProxy) rawFirst; "
+                    "if (!\"order-0001\".equals(String.valueOf(first.get(\"name\")))) throw new RuntimeException(\"bad relationship Java child: \" + first.get(\"name\")); "
+                    "if (!\"js-items\".equals(String.valueOf(first.get(\"items\")))) throw new RuntimeException(\"relationship Java items lost\"); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(first.get(\"keys\")))) throw new RuntimeException(\"relationship Java keys lost\"); "
+                    "if (!\"js-then\".equals(String.valueOf(first.get(\"then\")))) throw new RuntimeException(\"relationship Java then lost\"); "
+                    "if (!\"2\".equals(String.valueOf(first.get(\"length\")))) throw new RuntimeException(\"relationship Java length lost\"); "
+                    "if (!\"field-get\".equals(String.valueOf(first.get(\"get\")))) throw new RuntimeException(\"relationship Java get lost\"); "
+                    "if (!\"ruby-close\".equals(String.valueOf(first.get(\"close\")))) throw new RuntimeException(\"relationship Java close lost\"); "
+                    "if (!\"order-0001:js-items:1\".equals(String.valueOf(first.call(\"summary\")))) throw new RuntimeException(\"relationship Java method lost: \" + first.call(\"summary\")); "
+                    "if (!first.set(\"count\", 42)) throw new RuntimeException(\"relationship Java count set failed\"); "
+                    "if (!first.set(\"get\", \"java-get\")) throw new RuntimeException(\"relationship Java get set failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
+        raise AssertionError(f"SQLAlchemy relationship did not use live resource proxies: before={before_boundary}, after={boundary}")
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
+        raise AssertionError(f"SQLAlchemy relationship used JSON fallback: before={before_boundary}, after={boundary}")
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures != 0 and stream_capture_delta != 0:
+        raise AssertionError(f"SQLAlchemy relationship crossed as stream: before={before_boundary}, after={boundary}")
+    table_captures = boundary.get("table_proxy_captures", 0)
+    table_capture_delta = table_captures - before_boundary.get("table_proxy_captures", 0)
+    if table_captures != 0 and table_capture_delta != 0:
+        raise AssertionError(f"SQLAlchemy relationship crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"SQLAlchemy relationship did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("index", 0) <= before_accesses.get("index", 0):
+        raise AssertionError(f"SQLAlchemy relationship did not record index access: before={before_handles}, after={handles}")
+    if accesses.get("call", 0) <= before_accesses.get("call", 0):
+        raise AssertionError(f"SQLAlchemy relationship did not record method calls: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"SQLAlchemy relationship did not record mutations: before={before_handles}, after={handles}")
+
+
 def test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -27026,6 +27234,7 @@ def main():
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
         check("Manifest SQLAlchemy ORM yield_per is lazy and cancellable", test_manifest_sqlalchemy_orm_yield_per_is_lazy_and_cancellable)
+        check("Manifest SQLAlchemy lazy relationship collection stays live", test_manifest_sqlalchemy_lazy_relationship_collection_stays_live)
         check("Manifest SQLAlchemy Result partitions are lazy and cancellable", test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
