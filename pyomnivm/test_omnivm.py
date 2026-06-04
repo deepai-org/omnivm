@@ -261,6 +261,7 @@ class TestRuntimeError(unittest.TestCase):
             runtime="java",
         )
         assert err.details == {"code": "E_OUTER", "path": ["payload", "age"]}
+        assert err.details_json == "{\"code\":\"E_OUTER\",\"path\":[\"payload\",\"age\"]}"
         assert err.cause_chain[0]["details"] == [{"code": "E_INNER"}]
         assert err.cause_chain[1]["details"] == "not json"
 
@@ -315,6 +316,7 @@ class TestRuntimeError(unittest.TestCase):
             "boundary_path": "call[javascript]",
             "original_error_handle": None,
             "details": None,
+            "details_json": None,
         }
 
     def test_as_dict_alias_returns_structured_error_envelope(self):
@@ -360,6 +362,7 @@ class TestRuntimeError(unittest.TestCase):
         envelope["details"][0]["code"] = "changed"
         envelope["cause_chain"][0]["details"]["path"][1] = "changed"
         assert err.details == [{"code": "too_small"}]
+        assert err.details_json == '[{"code":"too_small"}]'
         assert err.cause_chain[0]["details"] == {"path": ["payload", "age"]}
 
     def test_cause_runtime_defaults_origin_runtime(self):

@@ -7838,10 +7838,13 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"return _copy_json_value(self._cause_chain)",
 		"def details(self):",
 		"return _copy_json_value(self._details)",
+		"self.details_json = _runtime_error_details_json(self._details) if details is not None else parsed.get('details_json')",
+		"'details_json': self.details_json",
 		"def to_json(self):",
 		"return globals()['__omnivm_json'].dumps(self.to_dict(), separators=(',', ':'))",
 		"if isinstance(value, tuple):",
 		"return [_copy_json_value(item) for item in value]",
+		"def _runtime_error_details_json(value):",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError readers should copy mutable structured values, missing %q", want)
@@ -7860,6 +7863,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"raw_details = source.get('detailsJson')",
 		"return __omnivm_json.loads(raw_details)",
 		"return raw_details",
+		"def details_json_field(source):",
+		"'details_json': details_json_field(envelope)",
+		"'details_json': _parse_runtime_error_details_json(body)",
 		"stack_frames = field('stack_frames', 'stackFrames')",
 		"cause_chain = field('cause_chain', 'causeChain')",
 		"item = {'type': str(cause.get('type') or cause.get('name') or ''), 'message': str(cause.get('message') or '')}",
@@ -7956,6 +7962,9 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"OmniVM.__copy_json_value(@cause_chain)",
 		"def details",
 		"OmniVM.__copy_json_value(@details)",
+		"attr_reader :runtime, :origin_runtime, :type, :traceback, :boundary_path, :original_error_handle, :details_json",
+		"@details_json = parsed[:details_json]",
+		"details_json: @details_json",
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError readers should copy mutable structured values, missing %q", want)
@@ -7971,6 +7980,12 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "JSON.generate(to_h, *args)") {
 		t.Fatalf("embedded Ruby RuntimeError should expose Rails/Ruby JSON envelope helpers")
+	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "details_json_field = ->(source) do") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "details_json: details_json_field.call(envelope)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "def self.__parse_runtime_error_details_json(text)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "details_json: OmniVM.__parse_runtime_error_details_json(body)") {
+		t.Fatalf("embedded Ruby RuntimeError should preserve raw details_json in structured envelopes")
 	}
 }
 

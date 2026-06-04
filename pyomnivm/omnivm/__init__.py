@@ -107,6 +107,9 @@ class RuntimeError(_builtins.RuntimeError):
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
         self._details = _copy_json_value(details) if details is not None else _copy_json_value(parsed["details"])
+        self.details_json = _runtime_error_details_json(self._details) if details is not None else parsed.get("details_json")
+        if self.details_json is None and self._details is not None:
+            self.details_json = _runtime_error_details_json(self._details)
 
     @property
     def stack_frames(self):
@@ -145,6 +148,7 @@ class RuntimeError(_builtins.RuntimeError):
             "boundary_path": self.boundary_path,
             "original_error_handle": self.original_error_handle,
             "details": _copy_json_value(self.details),
+            "details_json": self.details_json,
         }
 
     def as_dict(self):
@@ -164,6 +168,15 @@ def _copy_json_value(value):
     if isinstance(value, tuple):
         return [_copy_json_value(item) for item in value]
     return value
+
+
+def _runtime_error_details_json(value):
+    if value is None:
+        return None
+    try:
+        return json.dumps(_copy_json_value(value), separators=(",", ":"))
+    except Exception:
+        return str(value)
 
 
 def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
@@ -300,6 +313,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "boundary_path": wrapped_boundary,
         "original_error_handle": original_error_handle,
         "details": _parse_runtime_error_details(body),
+        "details_json": _parse_runtime_error_details_json(body),
     }
 
 
@@ -332,6 +346,17 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
             except Exception:
                 return raw_details
         return _copy_json_value(raw_details) if raw_details is not None else None
+    def details_json_field(source):
+        if not isinstance(source, dict):
+            return None
+        if "details" in source:
+            return _runtime_error_details_json(source.get("details"))
+        raw_details = source.get("details_json")
+        if raw_details is None:
+            raw_details = source.get("detailsJson")
+        if raw_details is None:
+            return None
+        return raw_details if isinstance(raw_details, str) else _runtime_error_details_json(raw_details)
     runtime_name = text_field(envelope.get("runtime"), runtime)
     origin_runtime = text_field(field("origin_runtime", "originRuntime"), runtime_name)
     err_type = text_field(envelope.get("type"))
@@ -396,6 +421,7 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         "boundary_path": text_field(field("boundary_path", "boundaryPath"), boundary_path),
         "original_error_handle": text_field(field("original_error_handle", "originalErrorHandle"), None),
         "details": details_field(envelope),
+        "details_json": details_json_field(envelope),
     }
 
 
@@ -432,6 +458,16 @@ def _parse_runtime_error_details(text):
         except Exception:
             return None
         return value
+    return None
+
+
+def _parse_runtime_error_details_json(text):
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Details: "):
+            continue
+        raw = stripped[len("Details: ") :]
+        return raw or None
     return None
 
 
