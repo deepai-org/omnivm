@@ -299,6 +299,8 @@ Stream handles release automatically when `stream_next` reaches end-of-stream.
 Read errors from owner stream protocols are terminal for the stream lease: the
 owner is closed/released before the error crosses the boundary, and later use
 of the same stream handle reports the closed-stream lifecycle diagnostic.
+Generated stream proxies also mark themselves closed when a pull raises, detach
+their fallback finalizer, and rethrow the original error.
 Targets may cancel abandoned streams; collision-safe stream close helpers route
 to `stream_cancel` so partial consumption closes the owner deterministically.
 Request/manifest scope cleanup and proxy finalizers remain fallback release

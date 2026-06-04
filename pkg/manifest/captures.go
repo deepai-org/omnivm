@@ -1028,7 +1028,11 @@ class __OmniVMStreamProxy:
     def _pull_next(self):
         if self._exhausted:
             return False
-        item = self._next_envelope()
+        try:
+            item = self._next_envelope()
+        except Exception:
+            self._mark_closed()
+            raise
         if item.get("done") is True:
             self._mark_closed()
             return False
@@ -1790,6 +1794,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
       }
     } catch (_e) {
+      closeRemote();
       throw _e;
     }
     return {done: true};
@@ -2610,8 +2615,13 @@ class OmniVMStreamProxy
   def each
     return enum_for(:each) unless block_given?
     loop do
-      raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
-      env = JSON.parse(raw)
+      begin
+        raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
+        env = JSON.parse(raw)
+      rescue
+        __omnivm_mark_closed
+        raise
+      end
       item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
       if item.nil? || item["done"] == true
         __omnivm_mark_closed

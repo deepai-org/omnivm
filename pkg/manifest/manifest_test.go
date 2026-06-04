@@ -5041,6 +5041,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def _mark_closed(self):") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
+		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
 		!contains(code, "if self._closed:\n            return False") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "self._mark_closed()\n        return True") {
@@ -5098,8 +5099,9 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	}
 	if !contains(code, "var cancelRemote = function()") ||
 		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") {
-		t.Fatalf("JS stream proxy close should cancel the remote stream through the explicit path, got %q", code)
+		t.Fatalf("JS stream proxy close/error handling should mark remote streams closed through explicit paths, got %q", code)
 	}
 }
 
@@ -5312,9 +5314,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "class OmniVMStreamProxy") ||
 		!contains(code, "def __omnivm_mark_closed") ||
+		!contains(code, "rescue\n        __omnivm_mark_closed\n        raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, "def omnivm_close\n    close\n  end") {
-		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, got %q", code)
+		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers and mark pull errors closed, got %q", code)
 	}
 	if contains(code, "def close\n    return false if @__omnivm_closed == true\n    begin\n      OmniVM.call(\"__manifest\", JSON.generate({op: \"stream_cancel\"") {
 		t.Fatalf("Ruby stream close should not swallow user-initiated cancellation failures")
