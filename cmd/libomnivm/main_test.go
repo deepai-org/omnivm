@@ -57,6 +57,10 @@ func TestThreadAffinityStatusReportsDiagnosticOnlyDispatch(t *testing.T) {
 	if status["owner_dispatch_supported"] != false {
 		t.Fatalf("owner dispatch should be reported unsupported: %+v", status)
 	}
+	reason, ok := status["reason"].(string)
+	if !ok || reason == "" {
+		t.Fatalf("owner dispatch status omitted unsupported reason: %+v", status)
+	}
 	targets, ok := status["owner_dispatch_targets"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("owner dispatch targets omitted: %+v", status)

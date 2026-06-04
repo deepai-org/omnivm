@@ -1258,6 +1258,7 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniStatus.return_value = (
             b'{"thread_affinity":{"mode":"diagnostic_only",'
             b'"host_thread_id":12345,"owner_dispatch_supported":false,'
+            b'"reason":"c-shared mode exposes diagnostics only",'
             b'"owner_dispatch_targets":{"python_asyncio":{"supported":false},'
             b'"javascript_event_loop":{"supported":false},'
             b'"java_executor":{"supported":false},'
@@ -1268,6 +1269,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert info["mode"] == "diagnostic_only"
         assert info["host_thread_id"] == 12345
         assert info["owner_dispatch_supported"] is False
+        assert "diagnostics only" in info["reason"]
         assert info["python_assert_host_thread"] is True
         assert info["owner_dispatch_targets"]["python_asyncio"]["supported"] is False
         assert info["owner_dispatch_targets"]["javascript_event_loop"]["supported"] is False
