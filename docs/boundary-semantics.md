@@ -344,6 +344,8 @@ errors, so later `cancel()` or Cleaner cleanup stays idempotent. Java callers
 that want deterministic early-cancellation around stream operations can use
 `StreamProxy.stream()` in a try-with-resources block; the returned
 `java.util.stream.Stream` attaches `onClose` to the proxy's `close` path.
+`StreamProxy.toList()` uses that same closeable stream view, so chunk
+materialization errors still run the stream cancellation path.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can
 become Arrow/shared-buffer table descriptors without a user-visible helper.
 

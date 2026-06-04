@@ -6497,6 +6497,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "public static final class StreamProxy implements Iterable<Object>, AutoCloseable") ||
 		!contains(code, "public Stream<Object> stream()") ||
 		!contains(code, "return StreamSupport.stream(spliterator(), false).onClose(this::close);") ||
+		!contains(code, "try (Stream<Object> items = stream())") ||
+		!contains(code, "items.forEach(out::add);") ||
 		!contains(code, "return proxy.releaseExplicit();") ||
 		!contains(code, "return proxy.cancel();") ||
 		!contains(code, `"op\":\"handle_release_explicit\"`) ||

@@ -2169,8 +2169,8 @@ public class OmniVM {
 
         public List<Object> toList() {
             List<Object> out = new ArrayList<>();
-            for (Object item : this) {
-                out.add(item);
+            try (Stream<Object> items = stream()) {
+                items.forEach(out::add);
             }
             return out;
         }
