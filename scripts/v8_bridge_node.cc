@@ -637,9 +637,9 @@ static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
     if (runtime.empty()) {
         return "";
     }
-    std::string type = omnivm_v8_get_string_prop(isolate, context, object, "type");
+    std::string type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name");
     std::string message = omnivm_v8_get_string_prop(isolate, context, object, "message");
-    std::string traceback = omnivm_v8_get_string_prop(isolate, context, object, "traceback");
+    std::string traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack");
     std::string handle = omnivm_v8_get_string_prop_fallback(isolate, context, object, "original_error_handle", "originalErrorHandle");
 
     std::string out = runtime + ": ";
@@ -672,7 +672,7 @@ static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
                 continue;
             }
             v8::Local<v8::Object> cause = cause_value.As<v8::Object>();
-            std::string cause_type = omnivm_v8_get_string_prop(isolate, context, cause, "type");
+            std::string cause_type = omnivm_v8_get_string_prop_fallback(isolate, context, cause, "type", "name");
             std::string cause_message = omnivm_v8_get_string_prop(isolate, context, cause, "message");
             out += "\nCaused by: ";
             if (!cause_type.empty()) {
@@ -681,7 +681,7 @@ static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
             out += cause_message;
         }
     }
-    std::string details = omnivm_v8_json_stringify_prop(isolate, context, object, "details");
+    std::string details = omnivm_v8_details_json_prop_fallback(isolate, context, object);
     if (!details.empty()) {
         out += "\nDetails: " + details;
     }

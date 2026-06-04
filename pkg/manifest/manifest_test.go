@@ -8269,6 +8269,10 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	for _, want := range []string{
 		`if (!omnivm_v8_parse_runtime_error_envelope_text(isolate, context, err_msg, runtime_hint, envelope))`,
 		`std::string origin_runtime = env.origin_runtime.empty() ? env.runtime : env.origin_runtime`,
+		`std::string type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name")`,
+		`std::string traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack")`,
+		`std::string cause_type = omnivm_v8_get_string_prop_fallback(isolate, context, cause, "type", "name")`,
+		`std::string details = omnivm_v8_details_json_prop_fallback(isolate, context, object)`,
 		`env.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, object, "origin_runtime", "originRuntime")`,
 		`env.type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name")`,
 		`env.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack")`,
