@@ -8089,6 +8089,31 @@ func TestLibOmniVMThreadAffinityStatusReportsUnsupportedOwnerDispatch(t *testing
 	}
 }
 
+func TestLibOmniVMRuntimeEntrypointsRequireHostThread(t *testing.T) {
+	data, err := os.ReadFile("../../cmd/libomnivm/main.go")
+	if err != nil {
+		t.Fatalf("read libomnivm source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		`done, err := beginRuntimeExternalCall("call", threadID)`,
+		`done, err := beginRuntimeExternalCall("exec", threadID)`,
+		`done, err := beginRuntimeExternalCall("manifest", threadID)`,
+		`done, err := beginRuntimeExternalCall("load_manifest_module", threadID)`,
+		`done, err := beginRuntimeExternalCall("manifest_call", threadID)`,
+		`done, err := beginRuntimeExternalCall("load_plugin", threadID)`,
+		`done, err := beginRuntimeExternalCall("typed_call", threadID)`,
+		"func beginRuntimeExternalCall(op string, threadID int64) (func(), error)",
+		"if err := requireHostThreadForRuntimeCall(op, threadID); err != nil",
+		"thread affinity violation: %s must run on OmniVM host thread",
+		"owner dispatch is unsupported in c-shared mode",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("libomnivm runtime entrypoints should reject foreign host threads, missing %q", want)
+		}
+	}
+}
+
 func TestManifestRunnerTypedCallbacksRejectForeignThreads(t *testing.T) {
 	data, err := os.ReadFile("../../cmd/manifest-runner/main.go")
 	if err != nil {
