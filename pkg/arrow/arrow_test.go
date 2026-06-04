@@ -534,20 +534,20 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.LeaseState != "borrowed" || status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 4 {
+	if status.LeaseState != "borrowed" || status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 4 || status.ActiveNamedBorrows != 1 || status.NamedBorrowQueue != 1 {
 		t.Fatalf("bad borrowed live status: %+v", status)
 	}
 	if err := s.Free("payload"); err != nil {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.State != "released_detached" || status.LeaseState != "detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
+	if status.State != "released_detached" || status.LeaseState != "detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.ActiveNamedBorrows != 1 || status.NamedBorrowQueue != 1 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
 		t.Fatalf("bad released detached status: %+v", status)
 	}
 
 	lease.Release()
 	status = s.Status("payload")
-	if status.State != "released" || status.LeaseState != "released" || !status.Released || status.ActiveBorrows != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
+	if status.State != "released" || status.LeaseState != "released" || !status.Released || status.ActiveBorrows != 0 || status.ActiveNamedBorrows != 0 || status.NamedBorrowQueue != 0 || status.DetachedBuffers != 0 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" || status.MemorySpace != "host" {
 		t.Fatalf("bad released status after borrow release: %+v", status)
 	}
 	if _, err := s.Get("payload"); err == nil || !strings.Contains(err.Error(), "was released") {
@@ -662,6 +662,10 @@ func TestNamedBorrowQueueDiagnosticsExposeAmbiguousSameNameBorrows(t *testing.T)
 	}
 	if stats.DetachedBuffers != 1 || stats.ActiveBorrows != 2 {
 		t.Fatalf("replacement should leave one detached borrow and one named borrow: %+v", stats)
+	}
+	status := s.Status("payload")
+	if status.ActiveNamedBorrows != 2 || status.NamedBorrowQueue != 2 || status.DetachedBuffers != 1 || status.ActiveBorrows != 2 {
+		t.Fatalf("buffer status should expose same-name named borrow ambiguity: %+v", status)
 	}
 }
 

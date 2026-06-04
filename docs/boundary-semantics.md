@@ -668,7 +668,9 @@ use `ReleaseWithError()`.
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports a
 coarse `state` (`live`, `released`, `released_detached`, or `missing`), a
 direct `lease_state` (`owned`, `borrowed`, `detached`, `released`, or
-`missing`), and `memory_space` with dtype/format/ownership metadata. Current
+`missing`), per-name `active_named_borrows` and `named_borrow_queue`
+diagnostics when finalizer-released native views are still associated with that
+public name, and `memory_space` with dtype/format/ownership metadata. Current
 zero-copy buffers report `memory_space="host"`; GPU/accelerator memory should
 stay proxied or require an explicit device-aware bridge before it can report a
 different memory space. Released buffer tombstones retain their

@@ -116,6 +116,8 @@ type BufferStatus struct {
 	MemorySpace         string `json:"memory_space,omitempty"`
 	ActiveBorrows       int64  `json:"active_borrows,omitempty"`
 	ActiveBorrowedBytes int64  `json:"active_borrowed_bytes,omitempty"`
+	ActiveNamedBorrows  int64  `json:"active_named_borrows,omitempty"`
+	NamedBorrowQueue    int    `json:"named_borrow_queue,omitempty"`
 	DetachedBuffers     int    `json:"detached_buffers,omitempty"`
 	DetachedBytes       int64  `json:"detached_bytes,omitempty"`
 }
@@ -510,6 +512,10 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		status.ActiveBorrowedBytes += int64(refs) * size
 		status.DetachedBuffers++
 		status.DetachedBytes += int64(refs) * size
+	}
+	if queueLen := len(s.namedBorrows[name]); queueLen > 0 {
+		status.ActiveNamedBorrows = int64(queueLen)
+		status.NamedBorrowQueue = queueLen
 	}
 	return status
 }
