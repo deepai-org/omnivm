@@ -5710,6 +5710,8 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 	}
 	if !contains(code, "var cancelRemote = function()") ||
 		!contains(code, "var markRemoteClosed = function()") ||
+		!contains(code, "if (localValues) return markRemoteClosed();") ||
+		!contains(code, "if (remoteClosed) return {done: true};") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||

@@ -1842,6 +1842,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   };
   var cancelRemote = function() {
     if (remoteClosed) return false;
+    if (localValues) return markRemoteClosed();
     if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
     var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
     var env = JSON.parse(raw);
@@ -1854,6 +1855,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   };
   var nextValue = function() {
     if (localValues) {
+      if (remoteClosed) return {done: true};
       if (localIndex >= localValues.length) return {done: true};
       return {done: false, value: localValues[localIndex++]};
     }
