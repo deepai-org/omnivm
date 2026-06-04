@@ -634,6 +634,10 @@ Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
 `omnivm.proxy_contains(proxy, key)`, and `omnivm.proxy_close(proxy)`.
+Local Python protocol attributes such as `__class__` and `__repr__` stay local
+so introspection and debugging remain ordinary; owner fields with those names
+remain available through `omnivm.proxy_get(proxy, "__class__")` and the same
+helper family.
 Generated Python manifest capture code also injects `omnivm_close(value)` so
 guest Python snippets can explicitly release a handle proxy or cancel a stream
 proxy even when the owner object has a real `close` field or method.
