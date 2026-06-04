@@ -21191,6 +21191,166 @@ def test_manifest_busboy_upload_abort_cancels_python_owner():
         raise AssertionError(f"Busboy upload leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_express_multer_upload_abort_cancels_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "class MulterUploadBody:\n"
+                    "    def __init__(self):\n"
+                    "        boundary = b'----omnivm-multer-boundary'\n"
+                    "        self.chunks = [\n"
+                    "            b'--' + boundary + b'\\r\\n',\n"
+                    "            b'Content-Disposition: form-data; name=\"file\"; filename=\"upload.txt\"\\r\\n',\n"
+                    "            b'Content-Type: text/plain\\r\\n\\r\\n',\n"
+                    "            b'first-multer-',\n"
+                    "        ] + [((b'multer-tail-%04d-' % i) + (b'x' * 32768)) for i in range(40)] + [b'\\r\\n--' + boundary + b'--\\r\\n']\n"
+                    "        self.index = 0\n"
+                    "        self.pulls = 0\n"
+                    "        self.closed = False\n"
+                    "    def __iter__(self):\n"
+                    "        return self\n"
+                    "    def __next__(self):\n"
+                    "        self.pulls += 1\n"
+                    "        if self.index >= len(self.chunks):\n"
+                    "            raise StopIteration\n"
+                    "        chunk = self.chunks[self.index]\n"
+                    "        self.index += 1\n"
+                    "        return chunk\n"
+                    "    def close(self):\n"
+                    "        self.closed = True\n"
+                    "multer_upload_body = MulterUploadBody()\n"
+                ),
+            },
+            {"op": "eval", "runtime": "python", "bind": "multer_upload_body", "code": "multer_upload_body"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "(async () => {\n"
+                    "  const express = require('express');\n"
+                    "  const multer = require('multer');\n"
+                    "  const {request: undiciRequest} = require('undici');\n"
+                    "  globalThis.multerAbortState = {\n"
+                    "    requests: 0,\n"
+                    "    bytes: 0,\n"
+                    "    aborted: false,\n"
+                    "    reqAborted: false,\n"
+                    "    reqClosed: false,\n"
+                    "    multerFinished: false,\n"
+                    "    multerError: null,\n"
+                    "    fileSize: null,\n"
+                    "    uploadClosed: false,\n"
+                    "    uploadError: null,\n"
+                    "    sourceCancelled: false,\n"
+                    "    clientRejected: false,\n"
+                    "    clientRejectName: null,\n"
+                    "    clientRejectMessage: null\n"
+                    "  };\n"
+                    "  if (typeof multer_upload_body.toNodeReadable !== 'function') {\n"
+                    "    throw new Error('OmniVM stream proxy did not expose toNodeReadable');\n"
+                    "  }\n"
+                    "  const originalCancel = multer_upload_body.cancel.bind(multer_upload_body);\n"
+                    "  multer_upload_body.cancel = reason => {\n"
+                    "    globalThis.multerAbortState.sourceCancelled = true;\n"
+                    "    return originalCancel(reason);\n"
+                    "  };\n"
+                    "  const abortController = new AbortController();\n"
+                    "  const upload = multer({storage: multer.memoryStorage()});\n"
+                    "  const app = express();\n"
+                    "  app.post('/upload', (req, res) => {\n"
+                    "    const state = globalThis.multerAbortState;\n"
+                    "    state.requests += 1;\n"
+                    "    req.on('data', chunk => {\n"
+                    "      state.bytes += chunk.length;\n"
+                    "      if (!state.aborted && state.bytes > 192) {\n"
+                    "        state.aborted = true;\n"
+                    "        abortController.abort(new Error('client-stop'));\n"
+                    "      }\n"
+                    "    });\n"
+                    "    req.on('aborted', () => { state.reqAborted = true; });\n"
+                    "    req.on('close', () => { state.reqClosed = true; });\n"
+                    "    upload.single('file')(req, res, err => {\n"
+                    "      state.multerFinished = true;\n"
+                    "      state.multerError = err ? (err.code || err.message || String(err)) : null;\n"
+                    "      state.fileSize = req.file && req.file.buffer ? req.file.buffer.length : null;\n"
+                    "      if (!res.destroyed && !res.headersSent) res.status(err ? 499 : 200).end(err ? 'aborted' : 'ok');\n"
+                    "    });\n"
+                    "  });\n"
+                    "  const server = app.listen(0, '127.0.0.1');\n"
+                    "  await new Promise((resolve, reject) => {\n"
+                    "    server.once('listening', resolve);\n"
+                    "    server.once('error', reject);\n"
+                    "  });\n"
+                    "  const body = multer_upload_body.toNodeReadable({objectMode: false, highWaterMark: 1});\n"
+                    "  body.on('close', () => { globalThis.multerAbortState.uploadClosed = true; });\n"
+                    "  body.on('error', err => { globalThis.multerAbortState.uploadError = err && err.message ? err.message : String(err); });\n"
+                    "  const port = server.address().port;\n"
+                    "  try {\n"
+                    "    await undiciRequest('http://127.0.0.1:' + port + '/upload', {\n"
+                    "      method: 'POST',\n"
+                    "      body,\n"
+                    "      headers: {'content-type': 'multipart/form-data; boundary=----omnivm-multer-boundary'},\n"
+                    "      signal: abortController.signal\n"
+                    "    });\n"
+                    "  } catch (err) {\n"
+                    "    globalThis.multerAbortState.clientRejected = true;\n"
+                    "    globalThis.multerAbortState.clientRejectName = err && err.name ? err.name : null;\n"
+                    "    globalThis.multerAbortState.clientRejectMessage = err && err.message ? err.message : String(err);\n"
+                    "  } finally {\n"
+                    "    await new Promise(resolve => setTimeout(resolve, 80));\n"
+                    "    await new Promise(resolve => server.close(resolve));\n"
+                    "  }\n"
+                    "  for (let i = 0; i < 20 && !globalThis.multerAbortState.sourceCancelled; i++) {\n"
+                    "    await new Promise(resolve => setImmediate(resolve));\n"
+                    "  }\n"
+                    "  const state = globalThis.multerAbortState;\n"
+                    "  if (state.requests !== 1) throw new Error('Express/Multer saw bad request count: ' + JSON.stringify(state));\n"
+                    "  if (state.bytes <= 192) throw new Error('Express/Multer did not receive upload bytes before abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.aborted || !state.clientRejected) throw new Error('Express/Multer upload did not abort client: ' + JSON.stringify(state));\n"
+                    "  if (!state.reqClosed) throw new Error('Express/Multer request did not close after abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.uploadClosed) throw new Error('Express/Multer upload body stream did not close: ' + JSON.stringify(state));\n"
+                    "  if (!state.sourceCancelled) throw new Error('Express/Multer abort did not cancel Python source: ' + JSON.stringify(state));\n"
+                    "})()\n"
+                ),
+                "captures": {"multer_upload_body": "multer_upload_body"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not multer_upload_body.closed:\n"
+                    "    raise AssertionError('Express/Multer upload abort did not close Python owner')\n"
+                    "if multer_upload_body.index <= 3:\n"
+                    "    raise AssertionError(f'Express/Multer did not consume file data before abort: {multer_upload_body.__dict__!r}')\n"
+                    "if multer_upload_body.index >= len(multer_upload_body.chunks):\n"
+                    "    raise AssertionError(f'Express/Multer drained entire upload after abort: {multer_upload_body.__dict__!r}')\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Express/Multer upload source did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Express/Multer upload source used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Express/Multer upload did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Express/Multer upload leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -26312,6 +26472,7 @@ def main():
         check("Manifest Node classic Readable early cancel releases owner", test_manifest_node_classic_readable_early_cancel_releases_owner)
         check("Manifest Node classic pipeline abort cancels Python owner", test_manifest_node_classic_pipeline_abort_cancels_python_owner)
         check("Manifest Busboy upload abort cancels Python owner", test_manifest_busboy_upload_abort_cancels_python_owner)
+        check("Manifest Express Multer upload abort cancels Python owner", test_manifest_express_multer_upload_abort_cancels_python_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
