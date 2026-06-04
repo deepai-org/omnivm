@@ -620,10 +620,14 @@ proxies. When user code needs an unambiguous operation, it can use
 `proxy[omnivm.proxyLength]`; data fields remain available through
 `omnivm.proxyGet(proxy, "length")`. `toJSON` is local proxy bookkeeping for
 `JSON.stringify(proxy)`, so a remote field or method named `toJSON` should be
-read with `omnivm.proxyGet(proxy, "toJSON")`. JavaScript handle and stream
-proxies also expose `Symbol.dispose` and `Symbol.asyncDispose` when the runtime
-supports them, and `omnivm.proxyClose(value)` honors both symbols before
-falling back to a descriptor-safe public `close` method.
+read with `omnivm.proxyGet(proxy, "toJSON")`. Callable remote `then` fields are
+hidden from natural property access so proxies do not become Promise thenables;
+use `omnivm.proxyGet(proxy, "then")` or `omnivm.proxyCall(proxy, "then", args)`
+for the owner field or method. Non-callable remote `then` fields remain
+naturally readable. JavaScript handle and stream proxies also expose
+`Symbol.dispose` and `Symbol.asyncDispose` when the runtime supports them, and
+`omnivm.proxyClose(value)` honors both symbols before falling back to a
+descriptor-safe public `close` method.
 Python retained manifest proxies provide matching helpers:
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
