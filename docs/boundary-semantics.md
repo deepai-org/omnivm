@@ -497,6 +497,11 @@ threads, access recording for chatty proxy detection, and reference/drop-edge
 events for cross-runtime cycle observability. These hooks are adapter plumbing,
 not `.poly` language APIs.
 
+`omnivm.status()["ruby_threading"]` exposes the embedded Ruby deployment
+boundary as structured data. The current mode is `single_vm_thread`; native Ruby
+threads are intentionally unsupported in process, and native-threaded app
+servers such as Puma should run out of process or be guarded by a startup check.
+
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
 proxies. When user code needs an unambiguous collection length, it can use

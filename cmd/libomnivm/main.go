@@ -636,10 +636,17 @@ func OmniStatus() *C.char {
 		"lifecycle_errors":            lifecycleErrors.Load(),
 		"shutdown_while_active_count": shutdownWhileActiveCount.Load(),
 		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline",
-		"runtimes":                    []string{},
-		"go_plugins":                  []string{},
-		"boundary":                    loadBoundaryStats(),
-		"arrow":                       arrow.GlobalStore().Stats(),
+		"ruby_threading": map[string]interface{}{
+			"mode":                     "single_vm_thread",
+			"native_threads_supported": false,
+			"thread_new":               "unsupported_diagnostic",
+			"supported_concurrency":    "fiber_async_or_external_process_threads",
+			"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.",
+		},
+		"runtimes":   []string{},
+		"go_plugins": []string{},
+		"boundary":   loadBoundaryStats(),
+		"arrow":      arrow.GlobalStore().Stats(),
 	}
 	if eng != nil {
 		status["golden_thread_id"] = eng.GoldenThreadID

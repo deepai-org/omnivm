@@ -15728,6 +15728,15 @@ def test_status_observability():
         raise AssertionError("fresh worker reported a timeout runtime")
     if "go=deadline" not in status["watchdog_capabilities"]:
         raise AssertionError("status omitted Go deadline capability")
+    ruby_threading = status.get("ruby_threading")
+    if not isinstance(ruby_threading, dict):
+        raise AssertionError(f"status omitted Ruby threading capability boundary: {status}")
+    if ruby_threading.get("mode") != "single_vm_thread":
+        raise AssertionError(f"status reported unexpected Ruby threading mode: {ruby_threading}")
+    if ruby_threading.get("native_threads_supported") is not False:
+        raise AssertionError(f"status should report native Ruby threads unsupported: {ruby_threading}")
+    if "Puma" not in ruby_threading.get("app_server_boundary", ""):
+        raise AssertionError(f"status should make Puma/out-of-process boundary visible: {ruby_threading}")
     handles = status.get("handles")
     if not isinstance(handles, dict):
         raise AssertionError("status omitted handle diagnostics")
