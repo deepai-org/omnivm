@@ -285,7 +285,7 @@ except omnivm.RuntimeError as exc:
 
 `RuntimeError.to_dict()` and its `as_dict()` alias return a JSON-serializable envelope with `runtime`,
 `origin_runtime`, `type`, `message`, `traceback`, `stack_frames`, `cause_chain`,
-`boundary_path`, and `original_error_handle`. The handle is only populated when
+`boundary_path`, `original_error_handle`, and `details`. The handle is only populated when
 the source runtime reports one; callers should treat it as optional diagnostic
 metadata. Native JavaScript `Error` objects created by OmniVM expose the same
 envelope through `toJSON()`, so `JSON.stringify(error)` emits matching
