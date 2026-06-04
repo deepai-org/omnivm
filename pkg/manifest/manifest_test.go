@@ -8068,6 +8068,53 @@ raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.lengt
 	}
 }
 
+func TestRubyRemoteStreamCancelsOnChunkMaterializationError(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"done" => false, "value" => {"bad" => true}}}) if req["op"] == "stream_next"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "stream_cancel"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+def __omnivm_stream_chunk_value(_value)
+  raise "chunk boom"
+end
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 89, "runtime" => "ruby", "kind" => "stream"})
+begin
+  stream.each { |_item| }
+rescue => e
+  raise unless e.message.include?("chunk boom")
+else
+  raise "chunk materialization error was not raised"
+end
+raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
+raise "close was not idempotent" unless stream.close == false
+raise "stream handle was not retained" unless OmniVM.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 89 }
+cancels = OmniVM.requests.select { |req| req["op"] == "stream_cancel" }
+raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.length == 1 && cancels[0]["id"] == 89
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby remote stream materialization-error lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
 func TestInjectJavaCapturesUsesManifestCaptureStore(t *testing.T) {
 	code := injectJavaCaptures(map[string]string{
 		"req": `{"__omnivm_resource__":true,"id":7,"runtime":"java","kind":"request","closed":false}`,
