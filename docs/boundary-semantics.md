@@ -691,6 +691,7 @@ The shared Arrow data plane exposes generic bulk-data diagnostics under
 - `releases`;
 - `copied_bytes`;
 - `zero_copy_borrows`;
+- `zero_copy_imports`;
 - `active_borrows`;
 - `active_borrowed_bytes`;
 - `active_named_borrows`;
@@ -699,6 +700,8 @@ The shared Arrow data plane exposes generic bulk-data diagnostics under
 - `detached_buffers`;
 - `detached_bytes`;
 - `deferred_release_drops`;
+- `deferred_release_queue_len`;
+- `deferred_release_overflow_names`;
 - `largest_buffer_name`;
 - `largest_buffer_size`.
 
@@ -716,6 +719,10 @@ use `ReleaseWithError()`.
 Python borrowed `memoryview` cleanup follows the same finalizer rule:
 `get_buffer()` views call `OmniBufRelease` quietly when collected, while
 `omnivm.release_buffer(name)` remains the user-initiated diagnostic path.
+Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
+pressure on that queue: `deferred_release_queue_len` includes both the channel
+backlog and the overflow spill map, while `deferred_release_overflow_names`
+counts distinct buffer names currently represented in the spill map.
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports a
 coarse `state` (`live`, `released`, `released_detached`, or `missing`), a
 direct `lease_state` (`owned`, `borrowed`, `detached`, `released`, or
