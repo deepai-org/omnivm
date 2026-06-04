@@ -8059,6 +8059,24 @@ func TestLibOmniVMThreadAffinityStatusReportsUnsupportedOwnerDispatch(t *testing
 	}
 }
 
+func TestManifestRunnerTypedCallbacksRejectForeignThreads(t *testing.T) {
+	data, err := os.ReadFile("../../cmd/manifest-runner/main.go")
+	if err != nil {
+		t.Fatalf("read manifest-runner source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		`func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t`,
+		`currentTid := int64(C.get_thread_id())`,
+		`if currentTid != goldenThreadID {`,
+		`polyglot.Error(fmt.Sprintf("omnivm.typed_call from non-Golden Thread (tid=%d, expected=%d)", currentTid, goldenThreadID)).ToCValueRaw(unsafe.Pointer(&cv))`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("manifest-runner typed bridge should reject non-Golden Thread callbacks, missing %q", want)
+		}
+	}
+}
+
 func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 	files := map[string]string{}
 	for _, path := range []string{

@@ -197,6 +197,13 @@ func OmniBufStatus(cName *C.char) *C.char {
 
 //export OmniCallTyped
 func OmniCallTyped(cRuntime *C.char, cFuncName *C.char, cArgs *C.omni_value_t, nargs C.int32_t) C.omni_value_t {
+	currentTid := int64(C.get_thread_id())
+	if currentTid != goldenThreadID {
+		var cv C.omni_value_t
+		polyglot.Error(fmt.Sprintf("omnivm.typed_call from non-Golden Thread (tid=%d, expected=%d)", currentTid, goldenThreadID)).ToCValueRaw(unsafe.Pointer(&cv))
+		return cv
+	}
+
 	rtName := C.GoString(cRuntime)
 	funcName := C.GoString(cFuncName)
 
