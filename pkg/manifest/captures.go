@@ -1464,12 +1464,12 @@ if (typeof omnivm !== 'undefined' && omnivm) {
         if (typeof Symbol !== 'undefined') {
           var symbolDispose = null;
           try {
-            symbolDispose = Symbol.dispose && value && value[Symbol.dispose];
+            symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null;
           } catch (_symbolDisposeLookupError) {}
           if (typeof symbolDispose === 'function') return symbolDispose.call(value);
           var symbolAsyncDispose = null;
           try {
-            symbolAsyncDispose = Symbol.asyncDispose && value && value[Symbol.asyncDispose];
+            symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null;
           } catch (_symbolAsyncDisposeLookupError) {}
           if (typeof symbolAsyncDispose === 'function') return symbolAsyncDispose.call(value);
         }

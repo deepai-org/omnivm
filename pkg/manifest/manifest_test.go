@@ -5785,12 +5785,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
 		!contains(code, "try {\n          omnivmClose = value && value.__omnivm_close;") ||
 		!contains(code, "return omnivmClose.call(value)") ||
-		!contains(code, "symbolDispose = Symbol.dispose && value && value[Symbol.dispose]") ||
-		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose && value && value[Symbol.asyncDispose]") ||
+		!contains(code, "symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null") ||
+		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
-	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") {
+	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
 		t.Fatalf("JS proxyClose should not invoke dynamic close property lookup")
 	}
 	if !contains(code, `prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON"`) {
