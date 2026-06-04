@@ -5,8 +5,10 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.jar.*;
 import java.util.regex.*;
@@ -675,11 +677,246 @@ public class OmniVMRunner {
         StringWriter sw = new StringWriter();
         throwable.printStackTrace(new PrintWriter(sw));
         String text = sw.toString().trim();
+        String details = throwableDetailsJson(throwable);
+        if (details != null && !details.isEmpty()) {
+            text += "\nDetails: " + details;
+        }
         String handle = originalErrorHandle(throwable);
         if (handle != null && !handle.isEmpty()) {
             text += "\nOriginal error handle: " + handle;
         }
         return text;
+    }
+
+    private static String throwableDetailsJson(Throwable throwable) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        addThrowableDetail(details, "details", throwable, "getDetails");
+        addThrowableDetail(details, "details", throwable, "details");
+        addThrowableDetail(details, "errors", throwable, "getErrors");
+        addThrowableDetail(details, "errors", throwable, "errors");
+        addThrowableDetail(details, "path", throwable, "getPath");
+        addThrowableDetail(details, "path", throwable, "path");
+        addThrowableDetail(details, "location", throwable, "getLocation");
+        addThrowableDetail(details, "location", throwable, "location");
+        addThrowableDetail(details, "original_message", throwable, "getOriginalMessage");
+        addThrowableDetail(details, "original_message", throwable, "originalMessage");
+        addThrowableDetail(details, "to_map", throwable, "toMap");
+        if (details.isEmpty()) {
+            return "";
+        }
+        return jsonValue(details);
+    }
+
+    private static void addThrowableDetail(Map<String, Object> details, String key, Throwable throwable, String methodName) {
+        if (details.containsKey(key)) {
+            return;
+        }
+        Object raw = callThrowableDetailMethod(throwable, methodName);
+        if (raw == null) {
+            raw = throwableDetailField(throwable, methodName);
+        }
+        Object normalized = normalizeDetailValue(raw, 0);
+        if (isEmptyDetail(normalized)) {
+            return;
+        }
+        details.put(key, normalized);
+    }
+
+    private static Object callThrowableDetailMethod(Throwable throwable, String methodName) {
+        try {
+            Method method = throwable.getClass().getMethod(methodName);
+            if (method.getParameterCount() != 0 || method.getDeclaringClass() == Throwable.class) {
+                return null;
+            }
+            method.setAccessible(true);
+            return method.invoke(throwable);
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static Object throwableDetailField(Throwable throwable, String accessorName) {
+        String fieldName = detailFieldName(accessorName);
+        if (fieldName.isEmpty()) {
+            return null;
+        }
+        for (Class<?> current = throwable.getClass(); current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(fieldName);
+                if (Modifier.isStatic(field.getModifiers())) {
+                    return null;
+                }
+                field.setAccessible(true);
+                return field.get(throwable);
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                // Try the next superclass.
+            }
+        }
+        return null;
+    }
+
+    private static String detailFieldName(String accessorName) {
+        if (accessorName.startsWith("get") && accessorName.length() > 3) {
+            String tail = accessorName.substring(3);
+            return Character.toLowerCase(tail.charAt(0)) + tail.substring(1);
+        }
+        return switch (accessorName) {
+            case "originalMessage" -> "originalMessage";
+            case "toMap" -> "";
+            default -> accessorName;
+        };
+    }
+
+    private static Object normalizeDetailValue(Object value, int depth) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof CharSequence || value instanceof Number || value instanceof Boolean) {
+            return value;
+        }
+        if (depth >= 4) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            int count = 0;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (count >= 32) {
+                    out.put("_truncated", true);
+                    break;
+                }
+                out.put(String.valueOf(entry.getKey()), normalizeDetailValue(entry.getValue(), depth + 1));
+                count++;
+            }
+            return out;
+        }
+        if (value instanceof Iterable<?> iterable) {
+            List<Object> out = new ArrayList<>();
+            int count = 0;
+            for (Object item : iterable) {
+                if (count >= 32) {
+                    out.add("...");
+                    break;
+                }
+                out.add(normalizeDetailValue(item, depth + 1));
+                count++;
+            }
+            return out;
+        }
+        Class<?> cls = value.getClass();
+        if (cls.isArray()) {
+            List<Object> out = new ArrayList<>();
+            int length = Math.min(Array.getLength(value), 32);
+            for (int i = 0; i < length; i++) {
+                out.add(normalizeDetailValue(Array.get(value, i), depth + 1));
+            }
+            if (Array.getLength(value) > length) {
+                out.add("...");
+            }
+            return out;
+        }
+        return String.valueOf(value);
+    }
+
+    private static boolean isEmptyDetail(Object value) {
+        if (value == null) {
+            return true;
+        }
+        if (value instanceof String s) {
+            return s.isEmpty();
+        }
+        if (value instanceof Map<?, ?> map) {
+            return map.isEmpty();
+        }
+        if (value instanceof Collection<?> collection) {
+            return collection.isEmpty();
+        }
+        return false;
+    }
+
+    private static String jsonValue(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        if (value instanceof Boolean) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Number number) {
+            return jsonNumber(number);
+        }
+        if (value instanceof Map<?, ?> map) {
+            StringBuilder out = new StringBuilder("{");
+            boolean first = true;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!first) {
+                    out.append(',');
+                }
+                first = false;
+                out.append(jsonString(String.valueOf(entry.getKey()))).append(':').append(jsonValue(entry.getValue()));
+            }
+            return out.append('}').toString();
+        }
+        if (value instanceof Iterable<?> iterable) {
+            StringBuilder out = new StringBuilder("[");
+            boolean first = true;
+            for (Object item : iterable) {
+                if (!first) {
+                    out.append(',');
+                }
+                first = false;
+                out.append(jsonValue(item));
+            }
+            return out.append(']').toString();
+        }
+        return jsonString(String.valueOf(value));
+    }
+
+    private static String jsonNumber(Number number) {
+        if (number instanceof Double d && !Double.isFinite(d)) {
+            return jsonString(String.valueOf(d));
+        }
+        if (number instanceof Float f && !Float.isFinite(f)) {
+            return jsonString(String.valueOf(f));
+        }
+        return String.valueOf(number);
+    }
+
+    private static String jsonString(String value) {
+        StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            switch (ch) {
+                case '"':
+                    out.append("\\\"");
+                    break;
+                case '\\':
+                    out.append("\\\\");
+                    break;
+                case '\b':
+                    out.append("\\b");
+                    break;
+                case '\f':
+                    out.append("\\f");
+                    break;
+                case '\n':
+                    out.append("\\n");
+                    break;
+                case '\r':
+                    out.append("\\r");
+                    break;
+                case '\t':
+                    out.append("\\t");
+                    break;
+                default:
+                    if (ch < 0x20) {
+                        out.append(String.format("\\u%04x", (int) ch));
+                    } else {
+                        out.append(ch);
+                    }
+                    break;
+            }
+        }
+        return out.append('"').toString();
     }
 
     private static String originalErrorHandle(Throwable throwable) {

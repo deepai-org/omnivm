@@ -18814,6 +18814,80 @@ raise ActiveRecord::RecordInvalid.new(record)
             raise AssertionError(f"JS ActiveRecord validation structured detail {part!r} lost: {envelope}")
 
 
+def test_javascript_native_java_error_details_cross_runtime_call():
+    java_source = r'''
+public class JavaDetailException extends RuntimeException {
+  public final String location = "request.body";
+
+  JavaDetailException() {
+    super("java detail failure");
+  }
+
+  public java.util.Map<String, Object> getDetails() {
+    java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+    details.put("code", "E_JAVA_DETAIL");
+    details.put("status", 409);
+    details.put("path", java.util.Arrays.asList("users", "age"));
+    return details;
+  }
+
+  public java.util.List<String> getErrors() {
+    return java.util.Arrays.asList("age must be positive", "name is required");
+  }
+
+  public String getOriginalMessage() {
+    return "upstream validation rejected payload";
+  }
+
+  public static void main(String[] args) {
+    throw new JavaDetailException();
+  }
+}
+'''
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("java", {json.dumps(java_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      boundaryPath: err.boundaryPath,
+      details: err.details
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    if envelope.get("missing"):
+        raise AssertionError("JS Java detail error path did not raise")
+    if not envelope.get("isError"):
+        raise AssertionError(f"JS catch did not receive native Error for Java detail failure: {envelope}")
+    if envelope.get("runtime") != "java" or envelope.get("type") != "JavaDetailException":
+        raise AssertionError(f"JS Java detail error runtime/type lost: {envelope}")
+    if "java detail failure" not in envelope.get("message", ""):
+        raise AssertionError(f"JS Java detail error message lost: {envelope}")
+    if envelope.get("boundaryPath") != "call[java]":
+        raise AssertionError(f"JS Java detail boundary path lost: {envelope}")
+    details = envelope.get("details")
+    if not isinstance(details, dict):
+        raise AssertionError(f"JS Java structured details lost: {envelope}")
+    if details.get("details") != {"code": "E_JAVA_DETAIL", "status": 409, "path": ["users", "age"]}:
+        raise AssertionError(f"JS Java getDetails payload lost: {envelope}")
+    if details.get("errors") != ["age must be positive", "name is required"]:
+        raise AssertionError(f"JS Java getErrors payload lost: {envelope}")
+    if details.get("location") != "request.body":
+        raise AssertionError(f"JS Java detail field payload lost: {envelope}")
+    if details.get("original_message") != "upstream validation rejected payload":
+        raise AssertionError(f"JS Java original message payload lost: {envelope}")
+
+
 def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
     pydantic_source = (
         "from pydantic import BaseModel, Field\n"
@@ -29850,6 +29924,7 @@ def main():
         check("JavaScript native Python to_dict error details cross runtime call", test_javascript_native_python_to_dict_error_details_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
         check("JavaScript native ActiveRecord validation details cross runtime call", test_javascript_native_activerecord_validation_details_cross_runtime_call)
+        check("JavaScript native Java error details cross runtime call", test_javascript_native_java_error_details_cross_runtime_call)
         check("Ruby and Java native ecosystem library error fields cross runtime calls", test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
