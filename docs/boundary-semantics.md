@@ -340,8 +340,12 @@ non-collection sync iterables, async iterables, or `getReader` streams, Java
 values. The bridge pulls bounded chunks with `stream_next` and releases the
 stream handle at EOF or owner read error.
 Closeable stream sources are closed through their host
-protocol on EOF, read error, cancellation, or scope/finalizer release: Python and Ruby
-`close`, Java `AutoCloseable`, JavaScript iterator `return`, and Go `io.Closer`.
+protocol on EOF, read error, cancellation, or scope/finalizer release: Python
+`close`/async `aclose`, Ruby `close`, Java `AutoCloseable`, JavaScript
+iterator `return`, and Go `io.Closer`. Python async stream cancellation is
+scheduled onto the same pump-owned asyncio loop used for async pulls, so
+`stream_cancel` can await `aclose()` without creating another thread or event
+loop.
 Go handle proxies expose `GetWithError`, `IndexWithError`,
 `ValuesWithError`, `KeysWithError`, `ItemsWithError`, `ContainsWithError`,
 `LenWithError`, `SetWithError`, `CallWithError`, and `AsMapWithError` for

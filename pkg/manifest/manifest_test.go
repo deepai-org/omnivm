@@ -5280,6 +5280,32 @@ func TestRuntimeRefPythonAsyncStreamCloseUsesOwnerLoopContract(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonAsyncStreamCloseStepAwaitsCancellation(t *testing.T) {
+	code, ok := runtimeRefPythonStreamCloseStepCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
+	if !ok {
+		t.Fatal("runtimeRefPythonStreamCloseStepCode unsupported")
+	}
+	for _, want := range []string{
+		"__omnivm_close_ready = False",
+		"__omnivm_close_error = None",
+		"async def __omnivm_close_one",
+		"await __omnivm_target_aclose()",
+		"async def __omnivm_stream_close_task()",
+		"await __omnivm_close_frame_iterators(__omnivm_stream_iter)",
+		"globals()['__omnivm_stream_loop'] = __omnivm_loop",
+		"__aio.ensure_future(__omnivm_stream_close_task(), loop=__omnivm_loop)",
+		"globals()[\"__omnivm_stream_state\"] = None",
+		"globals()[\"__omnivm_close_ready\"] = True",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefPythonStreamCloseStepCode missing %q in %q", want, code)
+		}
+	}
+	if contains(code, "run_until_complete") || contains(code, "run_coroutine_threadsafe") {
+		t.Fatalf("runtimeRefPythonStreamCloseStepCode should schedule close for the pump loop, got %q", code)
+	}
+}
+
 func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
 	code, ok := runtimeRefJSStreamCloseStepCode(RuntimeRef{Runtime: "javascript", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
 	if !ok {
@@ -5298,6 +5324,46 @@ func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
 		if !contains(code, want) {
 			t.Fatalf("runtimeRefJSStreamCloseStepCode missing %q in %q", want, code)
 		}
+	}
+}
+
+func TestRuntimeRefPythonAsyncStreamCancelWaitsForCloseTask(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "python", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+	ready := false
+	mocks["python"].pumpFn = func() { ready = true }
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__aiter__"):
+			return pkg.Result{Value: true}
+		case strings.Contains(code, "stream_close_ready"):
+			if ready {
+				return pkg.Result{Value: "True"}
+			}
+			return pkg.Result{Value: "False"}
+		case strings.Contains(code, "stream_close_error"):
+			return pkg.Result{Value: nil}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	result, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("HandleCall stream_cancel Python async runtime ref: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Value != true {
+		t.Fatalf("stream_cancel Python async runtime ref envelope = %#v, want true", env)
+	}
+	if mocks["python"].pumpCalls == 0 {
+		t.Fatal("stream_cancel did not pump while waiting for Python async close")
+	}
+	if len(mocks["python"].execCalls) != 1 || !strings.Contains(mocks["python"].execCalls[0], "__omnivm_stream_close_task") {
+		t.Fatalf("Python async close execute calls = %#v, want scheduled close task", mocks["python"].execCalls)
 	}
 }
 

@@ -2289,6 +2289,38 @@ func (e *Executor) closeRuntimeRefStream(id handles.ID, ref RuntimeRef) error {
 		}
 		return nil
 	}
+	if ref.Runtime == "python" {
+		asyncStream, err := e.runtimeRefIsPythonAsyncStream(ref)
+		if err != nil {
+			return err
+		}
+		if asyncStream {
+			readyVar := e.nextRuntimeRefVar(id, "stream_close_ready")
+			errVar := e.nextRuntimeRefVar(id, "stream_close_error")
+			code, ok := runtimeRefPythonStreamCloseStepCode(ref, stateVar, readyVar, errVar)
+			if !ok {
+				return nil
+			}
+			rt, ok := e.runtimes[ref.Runtime]
+			if !ok {
+				return nil
+			}
+			result := rt.Execute(code)
+			if result.Err != nil {
+				return result.Err
+			}
+			if err := e.pumpUntilDone(func() bool {
+				check := rt.Eval(runtimeVarRef(ref.Runtime, readyVar))
+				return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
+			}); err != nil {
+				return err
+			}
+			if err := e.asyncPythonError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
 	code, ok := runtimeRefStreamCloseCode(ref, stateVar)
 	if !ok {
 		return nil
@@ -2302,6 +2334,60 @@ func (e *Executor) closeRuntimeRefStream(id handles.ID, ref RuntimeRef) error {
 		return result.Err
 	}
 	return nil
+}
+
+func runtimeRefPythonStreamCloseStepCode(ref RuntimeRef, stateVar, readyVar, errVar string) (string, bool) {
+	if ref.Runtime != "python" {
+		return "", false
+	}
+	base := runtimeVarRef(ref.Runtime, ref.VarName)
+	return fmt.Sprintf(`%s = False
+%s = None
+__omnivm_stream_obj = %s
+__omnivm_stream_iter = globals().get(%q)
+__omnivm_close_seen = set()
+async def __omnivm_close_one(__omnivm_target):
+    if __omnivm_target is None:
+        return
+    __omnivm_target_id = id(__omnivm_target)
+    if __omnivm_target_id in __omnivm_close_seen:
+        return
+    __omnivm_close_seen.add(__omnivm_target_id)
+    __omnivm_target_aclose = getattr(__omnivm_target, 'aclose', None)
+    __omnivm_target_close = getattr(__omnivm_target, 'close', None)
+    if callable(__omnivm_target_aclose):
+        await __omnivm_target_aclose()
+    elif callable(__omnivm_target_close):
+        __omnivm_target_close()
+async def __omnivm_close_frame_iterators(__omnivm_target):
+    for __omnivm_frame_attr in ('ag_frame', 'gi_frame'):
+        __omnivm_frame = getattr(__omnivm_target, __omnivm_frame_attr, None)
+        if __omnivm_frame is None:
+            continue
+        for __omnivm_local in list(getattr(__omnivm_frame, 'f_locals', {}).values()):
+            if __omnivm_local is not __omnivm_target and (
+                callable(getattr(__omnivm_local, 'aclose', None)) or
+                callable(getattr(__omnivm_local, 'close', None))
+            ):
+                await __omnivm_close_one(__omnivm_local)
+async def __omnivm_stream_close_task():
+    try:
+        await __omnivm_close_frame_iterators(__omnivm_stream_iter)
+        await __omnivm_close_frame_iterators(__omnivm_stream_obj)
+        await __omnivm_close_one(__omnivm_stream_iter)
+        if __omnivm_stream_obj is not __omnivm_stream_iter:
+            await __omnivm_close_one(__omnivm_stream_obj)
+        globals()[%q] = None
+    except BaseException as e:
+        globals()[%q] = type(e).__name__ + ": " + str(e)
+    finally:
+        globals()[%q] = True
+import asyncio as __aio
+__omnivm_loop = globals().get('__omnivm_stream_loop')
+if __omnivm_loop is None or __omnivm_loop.is_closed():
+    __omnivm_loop = __aio.new_event_loop()
+    globals()['__omnivm_stream_loop'] = __omnivm_loop
+__aio.ensure_future(__omnivm_stream_close_task(), loop=__omnivm_loop)`, readyVar, errVar, base, stateVar, stateVar, errVar, readyVar), true
 }
 
 func runtimeRefJSStreamCloseStepCode(ref RuntimeRef, stateVar, readyVar, errVar string) (string, bool) {
