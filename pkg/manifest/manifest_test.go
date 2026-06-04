@@ -7178,7 +7178,12 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def to_s") || !contains(code, `__omnivm_data_key_value("to_s")`) {
 		t.Fatalf("Ruby materializer should let remote identity-name fields beat local Object methods, got %q", code)
 	}
-	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") || !contains(code, "def __omnivm_local_value(key)") || !contains(code, "__omnivm_local_key?(key)") {
+	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") ||
+		!contains(code, `@value["__omnivm_resource__"] == true || @value["__omnivm_table__"] == true || @value["__omnivm_job__"] == true`) ||
+		!contains(code, `"__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__"`) ||
+		!contains(code, `"format", "ownership", "metadata", "released"`) ||
+		!contains(code, "def __omnivm_local_value(key)") ||
+		!contains(code, "__omnivm_local_key?(key)") {
 		t.Fatalf("Ruby resource proxy should keep internal descriptor metadata out of user-visible fields, got %q", code)
 	}
 	if !contains(code, "def self.__omnivm_missing_bridge_error?(error)") || !contains(code, "raise unless __omnivm_missing_bridge_error?(e)") {
@@ -7337,6 +7342,61 @@ end
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyHandleProxyTableDescriptorMetadataDoesNotShadowRemoteFields(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    if req["op"] == "handle_contains"
+      return JSON.generate({"__omnivm_result__" => true, "value" => req["value"] == "metadata"})
+    end
+    if req["op"] == "handle_index"
+      raise "manifest HandleCall: handle #{req["id"]} has no index #{req["value"]}"
+    end
+    if req["op"] == "handle_get" && req["key"] == "metadata"
+      return JSON.generate({"__omnivm_result__" => true, "value" => {"remote" => true}})
+    end
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+proxy = __omnivm_materialize_capture({
+  "__omnivm_table__" => true,
+  "id" => 81,
+  "runtime" => "python",
+  "format" => "arrow_c_data",
+  "ownership" => "borrowed",
+  "metadata" => {"dtype" => 4},
+  "released" => false
+})
+raise "descriptor metadata shadowed remote field: #{proxy.metadata.inspect}" unless proxy.metadata == {"remote" => true}
+raise "fetch metadata shadowed remote field" unless proxy.fetch("metadata") == {"remote" => true}
+if proxy.respond_to?(:format)
+  raise "descriptor format should not be reported as a local method"
+end
+requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
+raise "metadata was not fetched remotely: #{requested.inspect}" unless requested.include?("metadata")
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby table descriptor collision check failed: %v\n%s", err, out)
 	}
 }
 

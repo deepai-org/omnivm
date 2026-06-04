@@ -2404,8 +2404,12 @@ class OmniVMHandleProxy
   end
 
   def __omnivm_internal_descriptor_key?(key)
-    @value["__omnivm_resource__"] == true &&
-      ["__omnivm_resource__", "__omnivm_materialized__", "id", "runtime", "kind", "closed", "transfer", "disposer"].include?(key.to_s)
+    return false unless @value["__omnivm_resource__"] == true || @value["__omnivm_table__"] == true || @value["__omnivm_job__"] == true
+    [
+      "__omnivm_resource__", "__omnivm_table__", "__omnivm_job__", "__omnivm_materialized__",
+      "id", "runtime", "kind", "closed", "transfer", "disposer",
+      "format", "ownership", "metadata", "released"
+    ].include?(key.to_s)
   end
 
   def __omnivm_local_key?(key)
