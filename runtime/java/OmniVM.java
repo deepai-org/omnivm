@@ -1840,9 +1840,7 @@ public class OmniVM {
         @Override
         public String toString() {
             try {
-                if (containsKey("toString")) {
-                    return String.valueOf(get("toString"));
-                }
+                return String.valueOf(bridgeGet("toString"));
             } catch (RuntimeException err) {
                 if (!isMissingBridgeError(err)) {
                     throw err;

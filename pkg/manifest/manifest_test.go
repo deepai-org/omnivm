@@ -7797,8 +7797,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("Java explicit close should claim released before owner calls and reset it only after failed calls")
 	}
 	if !contains(code, "public String toString()") ||
-		!contains(code, `if (containsKey("toString"))`) ||
-		!contains(code, `return String.valueOf(get("toString"));`) ||
+		!contains(code, `return String.valueOf(bridgeGet("toString"));`) ||
 		!contains(code, "if (!isMissingBridgeError(err)) {\n                    throw err;\n                }") {
 		t.Fatalf("Java HandleProxy.toString should prefer a remote toString field with missing-bridge fallback")
 	}
