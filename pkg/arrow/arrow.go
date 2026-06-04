@@ -85,6 +85,9 @@ type Stats struct {
 	ZeroCopyImports     int64          `json:"zero_copy_imports"`
 	ActiveBorrows       int64          `json:"active_borrows"`
 	ActiveBorrowedBytes int64          `json:"active_borrowed_bytes"`
+	ActiveNamedBorrows  int64          `json:"active_named_borrows"`
+	NamedBorrowQueues   int            `json:"named_borrow_queues"`
+	MaxNamedBorrowQueue int            `json:"max_named_borrow_queue"`
 	DetachedBuffers     int            `json:"detached_buffers"`
 	DetachedBytes       int64          `json:"detached_bytes"`
 	DeferredDrops       int64          `json:"deferred_release_drops"`
@@ -385,6 +388,16 @@ func (s *SharedStore) Stats() Stats {
 		if size > stats.LargestBufferSize {
 			stats.LargestBufferSize = size
 			stats.LargestBufferName = name
+		}
+	}
+	for _, queue := range s.namedBorrows {
+		if len(queue) == 0 {
+			continue
+		}
+		stats.NamedBorrowQueues++
+		stats.ActiveNamedBorrows += int64(len(queue))
+		if len(queue) > stats.MaxNamedBorrowQueue {
+			stats.MaxNamedBorrowQueue = len(queue)
 		}
 	}
 	for buf := range s.detached {

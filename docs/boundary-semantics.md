@@ -579,6 +579,9 @@ The shared Arrow data plane exposes generic bulk-data diagnostics under
 - `zero_copy_borrows`;
 - `active_borrows`;
 - `active_borrowed_bytes`;
+- `active_named_borrows`;
+- `named_borrow_queues`;
+- `max_named_borrow_queue`;
 - `detached_buffers`;
 - `detached_bytes`;
 - `deferred_release_drops`;
@@ -590,6 +593,10 @@ borrowed views keep the backing memory alive until their own borrow release or
 finalizer arrives, and those unnamed leases remain visible through
 `active_borrows`, `active_borrowed_bytes`, `detached_buffers`, and
 `detached_bytes`.
+Named borrow queue counters expose runtime buffer views that can only release
+by public buffer name. A `max_named_borrow_queue` greater than one means more
+than one active view shares that release name, so finalizer-order issues are
+observable in diagnostics instead of hidden as a memory leak.
 
 Internal debug helpers such as materialize-to-value or materialize-to-Arrow may
 exist, but normal `.poly` code should not need to call them.

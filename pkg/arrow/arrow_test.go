@@ -448,6 +448,53 @@ func TestNamedBorrowReleaseTracksOriginalBufferAfterReplacement(t *testing.T) {
 	}
 }
 
+func TestNamedBorrowQueueDiagnostics(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := s.Stats()
+	if stats.ActiveNamedBorrows != 1 || stats.NamedBorrowQueues != 1 || stats.MaxNamedBorrowQueue != 1 {
+		t.Fatalf("named borrow stats = %+v, want one active queue", stats)
+	}
+
+	if err := s.releaseNamedBorrow("payload"); err != nil {
+		t.Fatal(err)
+	}
+	stats = s.Stats()
+	if stats.ActiveNamedBorrows != 0 || stats.NamedBorrowQueues != 0 || stats.MaxNamedBorrowQueue != 0 {
+		t.Fatalf("named borrow stats did not clear: %+v", stats)
+	}
+}
+
+func TestNamedBorrowQueueDiagnosticsExposeAmbiguousSameNameBorrows(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.SetWithDtype("payload", []byte{1}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("payload"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetWithDtype("payload", []byte{2}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := s.Stats()
+	if stats.ActiveNamedBorrows != 2 || stats.NamedBorrowQueues != 1 || stats.MaxNamedBorrowQueue != 2 {
+		t.Fatalf("named borrow queue should expose same-name ambiguity: %+v", stats)
+	}
+	if stats.DetachedBuffers != 1 || stats.ActiveBorrows != 2 {
+		t.Fatalf("replacement should leave one detached borrow and one named borrow: %+v", stats)
+	}
+}
+
 func TestSharedStoreStats(t *testing.T) {
 	s := NewSharedStore()
 	if _, err := s.Allocate("allocated", 8); err != nil {
