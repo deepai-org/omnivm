@@ -1358,6 +1358,9 @@ class ManifestProxy:
             self._detach_after_remote_close()
         return released
 
+    def _omnivm_close(self):
+        return self.close()
+
     def _retain_arg_lease(self, lease):
         lease.retain()
         object.__getattribute__(self, "_arg_finalizers").append(
@@ -1487,6 +1490,9 @@ class _LocalManifestStreamProxy:
         self._closed = True
         self._cursor = len(self._values)
         return True
+
+    def _omnivm_close(self):
+        return self.close()
 
     def __iter__(self):
         try:
@@ -1724,6 +1730,9 @@ class _ManifestStreamIterator:
         result = self._proxy.close()
         self._detach_finalizer()
         return result
+
+    def _omnivm_close(self):
+        return self.close()
 
     def __enter__(self):
         return self

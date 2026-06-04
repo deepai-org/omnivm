@@ -1264,7 +1264,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3, "remote-class", "remote-repr"]
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
-        assert omnivm_mod.proxy_close(proxy) is True
+        assert proxy._omnivm_close() is True
         release_count = sum(1 for request in requests if request.get("op") == "handle_release_explicit")
         assert omnivm_mod.proxy_close(proxy) is False
         assert sum(1 for request in requests if request.get("op") == "handle_release_explicit") == release_count
@@ -1571,7 +1571,7 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniManifestCall.side_effect = manifest_call
         proxy = omnivm_mod.manifest_call("demo", "rows")
 
-        assert omnivm_mod.proxy_close(proxy) is True
+        assert proxy._omnivm_close() is True
         assert omnivm_mod.proxy_close(proxy) is False
         assert requests[-1] == {"op": "stream_cancel", "id": 45}
         assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
@@ -1644,6 +1644,7 @@ class TestCallWithMockLib(unittest.TestCase):
         values = list(stream)
         assert values[0] == "row-1"
         assert list(values[1]["nested"]) == ["inner"]
+        assert stream._omnivm_close() is False
         assert omnivm_mod.proxy_close(stream) is False
         assert requests == [{"func": "rows", "args": []}]
 
@@ -1660,6 +1661,16 @@ class TestCallWithMockLib(unittest.TestCase):
 
         consume_one()
         assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
+    def test_embedded_local_stream_exposes_collision_safe_close(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        assert stream._omnivm_close() is True
+        assert stream._omnivm_close() is False
         assert list(stream) == []
 
     def test_manifest_stream_iterator_cancels_on_early_break(self):
