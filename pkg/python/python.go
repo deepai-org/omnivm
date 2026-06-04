@@ -2681,6 +2681,22 @@ static char* omnivm_py_unicode_attr_dup(PyObject* obj, const char* name) {
     return out;
 }
 
+static char* omnivm_py_unicode_attr_dup_fallback(PyObject* obj, const char* primary, const char* fallback) {
+    char* out = omnivm_py_unicode_attr_dup(obj, primary);
+    if (out) return out;
+    return omnivm_py_unicode_attr_dup(obj, fallback);
+}
+
+static PyObject* omnivm_py_mapping_get_item_fallback(PyObject* obj, const char* primary, const char* fallback) {
+    if (!PyMapping_Check(obj)) return NULL;
+    PyObject* value = PyMapping_GetItemString(obj, primary);
+    if (value) return value;
+    PyErr_Clear();
+    value = PyMapping_GetItemString(obj, fallback);
+    if (!value) PyErr_Clear();
+    return value;
+}
+
 static void omnivm_py_append_text(char** out, size_t* len, const char* text) {
     if (!text || !text[0]) return;
     size_t add = strlen(text);
@@ -3156,9 +3172,9 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
     if (!value) return NULL;
     char* runtime = omnivm_py_unicode_attr_dup(value, "runtime");
     if (!runtime) return NULL;
-    char* err_type = omnivm_py_unicode_attr_dup(value, "type");
+    char* err_type = omnivm_py_unicode_attr_dup_fallback(value, "type", "name");
     char* message = omnivm_py_unicode_attr_dup(value, "message");
-    char* traceback = omnivm_py_unicode_attr_dup(value, "traceback");
+    char* traceback = omnivm_py_unicode_attr_dup_fallback(value, "traceback", "stack");
     char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
     char* details_json = omnivm_py_error_details_json(value);
 
@@ -3187,8 +3203,7 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
                 PyErr_Clear();
                 continue;
             }
-            PyObject* cause_type_obj = PyMapping_Check(cause) ? PyMapping_GetItemString(cause, "type") : NULL;
-            if (!cause_type_obj) PyErr_Clear();
+            PyObject* cause_type_obj = omnivm_py_mapping_get_item_fallback(cause, "type", "name");
             PyObject* cause_msg_obj = PyMapping_Check(cause) ? PyMapping_GetItemString(cause, "message") : NULL;
             if (!cause_msg_obj) PyErr_Clear();
             char* cause_type = cause_type_obj ? omnivm_py_unicode_attr_dup(cause_type_obj, "__str__") : NULL;

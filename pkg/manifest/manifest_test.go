@@ -8173,6 +8173,25 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	}
 }
 
+func TestPythonNativeRuntimeErrorFormatterAcceptsNameStackAliases(t *testing.T) {
+	data, err := os.ReadFile("../../pkg/python/python.go")
+	if err != nil {
+		t.Fatalf("read Python runtime source: %v", err)
+	}
+	code := string(data)
+	for _, want := range []string{
+		"static char* omnivm_py_unicode_attr_dup_fallback(PyObject* obj, const char* primary, const char* fallback)",
+		`char* err_type = omnivm_py_unicode_attr_dup_fallback(value, "type", "name")`,
+		`char* traceback = omnivm_py_unicode_attr_dup_fallback(value, "traceback", "stack")`,
+		`static PyObject* omnivm_py_mapping_get_item_fallback(PyObject* obj, const char* primary, const char* fallback)`,
+		`PyObject* cause_type_obj = omnivm_py_mapping_get_item_fallback(cause, "type", "name")`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Python native RuntimeError formatter should normalize JS-style aliases, missing %q", want)
+		}
+	}
+}
+
 func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	data, err := os.ReadFile("../../scripts/v8_bridge_node.cc")
 	if err != nil {
