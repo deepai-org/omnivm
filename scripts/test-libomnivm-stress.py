@@ -18142,6 +18142,40 @@ def test_native_runtime_error_original_handle_marker_crosses_runtimes():
     if js_envelope.get("originalErrorHandle") != "py-error-42":
         raise AssertionError(f"JS catch lost original error handle marker: {js_envelope}")
 
+    python_native_source = (
+        "err = RuntimeError('native handle attribute')\n"
+        "err.original_error_handle = 'py-native-error-77'\n"
+        "raise err"
+    )
+    js_native_python_result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  try {{
+    omnivm.call("python", {json.dumps(python_native_source)});
+  }} catch (err) {{
+    return JSON.stringify({{
+      runtime: err.runtime,
+      type: err.type,
+      message: err.message,
+      boundaryPath: err.boundaryPath,
+      originalErrorHandle: err.originalErrorHandle
+    }});
+  }}
+  return JSON.stringify({{missing: true}});
+}})()
+'''
+    )
+    js_native_python_envelope = json.loads(js_native_python_result)
+    if js_native_python_envelope.get("runtime") != "python" or js_native_python_envelope.get("type") != "RuntimeError":
+        raise AssertionError(f"JS catch lost Python native handle runtime/type: {js_native_python_envelope}")
+    if "native handle attribute" not in js_native_python_envelope.get("message", ""):
+        raise AssertionError(f"JS catch lost Python native handle message: {js_native_python_envelope}")
+    if js_native_python_envelope.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS catch lost Python native handle boundary: {js_native_python_envelope}")
+    if js_native_python_envelope.get("originalErrorHandle") != "py-native-error-77":
+        raise AssertionError(f"JS catch lost Python native original error handle attribute: {js_native_python_envelope}")
+
     py_result = omnivm.call(
         "python",
         r'''(lambda ns: (__import__('builtins').exec(r"""
@@ -18230,6 +18264,29 @@ end
     if ruby_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
         raise AssertionError(f"Ruby catch lost original error handle marker: {ruby_fields!r}")
 
+    ruby_native_python_result = omnivm.call(
+        "ruby",
+        f'''
+begin
+  OmniVM.call("python", {json.dumps(python_native_source)})
+rescue OmniVM::RuntimeError => e
+  [
+    e.runtime,
+    e.type,
+    e.message.include?("native handle attribute"),
+    e.boundary_path,
+    e.original_error_handle,
+    e.to_h[:original_error_handle],
+  ].join("|")
+else
+  "missing"
+end
+'''
+    )
+    ruby_native_python_fields = ruby_native_python_result.split("|")
+    if ruby_native_python_fields != ["python", "RuntimeError", "true", "call[python]", "py-native-error-77", "py-native-error-77"]:
+        raise AssertionError(f"Ruby catch lost Python native original error handle attribute: {ruby_native_python_fields!r}")
+
     ruby_native_result = omnivm.call(
         "ruby",
         f'''
@@ -18277,6 +18334,31 @@ end
     java_fields = java_result.split("|")
     if java_fields != ["python", "RuntimeError", "true", "call[python]", "py-error-42", "py-error-42"]:
         raise AssertionError(f"Java catch lost original error handle marker: {java_fields!r}")
+
+    java_native_python_result = omnivm.call(
+        "java",
+        f'''
+((java.util.concurrent.Callable<String>)(() -> {{
+    try {{
+        omnivm.OmniVM.call("python", {json.dumps(python_native_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        java.util.Map<String, Object> envelope = e.toMap();
+        return String.join("|",
+            e.getRuntime(),
+            e.getType(),
+            Boolean.toString(e.getMessage().contains("native handle attribute")),
+            e.getBoundaryPath(),
+            e.getOriginalErrorHandle(),
+            String.valueOf(envelope.get("original_error_handle"))
+        );
+    }}
+    return "missing";
+}})).call()
+'''
+    )
+    java_native_python_fields = java_native_python_result.split("|")
+    if java_native_python_fields != ["python", "RuntimeError", "true", "call[python]", "py-native-error-77", "py-native-error-77"]:
+        raise AssertionError(f"Java catch lost Python native original error handle attribute: {java_native_python_fields!r}")
 
     java_native_result = omnivm.call(
         "java",

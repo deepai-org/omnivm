@@ -2540,6 +2540,16 @@ static char* omnivm_py_fetch_traceback_error_inner() {
     }
     Py_XDECREF(traceback_module);
 
+    if (result && value) {
+        char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
+        if (handle) {
+            size_t len = strlen(result);
+            omnivm_py_append_text(&result, &len, "\nOriginal error handle: ");
+            omnivm_py_append_text(&result, &len, handle);
+            free(handle);
+        }
+    }
+
     if (!result) {
         PyErr_Clear();
     }
