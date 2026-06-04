@@ -56,6 +56,8 @@ __all__ = [
     "affinity_status",
     "owner_dispatch_status",
     "assert_owner_dispatch_supported",
+    "ruby_threading_status",
+    "assert_ruby_native_threads_supported",
     "assert_host_thread",
     "watchdog_capabilities",
     "worker_tainted",
@@ -1310,6 +1312,43 @@ def assert_owner_dispatch_supported(label=""):
     raise RuntimeError(
         f"{prefix}owner dispatch unsupported: mode={mode}: {reason}",
         boundary_path="thread_affinity",
+    )
+
+
+def ruby_threading_status():
+    """
+    Return the embedded Ruby threading capability contract.
+
+    This lets host startup code decide whether a Ruby framework that requires
+    native Ruby threads can run in process before loading that framework.
+    """
+    info = status().get("ruby_threading")
+    if not isinstance(info, dict):
+        raise RuntimeError(
+            "libomnivm status omitted ruby_threading capability",
+            boundary_path="ruby_threading",
+        )
+    return info
+
+
+def assert_ruby_native_threads_supported(label=""):
+    """
+    Raise RuntimeError when embedded Ruby cannot run native Ruby threads.
+
+    Puma and other native-threaded Ruby app servers should use this as a
+    startup guard and choose an out-of-process deployment when it fails.
+    """
+    info = ruby_threading_status()
+    if info.get("native_threads_supported") is True:
+        return True
+    prefix = f"{label}: " if label else ""
+    mode = info.get("mode") or "unknown"
+    reason = info.get("app_server_boundary") or (
+        "native Ruby threads are not supported by this libomnivm build"
+    )
+    raise RuntimeError(
+        f"{prefix}native Ruby threads unsupported: mode={mode}: {reason}",
+        boundary_path="ruby_threading",
     )
 
 

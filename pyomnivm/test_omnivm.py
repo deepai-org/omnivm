@@ -302,6 +302,14 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.assert_owner_dispatch_supported()
 
+    def test_ruby_threading_status_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.ruby_threading_status()
+
+    def test_assert_ruby_native_threads_supported_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.assert_ruby_native_threads_supported()
+
     def test_assert_host_thread_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.assert_host_thread()
@@ -893,6 +901,42 @@ class TestCallWithMockLib(unittest.TestCase):
             b'"owner_dispatch_supported":true}}'
         )
         assert omnivm_mod.assert_owner_dispatch_supported("startup") is True
+
+    def test_ruby_threading_status_reports_capability_contract(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"ruby_threading":{"mode":"single_vm_thread",'
+            b'"native_threads_supported":false,'
+            b'"app_server_boundary":"run Puma out of process"}}'
+        )
+        info = omnivm_mod.ruby_threading_status()
+        assert info["mode"] == "single_vm_thread"
+        assert info["native_threads_supported"] is False
+        assert "Puma" in info["app_server_boundary"]
+
+    def test_ruby_threading_status_requires_status_capability(self):
+        self.mock_lib.OmniStatus.return_value = b'{"initialized":true}'
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.ruby_threading_status()
+        assert ctx.exception.boundary_path == "ruby_threading"
+
+    def test_assert_ruby_native_threads_supported_reports_diagnostic(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"ruby_threading":{"mode":"single_vm_thread",'
+            b'"native_threads_supported":false,'
+            b'"app_server_boundary":"run Puma out of process"}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.assert_ruby_native_threads_supported("puma startup")
+        assert "puma startup: native Ruby threads unsupported" in str(ctx.exception)
+        assert "single_vm_thread" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "ruby_threading"
+
+    def test_assert_ruby_native_threads_supported_accepts_supported_status(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"ruby_threading":{"mode":"native_threads",'
+            b'"native_threads_supported":true}}'
+        )
+        assert omnivm_mod.assert_ruby_native_threads_supported("startup") is True
 
     def test_watchdog_capabilities_parses_matrix(self):
         self.mock_lib.OmniWatchdogCapabilities.return_value = (

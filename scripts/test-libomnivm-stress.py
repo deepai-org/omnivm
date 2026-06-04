@@ -15761,6 +15761,19 @@ def test_status_observability():
         raise AssertionError(f"status should report native Ruby threads unsupported: {ruby_threading}")
     if "Puma" not in ruby_threading.get("app_server_boundary", ""):
         raise AssertionError(f"status should make Puma/out-of-process boundary visible: {ruby_threading}")
+    ruby_status = omnivm.ruby_threading_status()
+    if ruby_status.get("native_threads_supported") is not False:
+        raise AssertionError(f"Ruby threading helper should report native threads unsupported: {ruby_status}")
+    try:
+        omnivm.assert_ruby_native_threads_supported("puma startup")
+    except omnivm.RuntimeError as exc:
+        error = exc.to_dict()
+        if error.get("boundary_path") != "ruby_threading":
+            raise AssertionError(f"Ruby native-thread guard lost boundary path: {error}")
+        if "puma startup: native Ruby threads unsupported" not in error.get("message", ""):
+            raise AssertionError(f"Ruby native-thread guard lost label: {error}")
+    else:
+        raise AssertionError("Ruby native-thread guard should reject embedded single-thread Ruby")
     handles = status.get("handles")
     if not isinstance(handles, dict):
         raise AssertionError("status omitted handle diagnostics")
