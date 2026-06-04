@@ -4635,6 +4635,48 @@ func TestHandleCallStreamReaderErrorReleasesOwner(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefStreamReadErrorReleasesHandle(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	execCalls := 0
+	mocks["python"].execFn = func(code string) pkg.Result {
+		execCalls++
+		if execCalls == 1 {
+			return pkg.Result{Err: errors.New("owner stream failed")}
+		}
+		return pkg.Result{}
+	}
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: false}
+	}
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "python", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("runtime ref stream_next error did not fail")
+	} else if !strings.Contains(err.Error(), "owner stream failed") {
+		t.Fatalf("runtime ref stream_next error = %v, want owner failure", err)
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 1 {
+		t.Fatalf("runtime ref stream read error should release handle once: %+v", stats)
+	}
+	if execCalls < 2 {
+		t.Fatalf("runtime ref stream read error did not run stream close cleanup; execCalls=%d", execCalls)
+	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale runtime ref stream_next after read error did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=python", "kind=stream", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale runtime ref stream_next after error missing %q: %s", want, got)
+			}
+		}
+	}
+}
+
 func TestHandleCallStreamCancelClosesReader(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	reader := &closeTrackingReader{Reader: strings.NewReader("reader-body")}

@@ -2165,7 +2165,7 @@ func (e *Executor) runtimeRefStreamNext(id handles.ID, ref RuntimeRef) (interfac
 		}
 		result := rt.Execute(code)
 		if result.Err != nil {
-			return nil, false, result.Err
+			return nil, false, e.releaseRuntimeRefStreamAfterError(id, result.Err)
 		}
 		readyValue := "true"
 		if ref.Runtime == "python" {
@@ -2175,20 +2175,20 @@ func (e *Executor) runtimeRefStreamNext(id handles.ID, ref RuntimeRef) (interfac
 			check := rt.Eval(runtimeVarRef(ref.Runtime, readyVar))
 			return check.Value != nil && fmt.Sprintf("%v", check.Value) == readyValue
 		}); err != nil {
-			return nil, false, err
+			return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
 		}
 		if ref.Runtime == "javascript" {
 			if err := e.asyncJSError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
-				return nil, false, err
+				return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
 			}
 		} else if ref.Runtime == "python" {
 			if err := e.asyncPythonError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
-				return nil, false, err
+				return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
 			}
 		}
 		doneValue, err := e.runtimeRefEvalPrimitive(RuntimeRef{Runtime: ref.Runtime, VarName: doneVar}, runtimeVarRef(ref.Runtime, doneVar))
 		if err != nil {
-			return nil, false, err
+			return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
 		}
 		done, _ := doneValue.(bool)
 		if done {
@@ -2198,7 +2198,10 @@ func (e *Executor) runtimeRefStreamNext(id handles.ID, ref RuntimeRef) (interfac
 			return nil, true, nil
 		}
 		value, ok, err := e.runtimeRefEvalExpr(ref, valueVar, runtimeVarRef(ref.Runtime, valueVar))
-		return value, false, errOrNotOK(ok, err)
+		if err := errOrNotOK(ok, err); err != nil {
+			return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
+		}
+		return value, false, nil
 	}
 	code, ok := runtimeRefStreamNextCode(ref, valueVar, doneVar, stateVar)
 	if !ok {
@@ -2210,11 +2213,11 @@ func (e *Executor) runtimeRefStreamNext(id handles.ID, ref RuntimeRef) (interfac
 	}
 	result := rt.Execute(code)
 	if result.Err != nil {
-		return nil, false, result.Err
+		return nil, false, e.releaseRuntimeRefStreamAfterError(id, result.Err)
 	}
 	doneValue, err := e.runtimeRefEvalPrimitive(RuntimeRef{Runtime: ref.Runtime, VarName: doneVar}, runtimeVarRef(ref.Runtime, doneVar))
 	if err != nil {
-		return nil, false, err
+		return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
 	}
 	done, _ := doneValue.(bool)
 	if done {
@@ -2224,7 +2227,20 @@ func (e *Executor) runtimeRefStreamNext(id handles.ID, ref RuntimeRef) (interfac
 		return nil, true, nil
 	}
 	value, ok, err := e.runtimeRefEvalExpr(ref, valueVar, runtimeVarRef(ref.Runtime, valueVar))
-	return value, false, errOrNotOK(ok, err)
+	if err := errOrNotOK(ok, err); err != nil {
+		return nil, false, e.releaseRuntimeRefStreamAfterError(id, err)
+	}
+	return value, false, nil
+}
+
+func (e *Executor) releaseRuntimeRefStreamAfterError(id handles.ID, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if err := e.ensureHandleTable().ReleaseAllRefs(id); err != nil {
+		return fmt.Errorf("%w; additionally failed to close stream after read error: %v", cause, err)
+	}
+	return cause
 }
 
 func (e *Executor) runtimeRefIsPythonAsyncStream(ref RuntimeRef) (bool, error) {
