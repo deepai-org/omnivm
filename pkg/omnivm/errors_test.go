@@ -341,6 +341,62 @@ func TestParseError_StructuredJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseError_WrappedStructuredJSONEnvelopePreservesFields(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":        "javascript",
+		"origin_runtime": "python",
+		"type":           "AggregateError",
+		"message":        "invalid",
+		"stack_frames":   []interface{}{"at parse (<anonymous>:1:2)"},
+		"cause_chain":    []interface{}{map[string]interface{}{"type": "TypeError", "message": "inner"}},
+		"details":        []interface{}{map[string]interface{}{"path": []interface{}{"user", "age"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("", "ERR:execute manifest: call [javascript]: "+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "javascript" || re.OriginRuntime != "python" {
+		t.Fatalf("runtime/origin = %q/%q, want javascript/python", re.Runtime, re.OriginRuntime)
+	}
+	if re.Type != "AggregateError" || re.Message != "invalid" {
+		t.Fatalf("type/message = %q/%q, want AggregateError/invalid", re.Type, re.Message)
+	}
+	if re.BoundaryPath != "execute manifest > call[javascript]" {
+		t.Fatalf("BoundaryPath = %q, want outer manifest/call boundary", re.BoundaryPath)
+	}
+	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
+		t.Fatalf("StackFrames = %#v", re.StackFrames)
+	}
+	if len(re.CauseChain) != 1 || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
+		t.Fatalf("CauseChain = %#v", re.CauseChain)
+	}
+	if details, ok := re.Details.([]interface{}); !ok || len(details) != 1 {
+		t.Fatalf("Details = %#v, want one structured detail", re.Details)
+	}
+}
+
+func TestParseError_WrappedStructuredJSONEnvelopeKeepsExplicitBoundary(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":       "ruby",
+		"type":          "RuntimeError",
+		"message":       "failed",
+		"boundary_path": "call[ruby] > callback[python]",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("", "ERR:execute manifest: "+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.BoundaryPath != "call[ruby] > callback[python]" {
+		t.Fatalf("BoundaryPath = %q, want explicit envelope boundary", re.BoundaryPath)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

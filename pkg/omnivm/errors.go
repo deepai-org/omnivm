@@ -132,6 +132,16 @@ func ParseError(runtime, s string) *RuntimeError {
 	body, matched = stripRuntimePrefixes(body, &sourceRuntime)
 	recognized = recognized || matched
 
+	if re := parseStructuredErrorEnvelope(body, sourceRuntime); re != nil {
+		if len(boundaryParts) > 0 {
+			defaultBoundary := boundaryPath(nil, re.Runtime)
+			if re.BoundaryPath == "" || re.BoundaryPath == defaultBoundary {
+				re.BoundaryPath = boundaryPath(boundaryParts, re.Runtime)
+			}
+		}
+		return re
+	}
+
 	if !recognized {
 		return nil
 	}
