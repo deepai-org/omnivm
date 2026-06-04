@@ -1663,6 +1663,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (prop === "__omnivm_iter") return function(mode) { return bridgeIter(mode); };
       if (prop === "__omnivm_contains") return function(key) { return bridgeContains(key); };
       if (prop === "__omnivm_close") return releaseProxyLease;
+      if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return releaseProxyLease;
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
@@ -1860,7 +1861,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     }
     return {done: true};
   };
-    var stream = {
+  var stream = {
     runtime: value.runtime,
     kind: value.kind,
     cancel: function(reason) {
@@ -1945,6 +1946,11 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       };
     }
   };
+  if (typeof Symbol !== 'undefined' && Symbol.dispose) {
+    stream[Symbol.dispose] = function() {
+      return cancelRemote();
+    };
+  }
   if (globalThis.__omnivm_handle_finalizers && value && value.id != null) {
     if (value.transfer === true) {
       globalThis.__omnivm_adopt_handle(value.id);
