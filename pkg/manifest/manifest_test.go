@@ -6867,6 +6867,7 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		"omnivm_v8_runtime_error_to_json",
 		"omnivm_v8_parse_runtime_error_envelope_text",
 		"omnivm_v8_parse_runtime_error_envelope_object",
+		"omnivm_v8_details_json_prop_fallback",
 		`"toJSON"`,
 		`"origin_runtime"`,
 		`"stack_frames"`,
@@ -6893,9 +6894,12 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 		`if (!omnivm_v8_parse_runtime_error_envelope_text(isolate, context, err_msg, runtime_hint, envelope))`,
 		`std::string origin_runtime = env.origin_runtime.empty() ? env.runtime : env.origin_runtime`,
 		`env.origin_runtime = omnivm_v8_get_string_prop_fallback(isolate, context, object, "origin_runtime", "originRuntime")`,
+		`env.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, object)`,
 		`cause.origin_runtime = cause.runtime`,
-		`cause.details_json = omnivm_v8_json_stringify_prop(isolate, context, cause_object, "details")`,
+		`cause.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, cause_object)`,
 		`omnivm_v8_set_string_prop(isolate, context, cause, "origin_runtime", env.cause_chain[i].origin_runtime)`,
+		`const char* keys[] = {"details_json", "detailsJson"}`,
+		`details = details_text`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("V8 runtime error parser should preserve structured envelopes across prefixed bridge errors, missing %q", want)

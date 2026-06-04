@@ -121,6 +121,33 @@ static std::string omnivm_v8_json_stringify_prop(v8::Isolate* isolate,
     return omnivm_v8_json_stringify(isolate, context, value);
 }
 
+static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
+                                                        v8::Local<v8::Context> context,
+                                                        v8::Local<v8::Object> object) {
+    std::string details = omnivm_v8_json_stringify_prop(isolate, context, object, "details");
+    if (!details.empty()) {
+        return details;
+    }
+    const char* keys[] = {"details_json", "detailsJson"};
+    for (const char* key : keys) {
+        v8::Local<v8::Value> value;
+        if (!object->Get(
+                context,
+                v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
+            ).ToLocal(&value) || value.IsEmpty() || value->IsNullOrUndefined()) {
+            continue;
+        }
+        if (value->IsString()) {
+            return omnivm_v8_value_string(isolate, context, value);
+        }
+        std::string json = omnivm_v8_json_stringify(isolate, context, value);
+        if (!json.empty()) {
+            return json;
+        }
+    }
+    return "";
+}
+
 static std::string omnivm_v8_error_stack(v8::Isolate* isolate,
                                          v8::Local<v8::Context> context,
                                          v8::Local<v8::Value> value) {
@@ -379,7 +406,7 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         env.boundary_path = fallback_boundary;
     }
     env.original_error_handle = omnivm_v8_get_string_prop_fallback(isolate, context, object, "original_error_handle", "originalErrorHandle");
-    env.details_json = omnivm_v8_json_stringify_prop(isolate, context, object, "details");
+    env.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, object);
 
     v8::Local<v8::Value> causes_value;
     if (!object->Get(
@@ -417,7 +444,7 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         }
         cause.boundary_path = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "boundary_path", "boundaryPath");
         cause.original_error_handle = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "original_error_handle", "originalErrorHandle");
-        cause.details_json = omnivm_v8_json_stringify_prop(isolate, context, cause_object, "details");
+        cause.details_json = omnivm_v8_details_json_prop_fallback(isolate, context, cause_object);
         env.cause_chain.push_back(cause);
     }
     return true;
@@ -951,6 +978,12 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
                     v8::String::NewFromUtf8Literal(isolate, "details"),
                     details
                 ).ToChecked();
+            } else {
+                cause->Set(
+                    context,
+                    v8::String::NewFromUtf8Literal(isolate, "details"),
+                    details_text
+                ).ToChecked();
             }
         }
         causes->Set(context, i, cause).ToChecked();
@@ -973,6 +1006,8 @@ static void omnivm_v8_set_runtime_error_props(v8::Isolate* isolate,
         v8::Local<v8::Value> parsed;
         if (v8::JSON::Parse(context, details_text).ToLocal(&parsed) && !parsed.IsEmpty()) {
             details = parsed;
+        } else {
+            details = details_text;
         }
     }
     error->Set(
