@@ -1156,6 +1156,9 @@ class __OmniVMStreamProxy:
             self._mark_closed()
         return released
 
+    def _omnivm_close(self):
+        return self.close()
+
 def __omnivm_materialize_capture(value):
     if isinstance(value, dict) and (
         value.get("__omnivm_stream__") is True

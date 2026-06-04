@@ -6019,7 +6019,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if self._local_values is not None:\n            return self._mark_closed()") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
-		!contains(code, "if released:\n            self._mark_closed()\n        return released") {
+		!contains(code, "if released:\n            self._mark_closed()\n        return released") ||
+		!contains(code, "def _omnivm_close(self):\n        return self.close()") {
 		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)
 	}
 	if contains(code, "def close(self):\n        try:\n            caller = globals()[\"__omnivm_bridge_module\"]()") {
@@ -6134,6 +6135,8 @@ if seen != ["a"]:
     raise RuntimeError("first item mismatch: " + repr(seen))
 if not stream._closed:
     raise RuntimeError("stream was not marked closed")
+if stream._omnivm_close() is not False:
+    raise RuntimeError("_omnivm_close was not idempotent")
 if stream.close() is not False:
     raise RuntimeError("close was not idempotent")
 if not any(req.get("op") == "handle_retain" and req.get("id") == 88 for req in Bridge.requests):
