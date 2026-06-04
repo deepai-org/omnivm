@@ -112,6 +112,35 @@ class TestRuntimeError(unittest.TestCase):
         )
         assert scalar_err.details == "too_small"
 
+    def test_parses_structured_json_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "origin_runtime": "python",
+                    "type": "AggregateError",
+                    "message": "invalid",
+                    "traceback": "fallback frame",
+                    "stack_frames": ["at parse (<anonymous>:1:2)"],
+                    "cause_chain": [{"type": "TypeError", "message": "inner"}],
+                    "boundary_path": "call[javascript] > callback[python]",
+                    "original_error_handle": "js-error-7",
+                    "details": [{"path": ["user", "age"]}],
+                }
+            ),
+            runtime="go",
+        )
+        assert err.runtime == "javascript"
+        assert err.origin_runtime == "python"
+        assert err.type == "AggregateError"
+        assert err.message == "invalid"
+        assert err.stack_frames == ["at parse (<anonymous>:1:2)"]
+        assert err.cause_chain == [{"type": "TypeError", "message": "inner"}]
+        assert err.boundary_path == "call[javascript] > callback[python]"
+        assert err.original_error_handle == "js-error-7"
+        assert err.details == [{"path": ["user", "age"]}]
+        assert err.to_dict()["origin_runtime"] == "python"
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"

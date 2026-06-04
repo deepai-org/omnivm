@@ -456,6 +456,10 @@ same runtime/origin-runtime, type, message, traceback, stack-frames, cause-chain
 original-error-handle/details fields, or call `ToMap()` for the same
 JSON-serializable envelope shape exposed by Python, Ruby, and Java callers,
 including runtime-prefixed errors that do not use the transport `ERR:` marker.
+Go and public Python callers also consume already-normalized JSON error
+envelopes directly, so runtime/origin-runtime, supplied stack frames, cause
+chains, boundary paths, original-error handles, and non-object structured
+details do not have to be recovered from message text.
 
 The target error envelope should preserve:
 

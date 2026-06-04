@@ -1,6 +1,7 @@
 package omnivm
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -296,6 +297,47 @@ Details: [{"path":["user","age"],"code":"too_small"}]`)
 	envelope["details"].([]interface{})[0] = "changed"
 	if _, ok := re.Details.([]interface{})[0].(map[string]interface{}); !ok {
 		t.Fatalf("ToMap exposed Details array backing storage: %#v", re.Details)
+	}
+}
+
+func TestParseError_StructuredJSONEnvelope(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":               "javascript",
+		"origin_runtime":        "python",
+		"type":                  "AggregateError",
+		"message":               "invalid",
+		"traceback":             "synthetic fallback frame",
+		"stack_frames":          []interface{}{"at parse (<anonymous>:1:2)"},
+		"cause_chain":           []interface{}{map[string]interface{}{"type": "TypeError", "message": "inner"}},
+		"boundary_path":         "call[javascript] > callback[python]",
+		"original_error_handle": "js-error-7",
+		"details":               []interface{}{map[string]interface{}{"path": []interface{}{"user", "age"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "javascript" || re.OriginRuntime != "python" {
+		t.Fatalf("runtime/origin = %q/%q, want javascript/python", re.Runtime, re.OriginRuntime)
+	}
+	if re.Type != "AggregateError" || re.Message != "invalid" {
+		t.Fatalf("type/message = %q/%q, want AggregateError/invalid", re.Type, re.Message)
+	}
+	if !reflect.DeepEqual(re.StackFrames, []string{"at parse (<anonymous>:1:2)"}) {
+		t.Fatalf("StackFrames = %#v", re.StackFrames)
+	}
+	if len(re.CauseChain) != 1 || re.CauseChain[0].Type != "TypeError" || re.CauseChain[0].Message != "inner" {
+		t.Fatalf("CauseChain = %#v", re.CauseChain)
+	}
+	if re.BoundaryPath != "call[javascript] > callback[python]" || re.OriginalErrorHandle != "js-error-7" {
+		t.Fatalf("boundary/handle = %q/%q", re.BoundaryPath, re.OriginalErrorHandle)
+	}
+	details, ok := re.Details.([]interface{})
+	if !ok || len(details) != 1 {
+		t.Fatalf("Details = %#v, want array", re.Details)
 	}
 }
 

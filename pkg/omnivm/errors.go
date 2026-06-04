@@ -111,6 +111,10 @@ func ParseError(runtime, s string) *RuntimeError {
 		body = strings.TrimSpace(body[4:])
 	}
 
+	if re := parseStructuredErrorEnvelope(body, runtime); re != nil {
+		return re
+	}
+
 	sourceRuntime := normalizeRuntime(runtime)
 	boundaryParts := []string{}
 	recognized := hasTransportMarker
@@ -180,6 +184,93 @@ func ParseError(runtime, s string) *RuntimeError {
 		OriginalErrorHandle: extractOriginalErrorHandle(body),
 		Details:             parseDetails(body),
 	}
+}
+
+func parseStructuredErrorEnvelope(body, fallbackRuntime string) *RuntimeError {
+	if body == "" || body[0] != '{' {
+		return nil
+	}
+	var envelope map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		return nil
+	}
+	if len(envelope) == 0 {
+		return nil
+	}
+	runtimeName, _ := envelope["runtime"].(string)
+	originRuntime, _ := envelope["origin_runtime"].(string)
+	errType, _ := envelope["type"].(string)
+	message, _ := envelope["message"].(string)
+	traceback, _ := envelope["traceback"].(string)
+	boundary, _ := envelope["boundary_path"].(string)
+	handle, _ := envelope["original_error_handle"].(string)
+	if runtimeName == "" {
+		runtimeName = normalizeRuntime(fallbackRuntime)
+	} else {
+		runtimeName = normalizeRuntime(runtimeName)
+	}
+	if originRuntime == "" {
+		originRuntime = runtimeName
+	} else {
+		originRuntime = normalizeRuntime(originRuntime)
+	}
+	if boundary == "" {
+		boundary = boundaryPath(nil, runtimeName)
+	}
+	if runtimeName == "" && errType == "" && message == "" && traceback == "" {
+		return nil
+	}
+	return &RuntimeError{
+		Runtime:             runtimeName,
+		OriginRuntime:       originRuntime,
+		Type:                errType,
+		Message:             message,
+		Traceback:           traceback,
+		StackFrames:         stringSliceEnvelopeValue(envelope["stack_frames"], stackFrames(traceback)),
+		CauseChain:          causeChainEnvelopeValue(envelope["cause_chain"]),
+		BoundaryPath:        boundary,
+		OriginalErrorHandle: handle,
+		Details:             copyJSONValue(envelope["details"]),
+	}
+}
+
+func stringSliceEnvelopeValue(value interface{}, fallback []string) []string {
+	items, ok := value.([]interface{})
+	if !ok {
+		return fallback
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return fallback
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]RuntimeErrorCause, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		cause := RuntimeErrorCause{}
+		if causeType, ok := entry["type"].(string); ok {
+			cause.Type = causeType
+		}
+		if message, ok := entry["message"].(string); ok {
+			cause.Message = message
+		}
+		out = append(out, cause)
+	}
+	return out
 }
 
 func stackFrames(traceback string) []string {

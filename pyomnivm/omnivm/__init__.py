@@ -96,7 +96,7 @@ class RuntimeError(_builtins.RuntimeError):
             boundary_path=boundary_path,
         )
         self.runtime = parsed["runtime"]
-        self.origin_runtime = parsed["runtime"]
+        self.origin_runtime = parsed["origin_runtime"]
         self.type = parsed["type"]
         self.message = parsed["message"]
         self.traceback = parsed["traceback"]
@@ -131,6 +131,14 @@ def _copy_json_value(value):
 
 
 def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
+    envelope = _parse_runtime_error_envelope(
+        text,
+        runtime=runtime,
+        boundary_path=boundary_path,
+    )
+    if envelope is not None:
+        return envelope
+
     source_runtime = runtime
     body = text
     boundary_parts = []
@@ -227,6 +235,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
 
     return {
         "runtime": source_runtime,
+        "origin_runtime": source_runtime,
         "type": err_type,
         "message": detail,
         "traceback": traceback,
@@ -236,6 +245,52 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         or (f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path),
         "original_error_handle": original_error_handle,
         "details": _parse_runtime_error_details(body),
+    }
+
+
+def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
+    body = str(text or "").strip()
+    if not body.startswith("{"):
+        return None
+    try:
+        envelope = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    runtime_name = envelope.get("runtime") or runtime
+    origin_runtime = envelope.get("origin_runtime") or runtime_name
+    err_type = envelope.get("type") or ""
+    message = envelope.get("message") or ""
+    traceback = envelope.get("traceback") or ""
+    if not any((runtime_name, err_type, message, traceback)):
+        return None
+    stack_frames = envelope.get("stack_frames")
+    if not isinstance(stack_frames, list) or not all(isinstance(frame, str) for frame in stack_frames):
+        stack_frames = _runtime_error_stack_frames(traceback)
+    cause_chain = envelope.get("cause_chain")
+    if not isinstance(cause_chain, list):
+        cause_chain = []
+    else:
+        cause_chain = [
+            {
+                "type": str(cause.get("type") or ""),
+                "message": str(cause.get("message") or ""),
+            }
+            for cause in cause_chain
+            if isinstance(cause, dict)
+        ]
+    return {
+        "runtime": runtime_name,
+        "origin_runtime": origin_runtime,
+        "type": err_type,
+        "message": message,
+        "traceback": traceback,
+        "stack_frames": stack_frames,
+        "cause_chain": cause_chain,
+        "boundary_path": envelope.get("boundary_path") or boundary_path,
+        "original_error_handle": envelope.get("original_error_handle"),
+        "details": _copy_json_value(envelope.get("details")),
     }
 
 
