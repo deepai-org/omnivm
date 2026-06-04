@@ -153,6 +153,7 @@ type Executor struct {
 	releasedResources map[handles.ID]*ResourceRef
 	tables            map[handles.ID]*TableRef
 	releasedTables    map[handles.ID]*TableRef
+	releasedStreams   map[handles.ID]releasedStreamRef
 	bridgeHandles     map[bridgeIdentity]handles.ID
 	jobs              map[int]*JobHandle
 	nextJobID         int
@@ -188,6 +189,7 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		releasedResources: make(map[handles.ID]*ResourceRef),
 		tables:            make(map[handles.ID]*TableRef),
 		releasedTables:    make(map[handles.ID]*TableRef),
+		releasedStreams:   make(map[handles.ID]releasedStreamRef),
 		bridgeHandles:     make(map[bridgeIdentity]handles.ID),
 		jobs:              make(map[int]*JobHandle),
 	}
@@ -2240,6 +2242,21 @@ func (e *Executor) rememberReleasedTable(id handles.ID, value interface{}) {
 	e.releasedTables[id] = &tombstone
 }
 
+type releasedStreamRef struct {
+	Runtime string
+	Kind    string
+}
+
+func (e *Executor) rememberReleasedStream(id handles.ID, runtime, kind string) {
+	if e.releasedStreams == nil {
+		e.releasedStreams = make(map[handles.ID]releasedStreamRef)
+	}
+	e.releasedStreams[id] = releasedStreamRef{
+		Runtime: nonEmpty(runtime, "unknown"),
+		Kind:    nonEmpty(kind, "stream"),
+	}
+}
+
 func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
 	entry, ok := e.ensureHandleTable().Get(id)
 	if ok {
@@ -2250,6 +2267,9 @@ func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
 	}
 	if ref := e.releasedTables[id]; ref != nil {
 		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed table handle %d (runtime=%s format=%s): owner-side lifecycle is released", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Format, "table"))
+	}
+	if ref, ok := e.releasedStreams[id]; ok {
+		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed stream handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, ref.Runtime, ref.Kind)
 	}
 	return handles.Entry{}, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
 }

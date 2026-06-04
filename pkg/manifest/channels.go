@@ -119,6 +119,7 @@ func (e *Executor) genericStreamHandle(runtime string, value interface{}) (handl
 			if err := closeGenericStreamValue(value); err != nil {
 				return err
 			}
+			e.rememberReleasedStream(id, runtime, streamKindForValue(value))
 			e.forgetReleasedHandle(id, value)
 			if releaser, ok := value.(interface{ Release() error }); ok {
 				return releaser.Release()

@@ -4713,6 +4713,16 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 	if stats.Live != 0 || stats.ExplicitReleases != 1 {
 		t.Fatalf("stream_cancel stats = %+v, want explicit release", stats)
 	}
+	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+		t.Fatal("stale stream_next after cancel did not fail")
+	} else {
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("stale stream_next diagnostic missing %q: %s", want, got)
+			}
+		}
+	}
 	if len(ch.ch) != 1 {
 		t.Fatalf("stream_cancel should not drain channel, len = %d, want 1", len(ch.ch))
 	}

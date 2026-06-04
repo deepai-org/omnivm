@@ -2717,6 +2717,7 @@ func (e *Executor) runtimeRefStreamHandle(ref RuntimeRef) (handles.ID, error) {
 			if err := e.closeRuntimeRefStream(id, ref); err != nil {
 				return err
 			}
+			e.rememberReleasedStream(id, ref.Runtime, "stream")
 			e.forgetReleasedHandle(id, ref)
 			return nil
 		},
