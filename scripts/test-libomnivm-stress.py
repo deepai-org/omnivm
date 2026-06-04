@@ -26962,6 +26962,66 @@ def test_manifest_proxy_finalizer_preserves_scope_owner():
         raise AssertionError(f"queued finalizer was not drained before scope-owner reuse: before={before}, after={after}")
 
 
+def test_manifest_closed_resource_proxy_reports_owner_lifecycle_error():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "resource",
+                "action": "open",
+                "runtime": "python",
+                "kind": "request",
+                "bind": "req",
+                "value": {"kind": "literal", "value": {"path": "/closed-owner"}},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"req": "req"},
+                "code": "global stale_py_req\nstale_py_req = req\nassert stale_py_req.path == '/closed-owner'",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"req": "req"},
+                "code": "globalThis.staleJSReq = req; if (globalThis.staleJSReq.path !== '/closed-owner') throw new Error('bad JS request path');",
+            },
+            {
+                "op": "resource",
+                "action": "close",
+                "target": "req",
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "try:\n"
+                    "    stale_py_req.path\n"
+                    "except Exception as exc:\n"
+                    "    text = str(exc)\n"
+                    "    assert 'manifest HandleCall: unknown handle' in text, text\n"
+                    "else:\n"
+                    "    raise AssertionError('closed Python resource proxy access did not raise')\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "try { globalThis.staleJSReq.path; } "
+                    "catch (err) { "
+                    "  if (!String(err && err.message || err).includes('manifest HandleCall: unknown handle')) throw err; "
+                    "  globalThis.closedOwnerProxyErrorSeen = true; "
+                    "} "
+                    "if (!globalThis.closedOwnerProxyErrorSeen) throw new Error('closed JS resource proxy access did not raise');"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+
 def test_manifest_returned_proxy_finalizer_releases_transfer():
     before = omnivm.status().get("handles", {})
     manifest = {
@@ -29168,6 +29228,7 @@ def main():
         check("Manifest Ruby proxy ObjectSpace finalizer", test_manifest_ruby_proxy_objectspace_finalizer)
         check("Manifest Java proxy Cleaner finalizer", test_manifest_java_proxy_cleaner_finalizer)
         check("Manifest proxy finalizer preserves scope owner", test_manifest_proxy_finalizer_preserves_scope_owner)
+        check("Manifest closed resource proxy reports owner lifecycle error", test_manifest_closed_resource_proxy_reports_owner_lifecycle_error)
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)

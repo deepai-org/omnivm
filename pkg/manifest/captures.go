@@ -521,6 +521,20 @@ import weakref as __omnivm_weakref
 import collections.abc as __omnivm_collections_abc
 __omnivm_proxy_cache = globals().setdefault("__omnivm_proxy_cache", __omnivm_weakref.WeakValueDictionary())
 
+class _OmniVMBridgeMissing(Exception):
+    pass
+
+def _omnivm_is_missing_bridge_error(exc):
+    text = str(exc)
+    return (
+        " has no property " in text
+        or " has no index " in text
+        or " has no length" in text
+        or " is not iterable" in text
+        or " does not support contains" in text
+        or " has no writable property " in text
+    )
+
 def __omnivm_bridge_module():
     caller = globals().get("omnivm")
     if caller is not None and hasattr(caller, "call"):
@@ -690,7 +704,12 @@ class __OmniVMHandleProxy:
             raise AttributeError(payload.get("key"))
         import json as __j
         payload["id"] = self._value.get("id")
-        raw = caller.call("__manifest", __j.dumps(payload))
+        try:
+            raw = caller.call("__manifest", __j.dumps(payload))
+        except Exception as exc:
+            if globals()["_omnivm_is_missing_bridge_error"](exc):
+                raise globals()["_OmniVMBridgeMissing"](str(exc))
+            raise
         env = __j.loads(raw)
         if isinstance(env, dict) and env.get("__omnivm_result__") is True:
             return self._materialize_bridge_value(env.get("value"))
@@ -827,20 +846,20 @@ class __OmniVMHandleProxy:
                 pass
         try:
             return self._bridge_get(key)
-        except Exception:
+        except _OmniVMBridgeMissing:
             pass
         if self._is_proxy_method_key(key):
             raise AttributeError(key)
         try:
             return self._bridge_index(key)
-        except Exception:
+        except _OmniVMBridgeMissing:
             pass
         raise AttributeError(key)
 
     def __contains__(self, key):
         try:
             return bool(self._bridge_contains(key))
-        except Exception:
+        except _OmniVMBridgeMissing:
             self._record("property")
             return self._has_local_value(key) or self._has_local_text_value(key)
 
@@ -851,7 +870,7 @@ class __OmniVMHandleProxy:
                 self._sync_mapping_cache()
             mode = "values" if self._value.get("kind") == "sequence" or self._value.get("__omnivm_table__") is True else "keys"
             return iter(self._bridge_iter(mode))
-        except Exception:
+        except _OmniVMBridgeMissing:
             self._record("iterate")
             return iter(self._value)
 
@@ -860,7 +879,7 @@ class __OmniVMHandleProxy:
             value = self._bridge_len()
             if isinstance(value, int):
                 return value
-        except Exception:
+        except _OmniVMBridgeMissing:
             pass
         self._record("property")
         return len(self._value)
@@ -875,7 +894,7 @@ class __OmniVMHandleProxy:
         if self._is_indexed_descriptor() and idx is not None:
             try:
                 return self._bridge_index(idx)
-            except Exception:
+            except _OmniVMBridgeMissing:
                 return default
         report = self._record("property")
         if isinstance(report, dict) and report.get("chatty") is True:
@@ -887,11 +906,11 @@ class __OmniVMHandleProxy:
         try:
             if not self._bridge_contains(text_key):
                 return default
-        except Exception:
+        except _OmniVMBridgeMissing:
             pass
         try:
             return self._bridge_get(text_key)
-        except Exception:
+        except _OmniVMBridgeMissing:
             return default
 
     def keys(self):
@@ -899,7 +918,7 @@ class __OmniVMHandleProxy:
         self._sync_mapping_cache()
         try:
             return self._bridge_iter("keys")
-        except Exception:
+        except _OmniVMBridgeMissing:
             self._record("iterate")
             return self._value.keys()
 
@@ -908,7 +927,7 @@ class __OmniVMHandleProxy:
         self._sync_mapping_cache()
         try:
             return [tuple(item) if isinstance(item, list) else item for item in self._bridge_iter("items")]
-        except Exception:
+        except _OmniVMBridgeMissing:
             self._record("iterate")
             return self._value.items()
 
@@ -917,7 +936,7 @@ class __OmniVMHandleProxy:
         self._sync_mapping_cache()
         try:
             return self._bridge_iter("values")
-        except Exception:
+        except _OmniVMBridgeMissing:
             self._record("iterate")
             return self._value.values()
 
@@ -1247,6 +1266,15 @@ if (typeof omnivm !== 'undefined' && omnivm) {
 }
 globalThis.__omnivm_arg_refs = globalThis.__omnivm_arg_refs || {};
 globalThis.__omnivm_arg_ref_counter = globalThis.__omnivm_arg_ref_counter || 0;
+globalThis.__omnivm_is_missing_bridge_error = globalThis.__omnivm_is_missing_bridge_error || function(error) {
+  var text = String(error && (error.message || error));
+  return text.indexOf(" has no property ") >= 0 ||
+    text.indexOf(" has no index ") >= 0 ||
+    text.indexOf(" has no length") >= 0 ||
+    text.indexOf(" is not iterable") >= 0 ||
+    text.indexOf(" does not support contains") >= 0 ||
+    text.indexOf(" has no writable property ") >= 0;
+};
 globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(value) {
   if (value === null || value === undefined || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
   if (value && value.__omnivm_proxy__ === true && value.__omnivm_descriptor__) return value.__omnivm_descriptor__;
@@ -1328,15 +1356,18 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       try {
         return bridge({op: "handle_index", value: idx});
       } catch (_e) {
+        if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
         return defaultValue;
       }
     }
     try {
       return bridge({op: "handle_get", key: textKey});
     } catch (_getError) {
+      if (!globalThis.__omnivm_is_missing_bridge_error(_getError)) throw _getError;
       try {
         return bridge({op: "handle_index", value: key});
       } catch (_indexError) {
+        if (!globalThis.__omnivm_is_missing_bridge_error(_indexError)) throw _indexError;
         return defaultValue;
       }
     }
@@ -1345,6 +1376,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     try {
       return bridge({op: "handle_len"});
     } catch (_e) {
+      if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
       return defaultValue;
     }
   };
@@ -1357,6 +1389,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           var thenValue = bridge({op: "handle_get", key: "then"}, {preserveCallable: true});
           return typeof thenValue === 'function' ? undefined : thenValue;
         } catch (_thenError) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_thenError)) throw _thenError;
           return Reflect.get(obj, prop, receiver);
         }
       }
@@ -1364,14 +1397,18 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         if (!(descriptor && descriptor.__omnivm_table__ === true)) {
           try {
             if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});
-          } catch (_fieldLengthError) {}
+          } catch (_fieldLengthError) {
+            if (!globalThis.__omnivm_is_missing_bridge_error(_fieldLengthError)) throw _fieldLengthError;
+          }
         }
         return bridgeLen(Reflect.get(obj, prop, receiver));
       }
       if (prop === 'name' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           if (bridge({op: "handle_contains", value: "name"})) return bridge({op: "handle_get", key: "name"});
-        } catch (_fieldNameError) {}
+        } catch (_fieldNameError) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_fieldNameError)) throw _fieldNameError;
+        }
         return Reflect.get(obj, prop, receiver);
       }
       if (hasLocalProp(obj, prop)) return Reflect.get(obj, prop, receiver);
@@ -1387,7 +1424,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           try {
             var values = bridge({op: "handle_iter", mode: "values"});
             if (Array.isArray(values)) return values[Symbol.iterator]();
-          } catch (_e) {}
+          } catch (_e) {
+            if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
+          }
           return [][Symbol.iterator]();
         };
       }
@@ -1395,25 +1434,32 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         if (isIndexedDescriptor() && /^(0|[1-9][0-9]*)$/.test(prop)) {
           try {
             return bridge({op: "handle_index", value: Number(prop)});
-          } catch (_indexedPropError) {}
+          } catch (_indexedPropError) {
+            if (!globalThis.__omnivm_is_missing_bridge_error(_indexedPropError)) throw _indexedPropError;
+          }
         }
         try {
           return bridge({op: "handle_get", key: prop});
         } catch (_e) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
           if (prop === 'get') {
             return bridgeGet;
           }
           if (/^(0|[1-9][0-9]*)$/.test(prop)) {
             try {
               return bridge({op: "handle_index", value: Number(prop)});
-            } catch (_ignored) {}
+            } catch (_ignored) {
+              if (!globalThis.__omnivm_is_missing_bridge_error(_ignored)) throw _ignored;
+            }
           }
         }
       }
       if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           if (bridge({op: "handle_contains", value: prop})) return bridge({op: "handle_get", key: prop});
-        } catch (_inheritedFieldError) {}
+        } catch (_inheritedFieldError) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_inheritedFieldError)) throw _inheritedFieldError;
+        }
       }
       return Reflect.get(obj, prop, receiver);
     },
@@ -1435,7 +1481,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           bridge({op: "handle_set", key: prop, value: globalThis.__omnivm_encode_arg(value)});
           if (hasLocalProp(obj, prop)) Reflect.set(obj, prop, value, receiver);
           return true;
-        } catch (_e) {}
+        } catch (_e) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
+        }
       }
       return Reflect.set(obj, prop, value, receiver);
     },
@@ -1446,7 +1494,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (typeof prop === 'string' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           return !!bridge({op: "handle_contains", value: prop});
-        } catch (_e) {}
+        } catch (_e) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
+        }
       }
       globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property");
       return Reflect.has(obj, prop);
@@ -1459,7 +1509,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           if (bridge({op: "handle_contains", value: prop})) {
             return {enumerable: true, configurable: true};
           }
-        } catch (_e) {}
+        } catch (_e) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
+        }
       }
       return undefined;
     },
@@ -1472,7 +1524,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
             if (Array.isArray(obj) && out.indexOf("length") < 0) out.push("length");
             return out;
           }
-        } catch (_e) {}
+        } catch (_e) {
+          if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
+        }
       }
       globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "iterate");
       return Reflect.ownKeys(obj);

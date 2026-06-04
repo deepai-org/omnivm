@@ -4769,6 +4769,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `"op": "handle_get"`) {
 		t.Fatalf("Python materializer should fetch handle properties, got %q", code)
 	}
+	if !contains(code, "class _OmniVMBridgeMissing") || !contains(code, "def _omnivm_is_missing_bridge_error") || !contains(code, "raise globals()[\"_OmniVMBridgeMissing\"]") {
+		t.Fatalf("Python materializer should distinguish missing remote fields from lifecycle bridge failures, got %q", code)
+	}
 	if !contains(code, `value.get("zeroArg") is True`) || !contains(code, `return self._bridge_call(key, (), {})`) {
 		t.Fatalf("Python materializer should invoke zero-arg callable descriptors as property access, got %q", code)
 	}
@@ -4897,6 +4900,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, `op: "handle_get"`) {
 		t.Fatalf("JS materializer should fetch handle properties, got %q", code)
+	}
+	if !contains(code, "globalThis.__omnivm_is_missing_bridge_error") || !contains(code, "has no property") || !contains(code, "throw _e") {
+		t.Fatalf("JS materializer should distinguish missing remote fields from lifecycle bridge failures, got %q", code)
 	}
 	if !contains(code, `if (bridge({op: "handle_contains", value: "length"})) return bridge({op: "handle_get", key: "length"});`) {
 		t.Fatalf("JS materializer should prefer remote length fields before collection length on non-indexed proxies, got %q", code)
