@@ -838,6 +838,35 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "release failed"):
             proxy.close()
 
+    def test_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 47,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_explicit":
+                raise RuntimeError("release failed")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            with proxy:
+                raise ValueError("body failed")
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("release failed" in note for note in notes)
+
     def test_manifest_stream_proxy_close_cancels_stream_once(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
@@ -908,6 +937,35 @@ class TestCallWithMockLib(unittest.TestCase):
             next(iterator)
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert proxy.close() is False
+
+    def test_manifest_stream_iterator_context_preserves_body_exception_when_close_fails(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 48,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_cancel":
+                raise RuntimeError("cancel failed")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            with iter(proxy):
+                raise ValueError("body failed")
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("cancel failed" in note for note in notes)
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):

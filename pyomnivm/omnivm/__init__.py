@@ -1195,8 +1195,16 @@ class ManifestProxy:
     def __enter__(self):
         return self
 
-    def __exit__(self, _exc_type, _exc, _tb):
-        self.close()
+    def __exit__(self, _exc_type, exc, _tb):
+        if _exc_type is None:
+            self.close()
+            return False
+        try:
+            self.close()
+        except BaseException as close_exc:
+            add_note = getattr(exc, "add_note", None)
+            if callable(add_note):
+                add_note(f"OmniVM proxy close failed during exception cleanup: {close_exc}")
         return False
 
     def __repr__(self):
@@ -1423,8 +1431,16 @@ class _ManifestStreamIterator:
     def __enter__(self):
         return self
 
-    def __exit__(self, _exc_type, _exc, _tb):
-        self.close()
+    def __exit__(self, _exc_type, exc, _tb):
+        if _exc_type is None:
+            self.close()
+            return False
+        try:
+            self.close()
+        except BaseException as close_exc:
+            add_note = getattr(exc, "add_note", None)
+            if callable(add_note):
+                add_note(f"OmniVM stream close failed during exception cleanup: {close_exc}")
         return False
 
 
