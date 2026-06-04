@@ -7510,6 +7510,10 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"return _copy_json_value(self._cause_chain)",
 		"def details(self):",
 		"return _copy_json_value(self._details)",
+		"def to_json(self):",
+		"return globals()['__omnivm_json'].dumps(self.to_dict(), separators=(',', ':'))",
+		"if isinstance(value, tuple):",
+		"return [_copy_json_value(item) for item in value]",
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python RuntimeError readers should copy mutable structured values, missing %q", want)
