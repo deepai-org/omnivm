@@ -503,11 +503,19 @@ func (p *GoStreamProxy) Recv() (interface{}, bool) {
 }
 
 func (p *GoStreamProxy) Values() []interface{} {
+	out, _ := p.ValuesWithError()
+	return out
+}
+
+func (p *GoStreamProxy) ValuesWithError() ([]interface{}, error) {
 	out := []interface{}{}
 	for {
-		value, ok := p.Recv()
+		value, ok, err := p.Next()
+		if err != nil {
+			return out, err
+		}
 		if !ok {
-			return out
+			return out, nil
 		}
 		out = append(out, value)
 	}
