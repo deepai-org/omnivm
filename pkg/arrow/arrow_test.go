@@ -367,6 +367,34 @@ func TestReplaceWithActiveBorrowKeepsLeaseStable(t *testing.T) {
 	}
 }
 
+func TestBufferStatusReportsDetachedBorrowAfterNameReuse(t *testing.T) {
+	s := NewSharedStore()
+	if _, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Borrow("payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetWithDtype("payload", []byte{9}, DtypeU8); err != nil {
+		t.Fatal(err)
+	}
+
+	status := s.Status("payload")
+	if !status.Live || status.Released || status.State != "live" || status.LeaseState != "borrowed" {
+		t.Fatalf("status should report live replacement with outstanding borrow: %+v", status)
+	}
+	if status.Len != 1 || status.Dtype != DtypeU8 || status.DetachedBuffers != 1 || status.DetachedBytes != 3 || status.ActiveBorrows != 1 || status.ActiveBorrowedBytes != 3 {
+		t.Fatalf("status hid same-name detached borrow after replacement: %+v", status)
+	}
+
+	lease.Release()
+	status = s.Status("payload")
+	if status.State != "live" || status.LeaseState != "owned" || status.DetachedBuffers != 0 || status.ActiveBorrows != 0 {
+		t.Fatalf("status did not clear detached borrow after release: %+v", status)
+	}
+}
+
 func TestFreeWithActiveBorrowTombstonesNameAndKeepsLeaseDiagnostics(t *testing.T) {
 	s := NewSharedStore()
 	buf, err := s.SetWithDtype("payload", []byte{1, 2, 3, 4}, DtypeBytes)

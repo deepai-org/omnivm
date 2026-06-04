@@ -445,9 +445,11 @@ func (s *SharedStore) Status(name string) BufferStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	live := false
+	status := BufferStatus{Name: name, State: "missing", LeaseState: "missing"}
 	if buf, ok := s.buffers[name]; ok {
 		buf.mu.Lock()
-		status := BufferStatus{
+		status = BufferStatus{
 			Name:        name,
 			State:       "live",
 			LeaseState:  "owned",
@@ -465,11 +467,8 @@ func (s *SharedStore) Status(name string) BufferStatus {
 			status.ActiveBorrowedBytes = status.ActiveBorrows * int64(buf.Len)
 		}
 		buf.mu.Unlock()
-		return status
-	}
-
-	status := BufferStatus{Name: name, State: "missing", LeaseState: "missing"}
-	if _, ok := s.released[name]; ok {
+		live = true
+	} else if _, ok := s.released[name]; ok {
 		status = s.releasedMeta[name]
 		status.Name = name
 		status.State = "released"
@@ -492,9 +491,13 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		if refs <= 0 {
 			continue
 		}
-		status.State = "released_detached"
-		status.LeaseState = "detached"
-		status.Released = true
+		if live {
+			status.LeaseState = "borrowed"
+		} else {
+			status.State = "released_detached"
+			status.LeaseState = "detached"
+			status.Released = true
+		}
 		if status.Len == 0 {
 			status.Len = size
 			status.Dtype = dtype
