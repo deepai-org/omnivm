@@ -407,11 +407,7 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 		return nil
 	}
 
-	buf.mu.Lock()
-	buf.refs--
-	refs := buf.refs
-	release := buf.release
-	buf.mu.Unlock()
+	refs, release := decrementBufferRef(buf)
 
 	if refs <= 0 {
 		if current, ok := s.buffers[name]; ok && current == buf {
@@ -423,6 +419,17 @@ func (s *SharedStore) releaseBufferLocked(name string, buf *Buffer) func() error
 	}
 	s.releases++
 	return nil
+}
+
+func decrementBufferRef(buf *Buffer) (int, func() error) {
+	buf.mu.Lock()
+	if buf.refs > 0 {
+		buf.refs--
+	}
+	refs := buf.refs
+	release := buf.release
+	buf.mu.Unlock()
+	return refs, release
 }
 
 // Free releases a named buffer.
@@ -439,10 +446,8 @@ func (s *SharedStore) Free(name string) error {
 		return fmt.Errorf("arrow: buffer %q not found", name)
 	}
 
+	refs, release := decrementBufferRef(buf)
 	buf.mu.Lock()
-	buf.refs--
-	refs := buf.refs
-	release := buf.release
 	releasedStatus := BufferStatus{
 		Name:        name,
 		State:       "released",
@@ -705,13 +710,8 @@ func (b *Buffer) Retain() {
 // Release decrements the direct reference count without running store-level
 // owner cleanup. Store users should prefer Free or BorrowedBuffer.Release.
 func (b *Buffer) Release() int {
-	b.mu.Lock()
-	if b.refs > 0 {
-		b.refs--
-	}
-	r := b.refs
-	b.mu.Unlock()
-	return r
+	refs, _ := decrementBufferRef(b)
+	return refs
 }
 
 func callBufferRelease(release func() error) error {

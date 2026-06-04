@@ -196,6 +196,41 @@ func TestBufferReleaseClampsAtZero(t *testing.T) {
 	}
 }
 
+func TestBufferFreeAfterDirectReleaseDoesNotUnderflow(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3}
+	releases := 0
+	buf, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		releases++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if refs := buf.Release(); refs != 0 {
+		t.Fatalf("direct Release refs=%d, want 0", refs)
+	}
+	if err := s.Free("payload"); err != nil {
+		t.Fatalf("Free after direct Release failed: %v", err)
+	}
+	if releases != 1 {
+		t.Fatalf("producer release callback called %d times, want 1", releases)
+	}
+	buf.mu.Lock()
+	refs := buf.refs
+	buf.mu.Unlock()
+	if refs != 0 {
+		t.Fatalf("Free after direct Release refs=%d, want clamped 0", refs)
+	}
+	if status := s.Status("payload"); status.State != "released" || !status.Released {
+		t.Fatalf("Free after direct Release status = %+v, want released", status)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewSharedStore()
 
