@@ -8299,6 +8299,15 @@ func TestV8RuntimeErrorExposesJSONEnvelope(t *testing.T) {
 	if contains(code, `v8::String::NewFromUtf8Literal(isolate, "errors"),`) {
 		t.Fatalf("V8 runtime error details should preserve non-object JSON instead of wrapping arrays")
 	}
+	genericDetailsStart := strings.Index(code, "static void omnivm_v8_append_error_details")
+	runtimeFormatterStart := strings.Index(code, "static std::string omnivm_v8_format_runtime_error_object")
+	if genericDetailsStart < 0 || runtimeFormatterStart < 0 || runtimeFormatterStart <= genericDetailsStart {
+		t.Fatalf("V8 generic exception details formatter should remain defined before runtime error object formatter")
+	}
+	genericDetailsBody := code[genericDetailsStart:runtimeFormatterStart]
+	if !contains(genericDetailsBody, `std::string details = omnivm_v8_details_json_prop_fallback(isolate, context, obj)`) {
+		t.Fatalf("V8 generic exception details formatter should use details_json/detailsJson fallback aliases")
+	}
 }
 
 func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {

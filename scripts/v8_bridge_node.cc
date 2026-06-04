@@ -396,19 +396,7 @@ static void omnivm_v8_append_error_details(v8::Isolate* isolate,
         return;
     }
     v8::Local<v8::Object> obj = value.As<v8::Object>();
-    std::string details = omnivm_v8_json_stringify_prop(isolate, context, obj, "details");
-    if (details.empty()) {
-        std::string issues = omnivm_v8_json_stringify_prop(isolate, context, obj, "issues");
-        if (!issues.empty()) {
-            details = "{\"issues\":" + issues + "}";
-        }
-    }
-    if (details.empty()) {
-        std::string errors = omnivm_v8_json_stringify_prop(isolate, context, obj, "errors");
-        if (!errors.empty()) {
-            details = "{\"errors\":" + errors + "}";
-        }
-    }
+    std::string details = omnivm_v8_details_json_prop_fallback(isolate, context, obj);
     if (details.empty()) {
         return;
     }
