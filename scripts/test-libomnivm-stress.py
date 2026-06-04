@@ -9994,18 +9994,25 @@ class PsycopgServerSideCursorOwner:
         return self.conn.closed
 
 psycopg_server_cursor_js = PsycopgServerSideCursorOwner("omnivm_server_cursor_js")
+psycopg_server_cursor_ruby = PsycopgServerSideCursorOwner("omnivm_server_cursor_ruby")
+psycopg_server_cursor_java = PsycopgServerSideCursorOwner("omnivm_server_cursor_java")
 '''
         verify = r'''
-if psycopg_server_cursor_js.rows_pulled != 1:
-    raise AssertionError(f"psycopg server-side cursor pulled {psycopg_server_cursor_js.rows_pulled} rows instead of one")
-if not psycopg_server_cursor_js.closed:
-    raise AssertionError("psycopg server-side cursor owner was not closed by stream cancellation")
-if not psycopg_server_cursor_js.cursor_closed:
-    raise AssertionError("psycopg server-side cursor remained open after stream cancellation")
-if not psycopg_server_cursor_js.connection_closed:
-    raise AssertionError("psycopg server-side cursor connection remained open after stream cancellation")
-if not psycopg_server_cursor_js.rollback_done:
-    raise AssertionError("psycopg server-side cursor transaction was not rolled back on close")
+for name, cursor in (
+    ("javascript", psycopg_server_cursor_js),
+    ("ruby", psycopg_server_cursor_ruby),
+    ("java", psycopg_server_cursor_java),
+):
+    if cursor.rows_pulled != 1:
+        raise AssertionError(f"{name} psycopg server-side cursor pulled {cursor.rows_pulled} rows instead of one")
+    if not cursor.closed:
+        raise AssertionError(f"{name} psycopg server-side cursor owner was not closed by stream cancellation")
+    if not cursor.cursor_closed:
+        raise AssertionError(f"{name} psycopg server-side cursor remained open after stream cancellation")
+    if not cursor.connection_closed:
+        raise AssertionError(f"{name} psycopg server-side cursor connection remained open after stream cancellation")
+    if not cursor.rollback_done:
+        raise AssertionError(f"{name} psycopg server-side cursor transaction was not rolled back on close")
 '''
         manifest = {
             "version": 1,
@@ -10025,6 +10032,33 @@ if not psycopg_server_cursor_js.rollback_done:
                         "if (psycopg_server_cursor_js.cancel('client-stop') !== true) throw new Error('psycopg server-side cursor cancel failed');"
                     ),
                 },
+                {
+                    "op": "exec",
+                    "runtime": "ruby",
+                    "captures": {"psycopg_server_cursor_ruby": "psycopg_server_cursor_ruby"},
+                    "code": (
+                        "first = psycopg_server_cursor_ruby.first; "
+                        "raise 'psycopg server-side cursor was empty' if first.nil?; "
+                        "raise \"bad psycopg Ruby server-side row number #{first['n']}\" unless first['n'].to_s == '1'; "
+                        "raise \"bad psycopg Ruby server-side label #{first['label']}\" unless first['label'] == 'row-1'; "
+                        "psycopg_server_cursor_ruby.close"
+                    ),
+                },
+                {
+                    "op": "exec",
+                    "runtime": "java",
+                    "captures": {"psycopg_server_cursor_java": "psycopg_server_cursor_java"},
+                    "code": (
+                        "Object raw = omnivm.OmniVM.getCapture(\"psycopg_server_cursor_java\"); "
+                        "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"psycopg server-side cursor should cross as stream proxy: \" + raw); "
+                        "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                        "if (!it.hasNext()) throw new RuntimeException(\"psycopg Java server-side cursor was empty\"); "
+                        "java.util.Map<?, ?> first = (java.util.Map<?, ?>) it.next(); "
+                        "if (!\"1\".equals(String.valueOf(first.get(\"n\")))) throw new RuntimeException(\"bad psycopg Java server-side row number: \" + first); "
+                        "if (!\"row-1\".equals(String.valueOf(first.get(\"label\")))) throw new RuntimeException(\"bad psycopg Java server-side label: \" + first); "
+                        "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"psycopg Java server-side cursor cancel failed\");"
+                    ),
+                },
                 {"op": "exec", "runtime": "python", "code": verify},
             ],
         }
@@ -10035,13 +10069,13 @@ if not psycopg_server_cursor_js.rollback_done:
         handles = after_status.get("handles", {})
         stream_captures = boundary.get("stream_proxy_captures", 0)
         stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
-        if stream_captures < 1 and stream_capture_delta < 1:
+        if stream_captures < 3 and stream_capture_delta < 3:
             raise AssertionError(f"psycopg server-side cursor did not cross as a lazy stream: before={before_boundary}, after={boundary}")
         if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
             raise AssertionError(f"psycopg server-side cursor used JSON fallback: before={before_boundary}, after={boundary}")
         explicit_releases = handles.get("explicit_releases", 0)
         explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
-        if explicit_releases < 1 and explicit_release_delta < 1:
+        if explicit_releases < 3 and explicit_release_delta < 3:
             raise AssertionError(f"psycopg server-side cursor stream did not release: before={before_handles}, after={handles}")
     finally:
         stop_postgres()
