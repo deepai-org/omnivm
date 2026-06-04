@@ -2263,13 +2263,46 @@ func TestGoStreamProxyCloseReportsExternallyClosedOwner(t *testing.T) {
 	if strings.Contains(got, "unknown handle") {
 		t.Fatalf("Go stream proxy stale Close used generic handle-table diagnostic: %s", got)
 	}
-	if err := stream.Close(); err != nil {
-		t.Fatalf("second stale Go stream proxy Close should be idempotent: %v", err)
+	if err := stream.Close(); err == nil {
+		t.Fatal("second stale Go stream proxy Close should keep reporting the owner lifecycle error")
 	}
 	stream.ReleaseFromFinalizer()
 	stats := e.handleTable.Stats(time.Now())
 	if stats.Live != 0 || stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 {
 		t.Fatalf("Go stream proxy stale close stats = %+v, want one external explicit release and no finalizer queue", stats)
+	}
+}
+
+func TestGoStreamProxyCloseErrorRemainsRetryable(t *testing.T) {
+	e, _ := makeExecutor("go")
+	id, err := e.genericStreamHandle("go", &closeErrorReader{Reader: strings.NewReader("reader-body")})
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "reader")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "reader")))
+	}
+
+	if err := stream.Close(); err == nil {
+		t.Fatal("Go stream proxy Close with owner close error did not fail")
+	} else if !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("Go stream proxy Close error = %v, want close failure", err)
+	}
+	err = stream.Close()
+	if err == nil {
+		t.Fatal("Go stream proxy Close after failed close did not keep reporting owner lifecycle failure")
+	}
+	got := err.Error()
+	for _, want := range []string{"closed stream handle", "runtime=go", "kind=reader", "owner-side lifecycle is closed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Go stream proxy retry close diagnostic missing %q: %s", want, got)
+		}
+	}
+	stream.ReleaseFromFinalizer()
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go stream proxy failed close cleanup stats = %+v, want no live handle and no queued finalizer cleanup", stats)
 	}
 }
 
@@ -2586,6 +2619,46 @@ func TestGoHandleProxyCloseClosesLastOwnedHandle(t *testing.T) {
 	stats := e.handleTable.Stats(time.Now())
 	if stats.Live != 0 || stats.ExplicitReleases != 1 || stats.FinalizerQueued != 0 {
 		t.Fatalf("Go proxy last-owner close stats = %+v, want closed explicit release without finalizer queue", stats)
+	}
+}
+
+func TestGoHandleProxyCloseErrorRemainsObservable(t *testing.T) {
+	table := handles.NewTable()
+	releaseErr := errors.New("release boom")
+	id, err := table.Register("value", handles.RegisterOptions{
+		Runtime: "go",
+		Kind:    "resource",
+		Release: func(any) error {
+			return releaseErr
+		},
+	})
+	if err != nil {
+		t.Fatalf("register handle: %v", err)
+	}
+	proxy := newGoHandleProxy(id, table, "resource", map[string]interface{}{
+		"__omnivm_resource__": true,
+		"id":                  uint64(id),
+		"runtime":             "go",
+		"kind":                "resource",
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err := table.Release(id); err != nil {
+		t.Fatalf("release owner ref: %v", err)
+	}
+
+	if err := proxy.Close(); err == nil {
+		t.Fatal("Go handle proxy Close with owner release error did not fail")
+	} else if !strings.Contains(err.Error(), "release boom") {
+		t.Fatalf("Go handle proxy Close error = %v, want release boom", err)
+	}
+	if err := proxy.Close(); err == nil {
+		t.Fatal("second Go handle proxy Close should keep reporting the release error")
+	} else if !strings.Contains(err.Error(), "release boom") {
+		t.Fatalf("second Go handle proxy Close error = %v, want release boom", err)
+	}
+	proxy.ReleaseFromFinalizer()
+	stats := table.Stats(time.Now())
+	if stats.Live != 0 || stats.ReleaseErrors != 1 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go handle proxy failed close stats = %+v, want one release error and no queued finalizer cleanup", stats)
 	}
 }
 

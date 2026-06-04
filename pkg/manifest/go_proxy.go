@@ -28,6 +28,7 @@ type GoHandleProxy struct {
 	boundary      func(handles.ID, interface{}) interface{}
 	onMaterialize func()
 	closed        bool
+	closeErr      error
 }
 
 // GoProxyItem is a single key/value pair returned by GoHandleProxy.Items.
@@ -407,12 +408,21 @@ func (p *GoHandleProxy) Close() error {
 	if p == nil || p.closed {
 		return nil
 	}
-	p.closed = true
-	runtime.SetFinalizer(p, nil)
+	if p.closeErr != nil {
+		return p.closeErr
+	}
 	if p.table == nil || p.id == 0 {
+		p.closed = true
+		runtime.SetFinalizer(p, nil)
 		return nil
 	}
-	return p.table.Release(p.id)
+	if err := p.table.Release(p.id); err != nil {
+		p.closeErr = err
+		return err
+	}
+	p.closed = true
+	runtime.SetFinalizer(p, nil)
+	return nil
 }
 
 func (p *GoHandleProxy) record(kind string) (handles.AccessReport, bool) {
@@ -528,15 +538,21 @@ func (p *GoStreamProxy) Close() error {
 	if p == nil || p.closed {
 		return nil
 	}
-	p.closed = true
-	runtime.SetFinalizer(p, nil)
 	if p.table == nil || p.id == 0 {
+		p.closed = true
+		runtime.SetFinalizer(p, nil)
 		return nil
 	}
 	if p.cancel != nil {
-		return p.cancel(p.id)
+		if err := p.cancel(p.id); err != nil {
+			return err
+		}
+	} else if err := p.table.ReleaseAllRefs(p.id); err != nil {
+		return err
 	}
-	return p.table.ReleaseAllRefs(p.id)
+	p.closed = true
+	runtime.SetFinalizer(p, nil)
+	return nil
 }
 
 func (p *GoStreamProxy) ReleaseFromFinalizer() {

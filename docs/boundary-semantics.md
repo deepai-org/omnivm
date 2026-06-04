@@ -333,8 +333,9 @@ Go stream proxies expose `Next()` and `ValuesWithError()` when callers need the
 terminal owner error; the older `Recv()` and `Values()` helpers remain
 EOF-shaped compatibility wrappers. The first explicit `Close()` on a Go stream
 proxy whose owner was already closed by another path reports the same
-owner-side lifecycle diagnostic as `stream_cancel`; repeated local `Close()`
-calls remain idempotent.
+owner-side lifecycle diagnostic as `stream_cancel`; failed or stale user
+`Close()` calls keep reporting an error until an owner release or cancellation
+succeeds.
 Java `StreamProxy` marks itself released before rethrowing terminal owner stream
 errors, so later `cancel()` or Cleaner cleanup stays idempotent.
 Binary chunks continue through the same bulk-data classifier, so byte chunks can
