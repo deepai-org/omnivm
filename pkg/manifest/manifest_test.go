@@ -6286,9 +6286,12 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "var addCloseListener = function(listener)") ||
 		!contains(code, "var listeners = closeListeners.slice()") ||
 		!contains(code, "if (notifyAdapters === true)") ||
+		!contains(code, "var localValues = Array.isArray(value && value.values) ? value.values.slice() : null;") ||
 		!contains(code, "if (localValues) return markRemoteClosed(true);") ||
 		!contains(code, "if (remoteClosed) return {done: true};") ||
 		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed(false);\n        return {done: true};\n      }") ||
+		!contains(code, "return {done: false, value: globalThis.__omnivm_materialize_capture(localValues[localIndex++])};") ||
+		!contains(code, "catch (_localMaterializeErr) {\n        markRemoteClosed(true);\n        throw _localMaterializeErr;\n      }") ||
 		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
@@ -6718,6 +6721,64 @@ if (unregistered !== 1) throw new Error("closed local stream was unregistered mo
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node local stream EOF lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSLocalStreamMaterializesNestedValuesLazily(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {},
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "handle_release_explicit") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") throw new Error("local stream should not call remote stream_cancel");
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var nested = {__omnivm_resource__: true, id: 101, runtime: "python", kind: "object"};
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 77, runtime: "javascript", kind: "stream", values: ["first", nested]});
+var retainsBeforePull = requests.filter(function(req) { return req.op === "handle_retain"; }).map(function(req) { return req.id; });
+if (JSON.stringify(retainsBeforePull) !== JSON.stringify([77])) {
+  throw new Error("nested local stream value was retained before pull: " + JSON.stringify(retainsBeforePull));
+}
+var iter = stream[Symbol.iterator]();
+var first = iter.next();
+if (first.done !== false || first.value !== "first") throw new Error("first value mismatch: " + JSON.stringify(first));
+var retainsAfterFirst = requests.filter(function(req) { return req.op === "handle_retain"; }).map(function(req) { return req.id; });
+if (JSON.stringify(retainsAfterFirst) !== JSON.stringify([77])) {
+  throw new Error("nested local stream value was retained before its chunk: " + JSON.stringify(retainsAfterFirst));
+}
+var second = iter.next();
+if (second.done !== false || second.value.__omnivm_descriptor__.id !== 101) {
+  throw new Error("second value was not the nested proxy: " + JSON.stringify(second));
+}
+var retainsAfterSecond = requests.filter(function(req) { return req.op === "handle_retain"; }).map(function(req) { return req.id; });
+if (JSON.stringify(retainsAfterSecond) !== JSON.stringify([77, 101])) {
+  throw new Error("nested local stream value was not retained when pulled: " + JSON.stringify(retainsAfterSecond));
+}
+stream.cancel();
+if (stream.__omnivm_closed__ !== true) throw new Error("local stream did not close after cancel");
+if (unregistered !== 1) throw new Error("local stream finalizer unregister mismatch: " + unregistered);
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node local stream lazy materialization check failed: %v\n%s", err, out)
 	}
 }
 

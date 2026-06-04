@@ -1901,9 +1901,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   return proxy;
 };
 globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy || function(value) {
-  var localValues = Array.isArray(value && value.values) ? value.values.map(function(v) {
-    return globalThis.__omnivm_materialize_capture(v);
-  }) : null;
+  var localValues = Array.isArray(value && value.values) ? value.values.slice() : null;
   var localIndex = 0;
   var remoteClosed = false;
   var closeListeners = [];
@@ -1957,7 +1955,12 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         markRemoteClosed(false);
         return {done: true};
       }
-      return {done: false, value: localValues[localIndex++]};
+      try {
+        return {done: false, value: globalThis.__omnivm_materialize_capture(localValues[localIndex++])};
+      } catch (_localMaterializeErr) {
+        markRemoteClosed(true);
+        throw _localMaterializeErr;
+      }
     }
     try {
       if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {
