@@ -190,9 +190,10 @@ handle without queueing work, and `handle_drop_reference` is an idempotent
 no-op when either side of the edge is already gone. This keeps GC/finalizer and
 scope cleanup races quiet without hiding ordinary stale-proxy use.
 Explicit proxy-close helpers use the same release operation, but as
-user-initiated calls: after a successful release, JavaScript unregisters the
-`FinalizationRegistry` token and Ruby undefines the `ObjectSpace` finalizer so
-later GC does not enqueue redundant cleanup for that proxy.
+user-initiated calls: after a successful release, Python detaches the
+`weakref.finalize` hook, JavaScript unregisters the `FinalizationRegistry`
+token, and Ruby undefines the `ObjectSpace` finalizer so later GC does not
+enqueue redundant cleanup for that proxy.
 
 ### Cross-Runtime Cycles
 

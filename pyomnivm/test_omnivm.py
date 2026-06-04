@@ -702,7 +702,38 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
         assert omnivm_mod.proxy_close(proxy) is True
+        release_count = sum(1 for request in requests if request.get("op") == "handle_release_finalizer")
+        assert omnivm_mod.proxy_close(proxy) is False
+        assert sum(1 for request in requests if request.get("op") == "handle_release_finalizer") == release_count
         assert requests[-1] == {"op": "handle_release_finalizer", "id": 43}
+
+    def test_manifest_proxy_close_propagates_explicit_release_failure(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 44,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_finalizer":
+                raise RuntimeError("release failed")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            proxy.close()
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            proxy.close()
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):

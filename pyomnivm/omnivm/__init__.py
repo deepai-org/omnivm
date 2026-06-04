@@ -1065,11 +1065,20 @@ class ManifestProxy:
 
     def close(self):
         finalizer = object.__getattribute__(self, "_finalizer")
+        released = False
         if finalizer.alive:
-            finalizer()
+            released = bool(_manifest_bridge_call(
+                object.__getattribute__(self, "_module_id"),
+                {
+                    "op": "handle_release_finalizer",
+                    "id": object.__getattribute__(self, "_handle_id"),
+                },
+            ))
+            finalizer.detach()
         for arg_finalizer in object.__getattribute__(self, "_arg_finalizers"):
             if arg_finalizer.alive:
                 arg_finalizer()
+        return released
 
     def _retain_arg_lease(self, lease):
         lease.retain()
@@ -1280,8 +1289,7 @@ def proxy_contains(value, key):
 def proxy_close(value):
     """Release a proxy lease without colliding with a data field named close."""
     if isinstance(value, ManifestProxy):
-        value.close()
-        return True
+        return value.close()
     close = getattr(value, "close", None)
     if callable(close):
         close()
