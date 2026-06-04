@@ -935,8 +935,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 		return NULL;
 	}
 
-	if (schema->n_children != 0 || array->length < 0 || array->offset < 0 ||
-	    array->null_count < 0 || array->null_count > array->length || array->n_children != 0 || array->n_buffers < 2 || !array->buffers) {
+	if (schema->n_children != 0 || schema->dictionary != NULL || array->length < 0 || array->offset < 0 ||
+	    array->null_count < 0 || array->null_count > array->length ||
+	    array->n_children != 0 || array->dictionary != NULL || array->n_buffers < 2 || !array->buffers) {
 		array->release(array);
 		schema->release(schema);
 		stream->release(stream);
