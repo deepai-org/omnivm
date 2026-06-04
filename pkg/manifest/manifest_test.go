@@ -5774,6 +5774,7 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "var markRemoteClosed = function()") ||
 		!contains(code, "if (localValues) return markRemoteClosed();") ||
 		!contains(code, "if (remoteClosed) return {done: true};") ||
+		!contains(code, "if (localIndex >= localValues.length) {\n        markRemoteClosed();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed();\n    return released;") ||
 		!contains(code, "catch (_e) {\n      closeRemote();\n      throw _e;\n    }") ||
@@ -5961,6 +5962,59 @@ if (symbolAsyncDisposeResult !== symbolAsyncDisposePromise) throw new Error("Sym
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node proxyClose return preservation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSLocalStreamMarksClosedAtEOF(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "stream_cancel") throw new Error("local EOF should not cancel remote stream");
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 77, runtime: "javascript", kind: "stream", values: ["a"]});
+var iter = stream[Symbol.iterator]();
+var first = iter.next();
+if (first.done !== false || first.value !== "a") throw new Error("first value mismatch");
+var done = iter.next();
+if (done.done !== true) throw new Error("stream did not report done at EOF");
+if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed at EOF");
+if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+if (unregistered !== 1) throw new Error("stream finalizer was not unregistered at EOF: " + unregistered);
+if (!requests.some(function(req) { return req.op === "handle_retain" && req.id === 77; })) {
+  throw new Error("stream handle was not retained");
+}
+if (requests.some(function(req) { return req.op === "stream_cancel"; })) {
+  throw new Error("local EOF called remote stream_cancel");
+}
+if (stream.cancel() !== false) throw new Error("closed local stream cancel should be idempotent false");
+if (unregistered !== 1) throw new Error("closed local stream was unregistered more than once");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node local stream EOF lifecycle check failed: %v\n%s", err, out)
 	}
 }
 

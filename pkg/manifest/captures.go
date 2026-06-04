@@ -1902,7 +1902,10 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var nextValue = function() {
     if (localValues) {
       if (remoteClosed) return {done: true};
-      if (localIndex >= localValues.length) return {done: true};
+      if (localIndex >= localValues.length) {
+        markRemoteClosed();
+        return {done: true};
+      }
       return {done: false, value: localValues[localIndex++]};
     }
     try {
