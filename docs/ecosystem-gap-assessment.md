@@ -167,7 +167,9 @@ does not pretend to provide universal owner-executor dispatch.
 contract: `mode=diagnostic_only`, `owner_dispatch_supported=false`, the pinned
 host thread id, and the per-runtime diagnostics/dispatch limitations. Apps that
 require callback migration onto a framework-owned loop, executor, or Ruby VM
-thread can reject the in-process integration before serving traffic.
+thread can call `omnivm.assert_owner_dispatch_supported(label)` to reject the
+in-process integration before serving traffic with a structured
+`thread_affinity` diagnostic.
 
 The remaining risk is framework-owned scheduling. Starlette ASGI app-call
 disconnect, Uvicorn event-loop re-entry during streaming response cancellation,

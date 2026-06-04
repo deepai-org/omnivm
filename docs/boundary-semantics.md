@@ -519,7 +519,8 @@ startup checks. In c-shared mode the block currently reports
 `mode=diagnostic_only` and `owner_dispatch_supported=false`: OmniVM exposes
 host-thread/asyncio diagnostics and pumps async runtimes at host call
 boundaries, but it does not export a universal owner-loop, executor, or VM
-thread dispatcher.
+thread dispatcher. `omnivm.assert_owner_dispatch_supported(label)` is the
+fail-fast form for integrations that require that dispatcher.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table

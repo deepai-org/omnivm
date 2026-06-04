@@ -55,6 +55,7 @@ __all__ = [
     "host_thread_id",
     "affinity_status",
     "owner_dispatch_status",
+    "assert_owner_dispatch_supported",
     "assert_host_thread",
     "watchdog_capabilities",
     "worker_tainted",
@@ -1291,6 +1292,25 @@ def owner_dispatch_status():
             boundary_path="thread_affinity",
         )
     return info
+
+
+def assert_owner_dispatch_supported(label=""):
+    """
+    Raise RuntimeError when this build cannot migrate callbacks to owners.
+
+    Use this in framework startup checks that require a universal owner
+    loop/executor/thread dispatcher rather than diagnostic-only affinity guards.
+    """
+    info = owner_dispatch_status()
+    if info.get("owner_dispatch_supported") is True:
+        return True
+    prefix = f"{label}: " if label else ""
+    mode = info.get("mode") or "unknown"
+    reason = info.get("reason") or "owner dispatch is not supported by this libomnivm build"
+    raise RuntimeError(
+        f"{prefix}owner dispatch unsupported: mode={mode}: {reason}",
+        boundary_path="thread_affinity",
+    )
 
 
 def assert_host_thread(label=""):

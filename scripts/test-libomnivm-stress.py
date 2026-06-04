@@ -15739,6 +15739,19 @@ def test_status_observability():
         raise AssertionError(f"thread affinity status host thread mismatch: {thread_affinity}")
     if thread_affinity.get("python_assert_host_thread") is not True:
         raise AssertionError(f"status omitted Python host-thread guard capability: {thread_affinity}")
+    owner_dispatch = omnivm.owner_dispatch_status()
+    if owner_dispatch.get("owner_dispatch_supported") is not False:
+        raise AssertionError(f"owner dispatch helper should report diagnostic-only status: {owner_dispatch}")
+    try:
+        omnivm.assert_owner_dispatch_supported("status test")
+    except omnivm.RuntimeError as exc:
+        error = exc.to_dict()
+        if error.get("boundary_path") != "thread_affinity":
+            raise AssertionError(f"owner dispatch guard lost boundary path: {error}")
+        if "status test: owner dispatch unsupported" not in error.get("message", ""):
+            raise AssertionError(f"owner dispatch guard lost label: {error}")
+    else:
+        raise AssertionError("owner dispatch guard should reject diagnostic-only c-shared mode")
     ruby_threading = status.get("ruby_threading")
     if not isinstance(ruby_threading, dict):
         raise AssertionError(f"status omitted Ruby threading capability boundary: {status}")

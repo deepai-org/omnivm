@@ -298,6 +298,10 @@ class TestNotInitialized(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.owner_dispatch_status()
 
+    def test_assert_owner_dispatch_supported_raises(self):
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.assert_owner_dispatch_supported()
+
     def test_assert_host_thread_raises(self):
         with self.assertRaises(omnivm_mod.RuntimeError):
             omnivm_mod.assert_host_thread()
@@ -870,6 +874,25 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.owner_dispatch_status()
         assert ctx.exception.boundary_path == "thread_affinity"
+
+    def test_assert_owner_dispatch_supported_reports_diagnostic(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false,'
+            b'"reason":"c-shared mode runs direct calls on the calling host thread"}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.assert_owner_dispatch_supported("django startup")
+        assert "django startup: owner dispatch unsupported" in str(ctx.exception)
+        assert "diagnostic_only" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "thread_affinity"
+
+    def test_assert_owner_dispatch_supported_accepts_supported_status(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"owner_dispatch",'
+            b'"owner_dispatch_supported":true}}'
+        )
+        assert omnivm_mod.assert_owner_dispatch_supported("startup") is True
 
     def test_watchdog_capabilities_parses_matrix(self):
         self.mock_lib.OmniWatchdogCapabilities.return_value = (
