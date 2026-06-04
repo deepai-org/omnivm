@@ -5961,6 +5961,72 @@ func TestInjectPythonCapturesUsesSafeBindingNames(t *testing.T) {
 	}
 }
 
+func TestPythonHandleProxyLifecycleNameCollisionsPreferRemoteFields(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    fields = {
+        "close": "remote-close-field",
+        "dispose": "remote-dispose-field",
+    }
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_access":
+            return json.dumps({"__omnivm_result__": True, "value": {"chatty": False}})
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_release_explicit":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_contains":
+            return json.dumps({"__omnivm_result__": True, "value": req["value"] in Bridge.fields})
+        if req["op"] == "handle_get" and req["key"] in Bridge.fields:
+            return json.dumps({"__omnivm_result__": True, "value": Bridge.fields[req["key"]]})
+        if req["op"] == "handle_get":
+            raise RuntimeError("resource has no property " + req["key"])
+        if req["op"] == "handle_call" and req["key"] in ("close", "dispose"):
+            raise RuntimeError("lifecycle helper called remote " + req["key"] + " field")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+proxy = __omnivm_materialize_capture({"__omnivm_resource__": True, "id": 80, "runtime": "python", "kind": "object"})
+if proxy.close != "remote-close-field":
+    raise RuntimeError("close was not remote-first: " + repr(proxy.close))
+if proxy.dispose != "remote-dispose-field":
+    raise RuntimeError("dispose was not remote-first: " + repr(proxy.dispose))
+if proxy.get("close") != "remote-close-field":
+    raise RuntimeError("get did not recover remote close")
+if proxy.get("dispose") != "remote-dispose-field":
+    raise RuntimeError("get did not recover remote dispose")
+if omnivm_close(proxy) is not True:
+    raise RuntimeError("omnivm_close did not release the proxy")
+if omnivm_close(proxy) is not False:
+    raise RuntimeError("omnivm_close was not idempotent after release")
+requested = [req["key"] for req in Bridge.requests if req["op"] == "handle_get"]
+for key in ("close", "dispose"):
+    if key not in requested:
+        raise RuntimeError("missing remote lookup for " + key + ": " + repr(requested))
+releases = [req for req in Bridge.requests if req["op"] == "handle_release_explicit"]
+if len(releases) != 1 or releases[0]["id"] != 80:
+    raise RuntimeError("explicit release mismatch: " + repr(releases))
+if any(req["op"] == "handle_call" and req.get("key") in ("close", "dispose") for req in Bridge.requests):
+    raise RuntimeError("lifecycle close dispatched to a remote lifecycle-named field")
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestPythonRemoteStreamCancelsOnEarlyBreak(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

@@ -666,6 +666,10 @@ helper family.
 Generated Python manifest capture code injects the same `omnivm_close(value)`
 helper so guest Python snippets can explicitly release a handle proxy or cancel
 a stream proxy even when the owner object has a real `close` field or method.
+For retained handle proxies, natural reads of owner fields named `close` or
+`dispose` still prefer the owner field; lifecycle release uses
+`omnivm.proxy_close(value)`, `omnivm.omnivm_close(value)`, or the generated
+`omnivm_close(value)` helper.
 The embedded Python `omnivm` module installs the same collision-safe
 `proxy_close(value)` and `omnivm_close(value)` helpers, so code running directly
 inside the embedded interpreter does not have to rely on proxy finalizers for
