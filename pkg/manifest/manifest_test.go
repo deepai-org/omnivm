@@ -8319,6 +8319,19 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
 		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
 	}
+	for _, want := range []string{
+		"GetDirectBufferAddress(env, obj)",
+		"handle->object = (*env)->NewGlobalRef(env, obj)",
+		"handle->array_kind = JVM_EXPORT_DIRECT",
+		"ReleasePrimitiveArrayCritical(env, (jarray)handle->object, handle->critical, JNI_ABORT)",
+		"(*env)->DeleteGlobalRef(env, handle->object)",
+		`MemorySpace: "host"`,
+		"SetExternalWithMetadata(name, unsafe.Pointer(out.data), byteLen, meta",
+	} {
+		if !contains(files["../../scripts/jvm_docker.go"], want) {
+			t.Fatalf("JVM direct/NIO buffer export should carry explicit host producer-memory lease semantics, missing %q", want)
+		}
+	}
 	if !contains(files["../../cmd/libomnivm/main.go"], "func OmniBufFree") || !contains(files["../../cmd/libomnivm/main.go"], "get_omni_buf_free_ptr") {
 		t.Fatalf("libomnivm should export and pass OmniBufFree")
 	}

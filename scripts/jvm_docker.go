@@ -1456,11 +1456,12 @@ func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, err
 	dtype := int32(out.dtype)
 	arrowFormat := C.GoString(out.arrow_format)
 	meta := arrow.BufferMetadata{
-		Dtype:     dtype,
-		Format:    arrowFormat,
-		Shape:     []int64{elements},
-		ReadOnly:  out.read_only != 0,
-		Ownership: "producer",
+		Dtype:       dtype,
+		Format:      arrowFormat,
+		Shape:       []int64{elements},
+		ReadOnly:    out.read_only != 0,
+		Ownership:   "producer",
+		MemorySpace: "host",
 	}
 	if _, err := arrow.GlobalStore().SetExternalWithMetadata(name, unsafe.Pointer(out.data), byteLen, meta, func() error {
 		C.omnivm_jvm_release_exported_buffer(out.handle)
