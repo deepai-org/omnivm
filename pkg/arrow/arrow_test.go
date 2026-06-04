@@ -454,13 +454,14 @@ func TestReplaceExternalWithActiveBorrowReportsDetachedLease(t *testing.T) {
 	s := NewSharedStore()
 	oldData := []byte{1, 2, 3}
 	newData := []byte{9, 8}
+	releaseErr := errors.New("old producer release failed")
 	releases := 0
 	old, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&oldData[0]), int64(len(oldData)), BufferMetadata{
 		Dtype:     DtypeBytes,
 		Ownership: "producer",
 	}, func() error {
 		releases++
-		return nil
+		return releaseErr
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -496,11 +497,14 @@ func TestReplaceExternalWithActiveBorrowReportsDetachedLease(t *testing.T) {
 		t.Fatalf("external replacement status hid detached borrow: %+v", status)
 	}
 
-	if err := lease.ReleaseWithError(); err != nil {
-		t.Fatal(err)
+	if err := lease.ReleaseWithError(); !errors.Is(err, releaseErr) {
+		t.Fatalf("ReleaseWithError after external replacement = %v, want producer release failure", err)
 	}
 	if releases != 1 {
 		t.Fatalf("external old release callback called %d times, want 1", releases)
+	}
+	if err := lease.ReleaseWithError(); !errors.Is(err, releaseErr) {
+		t.Fatalf("second ReleaseWithError after external replacement = %v, want cached producer release failure", err)
 	}
 	stats = s.Stats()
 	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
