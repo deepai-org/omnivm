@@ -624,10 +624,22 @@ def __omnivm_actual_public_method(value, name):
     if not callable(raw):
         return None
     try:
-        method = getattr(value, name)
+        instance_dict = object.__getattribute__(value, "__dict__")
     except Exception:
-        return None
-    return method if callable(method) else None
+        instance_dict = None
+    if isinstance(instance_dict, dict) and instance_dict.get(name) is raw:
+        return raw
+    if hasattr(raw, "__get__") and (
+        __inspect.isfunction(raw) or __inspect.ismethoddescriptor(raw) or __inspect.isbuiltin(raw)
+    ):
+        try:
+            method = raw.__get__(value, type(value))
+        except Exception:
+            return None
+        return method if callable(method) else None
+    if not hasattr(raw, "__get__"):
+        return raw
+    return None
 
 class __OmniVMHandleProxy:
     _omnivm_chatty_warned = {}

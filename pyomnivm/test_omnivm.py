@@ -1205,9 +1205,28 @@ class TestCallWithMockLib(unittest.TestCase):
             def __init__(self):
                 self.close = lambda: "instance-closed"
 
+        class InstanceGetattributeTrap:
+            def __init__(self):
+                self.lookup_count = 0
+                self.close = lambda: "instance-static-closed"
+
+            def __getattribute__(self, name):
+                if name == "close":
+                    object.__setattr__(
+                        self,
+                        "lookup_count",
+                        object.__getattribute__(self, "lookup_count") + 1,
+                    )
+                    raise AssertionError("dynamic close lookup should not run")
+                return object.__getattribute__(self, name)
+
+        trap = InstanceGetattributeTrap()
+
         assert omnivm_mod.proxy_close(StaticCloser()) == "static-closed"
         assert omnivm_mod.proxy_close(ClassCloser()) == "ClassCloser"
         assert omnivm_mod.proxy_close(InstanceCloser()) == "instance-closed"
+        assert omnivm_mod.proxy_close(trap) == "instance-static-closed"
+        assert trap.lookup_count == 0
 
     def test_proxy_helpers_ignore_descriptor_fields(self):
         class CloseProperty:

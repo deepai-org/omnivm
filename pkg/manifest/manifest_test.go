@@ -5657,6 +5657,10 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `isinstance(raw, (staticmethod, classmethod))`) ||
 		!contains(code, `method = raw.__get__(value, type(value))`) ||
 		!contains(code, `if not callable(raw):`) ||
+		!contains(code, `instance_dict = object.__getattribute__(value, "__dict__")`) ||
+		!contains(code, `instance_dict.get(name) is raw`) ||
+		!contains(code, `__inspect.isfunction(raw)`) ||
+		!contains(code, `__inspect.ismethoddescriptor(raw)`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, "result = close()\n        return True if result is None else result") ||
@@ -5666,7 +5670,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "finalizer.detach()") {
 		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
 	}
-	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) || contains(code, `getattr(value, name, None)`) {
+	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) || contains(code, `getattr(value, name, None)`) || contains(code, `getattr(value, name)`) {
 		t.Fatalf("Python proxy close helper should not invoke dynamic attribute lookup for lifecycle methods")
 	}
 	if !contains(code, `"op": "handle_adopt"`) || !contains(code, "__omnivm_adopt_handle_id") || !contains(code, `value.get("transfer") is True`) {
