@@ -68,6 +68,15 @@ func (r *errorAfterChunkReader) Close() error {
 	return nil
 }
 
+type errorAfterChunkCloseErrorReader struct {
+	errorAfterChunkReader
+}
+
+func (r *errorAfterChunkCloseErrorReader) Close() error {
+	r.closed = true
+	return errors.New("close failed")
+}
+
 type goHTTPMessageReaderShape struct {
 	Method  string
 	Path    string
@@ -2376,6 +2385,48 @@ func TestGoStreamProxyNextReportsOwnerReadError(t *testing.T) {
 	stats := e.handleTable.Stats(time.Now())
 	if stats.HandleAccessesByKind["stream"] != 2 || stats.Live != 0 || stats.FinalizerQueued != 0 {
 		t.Fatalf("Go stream proxy read error stats = %+v, want two reads, no live handles, no finalizer queue", stats)
+	}
+}
+
+func TestGoStreamProxyNextPreservesReadErrorWhenCloseFails(t *testing.T) {
+	e, _ := makeExecutor("go")
+	reader := &errorAfterChunkCloseErrorReader{errorAfterChunkReader: errorAfterChunkReader{chunk: "first"}}
+	id, err := e.genericStreamHandle("go", reader)
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "reader")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "reader")))
+	}
+	value, ok, err := stream.Next()
+	if err != nil || !ok || value == nil {
+		t.Fatalf("stream Next first = (%#v, %v, %v), want value,true,nil", value, ok, err)
+	}
+	if proxy, ok := value.(*GoHandleProxy); ok {
+		if err := proxy.Close(); err != nil {
+			t.Fatalf("close first chunk proxy: %v", err)
+		}
+	}
+	value, ok, err = stream.Next()
+	if err == nil || ok || value != nil {
+		t.Fatalf("stream Next error = (%#v, %v, %v), want nil,false,error", value, ok, err)
+	}
+	got := err.Error()
+	for _, want := range []string{"owner read failed", "additionally failed to close stream after read error", "close failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stream Next combined error missing %q: %s", want, got)
+		}
+	}
+	if !reader.closed {
+		t.Fatal("reader close was not attempted after read error")
+	}
+	if value, ok, err := stream.Next(); err != nil || ok || value != nil {
+		t.Fatalf("stream Next after combined error = (%#v, %v, %v), want nil,false,nil", value, ok, err)
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.HandleAccessesByKind["stream"] != 2 || stats.Live != 0 || stats.ReleaseErrors != 1 || stats.FinalizerQueued != 0 {
+		t.Fatalf("Go stream proxy combined read/close error stats = %+v, want two reads, one release error, no live handles/finalizers", stats)
 	}
 }
 

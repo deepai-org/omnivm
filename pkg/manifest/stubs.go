@@ -2112,7 +2112,7 @@ func (e *Executor) handleStreamNext(id handles.ID) (interface{}, bool, bool, err
 		value, done, ok, err := readGenericStreamValue(v)
 		if err != nil {
 			if releaseErr := e.ensureHandleTable().ReleaseAllRefs(id); releaseErr != nil {
-				return nil, false, true, releaseErr
+				return nil, false, true, fmt.Errorf("%w; additionally failed to close stream after read error: %v", err, releaseErr)
 			}
 			return nil, false, true, err
 		}
