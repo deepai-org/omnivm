@@ -3085,6 +3085,58 @@ static PyObject* omnivm_py_details_from_exception_group(PyObject* value) {
     return details;
 }
 
+static void omnivm_py_append_exception_group_causes(PyObject* value, char** out, size_t* len, int depth) {
+    if (!value || depth >= OMNIVM_PY_EXCEPTION_GROUP_MAX_DEPTH || !PyObject_HasAttrString(value, "exceptions")) {
+        return;
+    }
+    PyObject* exceptions = PyObject_GetAttrString(value, "exceptions");
+    if (!exceptions) {
+        PyErr_Clear();
+        return;
+    }
+    if (!PySequence_Check(exceptions)) {
+        Py_DECREF(exceptions);
+        return;
+    }
+    Py_ssize_t n = PySequence_Size(exceptions);
+    if (n < 0) {
+        Py_DECREF(exceptions);
+        PyErr_Clear();
+        return;
+    }
+    Py_ssize_t limit = n < OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN ? n : OMNIVM_PY_EXCEPTION_GROUP_MAX_CHILDREN;
+    for (Py_ssize_t i = 0; i < limit; ++i) {
+        PyObject* child = PySequence_GetItem(exceptions, i);
+        if (!child) {
+            PyErr_Clear();
+            continue;
+        }
+        PyObject* type_name = PyObject_GetAttrString((PyObject*)Py_TYPE(child), "__name__");
+        PyObject* message = PyObject_Str(child);
+        const char* type_utf8 = type_name ? PyUnicode_AsUTF8(type_name) : NULL;
+        const char* message_utf8 = message ? PyUnicode_AsUTF8(message) : NULL;
+        omnivm_py_append_text(out, len, "\nCaused by: ");
+        if (type_utf8 && type_utf8[0]) {
+            omnivm_py_append_text(out, len, type_utf8);
+            omnivm_py_append_text(out, len, ": ");
+        }
+        if (message_utf8 && message_utf8[0]) {
+            omnivm_py_append_text(out, len, message_utf8);
+        }
+        if (!type_name || !message) {
+            PyErr_Clear();
+        }
+        Py_XDECREF(type_name);
+        Py_XDECREF(message);
+        omnivm_py_append_exception_group_causes(child, out, len, depth + 1);
+        Py_DECREF(child);
+    }
+    if (n > limit) {
+        omnivm_py_append_text(out, len, "\nCaused by: ExceptionGroup: additional grouped exceptions truncated");
+    }
+    Py_DECREF(exceptions);
+}
+
 static PyObject* omnivm_py_details_from_noarg_method(PyObject* value, const char* name, int parse_json) {
     PyObject* details = omnivm_py_call_noarg_method(value, name);
     if (!details) return NULL;
@@ -3345,16 +3397,16 @@ static char* omnivm_py_fetch_traceback_error_inner() {
     Py_XDECREF(traceback_module);
 
     if (result && value) {
+        size_t len = strlen(result);
+        omnivm_py_append_exception_group_causes(value, &result, &len, 0);
         char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
         if (handle) {
-            size_t len = strlen(result);
             omnivm_py_append_text(&result, &len, "\nOriginal error handle: ");
             omnivm_py_append_text(&result, &len, handle);
             free(handle);
         }
         char* details_json = omnivm_py_error_details_json(value);
         if (details_json) {
-            size_t len = strlen(result);
             omnivm_py_append_text(&result, &len, "\nDetails: ");
             omnivm_py_append_text(&result, &len, details_json);
             free(details_json);

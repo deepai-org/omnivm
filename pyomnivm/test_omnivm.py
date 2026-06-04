@@ -90,6 +90,32 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_parses_python_exception_group_causes(self):
+        err = omnivm_mod.RuntimeError(
+            "Traceback (most recent call last):\n"
+            "ExceptionGroup: batch failed (2 sub-exceptions)\n"
+            "Caused by: ValueError: bad age\n"
+            "Caused by: TypeError: bad name",
+            runtime="python",
+        )
+        assert err.runtime == "python"
+        assert err.type == "ExceptionGroup"
+        assert err.message == "batch failed (2 sub-exceptions)"
+        assert err.cause_chain == [
+            {
+                "type": "ValueError",
+                "message": "bad age",
+                "runtime": "python",
+                "origin_runtime": "python",
+            },
+            {
+                "type": "TypeError",
+                "message": "bad name",
+                "runtime": "python",
+                "origin_runtime": "python",
+            },
+        ]
+
     def test_runtime_error_accepts_transport_error_marker(self):
         err = omnivm_mod.RuntimeError(
             'ERR:{"runtime":"javascript","type":"TypeError","message":"bad"}',
