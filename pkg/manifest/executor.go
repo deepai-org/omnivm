@@ -135,31 +135,32 @@ type FuncDef struct {
 
 // Executor runs manifest ops against a set of runtimes.
 type Executor struct {
-	runtimes         map[string]pkg.Runtime
-	defaultRuntime   string
-	scopes           []map[string]interface{}
-	handleTable      *handles.Table
-	handleScopes     []handles.ScopeID
-	funcs            map[string]*FuncDef
-	goFuncs          map[string]interface{}
-	javaStubFuncs    map[string]*FuncDef
-	channels         map[string]*ChanRef
-	channelsMu       sync.RWMutex
-	spawns           []*SpawnHandle
-	spawnsMu         sync.Mutex
-	nextSpawnID      int
-	nextRuntimeRefID int
-	resources        map[handles.ID]*ResourceRef
-	tables           map[handles.ID]*TableRef
-	bridgeHandles    map[bridgeIdentity]handles.ID
-	jobs             map[int]*JobHandle
-	nextJobID        int
-	yieldCollectors  [][]interface{}        // stack of yield collectors for nested generators
-	bridgeOps        map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
-	boundaryWarnings map[string]struct{}
-	boundaryStats    BoundaryStats
-	boundaryStatsMu  sync.Mutex
-	spawnWG          sync.WaitGroup
+	runtimes          map[string]pkg.Runtime
+	defaultRuntime    string
+	scopes            []map[string]interface{}
+	handleTable       *handles.Table
+	handleScopes      []handles.ScopeID
+	funcs             map[string]*FuncDef
+	goFuncs           map[string]interface{}
+	javaStubFuncs     map[string]*FuncDef
+	channels          map[string]*ChanRef
+	channelsMu        sync.RWMutex
+	spawns            []*SpawnHandle
+	spawnsMu          sync.Mutex
+	nextSpawnID       int
+	nextRuntimeRefID  int
+	resources         map[handles.ID]*ResourceRef
+	releasedResources map[handles.ID]*ResourceRef
+	tables            map[handles.ID]*TableRef
+	bridgeHandles     map[bridgeIdentity]handles.ID
+	jobs              map[int]*JobHandle
+	nextJobID         int
+	yieldCollectors   [][]interface{}        // stack of yield collectors for nested generators
+	bridgeOps         map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
+	boundaryWarnings  map[string]struct{}
+	boundaryStats     BoundaryStats
+	boundaryStatsMu   sync.Mutex
+	spawnWG           sync.WaitGroup
 }
 
 // NewExecutor creates an Executor with the given runtimes.
@@ -174,18 +175,19 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		table = handles.NewTable()
 	}
 	e := &Executor{
-		runtimes:      runtimes,
-		scopes:        []map[string]interface{}{make(map[string]interface{})},
-		handleTable:   table,
-		handleScopes:  []handles.ScopeID{table.NewScope()},
-		funcs:         make(map[string]*FuncDef),
-		goFuncs:       make(map[string]interface{}),
-		javaStubFuncs: make(map[string]*FuncDef),
-		channels:      make(map[string]*ChanRef),
-		resources:     make(map[handles.ID]*ResourceRef),
-		tables:        make(map[handles.ID]*TableRef),
-		bridgeHandles: make(map[bridgeIdentity]handles.ID),
-		jobs:          make(map[int]*JobHandle),
+		runtimes:          runtimes,
+		scopes:            []map[string]interface{}{make(map[string]interface{})},
+		handleTable:       table,
+		handleScopes:      []handles.ScopeID{table.NewScope()},
+		funcs:             make(map[string]*FuncDef),
+		goFuncs:           make(map[string]interface{}),
+		javaStubFuncs:     make(map[string]*FuncDef),
+		channels:          make(map[string]*ChanRef),
+		resources:         make(map[handles.ID]*ResourceRef),
+		releasedResources: make(map[handles.ID]*ResourceRef),
+		tables:            make(map[handles.ID]*TableRef),
+		bridgeHandles:     make(map[bridgeIdentity]handles.ID),
+		jobs:              make(map[int]*JobHandle),
 	}
 	e.registerChannelBuiltins()
 	return e
@@ -2173,6 +2175,7 @@ func (e *Executor) forgetReleasedHandle(id handles.ID, value interface{}) {
 	if id == 0 {
 		return
 	}
+	e.rememberReleasedResource(id, value)
 	delete(e.resources, id)
 	delete(e.tables, id)
 	e.forgetBridgeHandle(id, value)
@@ -2190,6 +2193,38 @@ func (e *Executor) forgetReleasedHandle(id handles.ID, value interface{}) {
 	case TableRef:
 		e.forgetBridgeHandle(id, v.Value)
 	}
+}
+
+func (e *Executor) rememberReleasedResource(id handles.ID, value interface{}) {
+	if e.releasedResources == nil {
+		e.releasedResources = make(map[handles.ID]*ResourceRef)
+	}
+	var ref *ResourceRef
+	switch v := value.(type) {
+	case *ResourceRef:
+		ref = v
+	case ResourceRef:
+		ref = &v
+	}
+	if ref == nil {
+		return
+	}
+	tombstone := *ref
+	tombstone.ID = id
+	tombstone.Closed = true
+	tombstone.Value = nil
+	e.releasedResources[id] = &tombstone
+}
+
+func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
+	entry, ok := e.ensureHandleTable().Get(id)
+	if ok {
+		return entry, nil
+	}
+	if ref := e.releasedResources[id]; ref != nil {
+		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed resource handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Kind, "resource"))
+	}
+	return handles.Entry{}, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
 }
 
 func (e *Executor) forgetBridgeHandle(id handles.ID, value interface{}) {

@@ -7241,6 +7241,51 @@ func TestGoldenProxyAndMaterializationDiagnostics(t *testing.T) {
 	}
 }
 
+func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
+	e, _ := makeExecutor("python")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value: &ValueExpr{Kind: "literal", Value: map[string]interface{}{
+			"path":  "/closed-owner",
+			"items": []interface{}{"first"},
+		}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	if _, err := e.executeOp(&Op{OpType: "resource", Action: "close", Target: "req"}); err != nil {
+		t.Fatalf("resource close: %v", err)
+	}
+
+	calls := []string{
+		`{"op":"handle_get","id":%d,"key":"path"}`,
+		`{"op":"handle_index","id":%d,"value":"items"}`,
+		`{"op":"handle_len","id":%d}`,
+		`{"op":"handle_iter","id":%d,"mode":"values"}`,
+		`{"op":"handle_contains","id":%d,"value":"path"}`,
+		`{"op":"stream_next","id":%d}`,
+		`{"op":"handle_set","id":%d,"key":"path","value":"/new"}`,
+		`{"op":"handle_call","id":%d,"key":"close","args":[]}`,
+	}
+	for _, call := range calls {
+		_, err := e.HandleCall(fmt.Sprintf(call, ref.ID))
+		if err == nil {
+			t.Fatalf("closed resource call %s did not fail", call)
+		}
+		got := err.Error()
+		for _, want := range []string{"closed resource handle", "runtime=python", "kind=request", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("closed resource call %s diagnostic missing %q: %s", call, want, got)
+			}
+		}
+	}
+}
+
 func TestAdapterConformanceCoversRuntimeAndFrameworkShapes(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript", "java", "ruby")
 

@@ -1113,9 +1113,9 @@ func (e *Executor) handleProperty(id handles.ID, key string) (interface{}, bool,
 	if key == "" {
 		return nil, false, fmt.Errorf("manifest HandleCall: empty handle property")
 	}
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "property"}); err != nil {
 		return nil, false, err
@@ -1128,9 +1128,9 @@ func (e *Executor) handleProperty(id handles.ID, key string) (interface{}, bool,
 }
 
 func (e *Executor) handleCallable(id handles.ID, key string) (bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return false, err
 	}
 	if ref, ok := runtimeRefFromHandleValue(entry.Value); ok {
 		if key == "" {
@@ -1142,9 +1142,9 @@ func (e *Executor) handleCallable(id handles.ID, key string) (bool, error) {
 }
 
 func (e *Executor) handleZeroArgCallable(id handles.ID, key string) (bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return false, err
 	}
 	if ref, ok := runtimeRefFromHandleValue(entry.Value); ok {
 		switch ref.Runtime {
@@ -1223,9 +1223,9 @@ func (e *Executor) bridgeResultValue(parent handles.ID, value interface{}) (inte
 	if isBridgePrimitive(value) {
 		return value, nil
 	}
-	parentEntry, ok := e.ensureHandleTable().Get(parent)
-	if !ok {
-		return nil, fmt.Errorf("manifest HandleCall: unknown handle %d", parent)
+	parentEntry, err := e.handleEntry(parent)
+	if err != nil {
+		return nil, err
 	}
 	if descriptor, ok := value.(map[string]interface{}); ok && isBridgeMarker(descriptor) {
 		if id, ok := bridgeMarkerHandleID(descriptor); ok {
@@ -1333,7 +1333,7 @@ func (e *Executor) bridgeResultValue(parent handles.ID, value interface{}) (inte
 		Value:   value,
 	}
 	var id handles.ID
-	id, err := e.ensureHandleTable().Register(ref, handles.RegisterOptions{
+	id, err = e.ensureHandleTable().Register(ref, handles.RegisterOptions{
 		Runtime: parentEntry.Runtime,
 		Kind:    ref.Kind,
 		ScopeID: e.currentHandleScope(),
@@ -1429,9 +1429,9 @@ func (e *Executor) handleDescriptorValue(id handles.ID) (interface{}, error) {
 	if ref := e.tables[id]; ref != nil {
 		return tableProxyValue(ref), nil
 	}
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, err
 	}
 	switch v := entry.Value.(type) {
 	case *ResourceRef:
@@ -1584,9 +1584,9 @@ func bridgeResultKind(value interface{}) string {
 }
 
 func (e *Executor) handleIndex(id handles.ID, key interface{}) (interface{}, bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "index"}); err != nil {
 		return nil, false, err
@@ -1607,9 +1607,9 @@ func (e *Executor) handleSet(id handles.ID, key string, value interface{}) (hand
 	if key == "" {
 		return handleSetResult{}, fmt.Errorf("manifest HandleCall: empty handle property")
 	}
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return handleSetResult{}, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return handleSetResult{}, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "mutation"}); err != nil {
 		return handleSetResult{}, err
@@ -1622,7 +1622,7 @@ func (e *Executor) handleSet(id handles.ID, key string, value interface{}) (hand
 	if err != nil {
 		return handleSetResult{}, err
 	}
-	ok, err = genericSet(entry.Value, key, value)
+	ok, err := genericSet(entry.Value, key, value)
 	if err != nil {
 		return handleSetResult{}, err
 	}
@@ -1995,9 +1995,9 @@ func (e *Executor) recordExistingHandleReference(parent, child handles.ID, kind 
 }
 
 func (e *Executor) handleLen(id handles.ID) (int, bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return 0, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return 0, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "length"}); err != nil {
 		return 0, false, err
@@ -2009,9 +2009,9 @@ func (e *Executor) handleLen(id handles.ID) (int, bool, error) {
 }
 
 func (e *Executor) handleIter(id handles.ID, mode string) ([]interface{}, bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "iterate"}); err != nil {
 		return nil, false, err
@@ -2023,9 +2023,9 @@ func (e *Executor) handleIter(id handles.ID, mode string) ([]interface{}, bool, 
 }
 
 func (e *Executor) handleContains(id handles.ID, key interface{}) (bool, bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return false, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return false, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "contains"}); err != nil {
 		return false, false, err
@@ -2037,9 +2037,9 @@ func (e *Executor) handleContains(id handles.ID, key interface{}) (bool, bool, e
 }
 
 func (e *Executor) handleStreamNext(id handles.ID) (interface{}, bool, bool, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, false, false, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, false, false, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "stream"}); err != nil {
 		return nil, false, false, err
@@ -2233,9 +2233,9 @@ func errOrNotOK(ok bool, err error) error {
 }
 
 func (e *Executor) handleMethodCall(id handles.ID, key string, args []interface{}, kwargs map[string]interface{}) (interface{}, error) {
-	entry, ok := e.ensureHandleTable().Get(id)
-	if !ok {
-		return nil, fmt.Errorf("manifest HandleCall: unknown handle %d", id)
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "call"}); err != nil {
 		return nil, err
