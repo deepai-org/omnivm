@@ -1694,6 +1694,90 @@ results.sort.join('|')
         raise AssertionError(f"Ruby Async callback affinity was not safe or diagnostic: {result}")
 
 
+def test_manifest_ruby_async_task_cancellation_status_crosses_runtimes():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "require 'async'\n"
+                    "$ruby_async_task_events = []\n"
+                    "Async do |task|\n"
+                    "  child = task.async do\n"
+                    "    begin\n"
+                    "      task.sleep 60\n"
+                    "    ensure\n"
+                    "      $ruby_async_task_events << 'ensure'\n"
+                    "    end\n"
+                    "  end\n"
+                    "  task.sleep 0\n"
+                    "  child.stop\n"
+                    "  $ruby_async_task_status = child\n"
+                    "end\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"ruby_async_task_status": "ruby_async_task_status"},
+                "code": (
+                    "if (ruby_async_task_status['finished?'] !== true) throw new Error('Ruby Async task did not report finished in JS'); "
+                    "if (omnivm.proxyGet(ruby_async_task_status, 'stopped?') !== true) throw new Error('Ruby Async task did not report stopped in JS');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"ruby_async_task_status": "ruby_async_task_status"},
+                "code": (
+                    "assert getattr(ruby_async_task_status, 'finished?') is True\n"
+                    "assert getattr(ruby_async_task_status, 'stopped?') is True\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"ruby_async_task_status": "ruby_async_task_status"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy task = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"ruby_async_task_status\"); "
+                    "if (!Boolean.TRUE.equals(task.get(\"finished?\"))) throw new RuntimeException(\"Ruby Async task did not report finished in Java: \" + task.get(\"finished?\")); "
+                    "if (!Boolean.TRUE.equals(task.get(\"stopped?\"))) throw new RuntimeException(\"Ruby Async task did not report stopped in Java: \" + task.get(\"stopped?\"));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "raise 'Ruby Async task ensure did not run' unless $ruby_async_task_events == ['ensure']\n"
+                    "raise 'Ruby Async task did not stay finished' unless $ruby_async_task_status.finished?\n"
+                    "raise 'Ruby Async task did not stay stopped' unless $ruby_async_task_status.stopped?\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Ruby Async task did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Ruby Async task crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Ruby Async task used JSON fallback: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"Ruby Async task did not record status property access: before={before_handles}, after={handles}")
+
+
 def test_ruby_thread_and_fiber_local_state_survives_nested_reentry():
     result = rb(
         r"""
@@ -28328,6 +28412,7 @@ def main():
         check("GC standoff (1MB x 4 runtimes x 25 rounds + cross-bridge)", test_gc_standoff_large_allocations)
         check("Ruby Fiber cooperative bridge (C stack switching)", test_ruby_fiber_cooperative_bridge)
         check("Ruby Async gem callback affinity is diagnostic or safe", test_ruby_async_gem_callback_affinity_is_diagnostic_or_safe)
+        check("Manifest Ruby Async task cancellation status crosses runtimes", test_manifest_ruby_async_task_cancellation_status_crosses_runtimes)
         check("Ruby Thread/Fiber local state survives nested re-entry", test_ruby_thread_and_fiber_local_state_survives_nested_reentry)
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
