@@ -628,8 +628,11 @@ pulls and cancellation run on OmniVM's pump-owned asyncio loop; this does not
 make general Python asyncio callbacks owner-dispatched.
 `omnivm.owner_dispatch_target_status(target)` returns one target block, and
 `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
-target-specific fail-fast guard. `omnivm.assert_owner_dispatch_supported(label)`
-remains the fail-fast form for integrations that require universal dispatch.
+target-specific fail-fast guard. Both accept the canonical target names and
+normalize common spellings such as `asyncio`, `JavaScript`, `java-executor`,
+and `ruby fiber` to their canonical names before reporting diagnostics.
+`omnivm.assert_owner_dispatch_supported(label)` remains the fail-fast form for
+integrations that require universal dispatch.
 These guard failures attach the relevant status block to
 `RuntimeError.details`, and `omnivm.assert_host_thread(label)` attaches the
 current affinity snapshot there as `details["affinity"]`.
