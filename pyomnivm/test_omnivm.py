@@ -366,6 +366,48 @@ class TestRuntimeError(unittest.TestCase):
         assert err.runtime == "python"
         assert err.boundary_path == "execute manifest > exec[python]"
 
+    def test_prefixed_structured_envelope_preserves_error_fields(self):
+        err = omnivm_mod.RuntimeError(
+            "execute manifest: exec [javascript]: "
+            + json.dumps(
+                {
+                    "runtime": "javascript",
+                    "origin_runtime": "python",
+                    "type": "AggregateError",
+                    "message": "outer",
+                    "traceback": "    at outer (<anonymous>:1:7)",
+                    "stack_frames": ["at outer (<anonymous>:1:7)"],
+                    "cause_chain": [
+                        {
+                            "runtime": "python",
+                            "origin_runtime": "ruby",
+                            "type": "ValueError",
+                            "message": "inner",
+                            "details": {"field": "age"},
+                        }
+                    ],
+                    "details": [{"code": "invalid"}],
+                }
+            ),
+            runtime="go",
+            boundary_path="call[go]",
+        )
+        assert err.runtime == "javascript"
+        assert err.origin_runtime == "python"
+        assert err.type == "AggregateError"
+        assert err.message == "outer"
+        assert err.boundary_path == "execute manifest > exec[javascript]"
+        assert err.details == [{"code": "invalid"}]
+        assert err.cause_chain == [
+            {
+                "type": "ValueError",
+                "message": "inner",
+                "runtime": "python",
+                "origin_runtime": "ruby",
+                "details": {"field": "age"},
+            }
+        ]
+
     def test_parses_manifest_python_traceback_tail(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: Traceback (most recent call last):\n"

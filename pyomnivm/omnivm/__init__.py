@@ -190,6 +190,17 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
                 changed = True
                 break
 
+    wrapped_boundary = " > ".join(boundary_parts) or (
+        f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path
+    )
+    envelope = _parse_runtime_error_envelope(
+        body,
+        runtime=source_runtime,
+        boundary_path=wrapped_boundary,
+    )
+    if envelope is not None:
+        return envelope
+
     first_line, _, rest = body.partition("\n")
     err_type = ""
     detail = first_line
@@ -249,8 +260,7 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
         "traceback": traceback,
         "stack_frames": _runtime_error_stack_frames(traceback),
         "cause_chain": cause_chain,
-        "boundary_path": " > ".join(boundary_parts)
-        or (f"call[{source_runtime}]" if source_runtime and source_runtime != runtime else boundary_path),
+        "boundary_path": wrapped_boundary,
         "original_error_handle": original_error_handle,
         "details": _parse_runtime_error_details(body),
     }
