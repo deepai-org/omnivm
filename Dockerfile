@@ -100,6 +100,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       "psycopg[binary]" \
       asyncpg \
       boto3 \
+      google-api-core \
       redis \
       pymongo \
       mockupdb \

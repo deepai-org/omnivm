@@ -9643,6 +9643,167 @@ for name, pager in (
         raise AssertionError(f"CloudWatch Logs paginator streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_google_api_core_pager_is_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+from google.api_core import page_iterator
+
+def make_google_api_core_pager(label):
+    class GoogleAPICorePagerOwner:
+        def __init__(self):
+            self.label = label
+            self.requests = []
+            self.closed = False
+            self.iterator = page_iterator.HTTPIterator(
+                client=None,
+                api_request=self.api_request,
+                path="/v1/projects/omnivm/items",
+                item_to_value=self.item_to_value,
+                items_key="items",
+                page_size=2,
+                extra_params={"label": label},
+            )
+            self.item_iter = iter(self.iterator)
+
+        def api_request(self, method, path, query_params=None, data=None):
+            params = dict(query_params or data or {})
+            self.requests.append({"method": method, "path": path, "params": params})
+            if len(self.requests) == 1:
+                return {
+                    "items": [
+                        {"id": f"{label}-1", "name": f"{label}-ada"},
+                        {"id": f"{label}-2", "name": f"{label}-grace"},
+                    ],
+                    "nextPageToken": f"{label}-next",
+                }
+            return {
+                "items": [{"id": f"{label}-3", "name": f"{label}-later"}],
+            }
+
+        def item_to_value(self, iterator, item):
+            return {
+                "id": item["id"],
+                "name": item["name"],
+                "items": "field-items",
+                "keys": "field-keys",
+                "count": 2,
+                "then": "field-then",
+                "length": 2,
+                "close": "field-close",
+            }
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.item_iter)
+
+        def close(self):
+            self.closed = True
+
+    return GoogleAPICorePagerOwner()
+
+google_api_core_pager_js = make_google_api_core_pager("js")
+google_api_core_pager_ruby = make_google_api_core_pager("ruby")
+google_api_core_pager_java = make_google_api_core_pager("java")
+'''
+    verify = r'''
+for name, pager in (
+    ("javascript", google_api_core_pager_js),
+    ("ruby", google_api_core_pager_ruby),
+    ("java", google_api_core_pager_java),
+):
+    if len(pager.requests) != 1:
+        raise AssertionError(f"{name} Google API Core pager made {len(pager.requests)} requests instead of one: {pager.requests}")
+    request = pager.requests[0]
+    if request["method"] != "GET" or request["path"] != "/v1/projects/omnivm/items":
+        raise AssertionError(f"{name} Google API Core pager made wrong request: {request}")
+    expected_label = "js" if name == "javascript" else name
+    if request["params"].get("label") != expected_label:
+        raise AssertionError(f"{name} Google API Core pager lost query params: {request}")
+    if not pager.closed:
+        raise AssertionError(f"{name} Google API Core pager was not closed by stream cancellation")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"google_api_core_pager_js": "google_api_core_pager_js"},
+                "code": (
+                    "const it = google_api_core_pager_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('Google API Core pager was empty'); "
+                    "const row = first.value; "
+                    "if (row.id !== 'js-1' || row.name !== 'js-ada') throw new Error('bad Google API Core JS row: ' + JSON.stringify(row)); "
+                    "if (row.items !== 'field-items' || row.keys !== 'field-keys' || String(row.count) !== '2' || row.then !== 'field-then' || String(row.length) !== '2' || row.close !== 'field-close') throw new Error('Google API Core JS collision fields lost: ' + JSON.stringify(row)); "
+                    "if (google_api_core_pager_js.cancel('client-stop') !== true) throw new Error('Google API Core JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"google_api_core_pager_ruby": "google_api_core_pager_ruby"},
+                "code": (
+                    "row = google_api_core_pager_ruby.first; "
+                    "raise 'Google API Core pager was empty' if row.nil?; "
+                    "raise \"bad Google API Core Ruby row #{row.inspect}\" unless row['id'] == 'ruby-1' && row['name'] == 'ruby-ada'; "
+                    "raise 'Google API Core Ruby items field lost' unless row['items'] == 'field-items'; "
+                    "raise 'Google API Core Ruby keys field lost' unless row['keys'] == 'field-keys'; "
+                    "raise 'Google API Core Ruby count field lost' unless row['count'].to_s == '2'; "
+                    "raise 'Google API Core Ruby then field lost' unless row['then'] == 'field-then'; "
+                    "raise 'Google API Core Ruby length field lost' unless row['length'].to_s == '2'; "
+                    "raise 'Google API Core Ruby close field lost' unless row['close'] == 'field-close'; "
+                    "google_api_core_pager_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"google_api_core_pager_java": "google_api_core_pager_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"google_api_core_pager_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"Google API Core pager should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"Google API Core pager was empty\"); "
+                    "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
+                    "if (!\"java-1\".equals(String.valueOf(row.get(\"id\"))) || !\"java-ada\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Google API Core Java row: \" + row); "
+                    "if (!\"field-items\".equals(String.valueOf(row.get(\"items\")))) throw new RuntimeException(\"Google API Core Java items field lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(row.get(\"keys\")))) throw new RuntimeException(\"Google API Core Java keys field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"count\")))) throw new RuntimeException(\"Google API Core Java count field lost\"); "
+                    "if (!\"field-then\".equals(String.valueOf(row.get(\"then\")))) throw new RuntimeException(\"Google API Core Java then field lost\"); "
+                    "if (!\"2\".equals(String.valueOf(row.get(\"length\")))) throw new RuntimeException(\"Google API Core Java length field lost\"); "
+                    "if (!\"field-close\".equals(String.valueOf(row.get(\"close\")))) throw new RuntimeException(\"Google API Core Java close field lost\"); "
+                    "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"Google API Core Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"Google API Core pagers did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    json_fallbacks = boundary.get("json_fallbacks", 0)
+    json_fallback_delta = json_fallbacks - before_boundary.get("json_fallbacks", 0)
+    if json_fallbacks != 0 and json_fallback_delta != 0:
+        raise AssertionError(f"Google API Core pager used JSON fallback: before={before_boundary}, after={boundary}")
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
+        raise AssertionError(f"Google API Core pager streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_redis_scan_iter_is_lazy_and_cancellable():
     redis_fixture, stop_redis = start_redis_fixture()
     try:
@@ -27935,6 +28096,7 @@ def main():
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
         check("Manifest boto3 DynamoDB paginator is lazy and cancellable", test_manifest_boto3_dynamodb_paginator_is_lazy_and_cancellable)
         check("Manifest boto3 CloudWatch Logs paginator is lazy and cancellable", test_manifest_boto3_cloudwatch_logs_paginator_is_lazy_and_cancellable)
+        check("Manifest Google API Core pager is lazy and cancellable", test_manifest_google_api_core_pager_is_lazy_and_cancellable)
         check("Manifest Redis scan_iter is lazy and cancellable", test_manifest_redis_scan_iter_is_lazy_and_cancellable)
         check("Manifest PyMongo cursor is lazy and cancellable", test_manifest_pymongo_cursor_is_lazy_and_cancellable)
         check("Manifest Prisma cursor pager is lazy and cancellable", test_manifest_prisma_cursor_pager_is_lazy_and_cancellable)
