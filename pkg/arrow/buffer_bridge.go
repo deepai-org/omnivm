@@ -321,8 +321,11 @@ func applyMetadataLocked(buf *Buffer, meta BufferMetadata) {
 // DeferredRelease is the fast path for named-borrow cleanup requests from GC
 // threads. The Golden Thread drains this on each pump cycle. Overflow releases
 // are kept in deferredReleaseOverflow so a saturated channel cannot silently
-// leak a borrowed buffer.
+// leak a borrowed buffer. Distinct overflow names are bounded so finalizer
+// storms cannot grow memory without limit; pressure is reported in store stats.
 var DeferredRelease = make(chan string, 256)
+
+const maxDeferredReleaseOverflowNames = 4096
 
 var deferredReleaseOverflow struct {
 	sync.Mutex
@@ -354,17 +357,21 @@ func (s *SharedStore) DrainDeferred() {
 	}
 }
 
-func queueDeferredReleaseOverflow(name string) {
+func queueDeferredReleaseOverflow(name string) bool {
 	deferredReleaseOverflow.Lock()
+	defer deferredReleaseOverflow.Unlock()
 	if deferredReleaseOverflow.counts == nil {
 		deferredReleaseOverflow.counts = make(map[string]int64)
 	}
 	if deferredReleaseOverflow.counts[name] == 0 {
+		if len(deferredReleaseOverflow.counts) >= maxDeferredReleaseOverflowNames {
+			return false
+		}
 		deferredReleaseOverflow.order = append(deferredReleaseOverflow.order, name)
 	}
 	deferredReleaseOverflow.counts[name]++
 	deferredReleaseOverflow.total++
-	deferredReleaseOverflow.Unlock()
+	return true
 }
 
 func nextDeferredReleaseOverflow() (string, bool) {

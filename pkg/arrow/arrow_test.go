@@ -2,11 +2,27 @@ package arrow
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"unsafe"
 )
+
+func resetDeferredReleaseTestState() {
+	for {
+		select {
+		case <-DeferredRelease:
+		default:
+			deferredReleaseOverflow.Lock()
+			deferredReleaseOverflow.counts = nil
+			deferredReleaseOverflow.order = nil
+			deferredReleaseOverflow.total = 0
+			deferredReleaseOverflow.Unlock()
+			return
+		}
+	}
+}
 
 func TestNewSharedStore(t *testing.T) {
 	s := NewSharedStore()
@@ -1011,6 +1027,40 @@ drained:
 	buf.mu.Unlock()
 	if refs != 1 {
 		t.Fatalf("coalesced releases drained wrong ref count: got %d, want 1", refs)
+	}
+}
+
+func TestBufReleaseBoundsDistinctSpillNamesAndReportsDrops(t *testing.T) {
+	resetDeferredReleaseTestState()
+	defer resetDeferredReleaseTestState()
+
+	s := NewSharedStore()
+	globalStore = s
+	for i := 0; i < cap(DeferredRelease); i++ {
+		DeferredRelease <- "missing"
+	}
+	for i := 0; i < maxDeferredReleaseOverflowNames; i++ {
+		BufRelease("spill-" + strconv.Itoa(i))
+	}
+
+	BufRelease("dropped")
+	BufRelease("spill-0")
+
+	stats := s.Stats()
+	if stats.DeferredDrops != 1 {
+		t.Fatalf("deferred release overflow drops = %d, want 1", stats.DeferredDrops)
+	}
+	if stats.DeferredOverflow != maxDeferredReleaseOverflowNames {
+		t.Fatalf("deferred release overflow names = %d, want %d", stats.DeferredOverflow, maxDeferredReleaseOverflowNames)
+	}
+	if stats.DeferredQueueLen != cap(DeferredRelease)+maxDeferredReleaseOverflowNames+1 {
+		t.Fatalf("deferred release queue len = %d, want channel + bounded spill + repeated release", stats.DeferredQueueLen)
+	}
+	if _, ok := deferredReleaseOverflow.counts["dropped"]; ok {
+		t.Fatal("dropped overflow name was retained")
+	}
+	if got := deferredReleaseOverflow.counts["spill-0"]; got != 2 {
+		t.Fatalf("repeated overflow name count = %d, want 2", got)
 	}
 }
 

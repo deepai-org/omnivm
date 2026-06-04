@@ -49,7 +49,9 @@ func BufRelease(name string) {
 	select {
 	case DeferredRelease <- name:
 	default:
-		queueDeferredReleaseOverflow(name)
+		if !queueDeferredReleaseOverflow(name) {
+			GlobalStore().recordDeferredDrop()
+		}
 	}
 }
 
