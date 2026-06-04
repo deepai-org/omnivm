@@ -141,6 +141,9 @@ wrapped = OmniVM::RuntimeError.new("ERR:execute manifest: call [javascript]: " +
 raise "wrapped origin #{wrapped.origin_runtime.inspect}" unless wrapped.origin_runtime == "python"
 raise "wrapped details #{wrapped.details.inspect}" unless wrapped.details == [{"path" => ["user", "age"], "code" => "too_small"}]
 raise "wrapped boundary #{wrapped.boundary_path.inspect}" unless wrapped.boundary_path == "execute manifest > call[javascript]"
+direct = OmniVM::RuntimeError.new("ERR:javascript: " + JSON.generate(wrapped_payload), runtime: "ruby")
+raise "direct origin #{direct.origin_runtime.inspect}" unless direct.origin_runtime == "python"
+raise "direct boundary #{direct.boundary_path.inspect}" unless direct.boundary_path == "call[javascript]"
 puts "ok"
 `)
 	if result.Err != nil {

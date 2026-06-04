@@ -658,13 +658,15 @@ public class OmniVMRunner {
             if (e.getTraceback() != null && !e.getTraceback().isEmpty()) {
                 out.append('\n').append(e.getTraceback());
             }
-            for (Map<String, String> cause : e.getCauseChain()) {
+            for (Map<String, Object> cause : e.getCauseChain()) {
                 out.append("\nCaused by: ");
-                String type = cause.get("type");
+                Object typeValue = cause.get("type");
+                String type = typeValue == null ? "" : String.valueOf(typeValue);
                 if (type != null && !type.isEmpty()) {
                     out.append(type).append(": ");
                 }
-                out.append(cause.getOrDefault("message", ""));
+                Object messageValue = cause.get("message");
+                out.append(messageValue == null ? "" : String.valueOf(messageValue));
             }
             if (e.getDetailsJson() != null && !e.getDetailsJson().isEmpty()) {
                 out.append("\nDetails: ").append(e.getDetailsJson());

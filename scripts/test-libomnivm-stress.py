@@ -19747,8 +19747,8 @@ def test_java_native_runtime_error_fields_cross_runtime_calls():
         omnivm.OmniVM.call("javascript", "(function() { throw new Error('outer', { cause: new TypeError('inner') }); })()");
     } catch (omnivm.OmniVM.RuntimeError e) {
         java.util.Map<String, Object> envelope = e.toMap();
-        java.util.List<java.util.Map<String, String>> causes = e.getCauseChain();
-        java.util.Map<String, String> cause = causes.isEmpty() ? new java.util.LinkedHashMap<>() : causes.get(0);
+        java.util.List<java.util.Map<String, Object>> causes = e.getCauseChain();
+        java.util.Map<String, Object> cause = causes.isEmpty() ? new java.util.LinkedHashMap<>() : causes.get(0);
         out.add(String.join("|",
             Boolean.toString(e instanceof RuntimeException),
             e.getClass().getName(),
@@ -19756,8 +19756,8 @@ def test_java_native_runtime_error_fields_cross_runtime_calls():
             e.getType(),
             Boolean.toString(e.getMessage().contains("outer")),
             e.getBoundaryPath(),
-            cause.getOrDefault("type", ""),
-            cause.getOrDefault("message", ""),
+            String.valueOf(cause.getOrDefault("type", "")),
+            String.valueOf(cause.getOrDefault("message", "")),
             Boolean.toString(e.getOriginalErrorHandle() == null),
             String.valueOf(envelope.get("runtime")),
             String.valueOf(envelope.get("boundary_path"))

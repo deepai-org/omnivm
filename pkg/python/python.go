@@ -192,7 +192,7 @@ static const char* omnivm_py_runtime_error_code =
 "                body = body[len(prefix):]\n"
 "                changed = True\n"
 "                break\n"
-"    wrapped_boundary = ' > '.join(boundary_parts) or boundary_path\n"
+"    wrapped_boundary = ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path)\n"
 "    envelope = _parse_runtime_error_envelope(body, runtime=source_runtime, boundary_path=wrapped_boundary)\n"
 "    if envelope is not None:\n"
 "        return envelope\n"

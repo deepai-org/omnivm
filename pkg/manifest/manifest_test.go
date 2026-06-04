@@ -6287,7 +6287,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		}
 		files[path] = string(data)
 	}
-	if !contains(files["../../pkg/python/python.go"], "wrapped_boundary = ' > '.join(boundary_parts) or boundary_path") ||
+	if !contains(files["../../pkg/python/python.go"], "wrapped_boundary = ' > '.join(boundary_parts) or (f'call[{source_runtime}]' if source_runtime and source_runtime != runtime else boundary_path)") ||
 		!contains(files["../../pkg/python/python.go"], "envelope = _parse_runtime_error_envelope(body, runtime=source_runtime, boundary_path=wrapped_boundary)") {
 		t.Fatalf("embedded Python RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
@@ -6321,17 +6321,21 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 			t.Fatalf("embedded Python RuntimeError should preserve nested cause envelope fields, missing %q", want)
 		}
 	}
-	if !contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? boundary_path : boundary_parts.join") ||
+	if !contains(files["../../pkg/ruby/ruby.go"], "fallback_boundary = source_runtime && source_runtime != runtime ?") ||
+		!contains(files["../../pkg/ruby/ruby.go"], `body = body[4..-1].to_s if body.start_with?(\"ERR:\")`) ||
+		!contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? fallback_boundary : boundary_parts.join") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
 	for _, want := range []string{
-		`field = ->(preferred, fallback) { envelope.key?(preferred) ? envelope[preferred] : envelope[fallback] }`,
+		`read_field = ->(hash, preferred, fallback = nil) do`,
+		`return hash[preferred_sym] if hash.key?(preferred_sym)`,
+		`field = ->(preferred, fallback) { read_field.call(envelope, preferred, fallback) }`,
 		`text_field = ->(value, fallback = \"\") { value.nil? ? fallback : value.to_s }`,
-		`runtime_name = text_field.call(envelope[\"runtime\"], runtime)`,
+		`runtime_name = text_field.call(field.call(\"runtime\", \"runtime\"), runtime)`,
 		`origin_runtime = text_field.call(field.call(\"origin_runtime\", \"originRuntime\"), runtime_name)`,
-		`err_type = text_field.call(envelope[\"type\"])`,
-		`detail = text_field.call(envelope[\"message\"])`,
+		`err_type = text_field.call(field.call(\"type\", \"type\"))`,
+		`detail = text_field.call(field.call(\"message\", \"message\"))`,
 		`stack_frames = field.call(\"stack_frames\", \"stackFrames\")`,
 		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
@@ -6342,11 +6346,11 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`cause_traceback = cause[\"traceback\"]`,
-		`cause_stack_frames = cause.key?(\"stack_frames\") ? cause[\"stack_frames\"] : cause[\"stackFrames\"]`,
+		`cause_traceback = read_field.call(cause, \"traceback\")`,
+		`cause_stack_frames = read_field.call(cause, \"stack_frames\", \"stackFrames\")`,
 		"item[:stack_frames] = cause_stack_frames.dup",
 		`item[:origin_runtime] = item[:runtime] if item[:runtime] && !item[:origin_runtime]`,
-		`item[:details] = __copy_json_value(cause[\"details\"])`,
+		`item[:details] = __copy_json_value(cause_details) unless cause_details.nil?`,
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
 			t.Fatalf("embedded Ruby RuntimeError should preserve nested cause envelope fields, missing %q", want)
