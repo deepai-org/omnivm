@@ -5948,8 +5948,13 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "def omnivm_close(value)") ||
 		!contains(code, "def proxy_close(value)") ||
-		!contains(code, "return value.omnivm_close if value.respond_to?(:omnivm_close)") {
+		!contains(code, "def __omnivm_actual_public_method?(value, name)") ||
+		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)") ||
+		!contains(code, "if __omnivm_actual_public_method?(value, :close)") {
 		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
+	}
+	if contains(code, "value.respond_to?(:close)") || contains(code, "value.respond_to?(:omnivm_close)") {
+		t.Fatalf("Ruby proxy close helpers should not trust respond_to_missing? for lifecycle methods")
 	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("Ruby materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)

@@ -2068,10 +2068,23 @@ def __omnivm_cached_proxy(kind, value)
   proxy
 end
 
+def __omnivm_actual_public_method?(value, name)
+  method_name = name.to_sym
+  begin
+    return true if value.singleton_class.public_instance_methods.include?(method_name)
+  rescue
+  end
+  begin
+    return value.class.public_instance_methods.include?(method_name)
+  rescue
+    false
+  end
+end
+
 def omnivm_close(value)
-  return value.omnivm_close if value.respond_to?(:omnivm_close)
-  if value.respond_to?(:close)
-    value.close
+  return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
+  if __omnivm_actual_public_method?(value, :close)
+    value.public_send(:close)
     return true
   end
   false
@@ -2080,9 +2093,9 @@ end
 if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
   class << OmniVM
     def proxy_close(value)
-      return value.omnivm_close if value.respond_to?(:omnivm_close)
-      if value.respond_to?(:close)
-        value.close
+      return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
+      if __omnivm_actual_public_method?(value, :close)
+        value.public_send(:close)
         return true
       end
       false
