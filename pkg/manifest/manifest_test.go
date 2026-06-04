@@ -7172,6 +7172,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby materializer should let remote then fields beat Object#then, got %q", code)
 	}
 	if !contains(code, "def class") || !contains(code, `__omnivm_data_key_value("class")`) ||
+		!contains(code, "def object_id") || !contains(code, `__omnivm_data_key_value("object_id")`) ||
 		!contains(code, "def inspect") || !contains(code, `__omnivm_data_key_value("inspect")`) ||
 		!contains(code, "def hash") || !contains(code, `__omnivm_data_key_value("hash")`) ||
 		!contains(code, "def to_s") || !contains(code, `__omnivm_data_key_value("to_s")`) {

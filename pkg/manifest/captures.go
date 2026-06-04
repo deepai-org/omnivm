@@ -2706,6 +2706,11 @@ class OmniVMHandleProxy
     super
   end
 
+  def object_id
+    return __omnivm_data_key_value("object_id") if __omnivm_data_key?("object_id")
+    super
+  end
+
   def inspect
     return __omnivm_data_key_value("inspect") if __omnivm_data_key?("inspect")
     super
