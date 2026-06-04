@@ -220,7 +220,7 @@ public class OmniVM {
             try {
                 return parseJson(detailsJson);
             } catch (RuntimeException ignored) {
-                return null;
+                return detailsJson;
             }
         }
 
@@ -342,12 +342,35 @@ public class OmniVM {
         }
         parsed.boundaryPath = nonEmptyJsonString(jsonValue(envelope, "boundary_path", "boundaryPath"), safeString(fallbackBoundary));
         parsed.originalErrorHandle = emptyToNull(jsonString(jsonValue(envelope, "original_error_handle", "originalErrorHandle")));
-        if (envelope.containsKey("details")) {
-            parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
-        }
+        parsed.detailsJson = detailsJsonValue(envelope);
         parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback));
         parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"));
         return parsed;
+    }
+
+    private static String detailsJsonValue(Map<String, Object> envelope) {
+        if (envelope.containsKey("details")) {
+            return jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
+        }
+        Object rawDetails = jsonValue(envelope, "details_json", "detailsJson");
+        if (rawDetails instanceof String text) {
+            return text;
+        }
+        if (rawDetails != null) {
+            return jsonValue(RuntimeError.copyJsonValue(rawDetails));
+        }
+        return null;
+    }
+
+    private static Object detailsObjectValue(Map<?, ?> source) {
+        if (source.containsKey("details")) {
+            return RuntimeError.copyJsonValue(source.get("details"));
+        }
+        Object rawDetails = jsonValue(source, "details_json", "detailsJson");
+        if (rawDetails instanceof String text) {
+            return RuntimeError.parseDetailsJson(text);
+        }
+        return rawDetails == null ? null : RuntimeError.copyJsonValue(rawDetails);
     }
 
     private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey) {
@@ -424,8 +447,9 @@ public class OmniVM {
             if (!originalErrorHandle.isEmpty()) {
                 entry.put("original_error_handle", originalErrorHandle);
             }
-            if (cause.containsKey("details")) {
-                entry.put("details", RuntimeError.copyJsonValue(cause.get("details")));
+            Object causeDetails = detailsObjectValue(cause);
+            if (cause.containsKey("details") || causeDetails != null) {
+                entry.put("details", causeDetails);
             }
             out.add(Collections.unmodifiableMap(entry));
         }

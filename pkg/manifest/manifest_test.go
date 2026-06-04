@@ -6660,10 +6660,14 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`out.put("details", copyJsonValue(details))`,
 		`out.put("details_json", detailsJson)`,
 		"private static Object parseDetailsJson(String detailsJson)",
+		"return detailsJson;",
 		"private static Object copyJsonValue(Object value)",
 		`out.put("cause_chain", copyJsonValue(causeChain))`,
 		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
-		`parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")))`,
+		`parsed.detailsJson = detailsJsonValue(envelope)`,
+		"private static String detailsJsonValue(Map<String, Object> envelope)",
+		`Object rawDetails = jsonValue(envelope, "details_json", "detailsJson")`,
+		"private static Object detailsObjectValue(Map<?, ?> source)",
 		"private static List<String> stringListJsonValue",
 		"private static List<Map<String, Object>> causeChainJsonValue",
 		`private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey)`,
@@ -6673,7 +6677,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`originRuntime = runtime`,
 		`String boundaryPath = jsonString(jsonValue(cause, "boundary_path", "boundaryPath"))`,
 		`String originalErrorHandle = jsonString(jsonValue(cause, "original_error_handle", "originalErrorHandle"))`,
-		`entry.put("details", RuntimeError.copyJsonValue(cause.get("details")))`,
+		`Object causeDetails = detailsObjectValue(cause)`,
+		`entry.put("details", causeDetails)`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime error envelope should expose copied structured details, missing %q", want)
