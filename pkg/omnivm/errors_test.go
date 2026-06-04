@@ -56,7 +56,7 @@ func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
 		Message:             "outer",
 		Traceback:           "    at <anonymous>:1:7\nCaused by: TypeError: inner",
 		StackFrames:         []string{"at <anonymous>:1:7"},
-		CauseChain:          []RuntimeErrorCause{{Type: "TypeError", Message: "inner"}},
+		CauseChain:          []RuntimeErrorCause{{Type: "TypeError", Message: "inner", StackFrames: []string{"at cause:1:1"}, Details: map[string]interface{}{"code": "E_INNER"}}},
 		BoundaryPath:        "call[javascript]",
 		OriginalErrorHandle: "js-error-42",
 		Details:             map[string]interface{}{"code": "E_JS"},
@@ -69,7 +69,7 @@ func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
 		"message":               "outer",
 		"traceback":             "    at <anonymous>:1:7\nCaused by: TypeError: inner",
 		"stack_frames":          []string{"at <anonymous>:1:7"},
-		"cause_chain":           []map[string]string{{"type": "TypeError", "message": "inner"}},
+		"cause_chain":           []map[string]interface{}{{"type": "TypeError", "message": "inner", "stack_frames": []string{"at cause:1:1"}, "details": map[string]interface{}{"code": "E_INNER"}}},
 		"boundary_path":         "call[javascript]",
 		"original_error_handle": "js-error-42",
 		"details":               map[string]interface{}{"code": "E_JS"},
@@ -83,7 +83,12 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	e := &RuntimeError{
 		Runtime:     "python",
 		StackFrames: []string{"File \"<string>\", line 1"},
-		CauseChain:  []RuntimeErrorCause{{Type: "ValueError", Message: "bad"}},
+		CauseChain: []RuntimeErrorCause{{
+			Type:        "ValueError",
+			Message:     "bad",
+			StackFrames: []string{"cause frame"},
+			Details:     map[string]interface{}{"items": []interface{}{map[string]interface{}{"path": "cause.path"}}},
+		}},
 		Details: map[string]interface{}{
 			"code":       "E_PY",
 			"items":      []interface{}{map[string]interface{}{"path": "user.age"}},
@@ -97,7 +102,10 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	}
 	envelope := e.ToMap()
 	envelope["stack_frames"].([]string)[0] = "changed"
-	envelope["cause_chain"].([]map[string]string)[0]["message"] = "changed"
+	envelopeCause := envelope["cause_chain"].([]map[string]interface{})[0]
+	envelopeCause["message"] = "changed"
+	envelopeCause["stack_frames"].([]string)[0] = "changed"
+	envelopeCause["details"].(map[string]interface{})["items"].([]interface{})[0].(map[string]interface{})["path"] = "changed"
 	details := envelope["details"].(map[string]interface{})
 	details["code"] = "changed"
 	details["items"].([]interface{})[0].(map[string]interface{})["path"] = "changed"
@@ -113,6 +121,12 @@ func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	}
 	if e.CauseChain[0].Message != "bad" {
 		t.Fatalf("ToMap exposed CauseChain backing storage: %#v", e.CauseChain)
+	}
+	if e.CauseChain[0].StackFrames[0] != "cause frame" {
+		t.Fatalf("ToMap exposed CauseChain stack frame backing storage: %#v", e.CauseChain)
+	}
+	if e.CauseChain[0].Details.(map[string]interface{})["items"].([]interface{})[0].(map[string]interface{})["path"] != "cause.path" {
+		t.Fatalf("ToMap exposed CauseChain details backing storage: %#v", e.CauseChain)
 	}
 	originalDetails := e.Details.(map[string]interface{})
 	if originalDetails["code"] != "E_PY" {
@@ -382,8 +396,11 @@ func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 			"origin_runtime":        "ruby",
 			"type":                  "java.lang.IllegalStateException",
 			"message":               "inner",
+			"traceback":             "java.lang.IllegalStateException: inner\n\tat Example.call(Example.java:7)",
+			"stack_frames":          []interface{}{"at Example.call(Example.java:7)"},
 			"boundary_path":         "call[javascript] > callback[java]",
 			"original_error_handle": "java-error-3",
+			"details":               map[string]interface{}{"code": "E_JAVA", "retryable": false},
 		}},
 	})
 	if err != nil {
@@ -403,10 +420,17 @@ func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 	if cause.Type != "java.lang.IllegalStateException" || cause.Message != "inner" {
 		t.Fatalf("cause type/message = %q/%q, want java.lang.IllegalStateException/inner", cause.Type, cause.Message)
 	}
+	if cause.Traceback == "" || len(cause.StackFrames) != 1 || cause.StackFrames[0] != "at Example.call(Example.java:7)" {
+		t.Fatalf("cause traceback/frames = %q/%#v", cause.Traceback, cause.StackFrames)
+	}
 	if cause.BoundaryPath != "call[javascript] > callback[java]" || cause.OriginalErrorHandle != "java-error-3" {
 		t.Fatalf("cause boundary/handle = %q/%q", cause.BoundaryPath, cause.OriginalErrorHandle)
 	}
-	causes, ok := re.ToMap()["cause_chain"].([]map[string]string)
+	details, ok := cause.Details.(map[string]interface{})
+	if !ok || details["code"] != "E_JAVA" || details["retryable"] != false {
+		t.Fatalf("cause details = %#v", cause.Details)
+	}
+	causes, ok := re.ToMap()["cause_chain"].([]map[string]interface{})
 	if !ok || len(causes) != 1 {
 		t.Fatalf("mapped cause_chain = %#v, want one mapped cause", re.ToMap()["cause_chain"])
 	}
@@ -414,6 +438,12 @@ func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 		causes[0]["boundary_path"] != "call[javascript] > callback[java]" ||
 		causes[0]["original_error_handle"] != "java-error-3" {
 		t.Fatalf("mapped cause metadata = %#v", causes[0])
+	}
+	if causes[0]["traceback"] == "" || !reflect.DeepEqual(causes[0]["stack_frames"], []string{"at Example.call(Example.java:7)"}) {
+		t.Fatalf("mapped cause traceback/frames = %#v", causes[0])
+	}
+	if mappedDetails, ok := causes[0]["details"].(map[string]interface{}); !ok || mappedDetails["code"] != "E_JAVA" {
+		t.Fatalf("mapped cause details = %#v", causes[0]["details"])
 	}
 }
 

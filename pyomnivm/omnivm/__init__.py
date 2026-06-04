@@ -284,9 +284,19 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
                 "type": str(cause.get("type") or ""),
                 "message": str(cause.get("message") or ""),
             }
+            cause_traceback = cause.get("traceback")
+            if isinstance(cause_traceback, str):
+                item["traceback"] = cause_traceback
+            cause_stack_frames = cause.get("stack_frames")
+            if isinstance(cause_stack_frames, list) and all(isinstance(frame, str) for frame in cause_stack_frames):
+                item["stack_frames"] = list(cause_stack_frames)
+            elif isinstance(cause_traceback, str):
+                item["stack_frames"] = _runtime_error_stack_frames(cause_traceback)
             for key in ("runtime", "origin_runtime", "boundary_path", "original_error_handle"):
                 if cause.get(key):
                     item[key] = str(cause.get(key))
+            if "details" in cause:
+                item["details"] = _copy_json_value(cause.get("details"))
             parsed_causes.append(item)
         cause_chain = parsed_causes
     return {

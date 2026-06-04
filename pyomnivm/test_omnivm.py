@@ -128,8 +128,11 @@ class TestRuntimeError(unittest.TestCase):
                             "origin_runtime": "ruby",
                             "type": "TypeError",
                             "message": "inner",
+                            "traceback": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                            "stack_frames": ["at cause (<anonymous>:2:4)"],
                             "boundary_path": "call[javascript] > callback[java]",
                             "original_error_handle": "java-error-3",
+                            "details": {"code": "E_INNER", "path": ["user", "age"]},
                         }
                     ],
                     "boundary_path": "call[javascript] > callback[python]",
@@ -148,10 +151,13 @@ class TestRuntimeError(unittest.TestCase):
             {
                 "type": "TypeError",
                 "message": "inner",
+                "traceback": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                "stack_frames": ["at cause (<anonymous>:2:4)"],
                 "runtime": "java",
                 "origin_runtime": "ruby",
                 "boundary_path": "call[javascript] > callback[java]",
                 "original_error_handle": "java-error-3",
+                "details": {"code": "E_INNER", "path": ["user", "age"]},
             }
         ]
         assert err.boundary_path == "call[javascript] > callback[python]"
@@ -235,19 +241,42 @@ class TestRuntimeError(unittest.TestCase):
 
     def test_to_dict_copies_mutable_envelope_values(self):
         err = omnivm_mod.RuntimeError(
-            "javascript: Error: outer\n"
-            "    at <anonymous>:1:7\n"
-            "Caused by: TypeError: inner\n"
-            "Details: {\"items\":[{\"path\":\"user.age\"}]}",
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "type": "Error",
+                    "message": "outer",
+                    "traceback": "    at <anonymous>:1:7",
+                    "stack_frames": ["at <anonymous>:1:7"],
+                    "cause_chain": [
+                        {
+                            "type": "TypeError",
+                            "message": "inner",
+                            "stack_frames": ["at cause (<anonymous>:2:4)"],
+                            "details": {"items": [{"path": "cause.path"}]},
+                        }
+                    ],
+                    "details": {"items": [{"path": "user.age"}]},
+                }
+            ),
             runtime="javascript",
         )
         envelope = err.to_dict()
         envelope["stack_frames"][0] = "changed"
         envelope["cause_chain"][0]["message"] = "changed"
+        envelope["cause_chain"][0]["stack_frames"][0] = "changed"
+        envelope["cause_chain"][0]["details"]["items"][0]["path"] = "changed"
         envelope["details"]["items"][0]["path"] = "changed"
 
         assert err.stack_frames == ["at <anonymous>:1:7"]
-        assert err.cause_chain == [{"type": "TypeError", "message": "inner"}]
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "stack_frames": ["at cause (<anonymous>:2:4)"],
+                "details": {"items": [{"path": "cause.path"}]},
+            }
+        ]
         assert err.details == {"items": [{"path": "user.age"}]}
 
     def test_parses_go_wrapped_error_cause_chain(self):

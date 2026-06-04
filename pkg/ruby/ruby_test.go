@@ -93,7 +93,13 @@ payload = {
   message: "bad value",
   traceback: "at parse (<anonymous>:1:2)",
   stack_frames: ["at parse (<anonymous>:1:2)"],
-  cause_chain: [{type: "TypeError", message: "inner"}],
+  cause_chain: [{
+    type: "TypeError",
+    message: "inner",
+    traceback: "TypeError: inner\n    at cause (<anonymous>:2:4)",
+    stack_frames: ["at cause (<anonymous>:2:4)"],
+    details: {code: "E_INNER", path: ["user", "age"]}
+  }],
   boundary_path: "call[javascript] > callback[python]",
   original_error_handle: "py-error-7",
   details: [{path: ["user", "age"], code: "too_small"}]
@@ -104,16 +110,25 @@ raise "origin #{err.origin_runtime.inspect}" unless err.origin_runtime == "pytho
 raise "type #{err.type.inspect}" unless err.type == "ValueError"
 raise "message #{err.message.inspect}" unless err.message == "bad value"
 raise "stack #{err.stack_frames.inspect}" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
-raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == [{type: "TypeError", message: "inner"}]
+expected_cause = [{
+  type: "TypeError",
+  message: "inner",
+  traceback: "TypeError: inner\n    at cause (<anonymous>:2:4)",
+  stack_frames: ["at cause (<anonymous>:2:4)"],
+  details: {"code" => "E_INNER", "path" => ["user", "age"]}
+}]
+raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == expected_cause
 raise "boundary #{err.boundary_path.inspect}" unless err.boundary_path == "call[javascript] > callback[python]"
 raise "handle #{err.original_error_handle.inspect}" unless err.original_error_handle == "py-error-7"
 raise "details #{err.details.inspect}" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
 copy = err.to_h
 copy[:stack_frames][0] = "changed"
 copy[:cause_chain][0][:message] = "changed"
+copy[:cause_chain][0][:stack_frames][0] = "changed"
+copy[:cause_chain][0][:details]["code"] = "changed"
 copy[:details][0]["code"] = "changed"
 raise "stack leaked" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
-raise "cause leaked" unless err.cause_chain == [{type: "TypeError", message: "inner"}]
+raise "cause leaked" unless err.cause_chain == expected_cause
 raise "details leaked" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
 json_hash = JSON.parse(err.to_json)
 raise "json origin #{json_hash.inspect}" unless json_hash["origin_runtime"] == "python"

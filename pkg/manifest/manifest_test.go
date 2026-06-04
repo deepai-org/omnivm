@@ -5923,7 +5923,10 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
 		`parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(envelope.get("details")))`,
 		"private static List<String> stringListJsonValue",
-		"private static List<Map<String, String>> causeChainJsonValue",
+		"private static List<Map<String, Object>> causeChainJsonValue",
+		`entry.put("traceback", traceback)`,
+		`entry.put("stack_frames", stackFrames)`,
+		`entry.put("details", RuntimeError.copyJsonValue(cause.get("details")))`,
 		`List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")`,
 	} {
 		if !contains(code, want) {
@@ -5955,12 +5958,30 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	if !contains(files["../../pkg/python/python.go"], "for key in ('runtime', 'origin_runtime', 'boundary_path', 'original_error_handle')") {
 		t.Fatalf("embedded Python RuntimeError should preserve structured cause metadata")
 	}
+	for _, want := range []string{
+		"cause_traceback = cause.get('traceback')",
+		"item['stack_frames'] = list(cause_stack_frames)",
+		"item['details'] = _copy_json_value(cause.get('details'))",
+	} {
+		if !contains(files["../../pkg/python/python.go"], want) {
+			t.Fatalf("embedded Python RuntimeError should preserve nested cause envelope fields, missing %q", want)
+		}
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "wrapped_boundary = boundary_parts.empty? ? boundary_path : boundary_parts.join") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
 	if !contains(files["../../pkg/ruby/ruby.go"], `[\"runtime\", \"origin_runtime\", \"boundary_path\", \"original_error_handle\"].each`) {
 		t.Fatalf("embedded Ruby RuntimeError should preserve structured cause metadata")
+	}
+	for _, want := range []string{
+		`cause_traceback = cause[\"traceback\"]`,
+		"item[:stack_frames] = cause_stack_frames.dup",
+		`item[:details] = __copy_json_value(cause[\"details\"])`,
+	} {
+		if !contains(files["../../pkg/ruby/ruby.go"], want) {
+			t.Fatalf("embedded Ruby RuntimeError should preserve nested cause envelope fields, missing %q", want)
+		}
 	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "def as_json(*_args)") ||
 		!contains(files["../../pkg/ruby/ruby.go"], "def to_json(*args)") ||

@@ -131,7 +131,7 @@ public class OmniVM {
         private final String type;
         private final String traceback;
         private final List<String> stackFrames;
-        private final List<Map<String, String>> causeChain;
+        private final List<Map<String, Object>> causeChain;
         private final String boundaryPath;
         private final String originalErrorHandle;
         private final Object details;
@@ -171,7 +171,7 @@ public class OmniVM {
             return stackFrames;
         }
 
-        public List<Map<String, String>> getCauseChain() {
+        public List<Map<String, Object>> getCauseChain() {
             return causeChain;
         }
 
@@ -248,7 +248,7 @@ public class OmniVM {
         String message = "";
         String traceback;
         List<String> stackFrames = new ArrayList<>();
-        List<Map<String, String>> causeChain = new ArrayList<>();
+        List<Map<String, Object>> causeChain = new ArrayList<>();
         String boundaryPath = "";
         String originalErrorHandle;
         String detailsJson;
@@ -375,8 +375,8 @@ public class OmniVM {
         return out;
     }
 
-    private static List<Map<String, String>> causeChainJsonValue(Object value) {
-        List<Map<String, String>> out = new ArrayList<>();
+    private static List<Map<String, Object>> causeChainJsonValue(Object value) {
+        List<Map<String, Object>> out = new ArrayList<>();
         if (!(value instanceof Iterable<?> iterable)) {
             return out;
         }
@@ -384,14 +384,25 @@ public class OmniVM {
             if (!(item instanceof Map<?, ?> cause)) {
                 continue;
             }
-            Map<String, String> entry = new LinkedHashMap<>();
+            Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("type", jsonString(cause.get("type")));
             entry.put("message", jsonString(cause.get("message")));
+            String traceback = jsonString(cause.get("traceback"));
+            if (!traceback.isEmpty()) {
+                entry.put("traceback", traceback);
+            }
+            List<String> stackFrames = stringListJsonValue(cause.get("stack_frames"), parseStackFrames(traceback));
+            if (!stackFrames.isEmpty()) {
+                entry.put("stack_frames", stackFrames);
+            }
             for (String key : List.of("runtime", "origin_runtime", "boundary_path", "original_error_handle")) {
                 String text = jsonString(cause.get(key));
                 if (!text.isEmpty()) {
                     entry.put(key, text);
                 }
+            }
+            if (cause.containsKey("details")) {
+                entry.put("details", RuntimeError.copyJsonValue(cause.get("details")));
             }
             out.add(Collections.unmodifiableMap(entry));
         }
@@ -519,8 +530,8 @@ public class OmniVM {
             || isOriginalErrorHandleLine(line);
     }
 
-    private static List<Map<String, String>> parseCauseChain(String text) {
-        List<Map<String, String>> causes = new ArrayList<>();
+    private static List<Map<String, Object>> parseCauseChain(String text) {
+        List<Map<String, Object>> causes = new ArrayList<>();
         String[] lines = text.split("\\R");
         for (String rawLine : lines) {
             String line = rawLine.trim();
@@ -538,7 +549,7 @@ public class OmniVM {
                     message = detail.substring(colon + 2).trim();
                 }
             }
-            Map<String, String> entry = new LinkedHashMap<>();
+            Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("type", type);
             entry.put("message", message);
             causes.add(Collections.unmodifiableMap(entry));

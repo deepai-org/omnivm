@@ -28,8 +28,11 @@ type RuntimeErrorCause struct {
 	OriginRuntime       string
 	Type                string
 	Message             string
+	Traceback           string
+	StackFrames         []string
 	BoundaryPath        string
 	OriginalErrorHandle string
+	Details             interface{}
 }
 
 func (e *RuntimeError) Error() string {
@@ -59,11 +62,17 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 	if e == nil {
 		return nil
 	}
-	causes := make([]map[string]string, 0, len(e.CauseChain))
+	causes := make([]map[string]interface{}, 0, len(e.CauseChain))
 	for _, cause := range e.CauseChain {
-		item := map[string]string{
+		item := map[string]interface{}{
 			"type":    cause.Type,
 			"message": cause.Message,
+		}
+		if cause.Traceback != "" {
+			item["traceback"] = cause.Traceback
+		}
+		if cause.StackFrames != nil {
+			item["stack_frames"] = append([]string(nil), cause.StackFrames...)
 		}
 		if cause.Runtime != "" {
 			item["runtime"] = cause.Runtime
@@ -76,6 +85,9 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 		}
 		if cause.OriginalErrorHandle != "" {
 			item["original_error_handle"] = cause.OriginalErrorHandle
+		}
+		if cause.Details != nil {
+			item["details"] = copyJSONValue(cause.Details)
 		}
 		causes = append(causes, item)
 	}
@@ -389,11 +401,18 @@ func causeChainEnvelopeValue(value interface{}) []RuntimeErrorCause {
 		if message, ok := entry["message"].(string); ok {
 			cause.Message = message
 		}
+		if traceback, ok := entry["traceback"].(string); ok {
+			cause.Traceback = traceback
+		}
+		cause.StackFrames = stringSliceEnvelopeValue(entry["stack_frames"], stackFrames(cause.Traceback))
 		if boundaryPath, ok := entry["boundary_path"].(string); ok {
 			cause.BoundaryPath = boundaryPath
 		}
 		if handle, ok := entry["original_error_handle"].(string); ok {
 			cause.OriginalErrorHandle = handle
+		}
+		if details, ok := entry["details"]; ok {
+			cause.Details = copyJSONValue(details)
 		}
 		out = append(out, cause)
 	}
