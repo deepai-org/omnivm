@@ -7796,6 +7796,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		strings.Index(code, "if (id == null || !released.compareAndSet(false, true))") > strings.Index(code, `bridgeManifestOp("{\"op\":\"handle_release_explicit\"`) {
 		t.Fatalf("Java explicit close should claim released before owner calls and reset it only after failed calls")
 	}
+	if !contains(code, "public String toString()") ||
+		!contains(code, `if (containsKey("toString"))`) ||
+		!contains(code, `return String.valueOf(get("toString"));`) ||
+		!contains(code, "if (!isMissingBridgeError(err)) {\n                    throw err;\n                }") {
+		t.Fatalf("Java HandleProxy.toString should prefer a remote toString field with missing-bridge fallback")
+	}
 	if !contains(code, `catch (RuntimeException err)`) ||
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
 		!contains(code, "markReleased();") ||
