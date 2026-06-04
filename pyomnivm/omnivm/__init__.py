@@ -46,6 +46,7 @@ __all__ = [
     "drain_worker_hook",
     "install_worker_drain_hook",
     "drain_finalizer_releases",
+    "lifecycle_scope",
     "unload_manifest_modules",
     "manifest_call",
     "ManifestProxy",
@@ -1118,6 +1119,31 @@ def drain_finalizer_releases(max_releases=0):
     for explicit worker-reload failures that should be reported.
     """
     return _drain_finalizer_releases(max_releases)
+
+
+class _LifecycleScope:
+    def __init__(self, max_finalizer_releases=0):
+        self.max_finalizer_releases = max_finalizer_releases
+        self.drained_finalizers = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.drained_finalizers = drain_finalizer_releases(self.max_finalizer_releases)
+        return False
+
+
+def lifecycle_scope(max_finalizer_releases=0):
+    """
+    Return a request/job lifecycle context that drains finalizer cleanup on exit.
+
+    The scope does not own live proxies; callers should still close streams,
+    handles, and buffers explicitly when their lifetime is known. This only
+    drains queued GC/finalizer releases as quiet teardown, preserving any
+    exception raised by the application body.
+    """
+    return _LifecycleScope(max_finalizer_releases)
 
 
 def manifest_call(module_id, func, args=()):

@@ -904,6 +904,11 @@ class TestNotInitialized(unittest.TestCase):
         omnivm_mod._lib = OldLib()
         assert omnivm_mod.drain_finalizer_releases() is False
 
+    def test_lifecycle_scope_noops_without_runtime(self):
+        with omnivm_mod.lifecycle_scope() as scope:
+            assert scope.drained_finalizers is None
+        assert scope.drained_finalizers is False
+
     @patch.object(omnivm_mod.atexit, "register")
     def test_install_worker_drain_hook_registers_once(self, register):
         assert omnivm_mod.install_worker_drain_hook() is omnivm_mod.drain_worker_hook
@@ -1101,6 +1106,22 @@ class TestCallWithMockLib(unittest.TestCase):
     def test_drain_finalizer_releases_stays_quiet_on_exception(self):
         self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
         assert omnivm_mod.drain_finalizer_releases() is False
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
+
+    def test_lifecycle_scope_drains_finalizers_on_exit(self):
+        self.mock_lib.OmniDrainFinalizerReleases.return_value = 0
+        with omnivm_mod.lifecycle_scope(max_finalizer_releases=5) as scope:
+            assert scope.drained_finalizers is None
+        assert scope.drained_finalizers is True
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(5)
+
+    def test_lifecycle_scope_preserves_body_exception_when_cleanup_fails(self):
+        self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            with omnivm_mod.lifecycle_scope() as scope:
+                raise ValueError("body failed")
+        assert str(ctx.exception) == "body failed"
+        assert scope.drained_finalizers is False
         self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
 
     def test_manifest_call_decodes_return_envelope(self):

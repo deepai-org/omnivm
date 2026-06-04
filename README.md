@@ -330,6 +330,7 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.drain_worker_hook(*args, **kwargs)` | App-server-compatible worker exit/reload hook that drains initialized workers and no-ops for workers that never loaded OmniVM |
 | `omnivm.install_worker_drain_hook()` | Register `drain_worker_hook()` with `atexit` as an idempotent process-exit fallback |
 | `omnivm.drain_finalizer_releases(max_releases=0)` | Best-effort request/job cleanup hook for queued proxy-finalizer releases (`0` drains all queued releases) |
+| `omnivm.lifecycle_scope(max_finalizer_releases=0)` | Context manager for request/job bodies that drains queued proxy-finalizer cleanup on exit without suppressing body errors |
 | `omnivm.worker_tainted()` | Return whether this worker should be recycled after a non-recoverable timeout |
 | `omnivm.worker_taint_reason()` | Return the recycle reason for diagnostics |
 | `omnivm.last_timeout_runtime()` | Return the runtime that caused the last non-recoverable timeout |
