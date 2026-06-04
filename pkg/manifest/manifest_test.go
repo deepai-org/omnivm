@@ -1523,7 +1523,16 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	if stats.Live != 0 || stats.ExplicitReleases != 1 {
 		t.Fatalf("table release should release handle explicitly, stats=%+v", stats)
 	}
+	parentID, err := e.ensureHandleTable().Register(map[string]interface{}{"owner": "table-parent"}, handles.RegisterOptions{
+		Runtime: "python",
+		Kind:    "resource",
+	})
+	if err != nil {
+		t.Fatalf("register table parent handle: %v", err)
+	}
 	for _, call := range []string{
+		`{"op":"handle_adopt","id":%d}`,
+		`{"op":"handle_access","id":%d,"kind":"property"}`,
 		`{"op":"handle_len","id":%d}`,
 		`{"op":"handle_index","id":%d,"value":0}`,
 	} {
@@ -1536,6 +1545,24 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("released table call %s diagnostic missing %q: %s", call, want, got)
 			}
+		}
+	}
+	for _, call := range []string{
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"property"}`, ref.ID, parentID),
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"property"}`, parentID, ref.ID),
+	} {
+		_, err := e.HandleCall(call)
+		if err == nil {
+			t.Fatalf("released table reference call %s did not fail", call)
+		}
+		got := err.Error()
+		for _, want := range []string{"closed table handle", "runtime=python", "format=arrow_c_data", "owner-side lifecycle is released"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("released table reference call %s diagnostic missing %q: %s", call, want, got)
+			}
+		}
+		if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
+			t.Fatalf("released table reference call %s used generic handle-table diagnostic: %s", call, got)
 		}
 	}
 	if !containsExecCall(mocks["python"].execCalls, "release_log.append('orders_view')") {
@@ -4713,6 +4740,13 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 	if stats.Live != 0 || stats.ExplicitReleases != 1 {
 		t.Fatalf("stream_cancel stats = %+v, want explicit release", stats)
 	}
+	parentID, err := e.ensureHandleTable().Register(map[string]interface{}{"owner": "stream-parent"}, handles.RegisterOptions{
+		Runtime: "javascript",
+		Kind:    "resource",
+	})
+	if err != nil {
+		t.Fatalf("register stream parent handle: %v", err)
+	}
 	if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
 		t.Fatal("stale stream_next after cancel did not fail")
 	} else {
@@ -4734,6 +4768,39 @@ func TestHandleCallStreamCancelReleasesChannel(t *testing.T) {
 		}
 		if strings.Contains(got, "unknown handle") {
 			t.Fatalf("stale stream_cancel used generic handle-table diagnostic: %s", got)
+		}
+	}
+	for _, call := range []string{
+		`{"op":"handle_adopt","id":%d}`,
+		`{"op":"handle_access","id":%d,"kind":"stream"}`,
+	} {
+		_, err := e.HandleCall(fmt.Sprintf(call, id))
+		if err == nil {
+			t.Fatalf("closed stream meta call %s did not fail", call)
+		}
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("closed stream meta call %s diagnostic missing %q: %s", call, want, got)
+			}
+		}
+	}
+	for _, call := range []string{
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"stream"}`, id, parentID),
+		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"stream"}`, parentID, id),
+	} {
+		_, err := e.HandleCall(call)
+		if err == nil {
+			t.Fatalf("closed stream reference call %s did not fail", call)
+		}
+		got := err.Error()
+		for _, want := range []string{"closed stream handle", "runtime=go", "kind=channel", "owner-side lifecycle is closed"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("closed stream reference call %s diagnostic missing %q: %s", call, want, got)
+			}
+		}
+		if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
+			t.Fatalf("closed stream reference call %s used generic handle-table diagnostic: %s", call, got)
 		}
 	}
 	if len(ch.ch) != 1 {
