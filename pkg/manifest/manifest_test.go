@@ -70,10 +70,14 @@ func (r *errorAfterChunkReader) Close() error {
 
 type errorAfterChunkCloseErrorReader struct {
 	errorAfterChunkReader
+	closeErr error
 }
 
 func (r *errorAfterChunkCloseErrorReader) Close() error {
 	r.closed = true
+	if r.closeErr != nil {
+		return r.closeErr
+	}
 	return errors.New("close failed")
 }
 
@@ -2390,7 +2394,11 @@ func TestGoStreamProxyNextReportsOwnerReadError(t *testing.T) {
 
 func TestGoStreamProxyNextPreservesReadErrorWhenCloseFails(t *testing.T) {
 	e, _ := makeExecutor("go")
-	reader := &errorAfterChunkCloseErrorReader{errorAfterChunkReader: errorAfterChunkReader{chunk: "first"}}
+	closeErr := errors.New("close failed")
+	reader := &errorAfterChunkCloseErrorReader{
+		errorAfterChunkReader: errorAfterChunkReader{chunk: "first"},
+		closeErr:              closeErr,
+	}
 	id, err := e.genericStreamHandle("go", reader)
 	if err != nil {
 		t.Fatalf("genericStreamHandle reader: %v", err)
@@ -2417,6 +2425,9 @@ func TestGoStreamProxyNextPreservesReadErrorWhenCloseFails(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("stream Next combined error missing %q: %s", want, got)
 		}
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("stream Next combined error should wrap close failure: %v", err)
 	}
 	if !reader.closed {
 		t.Fatal("reader close was not attempted after read error")
