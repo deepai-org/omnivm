@@ -84,6 +84,7 @@ type Stats struct {
 	Sets                int64          `json:"sets"`
 	Gets                int64          `json:"gets"`
 	Releases            int64          `json:"releases"`
+	ReleaseErrors       int64          `json:"release_errors"`
 	CopiedBytes         int64          `json:"copied_bytes"`
 	ZeroCopyBorrows     int64          `json:"zero_copy_borrows"`
 	ZeroCopyImports     int64          `json:"zero_copy_imports"`
@@ -137,6 +138,7 @@ type SharedStore struct {
 	sets            int64
 	gets            int64
 	releases        int64
+	releaseErrors   int64
 	copiedBytes     int64
 	zeroCopyBorrows int64
 	zeroCopyImports int64
@@ -177,21 +179,21 @@ func (s *SharedStore) markReleasedLocked(name string, status BufferStatus) {
 	}
 }
 
-func (s *SharedStore) recordReleaseError(name string, err error) {
-	if name == "" || err == nil {
+func (s *SharedStore) recordReleaseFailure(name string, err error) {
+	if err == nil {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.releaseErrors++
 	status, ok := s.releasedMeta[name]
-	if !ok {
-		return
+	if ok {
+		status.Name = name
+		status.State = "released"
+		status.Released = true
+		status.ReleaseError = err.Error()
+		s.releasedMeta[name] = status
 	}
-	status.Name = name
-	status.State = "released"
-	status.Released = true
-	status.ReleaseError = err.Error()
-	s.releasedMeta[name] = status
+	s.mu.Unlock()
 }
 
 func (s *SharedStore) forgetReleasedLocked(name string) {
@@ -349,7 +351,7 @@ func (s *SharedStore) releaseBorrow(name string, buf *Buffer, namedTracked bool)
 	s.mu.Unlock()
 	err := callBufferRelease(release)
 	if err != nil {
-		s.recordReleaseError(name, err)
+		s.recordReleaseFailure(name, err)
 	}
 	return err
 }
@@ -392,7 +394,7 @@ func (s *SharedStore) releaseNamedBorrow(name string) error {
 	s.mu.Unlock()
 	err := callBufferRelease(release)
 	if err != nil {
-		s.recordReleaseError(name, err)
+		s.recordReleaseFailure(name, err)
 	}
 	return err
 }
@@ -466,7 +468,7 @@ func (s *SharedStore) Free(name string) error {
 	if refs <= 0 {
 		err := callBufferRelease(release)
 		if err != nil {
-			s.recordReleaseError(name, err)
+			s.recordReleaseFailure(name, err)
 		}
 		return err
 	}
@@ -596,6 +598,7 @@ func (s *SharedStore) Stats() Stats {
 		Sets:             s.sets,
 		Gets:             s.gets,
 		Releases:         s.releases,
+		ReleaseErrors:    s.releaseErrors,
 		CopiedBytes:      s.copiedBytes,
 		ZeroCopyBorrows:  s.zeroCopyBorrows,
 		ZeroCopyImports:  s.zeroCopyImports,

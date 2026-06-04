@@ -88,6 +88,7 @@ func (s *SharedStore) SetWithValidityMetadata(name string, data []byte, validity
 	defer func() {
 		s.mu.Unlock()
 		if releaseErr := callBufferRelease(release); releaseErr != nil {
+			s.recordReleaseFailure(name, releaseErr)
 			err = errors.Join(err, releaseErr)
 		}
 	}()
@@ -185,6 +186,7 @@ func (s *SharedStore) SetExternalArrowWithMetadata(name string, data unsafe.Poin
 	defer func() {
 		s.mu.Unlock()
 		if releaseErr := callBufferRelease(oldRelease); releaseErr != nil {
+			s.recordReleaseFailure(name, releaseErr)
 			err = errors.Join(err, releaseErr)
 		}
 	}()

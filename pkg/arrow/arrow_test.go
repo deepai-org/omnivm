@@ -340,6 +340,9 @@ func TestSetWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
 	if !status.Live || status.Len != 2 || status.Dtype != DtypeI16 || status.Ownership != "omnivm" {
 		t.Fatalf("replacement status = %+v, want live owned replacement", status)
 	}
+	if stats := s.Stats(); stats.ReleaseErrors != 1 {
+		t.Fatalf("replacement release stats = %+v, want one release error", stats)
+	}
 }
 
 func TestSetExternalWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
@@ -374,6 +377,9 @@ func TestSetExternalWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
 	status := s.Status("payload")
 	if !status.Live || status.Len != 1 || status.Dtype != DtypeU8 || status.Ownership != "producer" {
 		t.Fatalf("replacement status = %+v, want live producer replacement", status)
+	}
+	if stats := s.Stats(); stats.ReleaseErrors != 1 {
+		t.Fatalf("external replacement release stats = %+v, want one release error", stats)
 	}
 }
 
@@ -602,6 +608,9 @@ func TestReplaceExternalWithActiveBorrowReportsDetachedLease(t *testing.T) {
 	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 || stats.ActiveBorrowedBytes != 0 {
 		t.Fatalf("external detached borrow stats did not clear after release: %+v", stats)
 	}
+	if stats.ReleaseErrors != 1 {
+		t.Fatalf("external detached borrow release errors = %+v, want one release error", stats)
+	}
 }
 
 func TestBufferStatusReportsDetachedBorrowAfterNameReuse(t *testing.T) {
@@ -722,6 +731,9 @@ func TestBorrowedBufferReleaseWithErrorReportsLastOwnerReleaseFailure(t *testing
 	if status.ReleaseError != "producer release failed" {
 		t.Fatalf("released external buffer status release error = %q, want producer release failed", status.ReleaseError)
 	}
+	if stats := s.Stats(); stats.ReleaseErrors != 1 {
+		t.Fatalf("released external buffer stats = %+v, want one release error", stats)
+	}
 }
 
 func TestBufferFreeRecordsProducerReleaseFailureInStatus(t *testing.T) {
@@ -747,6 +759,9 @@ func TestBufferFreeRecordsProducerReleaseFailureInStatus(t *testing.T) {
 	}
 	if status.ReleaseError != "producer release failed" {
 		t.Fatalf("release error status = %q, want producer release failed", status.ReleaseError)
+	}
+	if stats := s.Stats(); stats.ReleaseErrors != 1 {
+		t.Fatalf("free release failure stats = %+v, want one release error", stats)
 	}
 }
 
@@ -776,6 +791,47 @@ func TestBufFreeDoesNotConsumeBorrowFinalizerQueue(t *testing.T) {
 	stats = s.Stats()
 	if stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 {
 		t.Fatalf("borrow finalizer release did not clear detached diagnostics: %+v", stats)
+	}
+}
+
+func TestDeferredBorrowReleaseRecordsProducerReleaseFailure(t *testing.T) {
+	for {
+		select {
+		case <-DeferredRelease:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	s := NewSharedStore()
+	globalStore = s
+	data := []byte{1, 2, 3}
+	releaseErr := errors.New("producer release failed")
+	if _, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.borrowNamed("payload"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Free("payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	BufRelease("payload")
+	s.DrainDeferred()
+	stats := s.Stats()
+	if stats.LiveBuffers != 0 || stats.DetachedBuffers != 0 || stats.ActiveBorrows != 0 || stats.ReleaseErrors != 1 {
+		t.Fatalf("deferred release failure stats = %+v, want quiet release error recorded and no live borrow", stats)
+	}
+	status := s.Status("payload")
+	if status.State != "released" || status.ReleaseError != "producer release failed" {
+		t.Fatalf("deferred release failure status = %+v, want released tombstone with release error", status)
 	}
 }
 
