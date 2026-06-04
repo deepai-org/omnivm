@@ -5620,12 +5620,18 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
 	if !contains(code, "def omnivm_close(value):") ||
-		!contains(code, `getattr(value, "_omnivm_close", None)`) ||
+		!contains(code, `def __omnivm_actual_public_method(value, name):`) ||
+		!contains(code, `__inspect.getattr_static(value, name)`) ||
+		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
+		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
 		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
 		!contains(code, "finalizer.detach()") {
 		t.Fatalf("Python handle proxy should expose idempotent explicit close without relying on finalizers, got %q", code)
+	}
+	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) {
+		t.Fatalf("Python proxy close helper should not invoke dynamic attribute lookup for lifecycle methods")
 	}
 	if !contains(code, `"op": "handle_adopt"`) || !contains(code, "__omnivm_adopt_handle_id") || !contains(code, `value.get("transfer") is True`) {
 		t.Fatalf("Python materializer should adopt returned transfer handles, got %q", code)

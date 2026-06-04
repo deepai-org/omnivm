@@ -600,14 +600,25 @@ def _omnivm_encode_arg(value):
     return {"__omnivm_runtime_ref__": True, "runtime": "python", "var": "__omnivm_arg_refs[%r]" % __id, "callable": callable(value)}
 
 def omnivm_close(value):
-    close = getattr(value, "_omnivm_close", None)
+    close = __omnivm_actual_public_method(value, "_omnivm_close")
     if callable(close):
         return close()
-    close = getattr(value, "close", None)
+    close = __omnivm_actual_public_method(value, "close")
     if callable(close):
         close()
         return True
     return False
+
+def __omnivm_actual_public_method(value, name):
+    try:
+        import inspect as __inspect
+        raw = __inspect.getattr_static(value, name)
+    except Exception:
+        return None
+    if not callable(raw):
+        return None
+    method = getattr(value, name, None)
+    return method if callable(method) else None
 
 class __OmniVMHandleProxy:
     _omnivm_chatty_warned = {}
