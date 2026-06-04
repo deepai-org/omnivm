@@ -46,7 +46,8 @@ static int omnivm_epoll_wait_fds(int epfd, int* ready_fds, int max_fds, int time
 // eventfd write: MUST be uint64_t (8 bytes) or kernel returns EINVAL
 static void omnivm_eventfd_write(int fd) {
 	uint64_t val = 1;
-	(void)write(fd, &val, sizeof(val));
+	ssize_t written = write(fd, &val, sizeof(val));
+	(void)written;
 }
 
 // Drain fd: read uint64_t values until EAGAIN
