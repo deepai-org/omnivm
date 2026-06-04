@@ -319,6 +319,36 @@ func TestDirectRetainReleasesProducerAfterOwnerFree(t *testing.T) {
 	}
 }
 
+func TestDirectRetainReleaseFailureRecordedAfterOwnerFree(t *testing.T) {
+	s := NewSharedStore()
+	data := []byte{1, 2, 3}
+	releaseErr := errors.New("producer release failed")
+	buf, err := s.SetExternalWithMetadata("payload", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype:     DtypeBytes,
+		Ownership: "producer",
+	}, func() error {
+		return releaseErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf.Retain()
+	if err := s.Free("payload"); err != nil {
+		t.Fatalf("Free with direct retain failed: %v", err)
+	}
+	if refs := buf.Release(); refs != 0 {
+		t.Fatalf("direct Release refs=%d, want 0", refs)
+	}
+	status := s.Status("payload")
+	if status.ReleaseError != "producer release failed" {
+		t.Fatalf("direct release failure status = %+v, want producer release failure", status)
+	}
+	if stats := s.Stats(); stats.ReleaseErrors != 1 || stats.DetachedBuffers != 0 {
+		t.Fatalf("direct release failure stats = %+v, want one release error and no detached buffers", stats)
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewSharedStore()
 
