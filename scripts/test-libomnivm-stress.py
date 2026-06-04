@@ -8012,6 +8012,197 @@ for name, result in (
         raise AssertionError(f"SQLAlchemy large Result streams did not release: before={before_handles}, after={handles}")
 
 
+def test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+import os
+import tempfile
+import uuid
+import sqlalchemy as sa
+
+db_path = os.path.join(tempfile.gettempdir(), "omnivm-sqlalchemy-partitions-" + uuid.uuid4().hex + ".sqlite3")
+engine = sa.create_engine("sqlite:///" + db_path, future=True)
+metadata = sa.MetaData()
+orders = sa.Table(
+    "orders",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String),
+    sa.Column("items", sa.String),
+    sa.Column("keys", sa.String),
+    sa.Column("count", sa.Integer),
+    sa.Column("then", sa.String),
+    sa.Column("length", sa.Integer),
+    sa.Column("close", sa.String),
+)
+metadata.create_all(engine)
+with engine.begin() as conn:
+    conn.execute(
+        orders.insert(),
+        [
+            {
+                "id": idx,
+                "name": f"user-{idx:04d}",
+                "items": "field-items",
+                "keys": "field-keys",
+                "count": idx,
+                "then": "field-then",
+                "length": 2,
+                "close": "field-close",
+            }
+            for idx in range(1, 101)
+        ],
+    )
+
+class TrackingPartitionedSQLAlchemyResult:
+    def __init__(self, label):
+        self.label = label
+        self.conn = engine.connect()
+        stmt = (
+            sa.select(orders)
+            .order_by(orders.c.id)
+            .execution_options(stream_results=True, yield_per=10)
+        )
+        self.result = self.conn.execute(stmt).mappings()
+        self.iterator = iter(self.result.partitions(10))
+        self.partitions_pulled = 0
+        self.rows_pulled = 0
+        self.closed = False
+        self.conn_closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        partition = next(self.iterator)
+        self.partitions_pulled += 1
+        self.rows_pulled += len(partition)
+        rows = [dict(row) for row in partition]
+        return {
+            "label": self.label,
+            "rows": rows,
+            "items": "field-items",
+            "keys": "field-keys",
+            "count": len(rows),
+            "then": "field-then",
+            "length": len(rows),
+            "close": "field-close",
+        }
+
+    def close(self):
+        self.closed = True
+        self.result.close()
+        self.conn.close()
+        self.conn_closed = self.conn.closed
+
+sa_partition_js = TrackingPartitionedSQLAlchemyResult("javascript")
+sa_partition_ruby = TrackingPartitionedSQLAlchemyResult("ruby")
+sa_partition_java = TrackingPartitionedSQLAlchemyResult("java")
+'''
+    verify = r'''
+for name, result in (
+    ("javascript", sa_partition_js),
+    ("ruby", sa_partition_ruby),
+    ("java", sa_partition_java),
+):
+    if result.partitions_pulled != 1:
+        raise AssertionError(f"{name} SQLAlchemy partitions pulled {result.partitions_pulled} partitions instead of one")
+    if result.rows_pulled != 10:
+        raise AssertionError(f"{name} SQLAlchemy partitions pulled {result.rows_pulled} rows instead of one partition")
+    if not result.closed:
+        raise AssertionError(f"{name} SQLAlchemy partition stream was not closed by cancellation")
+    if not result.result.closed:
+        raise AssertionError(f"{name} underlying SQLAlchemy partition result did not close")
+    if not result.conn_closed:
+        raise AssertionError(f"{name} SQLAlchemy partition connection did not close")
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"sa_partition_js": "sa_partition_js"},
+                "code": (
+                    "const it = sa_partition_js[Symbol.iterator](); "
+                    "const first = it.next(); "
+                    "if (first.done) throw new Error('SQLAlchemy partition stream was empty'); "
+                    "const page = first.value; "
+                    "if (page.label !== 'javascript') throw new Error('bad SQLAlchemy partition label: ' + page.label); "
+                    "if (page.rows.length !== 10) throw new Error('bad SQLAlchemy partition row count: ' + page.rows.length); "
+                    "if (page.rows[0].name !== 'user-0001' || page.rows[9].name !== 'user-0010') throw new Error('bad SQLAlchemy partition rows: ' + JSON.stringify(page.rows)); "
+                    "if (page.items !== 'field-items' || page.keys !== 'field-keys' || String(page.count) !== '10' || page.then !== 'field-then' || String(page.length) !== '10' || page.close !== 'field-close') throw new Error('SQLAlchemy partition collision fields lost: ' + JSON.stringify(page)); "
+                    "if (sa_partition_js.cancel('client-stop') !== true) throw new Error('SQLAlchemy partition JS cancel failed');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"sa_partition_ruby": "sa_partition_ruby"},
+                "code": (
+                    "page = sa_partition_ruby.first; "
+                    "raise 'SQLAlchemy partition stream was empty' if page.nil?; "
+                    "rows = page['rows']; "
+                    "raise \"bad SQLAlchemy Ruby partition count #{rows.length}\" unless rows.length == 10; "
+                    "raise \"bad SQLAlchemy Ruby first row #{rows[0]['name']}\" unless rows[0]['name'] == 'user-0001'; "
+                    "raise \"bad SQLAlchemy Ruby last row #{rows[9]['name']}\" unless rows[9]['name'] == 'user-0010'; "
+                    "raise 'SQLAlchemy Ruby partition collision fields lost' unless page['items'] == 'field-items' && page['keys'] == 'field-keys' && page['count'].to_s == '10' && page['then'] == 'field-then' && page['length'].to_s == '10' && page['close'] == 'field-close'; "
+                    "sa_partition_ruby.close"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"sa_partition_java": "sa_partition_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"sa_partition_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"SQLAlchemy partition result should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"SQLAlchemy partition stream was empty\"); "
+                    "java.util.Map<?, ?> page = (java.util.Map<?, ?>) it.next(); "
+                    "Object rowsRaw = page.get(\"rows\"); "
+                    "java.util.function.Function<Integer, Object> rowAt = (idx) -> { "
+                    "    if (rowsRaw instanceof java.util.List<?>) return ((java.util.List<?>) rowsRaw).get(idx); "
+                    "    if (rowsRaw instanceof java.util.Map<?, ?>) { java.util.Map<?, ?> rowsMap = (java.util.Map<?, ?>) rowsRaw; return rowsMap.containsKey(idx) ? rowsMap.get(idx) : rowsMap.get(String.valueOf(idx)); } "
+                    "    throw new RuntimeException(\"unexpected SQLAlchemy partition rows shape: \" + rowsRaw); "
+                    "}; "
+                    "java.util.Map<?, ?> first = (java.util.Map<?, ?>) rowAt.apply(0); "
+                    "java.util.Map<?, ?> last = (java.util.Map<?, ?>) rowAt.apply(9); "
+                    "if (!\"user-0001\".equals(String.valueOf(first.get(\"name\")))) throw new RuntimeException(\"bad SQLAlchemy Java first row: \" + first); "
+                    "if (!\"user-0010\".equals(String.valueOf(last.get(\"name\")))) throw new RuntimeException(\"bad SQLAlchemy Java last row: \" + last); "
+                    "if (!\"field-items\".equals(String.valueOf(page.get(\"items\")))) throw new RuntimeException(\"SQLAlchemy Java partition items lost\"); "
+                    "if (!\"field-keys\".equals(String.valueOf(page.get(\"keys\")))) throw new RuntimeException(\"SQLAlchemy Java partition keys lost\"); "
+                    "if (!\"10\".equals(String.valueOf(page.get(\"count\")))) throw new RuntimeException(\"SQLAlchemy Java partition count lost: \" + page.get(\"count\")); "
+                    "if (!\"field-then\".equals(String.valueOf(page.get(\"then\")))) throw new RuntimeException(\"SQLAlchemy Java partition then lost\"); "
+                    "if (!\"10\".equals(String.valueOf(page.get(\"length\")))) throw new RuntimeException(\"SQLAlchemy Java partition length lost: \" + page.get(\"length\")); "
+                    "if (!\"field-close\".equals(String.valueOf(page.get(\"close\")))) throw new RuntimeException(\"SQLAlchemy Java partition close lost\"); "
+                    "if (!((omnivm.OmniVM.StreamProxy) raw).cancel()) throw new RuntimeException(\"SQLAlchemy partition Java cancel failed\");"
+                ),
+            },
+            {"op": "exec", "runtime": "python", "code": verify},
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
+        raise AssertionError(f"SQLAlchemy partitioned Result did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"SQLAlchemy partitioned Result used JSON fallback: before={before_boundary}, after={boundary}")
+    explicit_releases = handles.get("explicit_releases", 0)
+    explicit_release_delta = explicit_releases - before_handles.get("explicit_releases", 0)
+    if explicit_releases < 3 and explicit_release_delta < 3:
+        raise AssertionError(f"SQLAlchemy partitioned Result streams did not release: before={before_handles}, after={handles}")
+
+
 def test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -24922,6 +25113,7 @@ def main():
         check("Manifest SQLAlchemy model capture uses proxy not JSON", test_manifest_sqlalchemy_model_capture_uses_proxy_not_json)
         check("Manifest SQLAlchemy Result and Session lifecycle", test_manifest_sqlalchemy_result_session_lifecycle_and_rollback)
         check("Manifest SQLAlchemy large Result early cancel releases owner", test_manifest_sqlalchemy_large_result_early_cancel_releases_owner)
+        check("Manifest SQLAlchemy Result partitions are lazy and cancellable", test_manifest_sqlalchemy_result_partitions_are_lazy_and_cancellable)
         check("Manifest Python DB-API cursor lifecycle crosses as lazy stream", test_manifest_python_dbapi_cursor_lifecycle_crosses_as_lazy_stream)
         check("Manifest boto3 S3 paginator is lazy and cancellable", test_manifest_boto3_s3_paginator_is_lazy_and_cancellable)
         check("Manifest boto3 DynamoDB paginator is lazy and cancellable", test_manifest_boto3_dynamodb_paginator_is_lazy_and_cancellable)
