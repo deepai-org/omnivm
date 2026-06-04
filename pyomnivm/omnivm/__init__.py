@@ -1621,10 +1621,18 @@ def owner_dispatch_target_status(target):
         )
     info = targets.get(target_name)
     if not isinstance(info, dict):
+        known_targets = sorted(str(name) for name in targets.keys())
         raise RuntimeError(
-            f"libomnivm status omitted owner dispatch target {target_name!r}",
+            (
+                f"libomnivm status omitted owner dispatch target {target_name!r}; "
+                f"known targets: {', '.join(known_targets) if known_targets else 'none'}"
+            ),
             boundary_path="thread_affinity",
-            details={"target": target_name, "owner_dispatch_targets": targets},
+            details={
+                "target": target_name,
+                "known_targets": known_targets,
+                "owner_dispatch_targets": targets,
+            },
         )
     return info
 

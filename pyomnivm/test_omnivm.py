@@ -1733,13 +1733,15 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniStatus.return_value = (
             b'{"thread_affinity":{"mode":"diagnostic_only",'
             b'"owner_dispatch_supported":false,'
-            b'"owner_dispatch_targets":{}}}'
+            b'"owner_dispatch_targets":{"java_executor":{"supported":false}}}}'
         )
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.owner_dispatch_target_status("python_asyncio")
+        assert "known targets: java_executor" in str(ctx.exception)
         assert ctx.exception.boundary_path == "thread_affinity"
         assert ctx.exception.details["target"] == "python_asyncio"
-        assert ctx.exception.details["owner_dispatch_targets"] == {}
+        assert ctx.exception.details["known_targets"] == ["java_executor"]
+        assert ctx.exception.details["owner_dispatch_targets"] == {"java_executor": {"supported": False}}
 
     def test_assert_owner_dispatch_target_supported_reports_diagnostic(self):
         self.mock_lib.OmniStatus.return_value = (
