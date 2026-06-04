@@ -276,17 +276,20 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return None
     if not isinstance(envelope, dict):
         return None
+    def field(preferred, fallback):
+        value = envelope.get(preferred)
+        return envelope.get(fallback) if value is None else value
     runtime_name = envelope.get("runtime") or runtime
-    origin_runtime = envelope.get("origin_runtime") or runtime_name
+    origin_runtime = field("origin_runtime", "originRuntime") or runtime_name
     err_type = envelope.get("type") or ""
     message = envelope.get("message") or ""
     traceback = envelope.get("traceback") or ""
     if not any((runtime_name, err_type, message, traceback)):
         return None
-    stack_frames = envelope.get("stack_frames")
+    stack_frames = field("stack_frames", "stackFrames")
     if not isinstance(stack_frames, list) or not all(isinstance(frame, str) for frame in stack_frames):
         stack_frames = _runtime_error_stack_frames(traceback)
-    cause_chain = envelope.get("cause_chain")
+    cause_chain = field("cause_chain", "causeChain")
     if not isinstance(cause_chain, list):
         cause_chain = []
     else:
@@ -302,13 +305,24 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
             if isinstance(cause_traceback, str):
                 item["traceback"] = cause_traceback
             cause_stack_frames = cause.get("stack_frames")
+            if cause_stack_frames is None:
+                cause_stack_frames = cause.get("stackFrames")
             if isinstance(cause_stack_frames, list) and all(isinstance(frame, str) for frame in cause_stack_frames):
                 item["stack_frames"] = list(cause_stack_frames)
             elif isinstance(cause_traceback, str):
                 item["stack_frames"] = _runtime_error_stack_frames(cause_traceback)
-            for key in ("runtime", "origin_runtime", "boundary_path", "original_error_handle"):
-                if cause.get(key):
-                    item[key] = str(cause.get(key))
+            cause_field_pairs = (
+                ("runtime", "runtime"),
+                ("origin_runtime", "originRuntime"),
+                ("boundary_path", "boundaryPath"),
+                ("original_error_handle", "originalErrorHandle"),
+            )
+            for key, fallback in cause_field_pairs:
+                value = cause.get(key)
+                if value is None:
+                    value = cause.get(fallback)
+                if value:
+                    item[key] = str(value)
             if "details" in cause:
                 item["details"] = _copy_json_value(cause.get("details"))
             parsed_causes.append(item)
@@ -321,8 +335,8 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         "traceback": traceback,
         "stack_frames": stack_frames,
         "cause_chain": cause_chain,
-        "boundary_path": envelope.get("boundary_path") or boundary_path,
-        "original_error_handle": envelope.get("original_error_handle"),
+        "boundary_path": field("boundary_path", "boundaryPath") or boundary_path,
+        "original_error_handle": field("original_error_handle", "originalErrorHandle"),
         "details": _copy_json_value(envelope.get("details")),
     }
 

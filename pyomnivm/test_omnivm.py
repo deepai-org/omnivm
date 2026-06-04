@@ -165,6 +165,54 @@ class TestRuntimeError(unittest.TestCase):
         assert err.details == [{"path": ["user", "age"]}]
         assert err.to_dict()["origin_runtime"] == "python"
 
+    def test_parses_camel_case_structured_json_error_envelope(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "originRuntime": "python",
+                    "type": "AggregateError",
+                    "message": "invalid",
+                    "traceback": "fallback frame",
+                    "stackFrames": ["at parse (<anonymous>:1:2)"],
+                    "causeChain": [
+                        {
+                            "runtime": "java",
+                            "originRuntime": "ruby",
+                            "type": "TypeError",
+                            "message": "inner",
+                            "traceback": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                            "stackFrames": ["at cause (<anonymous>:2:4)"],
+                            "boundaryPath": "call[javascript] > callback[java]",
+                            "originalErrorHandle": "java-error-3",
+                            "details": {"code": "E_INNER"},
+                        }
+                    ],
+                    "boundaryPath": "call[javascript] > callback[python]",
+                    "originalErrorHandle": "js-error-7",
+                    "details": [{"path": ["user", "age"]}],
+                }
+            ),
+            runtime="go",
+        )
+        assert err.origin_runtime == "python"
+        assert err.stack_frames == ["at parse (<anonymous>:1:2)"]
+        assert err.boundary_path == "call[javascript] > callback[python]"
+        assert err.original_error_handle == "js-error-7"
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "traceback": "TypeError: inner\n    at cause (<anonymous>:2:4)",
+                "stack_frames": ["at cause (<anonymous>:2:4)"],
+                "runtime": "java",
+                "origin_runtime": "ruby",
+                "boundary_path": "call[javascript] > callback[java]",
+                "original_error_handle": "java-error-3",
+                "details": {"code": "E_INNER"},
+            }
+        ]
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"

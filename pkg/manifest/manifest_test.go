@@ -6108,8 +6108,17 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/python/python.go"], "self.details = _copy_json_value(details) if details is not None else parsed['details']") {
 		t.Fatalf("embedded Python RuntimeError should accept copied structured details overrides")
 	}
-	if !contains(files["../../pkg/python/python.go"], "for key in ('runtime', 'origin_runtime', 'boundary_path', 'original_error_handle')") {
-		t.Fatalf("embedded Python RuntimeError should preserve structured cause metadata")
+	for _, want := range []string{
+		"def field(preferred, fallback):",
+		"origin_runtime = field('origin_runtime', 'originRuntime') or runtime_name",
+		"stack_frames = field('stack_frames', 'stackFrames')",
+		"cause_chain = field('cause_chain', 'causeChain')",
+		"cause_stack_frames = cause.get('stackFrames')",
+		"for key, fallback in (('runtime', 'runtime'), ('origin_runtime', 'originRuntime'), ('boundary_path', 'boundaryPath'), ('original_error_handle', 'originalErrorHandle')):",
+	} {
+		if !contains(files["../../pkg/python/python.go"], want) {
+			t.Fatalf("embedded Python RuntimeError should accept JS camelCase envelope fields, missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		"cause_traceback = cause.get('traceback')",
@@ -6124,11 +6133,20 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		!contains(files["../../pkg/ruby/ruby.go"], "envelope = __parse_runtime_error_envelope(body, source_runtime, wrapped_boundary)") {
 		t.Fatalf("embedded Ruby RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
-	if !contains(files["../../pkg/ruby/ruby.go"], `[\"runtime\", \"origin_runtime\", \"boundary_path\", \"original_error_handle\"].each`) {
-		t.Fatalf("embedded Ruby RuntimeError should preserve structured cause metadata")
+	for _, want := range []string{
+		`field = ->(preferred, fallback) { envelope.key?(preferred) ? envelope[preferred] : envelope[fallback] }`,
+		`origin_runtime = field.call(\"origin_runtime\", \"originRuntime\") || runtime_name`,
+		`stack_frames = field.call(\"stack_frames\", \"stackFrames\")`,
+		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
+		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
+	} {
+		if !contains(files["../../pkg/ruby/ruby.go"], want) {
+			t.Fatalf("embedded Ruby RuntimeError should accept JS camelCase envelope fields, missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		`cause_traceback = cause[\"traceback\"]`,
+		`cause_stack_frames = cause.key?(\"stack_frames\") ? cause[\"stack_frames\"] : cause[\"stackFrames\"]`,
 		"item[:stack_frames] = cause_stack_frames.dup",
 		`item[:details] = __copy_json_value(cause[\"details\"])`,
 	} {
