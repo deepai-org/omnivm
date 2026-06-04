@@ -71,6 +71,7 @@ type BorrowedBuffer struct {
 	Metadata     BufferMetadata
 	namedTracked bool
 	once         sync.Once
+	releaseErr   error
 }
 
 // Stats is a process-level snapshot for bulk data diagnostics.
@@ -312,11 +313,10 @@ func (b *BorrowedBuffer) ReleaseWithError() error {
 	if b == nil || b.store == nil {
 		return nil
 	}
-	var err error
 	b.once.Do(func() {
-		err = b.store.releaseBorrow(b.name, b.Buffer, b.namedTracked)
+		b.releaseErr = b.store.releaseBorrow(b.name, b.Buffer, b.namedTracked)
 	})
-	return err
+	return b.releaseErr
 }
 
 func (s *SharedStore) releaseBorrow(name string, buf *Buffer, namedTracked bool) error {

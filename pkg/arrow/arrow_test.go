@@ -441,8 +441,8 @@ func TestBorrowedBufferReleaseWithErrorReportsLastOwnerReleaseFailure(t *testing
 	if releases != 1 {
 		t.Fatalf("release callback called %d times, want 1", releases)
 	}
-	if err := lease.ReleaseWithError(); err != nil {
-		t.Fatalf("second ReleaseWithError = %v, want nil", err)
+	if err := lease.ReleaseWithError(); !errors.Is(err, releaseErr) {
+		t.Fatalf("second ReleaseWithError = %v, want release callback failure", err)
 	}
 	buf.mu.Lock()
 	refs := buf.refs
