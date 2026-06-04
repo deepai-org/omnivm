@@ -2290,36 +2290,30 @@ func (e *Executor) closeRuntimeRefStream(id handles.ID, ref RuntimeRef) error {
 		return nil
 	}
 	if ref.Runtime == "python" {
-		asyncStream, err := e.runtimeRefIsPythonAsyncStream(ref)
-		if err != nil {
-			return err
-		}
-		if asyncStream {
-			readyVar := e.nextRuntimeRefVar(id, "stream_close_ready")
-			errVar := e.nextRuntimeRefVar(id, "stream_close_error")
-			code, ok := runtimeRefPythonStreamCloseStepCode(ref, stateVar, readyVar, errVar)
-			if !ok {
-				return nil
-			}
-			rt, ok := e.runtimes[ref.Runtime]
-			if !ok {
-				return nil
-			}
-			result := rt.Execute(code)
-			if result.Err != nil {
-				return result.Err
-			}
-			if err := e.pumpUntilDone(func() bool {
-				check := rt.Eval(runtimeVarRef(ref.Runtime, readyVar))
-				return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
-			}); err != nil {
-				return err
-			}
-			if err := e.asyncPythonError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
-				return err
-			}
+		readyVar := e.nextRuntimeRefVar(id, "stream_close_ready")
+		errVar := e.nextRuntimeRefVar(id, "stream_close_error")
+		code, ok := runtimeRefPythonStreamCloseStepCode(ref, stateVar, readyVar, errVar)
+		if !ok {
 			return nil
 		}
+		rt, ok := e.runtimes[ref.Runtime]
+		if !ok {
+			return nil
+		}
+		result := rt.Execute(code)
+		if result.Err != nil {
+			return result.Err
+		}
+		if err := e.pumpUntilDone(func() bool {
+			check := rt.Eval(runtimeVarRef(ref.Runtime, readyVar))
+			return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
+		}); err != nil {
+			return err
+		}
+		if err := e.asyncPythonError(rt, runtimeVarRef(ref.Runtime, errVar)); err != nil {
+			return err
+		}
+		return nil
 	}
 	code, ok := runtimeRefStreamCloseCode(ref, stateVar)
 	if !ok {

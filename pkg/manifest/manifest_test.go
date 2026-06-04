@@ -5367,6 +5367,47 @@ func TestRuntimeRefPythonAsyncStreamCancelWaitsForCloseTask(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonStreamCancelAlwaysUsesScheduledCloseTask(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "python", VarName: "rows"})
+	if err != nil {
+		t.Fatalf("runtimeRefStreamHandle: %v", err)
+	}
+	ready := false
+	mocks["python"].pumpFn = func() { ready = true }
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "stream_close_ready"):
+			if ready {
+				return pkg.Result{Value: "True"}
+			}
+			return pkg.Result{Value: "False"}
+		case strings.Contains(code, "stream_close_error"):
+			return pkg.Result{Value: nil}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	result, err := e.HandleCall(`{"op":"stream_cancel","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+	if err != nil {
+		t.Fatalf("HandleCall stream_cancel Python runtime ref: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Value != true {
+		t.Fatalf("stream_cancel Python runtime ref envelope = %#v, want true", env)
+	}
+	if mocks["python"].pumpCalls == 0 {
+		t.Fatal("stream_cancel did not pump while waiting for Python close")
+	}
+	if len(mocks["python"].execCalls) != 1 || !strings.Contains(mocks["python"].execCalls[0], "__omnivm_stream_close_task") {
+		t.Fatalf("Python close execute calls = %#v, want scheduled close task", mocks["python"].execCalls)
+	}
+	if strings.Contains(mocks["python"].execCalls[0], "run_until_complete") || strings.Contains(mocks["python"].execCalls[0], "owner dispatch unsupported") {
+		t.Fatalf("Python close should not use the synchronous close helper: %s", mocks["python"].execCalls[0])
+	}
+}
+
 func TestRuntimeRefPythonAsyncStreamCancelErrorKeepsLifecycleTombstone(t *testing.T) {
 	e, mocks := makeExecutor("python")
 	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "python", VarName: "rows"})
