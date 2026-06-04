@@ -89,7 +89,13 @@ func TestPythonExecuteError(t *testing.T) {
 func TestPythonRuntimeErrorPreludeStructuredEnvelopeSource(t *testing.T) {
 	for _, want := range []string{
 		"self.origin_runtime = parsed['origin_runtime']",
-		"self.stack_frames = parsed['stack_frames']",
+		"self._stack_frames = _copy_json_value(parsed['stack_frames'])",
+		"def stack_frames(self):",
+		"return _copy_json_value(self._stack_frames)",
+		"def cause_chain(self):",
+		"return _copy_json_value(self._cause_chain)",
+		"def details(self):",
+		"return _copy_json_value(self._details)",
 		"'origin_runtime': self.origin_runtime",
 		"'stack_frames': _copy_json_value(self.stack_frames)",
 		"def as_dict(self):",

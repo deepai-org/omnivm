@@ -486,6 +486,28 @@ class TestRuntimeError(unittest.TestCase):
             ),
             runtime="javascript",
         )
+        stack_frames = err.stack_frames
+        stack_frames[0] = "changed"
+        cause_chain = err.cause_chain
+        cause_chain[0]["message"] = "changed"
+        cause_chain[0]["stack_frames"][0] = "changed"
+        cause_chain[0]["details"]["items"][0]["path"] = "changed"
+        details = err.details
+        details["items"][0]["path"] = "changed"
+
+        assert err.stack_frames == ["at <anonymous>:1:7"]
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
+                "stack_frames": ["at cause (<anonymous>:2:4)"],
+                "details": {"items": [{"path": "cause.path"}]},
+            }
+        ]
+        assert err.details == {"items": [{"path": "user.age"}]}
+
         envelope = err.to_dict()
         envelope["stack_frames"][0] = "changed"
         envelope["cause_chain"][0]["message"] = "changed"

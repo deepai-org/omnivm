@@ -7441,8 +7441,22 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		t.Fatalf("embedded Python RuntimeError should retry structured envelope parsing after boundary stripping")
 	}
 	if !contains(files["../../pkg/python/python.go"], "def __init__(self, message, runtime=None, boundary_path=None, details=None)") ||
-		!contains(files["../../pkg/python/python.go"], "self.details = _copy_json_value(details) if details is not None else parsed['details']") {
+		!contains(files["../../pkg/python/python.go"], "self._details = _copy_json_value(details) if details is not None else _copy_json_value(parsed['details'])") {
 		t.Fatalf("embedded Python RuntimeError should accept copied structured details overrides")
+	}
+	for _, want := range []string{
+		"self._stack_frames = _copy_json_value(parsed['stack_frames'])",
+		"self._cause_chain = _copy_json_value(parsed['cause_chain'])",
+		"def stack_frames(self):",
+		"return _copy_json_value(self._stack_frames)",
+		"def cause_chain(self):",
+		"return _copy_json_value(self._cause_chain)",
+		"def details(self):",
+		"return _copy_json_value(self._details)",
+	} {
+		if !contains(files["../../pkg/python/python.go"], want) {
+			t.Fatalf("embedded Python RuntimeError readers should copy mutable structured values, missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		"def field(preferred, fallback):",

@@ -102,11 +102,35 @@ class RuntimeError(_builtins.RuntimeError):
         self.type = parsed["type"]
         self.message = parsed["message"]
         self.traceback = parsed["traceback"]
-        self.stack_frames = parsed["stack_frames"]
-        self.cause_chain = parsed["cause_chain"]
+        self._stack_frames = _copy_json_value(parsed["stack_frames"])
+        self._cause_chain = _copy_json_value(parsed["cause_chain"])
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
-        self.details = _copy_json_value(details) if details is not None else parsed["details"]
+        self._details = _copy_json_value(details) if details is not None else _copy_json_value(parsed["details"])
+
+    @property
+    def stack_frames(self):
+        return _copy_json_value(self._stack_frames)
+
+    @stack_frames.setter
+    def stack_frames(self, value):
+        self._stack_frames = _copy_json_value(value)
+
+    @property
+    def cause_chain(self):
+        return _copy_json_value(self._cause_chain)
+
+    @cause_chain.setter
+    def cause_chain(self, value):
+        self._cause_chain = _copy_json_value(value)
+
+    @property
+    def details(self):
+        return _copy_json_value(self._details)
+
+    @details.setter
+    def details(self, value):
+        self._details = _copy_json_value(value)
 
     def to_dict(self):
         """Return a structured, JSON-serializable runtime error envelope."""
