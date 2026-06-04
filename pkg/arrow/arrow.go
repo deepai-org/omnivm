@@ -424,12 +424,23 @@ func (s *SharedStore) Status(name string) BufferStatus {
 		buf.mu.Lock()
 		refs := buf.refs
 		size := int64(buf.Len)
+		dtype := buf.Dtype
+		format := buf.Format
+		readOnly := buf.ReadOnly
+		ownership := nonEmptyString(buf.Ownership, "omnivm")
 		buf.mu.Unlock()
 		if refs <= 0 {
 			continue
 		}
 		status.State = "released_detached"
 		status.Released = true
+		if status.Len == 0 {
+			status.Len = size
+			status.Dtype = dtype
+			status.Format = format
+			status.ReadOnly = readOnly
+			status.Ownership = ownership
+		}
 		status.ActiveBorrows += int64(refs)
 		status.ActiveBorrowedBytes += int64(refs) * size
 		status.DetachedBuffers++

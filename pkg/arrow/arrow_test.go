@@ -420,6 +420,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 	s := NewSharedStore()
 	_, err := s.SetWithMetadata("payload", []byte{1, 2, 3, 4}, BufferMetadata{
 		Dtype:     DtypeBytes,
+		Format:    "C",
 		ReadOnly:  true,
 		Ownership: "producer",
 	})
@@ -427,7 +428,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := s.Status("payload")
-	if !status.Live || status.State != "live" || status.Len != 4 || status.Dtype != DtypeBytes || !status.ReadOnly || status.Ownership != "producer" {
+	if !status.Live || status.State != "live" || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad live buffer status: %+v", status)
 	}
 
@@ -443,7 +444,7 @@ func TestBufferStatusReportsLiveReleasedAndDetachedStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = s.Status("payload")
-	if status.State != "released_detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 {
+	if status.State != "released_detached" || !status.Released || status.Live || status.DetachedBuffers != 1 || status.DetachedBytes != 4 || status.Len != 4 || status.Dtype != DtypeBytes || status.Format != "C" || !status.ReadOnly || status.Ownership != "producer" {
 		t.Fatalf("bad released detached status: %+v", status)
 	}
 
