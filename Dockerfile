@@ -122,6 +122,7 @@ RUN cd /usr/local/lib && npm install \
       undici \
       busboy \
       multer \
+      body-parser \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \
@@ -358,6 +359,7 @@ RUN cd /usr/local/lib && npm install \
       undici \
       busboy \
       multer \
+      body-parser \
       prisma \
       @prisma/client \
       @prisma/adapter-pg \

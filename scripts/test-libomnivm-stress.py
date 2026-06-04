@@ -21351,6 +21351,159 @@ def test_manifest_express_multer_upload_abort_cancels_python_owner():
         raise AssertionError(f"Express/Multer upload leaked live handles: before={before_handles}, after={handles}")
 
 
+def test_manifest_express_body_parser_json_abort_cancels_python_owner():
+    before_status = omnivm.status()
+    before_handles = before_status.get("handles", {})
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "class ExpressJsonBody:\n"
+                    "    def __init__(self):\n"
+                    "        self.chunks = [b'{\"payload\":\"first-json-'] + [((b'json-tail-%04d-' % i) + (b'x' * 32768)) for i in range(40)] + [b'\"}']\n"
+                    "        self.index = 0\n"
+                    "        self.pulls = 0\n"
+                    "        self.closed = False\n"
+                    "    def __iter__(self):\n"
+                    "        return self\n"
+                    "    def __next__(self):\n"
+                    "        self.pulls += 1\n"
+                    "        if self.index >= len(self.chunks):\n"
+                    "            raise StopIteration\n"
+                    "        chunk = self.chunks[self.index]\n"
+                    "        self.index += 1\n"
+                    "        return chunk\n"
+                    "    def close(self):\n"
+                    "        self.closed = True\n"
+                    "express_json_body = ExpressJsonBody()\n"
+                ),
+            },
+            {"op": "eval", "runtime": "python", "bind": "express_json_body", "code": "express_json_body"},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": (
+                    "(async () => {\n"
+                    "  const express = require('express');\n"
+                    "  const bodyParser = require('body-parser');\n"
+                    "  const {request: undiciRequest} = require('undici');\n"
+                    "  globalThis.expressJsonAbortState = {\n"
+                    "    requests: 0,\n"
+                    "    bytes: 0,\n"
+                    "    aborted: false,\n"
+                    "    reqAborted: false,\n"
+                    "    reqClosed: false,\n"
+                    "    parserFinished: false,\n"
+                    "    parserError: null,\n"
+                    "    parsed: false,\n"
+                    "    bodyClosed: false,\n"
+                    "    bodyError: null,\n"
+                    "    sourceCancelled: false,\n"
+                    "    clientRejected: false,\n"
+                    "    clientRejectName: null,\n"
+                    "    clientRejectMessage: null\n"
+                    "  };\n"
+                    "  if (typeof express_json_body.toNodeReadable !== 'function') {\n"
+                    "    throw new Error('OmniVM stream proxy did not expose toNodeReadable');\n"
+                    "  }\n"
+                    "  const originalCancel = express_json_body.cancel.bind(express_json_body);\n"
+                    "  express_json_body.cancel = reason => {\n"
+                    "    globalThis.expressJsonAbortState.sourceCancelled = true;\n"
+                    "    return originalCancel(reason);\n"
+                    "  };\n"
+                    "  const abortController = new AbortController();\n"
+                    "  const app = express();\n"
+                    "  app.post('/json', (req, res) => {\n"
+                    "    const state = globalThis.expressJsonAbortState;\n"
+                    "    state.requests += 1;\n"
+                    "    req.on('data', chunk => {\n"
+                    "      state.bytes += chunk.length;\n"
+                    "      if (!state.aborted && state.bytes > 4096) {\n"
+                    "        state.aborted = true;\n"
+                    "        abortController.abort(new Error('client-stop'));\n"
+                    "      }\n"
+                    "    });\n"
+                    "    req.on('aborted', () => { state.reqAborted = true; });\n"
+                    "    req.on('close', () => { state.reqClosed = true; });\n"
+                    "    bodyParser.json({limit: '8mb'})(req, res, err => {\n"
+                    "      state.parserFinished = true;\n"
+                    "      state.parserError = err ? (err.type || err.message || String(err)) : null;\n"
+                    "      state.parsed = !!req.body;\n"
+                    "      if (!res.destroyed && !res.headersSent) res.status(err ? 499 : 200).end(err ? 'aborted' : 'ok');\n"
+                    "    });\n"
+                    "  });\n"
+                    "  const server = app.listen(0, '127.0.0.1');\n"
+                    "  await new Promise((resolve, reject) => {\n"
+                    "    server.once('listening', resolve);\n"
+                    "    server.once('error', reject);\n"
+                    "  });\n"
+                    "  const body = express_json_body.toNodeReadable({objectMode: false, highWaterMark: 1});\n"
+                    "  body.on('close', () => { globalThis.expressJsonAbortState.bodyClosed = true; });\n"
+                    "  body.on('error', err => { globalThis.expressJsonAbortState.bodyError = err && err.message ? err.message : String(err); });\n"
+                    "  const port = server.address().port;\n"
+                    "  try {\n"
+                    "    await undiciRequest('http://127.0.0.1:' + port + '/json', {\n"
+                    "      method: 'POST',\n"
+                    "      body,\n"
+                    "      headers: {'content-type': 'application/json'},\n"
+                    "      signal: abortController.signal\n"
+                    "    });\n"
+                    "  } catch (err) {\n"
+                    "    globalThis.expressJsonAbortState.clientRejected = true;\n"
+                    "    globalThis.expressJsonAbortState.clientRejectName = err && err.name ? err.name : null;\n"
+                    "    globalThis.expressJsonAbortState.clientRejectMessage = err && err.message ? err.message : String(err);\n"
+                    "  } finally {\n"
+                    "    await new Promise(resolve => setTimeout(resolve, 80));\n"
+                    "    await new Promise(resolve => server.close(resolve));\n"
+                    "  }\n"
+                    "  for (let i = 0; i < 20 && !globalThis.expressJsonAbortState.sourceCancelled; i++) {\n"
+                    "    await new Promise(resolve => setImmediate(resolve));\n"
+                    "  }\n"
+                    "  const state = globalThis.expressJsonAbortState;\n"
+                    "  if (state.requests !== 1) throw new Error('Express/body-parser saw bad request count: ' + JSON.stringify(state));\n"
+                    "  if (state.bytes <= 4096) throw new Error('Express/body-parser did not receive JSON bytes before abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.aborted || !state.clientRejected) throw new Error('Express/body-parser did not abort client: ' + JSON.stringify(state));\n"
+                    "  if (!state.reqClosed) throw new Error('Express/body-parser request did not close after abort: ' + JSON.stringify(state));\n"
+                    "  if (!state.bodyClosed) throw new Error('Express/body-parser upload body stream did not close: ' + JSON.stringify(state));\n"
+                    "  if (!state.sourceCancelled) throw new Error('Express/body-parser abort did not cancel Python source: ' + JSON.stringify(state));\n"
+                    "})()\n"
+                ),
+                "captures": {"express_json_body": "express_json_body"},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "if not express_json_body.closed:\n"
+                    "    raise AssertionError('Express/body-parser JSON abort did not close Python owner')\n"
+                    "if express_json_body.index <= 1:\n"
+                    "    raise AssertionError(f'Express/body-parser did not consume JSON body before abort: {express_json_body.__dict__!r}')\n"
+                    "if express_json_body.index >= len(express_json_body.chunks):\n"
+                    "    raise AssertionError(f'Express/body-parser drained entire JSON upload after abort: {express_json_body.__dict__!r}')\n"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("stream_proxy_captures", 0) < 1:
+        raise AssertionError(f"Express/body-parser JSON body did not cross as a stream proxy: {boundary}")
+    if boundary.get("json_fallbacks", 0) != 0:
+        raise AssertionError(f"Express/body-parser JSON body used JSON fallback: {boundary}")
+    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+        raise AssertionError(f"Express/body-parser JSON body did not record stream access: before={before_handles}, after={handles}")
+    if handles.get("live", 0) != before_handles.get("live", 0):
+        raise AssertionError(f"Express/body-parser JSON body leaked live handles: before={before_handles}, after={handles}")
+
+
 def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner():
     manifest = {
         "version": 1,
@@ -26473,6 +26626,7 @@ def main():
         check("Manifest Node classic pipeline abort cancels Python owner", test_manifest_node_classic_pipeline_abort_cancels_python_owner)
         check("Manifest Busboy upload abort cancels Python owner", test_manifest_busboy_upload_abort_cancels_python_owner)
         check("Manifest Express Multer upload abort cancels Python owner", test_manifest_express_multer_upload_abort_cancels_python_owner)
+        check("Manifest Express body-parser JSON abort cancels Python owner", test_manifest_express_body_parser_json_abort_cancels_python_owner)
         check("Manifest Node Web Stream pipeTo abort re-enters Python and cancels owner", test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owner)
         check("Manifest HTTPX response stream early cancel releases owner", test_manifest_httpx_response_stream_early_cancel_releases_owner)
         check("Manifest requests response stream early cancel releases owner", test_manifest_requests_response_stream_early_cancel_releases_owner)
