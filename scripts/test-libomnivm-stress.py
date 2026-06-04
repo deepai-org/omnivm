@@ -25149,6 +25149,130 @@ pydantic_collision = CollisionModel(
         raise AssertionError(f"Pydantic collision model did not record mutation access: before={before_handles}, after={handles}")
 
 
+def test_manifest_protobuf_message_collision_fields_stay_natural():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
+    setup = r'''
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+file_proto = descriptor_pb2.FileDescriptorProto()
+file_proto.name = "omnivm_collision.proto"
+message_proto = file_proto.message_type.add()
+message_proto.name = "CollisionMessage"
+for number, name in enumerate(("items", "keys", "count", "then", "length", "get", "close"), start=1):
+    field = message_proto.field.add()
+    field.name = name
+    field.number = number
+    field.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+    if name in ("count", "length"):
+        field.type = descriptor_pb2.FieldDescriptorProto.TYPE_INT32
+    else:
+        field.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+
+pool = descriptor_pool.DescriptorPool()
+pool.Add(file_proto)
+CollisionMessage = message_factory.GetMessageClass(pool.FindMessageTypeByName("CollisionMessage"))
+
+protobuf_collision = CollisionMessage(
+    items="field-items",
+    keys="field-keys",
+    count=7,
+    then="field-then",
+    length=12,
+    get="field-get",
+    close="field-close",
+)
+'''
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {"op": "exec", "runtime": "python", "code": setup},
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"protobuf_collision": "protobuf_collision"},
+                "code": (
+                    "if (protobuf_collision.items !== 'field-items') throw new Error('Protobuf items field lost: ' + protobuf_collision.items); "
+                    "if (protobuf_collision.keys !== 'field-keys') throw new Error('Protobuf keys field lost: ' + protobuf_collision.keys); "
+                    "if (String(protobuf_collision.count) !== '7') throw new Error('Protobuf count field lost: ' + protobuf_collision.count); "
+                    "if (protobuf_collision.then !== 'field-then') throw new Error('Protobuf then field lost: ' + protobuf_collision.then); "
+                    "if (String(protobuf_collision.length) !== '12') throw new Error('Protobuf length field lost: ' + protobuf_collision.length); "
+                    "if (protobuf_collision.get !== 'field-get') throw new Error('Protobuf get field lost: ' + protobuf_collision.get); "
+                    "if (protobuf_collision.close !== 'field-close') throw new Error('Protobuf close field lost: ' + protobuf_collision.close); "
+                    "if (typeof protobuf_collision.SerializeToString !== 'function') throw new Error('Protobuf SerializeToString method lost'); "
+                    "protobuf_collision.items = 'js-items'; "
+                    "protobuf_collision.then = 'js-then'; "
+                    "protobuf_collision.length = 13; "
+                    "if (omnivm.proxyGet(protobuf_collision, 'length') !== 13) throw new Error('proxyGet lost Protobuf length field');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"protobuf_collision": "protobuf_collision"},
+                "code": (
+                    "raise \"bad Protobuf items #{protobuf_collision.items}\" unless protobuf_collision.items == 'js-items'; "
+                    "raise \"bad Protobuf then #{protobuf_collision.then}\" unless protobuf_collision.then == 'js-then'; "
+                    "raise \"bad Protobuf length #{protobuf_collision.length}\" unless protobuf_collision.length == 13; "
+                    "protobuf_collision.keys = 'ruby-keys'; "
+                    "protobuf_collision.close = 'ruby-close'"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"protobuf_collision": "protobuf_collision"},
+                "code": (
+                    "omnivm.OmniVM.HandleProxy payload = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"protobuf_collision\"); "
+                    "if (!\"js-items\".equals(String.valueOf(payload.get(\"items\")))) throw new RuntimeException(\"Protobuf Java items field lost: \" + payload.get(\"items\")); "
+                    "if (!\"ruby-keys\".equals(String.valueOf(payload.get(\"keys\")))) throw new RuntimeException(\"Protobuf Java keys field lost: \" + payload.get(\"keys\")); "
+                    "if (!\"field-get\".equals(String.valueOf(payload.get(\"get\")))) throw new RuntimeException(\"Protobuf Java get field lost: \" + payload.get(\"get\")); "
+                    "if (!\"ruby-close\".equals(String.valueOf(payload.get(\"close\")))) throw new RuntimeException(\"Protobuf Java close field lost: \" + payload.get(\"close\")); "
+                    "if (!payload.set(\"count\", 42)) throw new RuntimeException(\"Protobuf count set failed\"); "
+                    "if (!payload.set(\"get\", \"java-get\")) throw new RuntimeException(\"Protobuf get set failed\");"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "assert protobuf_collision.items == 'js-items', protobuf_collision\n"
+                    "assert protobuf_collision.keys == 'ruby-keys', protobuf_collision\n"
+                    "assert protobuf_collision.count == 42, protobuf_collision\n"
+                    "assert protobuf_collision.then == 'js-then', protobuf_collision\n"
+                    "assert protobuf_collision.length == 13, protobuf_collision\n"
+                    "assert protobuf_collision.get == 'java-get', protobuf_collision\n"
+                    "assert protobuf_collision.close == 'ruby-close', protobuf_collision\n"
+                    "dump = {field.name: value for field, value in protobuf_collision.ListFields()}\n"
+                    "assert dump == {'items': 'js-items', 'keys': 'ruby-keys', 'count': 42, 'then': 'js-then', 'length': 13, 'get': 'java-get', 'close': 'ruby-close'}, dump\n"
+                    "assert protobuf_collision.SerializeToString(), 'Protobuf owner method stopped working'"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) == 0:
+        raise AssertionError(f"Protobuf collision message did not cross as live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Protobuf collision message used JSON fallback: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Protobuf collision message crossed as stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"Protobuf collision message crossed as table: before={before_boundary}, after={boundary}")
+    accesses = handles.get("handle_accesses_by_kind", {})
+    before_accesses = before_handles.get("handle_accesses_by_kind", {})
+    if accesses.get("property", 0) <= before_accesses.get("property", 0):
+        raise AssertionError(f"Protobuf collision message did not record property access: before={before_handles}, after={handles}")
+    if accesses.get("mutation", 0) <= before_accesses.get("mutation", 0):
+        raise AssertionError(f"Protobuf collision message did not record mutation access: before={before_handles}, after={handles}")
+
+
 def test_manifest_attrs_model_collision_fields_stay_natural():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -28457,6 +28581,7 @@ def main():
         check("Manifest proxy setter values stay live", test_manifest_proxy_setter_values_stay_live)
         check("Manifest Python mapping collision setters prefer keys", test_manifest_python_mapping_collision_setters_prefer_keys)
         check("Manifest Pydantic model collision fields stay natural", test_manifest_pydantic_model_collision_fields_stay_natural)
+        check("Manifest Protobuf message collision fields stay natural", test_manifest_protobuf_message_collision_fields_stay_natural)
         check("Manifest attrs model collision fields stay natural", test_manifest_attrs_model_collision_fields_stay_natural)
         check("Manifest dataclass model collision fields stay natural", test_manifest_dataclass_model_collision_fields_stay_natural)
         check("Manifest Java zero arg methods stay natural in guest proxies", test_manifest_java_zero_arg_methods_stay_natural_in_guest_proxies)
