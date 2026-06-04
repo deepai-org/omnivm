@@ -1695,6 +1695,13 @@ class TestCallWithMockLib(unittest.TestCase):
         gc.collect()
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
 
+    def test_buffer_borrow_finalizer_ignores_release_failure(self):
+        self.mock_lib.OmniBufRelease.side_effect = RuntimeError("release failed")
+
+        omnivm_mod._release_buffer_borrow(b"payload")
+
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
+
     def test_get_buffer_returns_empty_memoryview_for_empty_buffer(self):
         def fill_buffer(_name, out):
             buf = ctypes.cast(

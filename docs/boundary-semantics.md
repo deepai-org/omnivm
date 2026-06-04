@@ -681,6 +681,9 @@ finalizer arrives, and those unnamed leases remain visible through
 Go `BorrowedBuffer.Release()` remains a quiet, idempotent finalizer-compatible
 lease release; explicit callers that need producer release callback failures can
 use `ReleaseWithError()`.
+Python borrowed `memoryview` cleanup follows the same finalizer rule:
+`get_buffer()` views call `OmniBufRelease` quietly when collected, while
+`omnivm.release_buffer(name)` remains the user-initiated diagnostic path.
 Use `omnivm.buffer_status(name)` for a per-name lifecycle check. It reports a
 coarse `state` (`live`, `released`, `released_detached`, or `missing`), a
 direct `lease_state` (`owned`, `borrowed`, `detached`, `released`, or

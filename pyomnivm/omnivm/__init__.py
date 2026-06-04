@@ -1926,8 +1926,11 @@ def get_buffer(name):
 
 
 def _release_buffer_borrow(encoded_name):
-    if _lib is not None:
-        _lib.OmniBufRelease(encoded_name)
+    try:
+        if _lib is not None:
+            _lib.OmniBufRelease(encoded_name)
+    except BaseException:
+        pass
 
 
 def set_buffer(name, data, dtype=0):
