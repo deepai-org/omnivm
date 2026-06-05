@@ -7115,6 +7115,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"Object.defineProperty(omnivm, \"bufferOwner\"",
 		"omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"omnivm.releaseBuffer(this.name)",
+		"__omnivm_buffer_owner_error",
+		`"native_memory"`,
+		`active_owner: true`,
 		"cannot be re-entered after release",
 		"is already active",
 		"if (this.released === true) return false",
@@ -7415,6 +7418,8 @@ try {
   throw new Error("active owner re-enter did not fail");
 } catch (err) {
   if (err.message.indexOf("already active") < 0) throw err;
+  if (err.boundary_path !== "native_memory") throw new Error("active owner boundary mismatch: " + err.boundary_path);
+  if (!err.details || !err.details.buffer || err.details.buffer.active_owner !== true || err.details.buffer.state !== "active") throw new Error("active owner details mismatch: " + JSON.stringify(err.details));
 }
 if (owner.release() !== true) throw new Error("release did not return true");
 if (owner.release() !== false) throw new Error("second release was not idempotent");
@@ -7424,6 +7429,8 @@ try {
   throw new Error("released owner re-enter did not fail");
 } catch (err) {
   if (err.message.indexOf("cannot be re-entered after release") < 0) throw err;
+  if (err.boundary_path !== "native_memory") throw new Error("released owner boundary mismatch: " + err.boundary_path);
+  if (!err.details || !err.details.buffer || err.details.buffer.released !== true || err.details.buffer.state !== "released") throw new Error("released owner details mismatch: " + JSON.stringify(err.details));
 }
 if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7], ["status", "payload"], ["release", "payload"]])) throw new Error("re-enter changed owner events: " + JSON.stringify(omnivm.events));
 
@@ -10960,6 +10967,9 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return Array.isArray(errors) ? errors.slice() : []",
 		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"globalThis.omnivm.releaseBuffer(this.name)",
+		"__omnivm_buffer_owner_error",
+		`"native_memory"`,
+		`active_owner: true`,
 		"cannot be re-entered after release",
 		"is already active",
 		"this.__omnivm_entered = false",

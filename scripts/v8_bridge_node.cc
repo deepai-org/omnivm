@@ -2078,6 +2078,9 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       return globalThis.__omnivm_buffer_status_released(details) ||
         !!(details && typeof details === 'object' && globalThis.__omnivm_buffer_status_released(details.buffer));
     };
+    globalThis.__omnivm_buffer_owner_error = globalThis.__omnivm_buffer_owner_error || function(message, buffer) {
+      return globalThis.__omnivm_owner_dispatch_error(message, "native_memory", {buffer: buffer});
+    };
     if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
       Object.defineProperty(globalThis, "__omnivm_BufferOwner", {
         configurable: true,
@@ -2090,8 +2093,8 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
         }
       });
       globalThis.__omnivm_BufferOwner.prototype.enter = function() {
-        if (this.released === true) throw new Error("omnivm.bufferOwner " + JSON.stringify(this.name) + " cannot be re-entered after release");
-        if (this.__omnivm_entered) throw new Error("omnivm.bufferOwner " + JSON.stringify(this.name) + " is already active");
+        if (this.released === true) throw globalThis.__omnivm_buffer_owner_error("omnivm.bufferOwner " + JSON.stringify(this.name) + " cannot be re-entered after release", {name: this.name, state: "released", released: true});
+        if (this.__omnivm_entered) throw globalThis.__omnivm_buffer_owner_error("omnivm.bufferOwner " + JSON.stringify(this.name) + " is already active", {name: this.name, state: "active", active_owner: true});
         if (this.__omnivm_data !== globalThis.__omnivm_buffer_owner_unset) {
           globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype);
         }
