@@ -1807,19 +1807,28 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       }
     });
   }
+  if (typeof globalThis.__omnivm_lifecycle_method_without_required_args !== 'function') {
+    Object.defineProperty(globalThis, "__omnivm_lifecycle_method_without_required_args", {
+      configurable: true,
+      value: function(value, name) {
+        var method = globalThis.__omnivm_actual_public_method(value, name);
+        return typeof method === 'function' && method.length === 0 ? method : null;
+      }
+    });
+  }
   if (typeof globalThis.omnivm !== 'undefined' && globalThis.omnivm && typeof globalThis.omnivm.proxyClose !== 'function') {
     Object.defineProperty(globalThis.omnivm, "proxyClose", {
       configurable: true,
       value: function(value) {
         var omnivmClose = null;
         try {
-          omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close");
+          omnivmClose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "__omnivm_close");
         } catch (_omnivmCloseLookupError) {}
         if (typeof omnivmClose === 'function') return omnivmClose.call(value);
         if (typeof Symbol !== 'undefined') {
           var symbolDispose = null;
           try {
-            symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null;
+            symbolDispose = Symbol.dispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.dispose) : null;
           } catch (_symbolDisposeLookupError) {}
           if (typeof symbolDispose === 'function') {
             var symbolDisposeResult = symbolDispose.call(value);
@@ -1827,24 +1836,24 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           }
           var symbolAsyncDispose = null;
           try {
-            symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null;
+            symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.asyncDispose) : null;
           } catch (_symbolAsyncDisposeLookupError) {}
           if (typeof symbolAsyncDispose === 'function') {
             var symbolAsyncDisposeResult = symbolAsyncDispose.call(value);
             return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult;
           }
         }
-        var close = globalThis.__omnivm_actual_public_method(value, "close");
+        var close = globalThis.__omnivm_lifecycle_method_without_required_args(value, "close");
         if (close) {
           var result = close.call(value);
           return result === undefined ? true : result;
         }
-        var dispose = globalThis.__omnivm_actual_public_method(value, "dispose");
+        var dispose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "dispose");
         if (dispose) {
           var disposeResult = dispose.call(value);
           return disposeResult === undefined ? true : disposeResult;
         }
-        var destroy = globalThis.__omnivm_actual_public_method(value, "destroy");
+        var destroy = globalThis.__omnivm_lifecycle_method_without_required_args(value, "destroy");
         if (destroy) {
           var destroyResult = destroy.call(value);
           return destroyResult === undefined ? true : destroyResult;

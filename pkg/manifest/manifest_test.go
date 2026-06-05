@@ -7167,17 +7167,19 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "globalThis.__omnivm_actual_public_method") ||
 		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
-		!contains(code, `omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`) ||
+		!contains(code, "globalThis.__omnivm_lifecycle_method_without_required_args") ||
+		!contains(code, "method.length === 0") ||
+		!contains(code, `omnivmClose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "__omnivm_close")`) ||
 		!contains(code, "return omnivmClose.call(value)") ||
-		!contains(code, "symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null") ||
-		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null") ||
+		!contains(code, "symbolDispose = Symbol.dispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.dispose) : null") ||
+		!contains(code, "symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.asyncDispose) : null") ||
 		!contains(code, "return symbolDisposeResult === undefined ? true : symbolDisposeResult") ||
 		!contains(code, "return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult") ||
-		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
+		!contains(code, `var close = globalThis.__omnivm_lifecycle_method_without_required_args(value, "close")`) ||
 		!contains(code, "var result = close.call(value);\n          return result === undefined ? true : result") ||
-		!contains(code, `var dispose = globalThis.__omnivm_actual_public_method(value, "dispose")`) ||
+		!contains(code, `var dispose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "dispose")`) ||
 		!contains(code, "var disposeResult = dispose.call(value);\n          return disposeResult === undefined ? true : disposeResult") ||
-		!contains(code, `var destroy = globalThis.__omnivm_actual_public_method(value, "destroy")`) ||
+		!contains(code, `var destroy = globalThis.__omnivm_lifecycle_method_without_required_args(value, "destroy")`) ||
 		!contains(code, "var destroyResult = destroy.call(value);\n          return destroyResult === undefined ? true : destroyResult") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
@@ -7440,6 +7442,14 @@ var disposeUndefinedResult = omnivm.proxyClose({dispose: function() {}});
 if (disposeUndefinedResult !== true) throw new Error("undefined dispose result should normalize to true");
 var disposeFalseResult = omnivm.proxyClose({dispose: function() { return false; }});
 if (disposeFalseResult !== false) throw new Error("false dispose result was not preserved");
+var requiredCloseDisposeCalls = 0;
+var requiredCloseDisposeResult = omnivm.proxyClose({
+  close: function(reason) { throw new Error("required close should not run: " + reason); },
+  dispose: function() { requiredCloseDisposeCalls++; return "disposed-after-required-close"; }
+});
+if (requiredCloseDisposeResult !== "disposed-after-required-close" || requiredCloseDisposeCalls !== 1) throw new Error("required close did not fall through to dispose");
+var requiredOnlyCloseResult = omnivm.proxyClose({close: function(reason) { throw new Error("required close should not run: " + reason); }});
+if (requiredOnlyCloseResult !== false) throw new Error("required-only close should not be treated as lifecycle close");
 var getterCount = 0;
 var getterTarget = {close: function() { return "getter-safe"; }};
 Object.defineProperty(getterTarget, "__omnivm_close", {get: function() { getterCount++; throw new Error("getter invoked"); }});
@@ -7463,6 +7473,8 @@ var destroyUndefinedResult = omnivm.proxyClose({destroy: function() {}});
 if (destroyUndefinedResult !== true) throw new Error("undefined destroy result should normalize to true");
 var destroyFalseResult = omnivm.proxyClose({destroy: function() { return false; }});
 if (destroyFalseResult !== false) throw new Error("false destroy result was not preserved");
+var requiredDestroyResult = omnivm.proxyClose({destroy: function(reason) { throw new Error("required destroy should not run: " + reason); }});
+if (requiredDestroyResult !== false) throw new Error("required destroy should not be treated as lifecycle close");
 var destroyGetterCount = 0;
 var destroyGetterTarget = {};
 Object.defineProperty(destroyGetterTarget, "destroy", {get: function() { destroyGetterCount++; throw new Error("destroy getter invoked"); }});
@@ -7472,9 +7484,13 @@ var symbolDisposeResult = omnivm.proxyClose({[Symbol.dispose]: function() {}});
 if (symbolDisposeResult !== true) throw new Error("undefined Symbol.dispose result should normalize to true");
 var symbolDisposeFalse = omnivm.proxyClose({[Symbol.dispose]: function() { return false; }});
 if (symbolDisposeFalse !== false) throw new Error("false Symbol.dispose result was not preserved");
+var requiredSymbolDispose = omnivm.proxyClose({[Symbol.dispose]: function(reason) { throw new Error("required Symbol.dispose should not run: " + reason); }});
+if (requiredSymbolDispose !== false) throw new Error("required Symbol.dispose should not be treated as lifecycle close");
 var symbolAsyncDisposePromise = Promise.resolve("async-symbol-closed");
 var symbolAsyncDisposeResult = omnivm.proxyClose({[Symbol.asyncDispose]: function() { return symbolAsyncDisposePromise; }});
 if (symbolAsyncDisposeResult !== symbolAsyncDisposePromise) throw new Error("Symbol.asyncDispose promise result was not preserved");
+var requiredSymbolAsyncDispose = omnivm.proxyClose({[Symbol.asyncDispose]: function(reason) { throw new Error("required Symbol.asyncDispose should not run: " + reason); }});
+if (requiredSymbolAsyncDispose !== false) throw new Error("required Symbol.asyncDispose should not be treated as lifecycle close");
 `
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
@@ -11332,18 +11348,20 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",
-		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,
+		"globalThis.__omnivm_lifecycle_method_without_required_args",
+		"method.length === 0",
+		`omnivmClose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "__omnivm_close")`,
 		"return omnivmClose.call(value)",
 		"return globalThis.omnivm.proxyClose(value)",
-		"symbolDispose = Symbol.dispose ? globalThis.__omnivm_actual_public_method(value, Symbol.dispose) : null",
-		"symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_actual_public_method(value, Symbol.asyncDispose) : null",
+		"symbolDispose = Symbol.dispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.dispose) : null",
+		"symbolAsyncDispose = Symbol.asyncDispose ? globalThis.__omnivm_lifecycle_method_without_required_args(value, Symbol.asyncDispose) : null",
 		"return symbolDisposeResult === undefined ? true : symbolDisposeResult",
 		"return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult",
-		`var close = globalThis.__omnivm_actual_public_method(value, "close")`,
+		`var close = globalThis.__omnivm_lifecycle_method_without_required_args(value, "close")`,
 		"return result === undefined ? true : result",
-		`var dispose = globalThis.__omnivm_actual_public_method(value, "dispose")`,
+		`var dispose = globalThis.__omnivm_lifecycle_method_without_required_args(value, "dispose")`,
 		"return disposeResult === undefined ? true : disposeResult",
-		`var destroy = globalThis.__omnivm_actual_public_method(value, "destroy")`,
+		`var destroy = globalThis.__omnivm_lifecycle_method_without_required_args(value, "destroy")`,
 		"return destroyResult === undefined ? true : destroyResult",
 		`Object.defineProperty(globalThis.omnivm, "cleanupErrors"`,
 		"return Array.isArray(errors) ? errors.slice() : []",
