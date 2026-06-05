@@ -147,6 +147,8 @@ expected_cause = [{
   message: "inner",
   traceback: "TypeError: inner\n    at cause (<anonymous>:2:4)",
   stack_frames: ["at cause (<anonymous>:2:4)"],
+  runtime: "javascript",
+  origin_runtime: "javascript",
   details: {"code" => "E_INNER", "path" => ["user", "age"]}
 }]
 raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == expected_cause
