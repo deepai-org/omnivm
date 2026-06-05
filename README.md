@@ -608,6 +608,14 @@ ordinary Go `Close() error` values through the same collision-safe lifecycle
 path; the compatibility alias `manifest.OmnivmClose(value)` remains available
 for generated-helper naming parity. The helpers return `(closed, error)` so
 failed owner cleanup is not mistaken for a successful close.
+Go integrations that need owner-loop/executor routing can preflight the same
+diagnostic-only boundary with `manifest.OwnerDispatchStatus()`,
+`manifest.OwnerDispatchTargetStatus(target)`,
+`manifest.AssertOwnerDispatchSupported(label)`, or
+`manifest.AssertOwnerDispatchTargetSupported(target, label)`. Go code that may
+load native-threaded Ruby app servers can also call
+`manifest.RubyThreadingStatus()` or
+`manifest.AssertRubyNativeThreadsSupported(label)`.
 
 ```bash
 # Run a single manifest

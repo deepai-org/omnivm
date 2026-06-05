@@ -684,6 +684,16 @@ Embedded Ruby exposes the contract with Ruby-style names:
 `OmniVM.owner_dispatch_target_status(target)`,
 `OmniVM.assert_owner_dispatch_supported(label)`, and
 `OmniVM.assert_owner_dispatch_target_supported(target, label)`.
+Go manifest callers expose the same diagnostic-only contract with
+`manifest.OwnerDispatchStatus()`,
+`manifest.OwnerDispatchTargetStatus(target)`,
+`manifest.AssertOwnerDispatchSupported(label)`,
+`manifest.AssertOwnerDispatchTargetSupported(target, label)`,
+`manifest.RubyThreadingStatus()`, and
+`manifest.AssertRubyNativeThreadsSupported(label)`. Go assert helpers return a
+structured `*manifest.OwnerDispatchError` whose `ToMap()`/JSON envelope includes
+the same `runtime`, `origin_runtime`, `type`, `boundary_path`, `details`, and
+`details_json` fields rather than throwing an exception.
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
