@@ -10485,8 +10485,10 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	}
 	for _, want := range []string{
 		"omnivm_py_last_export_rejection",
+		"omnivm_py_has_export_rejection",
 		"__dlpack__ device is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory",
 		"dataframe interchange data buffer is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory",
+		"if (!exported && !omnivm_py_has_export_rejection())",
 		`fmt.Errorf("python: native_memory unsupported zero-copy buffer export for %q: %s", name, C.GoString(rejection))`,
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {

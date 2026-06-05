@@ -790,14 +790,22 @@ func TestPythonExportBufferRejectsNonCPUDLPackDevice(t *testing.T) {
 	defer r.Shutdown()
 
 	if result := r.Execute(`
+import ctypes
+
 class GPUOnlyDLPack:
     def __init__(self):
         self.called = False
+        self.array_interface_called = False
+        self.backing = (ctypes.c_uint8 * 2)(1, 2)
     def __dlpack_device__(self):
         return (2, 0)
     def __dlpack__(self, stream=None):
         self.called = True
         raise RuntimeError("non-CPU __dlpack__ should not be called")
+    @property
+    def __array_interface__(self):
+        self.array_interface_called = True
+        return {"data": (ctypes.addressof(self.backing), False), "shape": (2,), "typestr": "|u1"}
 payload = GPUOnlyDLPack()
 `); result.Err != nil {
 		t.Fatalf("create non-CPU __dlpack__ payload: %v", result.Err)
@@ -809,6 +817,9 @@ payload = GPUOnlyDLPack()
 	}
 	if result := r.Eval("payload.called"); result.Err != nil || result.Value != "False" {
 		t.Fatalf("non-CPU __dlpack__ was called: value=%v err=%v", result.Value, result.Err)
+	}
+	if result := r.Eval("payload.array_interface_called"); result.Err != nil || result.Value != "False" {
+		t.Fatalf("non-CPU __dlpack__ fell through to __array_interface__: value=%v err=%v", result.Value, result.Err)
 	}
 }
 

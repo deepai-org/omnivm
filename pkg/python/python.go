@@ -735,6 +735,10 @@ static const char* omnivm_py_last_export_rejection(void) {
 	return g_export_rejection[0] == '\0' ? NULL : g_export_rejection;
 }
 
+static int omnivm_py_has_export_rejection(void) {
+	return g_export_rejection[0] != '\0';
+}
+
 static int omnivm_py_arrow_c_format(const char* format, char* out, size_t out_len, Py_ssize_t* itemsize) {
 	if (!format || !out || out_len < 2 || !itemsize) return 0;
 	if (strlen(format) != 1) return 0;
@@ -2024,10 +2028,10 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_array_method(PyObject* obj)
 	if (!exported) {
 		exported = omnivm_py_export_dlpack(array_obj);
 	}
-	if (!exported) {
+	if (!exported && !omnivm_py_has_export_rejection()) {
 		exported = omnivm_py_export_dataframe_interchange(array_obj);
 	}
-	if (!exported) {
+	if (!exported && !omnivm_py_has_export_rejection()) {
 		exported = omnivm_py_export_array_interface(array_obj);
 	}
 	Py_DECREF(array_obj);
@@ -2107,13 +2111,13 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_buffer(const char* expr) {
 		if (!exported) {
 			exported = omnivm_py_export_dlpack(obj);
 		}
-		if (!exported) {
+		if (!exported && !omnivm_py_has_export_rejection()) {
 			exported = omnivm_py_export_dataframe_interchange(obj);
 		}
-		if (!exported) {
+		if (!exported && !omnivm_py_has_export_rejection()) {
 			exported = omnivm_py_export_array_interface(obj);
 		}
-		if (!exported) {
+		if (!exported && !omnivm_py_has_export_rejection()) {
 			exported = omnivm_py_export_array_method(obj);
 		}
 		Py_DECREF(obj);
