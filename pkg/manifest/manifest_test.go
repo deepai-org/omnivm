@@ -7064,6 +7064,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`python_async_stream_pull`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`boundary_path = boundaryPath`,
+		`originRuntime = err.origin_runtime`,
 		`original_error_handle: err.original_error_handle`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
@@ -7255,6 +7256,7 @@ try {
   if (err.message.indexOf("express startup: owner dispatch unsupported") < 0) throw new Error("bad universal message: " + err.message);
   if (err.boundary_path !== "owner_dispatch") throw new Error("bad universal boundary: " + err.boundary_path);
   if (!err.details || err.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing universal details");
+  if (err.originRuntime !== "javascript") throw new Error("missing error originRuntime alias");
   if (!err.traceback || err.traceback.indexOf("OmniVMRuntimeError") < 0) throw new Error("missing error traceback property");
   if (!Array.isArray(err.stack_frames) || err.stack_frames.length === 0) throw new Error("missing error stack_frames property");
   if (!Array.isArray(err.stackFrames) || err.stackFrames.length !== err.stack_frames.length) throw new Error("missing error stackFrames alias");
@@ -10970,6 +10972,7 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
 		`err.toJSON = function()`,
+		`err.originRuntime = err.origin_runtime`,
 		`err.stack_frames = stackFrames.slice()`,
 		`err.cause_chain = causeChain.slice()`,
 		`stack_frames: stackFrames.slice()`,

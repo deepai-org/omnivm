@@ -1807,6 +1807,7 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     err.name = "OmniVMRuntimeError";
     err.runtime = "javascript";
     err.origin_runtime = "javascript";
+    err.originRuntime = err.origin_runtime;
     err.type = "RuntimeError";
     err.boundary_path = boundaryPath;
     err.boundaryPath = boundaryPath;

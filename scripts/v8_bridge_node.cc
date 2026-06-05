@@ -1998,6 +1998,7 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.name = "OmniVMRuntimeError";
       err.runtime = "javascript";
       err.origin_runtime = "javascript";
+      err.originRuntime = err.origin_runtime;
       err.type = "RuntimeError";
       err.boundary_path = boundaryPath;
       err.boundaryPath = boundaryPath;
