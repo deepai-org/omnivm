@@ -9548,6 +9548,25 @@ func TestJavaHandleProxyToStringPrefersMaterializedField(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static String nativeCall(String runtime, String code) {
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_get\"") && code.contains("\"key\":\"toString\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":\"bridge-to-string\"}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
 	checkPath := tmp + "/ProxyToStringCheck.java"
 	check := `package omnivm;
 
@@ -9562,13 +9581,16 @@ public final class ProxyToStringCheck {
         Object proxy = OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":82,\"runtime\":\"python\",\"kind\":\"object\",\"toString\":\"remote-to-string\"}");
         String text = String.valueOf(proxy);
         require("remote-to-string".equals(text), "toString did not prefer local materialized remote field: " + text);
+        Object bridged = OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":83,\"runtime\":\"python\",\"kind\":\"object\"}");
+        String bridgedText = String.valueOf(bridged);
+        require("bridge-to-string".equals(bridgedText), "toString did not fetch remote field through bridge: " + bridgedText);
     }
 }
 `
 	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
 		t.Fatalf("write Java proxy toString check: %v", err)
 	}
-	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
 		t.Fatalf("compile Java proxy toString check: %v\n%s", err, out)
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyToStringCheck").CombinedOutput(); err != nil {
