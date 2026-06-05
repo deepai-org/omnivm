@@ -732,9 +732,11 @@ def __omnivm_bridge_module():
         pass
     return None
 
-def __omnivm_release_handle_id(handle_id):
+def __omnivm_release_handle_id(handle_id, bridge_token=None):
     try:
         caller = __omnivm_bridge_module()
+        if bridge_token is not None and caller is not bridge_token:
+            return
         if caller is not None and hasattr(caller, "call"):
             import json as __j
             caller.call("__manifest", __j.dumps({"op": "handle_release_finalizer", "id": handle_id}))
@@ -904,6 +906,7 @@ class __OmniVMHandleProxy:
     def __init__(self, value):
         object.__setattr__(self, "_value", value)
         object.__setattr__(self, "_closed", False)
+        object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_module"]())
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -911,9 +914,13 @@ class __OmniVMHandleProxy:
             else:
                 globals()["__omnivm_retain_handle_id"](handle_id)
             import weakref as __w
-            object.__setattr__(self, "_finalizer", __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id))
+            object.__setattr__(self, "_finalizer", __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id, object.__getattribute__(self, "_bridge_token")))
         if isinstance(value, dict) and value.get("kind") == "mapping":
             self._sync_mapping_cache()
+
+    def _bridge_active(self):
+        bridge_token = object.__getattribute__(self, "_bridge_token")
+        return bridge_token is None or globals()["__omnivm_bridge_module"]() is bridge_token
 
     def _sync_mapping_cache(self):
         try:
@@ -945,6 +952,8 @@ class __OmniVMHandleProxy:
 
     def _record(self, kind="property"):
         if object.__getattribute__(self, "_closed"):
+            return None
+        if not self._bridge_active():
             return None
         try:
             caller = globals()["__omnivm_bridge_module"]()
@@ -1008,6 +1017,9 @@ class __OmniVMHandleProxy:
     def _bridge(self, payload):
         self._ensure_open(payload.get("op") or "operation")
         caller = globals()["__omnivm_bridge_module"]()
+        bridge_token = object.__getattribute__(self, "_bridge_token")
+        if bridge_token is not None and caller is not bridge_token:
+            raise AttributeError(payload.get("key"))
         if caller is None or not hasattr(caller, "call"):
             raise AttributeError(payload.get("key"))
         import json as __j
@@ -1126,6 +1138,9 @@ class __OmniVMHandleProxy:
 
     def _omnivm_close(self):
         if object.__getattribute__(self, "_closed"):
+            return False
+        if not self._bridge_active():
+            self._mark_closed()
             return False
         result = self._bridge({"op": "handle_release_explicit"})
         released = bool(result)
@@ -1349,6 +1364,7 @@ class __OmniVMStreamProxy:
         self._cursor = 0
         self._exhausted = False
         self._closed = False
+        self._bridge_token = globals()["__omnivm_bridge_module"]()
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -1356,7 +1372,10 @@ class __OmniVMStreamProxy:
             else:
                 globals()["__omnivm_retain_handle_id"](handle_id)
             import weakref as __w
-            self._finalizer = __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id)
+            self._finalizer = __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id, self._bridge_token)
+
+    def _bridge_active(self):
+        return self._bridge_token is None or globals()["__omnivm_bridge_module"]() is self._bridge_token
 
     def _mark_closed(self):
         if self._closed:
@@ -1370,6 +1389,8 @@ class __OmniVMStreamProxy:
 
     def _next_envelope(self):
         caller = globals()["__omnivm_bridge_module"]()
+        if self._bridge_token is not None and caller is not self._bridge_token:
+            return {"done": True}
         if caller is None or not hasattr(caller, "call"):
             return {"done": True}
         import json as __j
@@ -1501,6 +1522,9 @@ class __OmniVMStreamProxy:
             return False
         if self._local_values is not None:
             return self._mark_closed()
+        if not self._bridge_active():
+            self._mark_closed()
+            return False
         caller = globals()["__omnivm_bridge_module"]()
         if caller is None or not hasattr(caller, "call"):
             return False

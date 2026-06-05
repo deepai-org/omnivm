@@ -6834,7 +6834,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `mode = "values" if self._value.get("kind") == "sequence" or self._value.get("__omnivm_table__") is True else "keys"`) {
 		t.Fatalf("Python materializer should iterate sequence proxies by value and mapping proxies by key, got %q", code)
 	}
-	if !contains(code, `"op": "handle_release_finalizer"`) || !contains(code, "weakref") || !contains(code, "__omnivm_release_handle_id") {
+	if !contains(code, `def __omnivm_release_handle_id(handle_id, bridge_token=None):`) ||
+		!contains(code, `if bridge_token is not None and caller is not bridge_token:`) ||
+		!contains(code, `"op": "handle_release_finalizer"`) ||
+		!contains(code, "weakref") ||
+		!contains(code, "__omnivm_release_handle_id") ||
+		!contains(code, `object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_module"]())`) ||
+		!contains(code, `object.__getattribute__(self, "_bridge_token")`) {
 		t.Fatalf("Python materializer should queue weakref finalizer releases, got %q", code)
 	}
 	if !contains(code, `"op": "handle_retain"`) || !contains(code, "__omnivm_retain_handle_id") {
@@ -6870,6 +6876,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def _omnivm_record_cleanup_error(error, cleanup_error, note):") ||
 		!contains(code, `setattr(error, "omnivm_cleanup_errors", errors)`) ||
 		!contains(code, "return list(errors) if isinstance(errors, list) else []") ||
+		!contains(code, "def _bridge_active(self):") ||
+		!contains(code, "if not self._bridge_active():\n            self._mark_closed()\n            return False") ||
 		!contains(code, `result = self._bridge({"op": "handle_release_explicit"})`) ||
 		!contains(code, "released = bool(result)\n        if released:\n            self._mark_closed()") ||
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
@@ -6952,6 +6960,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
 		!contains(code, "if released:\n            self._mark_closed()\n        return released") ||
+		!contains(code, "if not self._bridge_active():\n            self._mark_closed()\n            return False") ||
+		!contains(code, "if self._bridge_token is not None and caller is not self._bridge_token:\n            return {\"done\": True}") ||
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
 		strings.Count(code, "async def __aenter__(self):\n        return self") < 2 ||
@@ -7329,6 +7339,76 @@ if len(loaded_cancels) != 1:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream early-break cancellation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonProxyFinalizersIgnoreReplacedBridge(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import gc
+import json
+
+class OldBridge:
+    requests = []
+
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        OldBridge.requests.append(req)
+        if req["op"] in ("handle_retain", "handle_adopt"):
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] in ("handle_release_explicit", "handle_release_finalizer", "stream_cancel"):
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected old manifest op " + req["op"])
+
+class NewBridge:
+    requests = []
+
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        NewBridge.requests.append(req)
+        if req["op"] in ("handle_release_explicit", "handle_release_finalizer", "stream_cancel", "handle_contains", "handle_get"):
+            return json.dumps({"__omnivm_result__": True, "value": "wrong-bridge"})
+        raise RuntimeError("unexpected new manifest op " + req["op"])
+
+` + code + `
+omnivm = OldBridge
+proxy = __omnivm_materialize_capture({"__omnivm_resource__": True, "id": 501, "runtime": "python", "kind": "request"})
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 502, "runtime": "python", "kind": "queryset"})
+if not any(req.get("op") == "handle_retain" and req.get("id") == 501 for req in OldBridge.requests):
+    raise RuntimeError("handle proxy was not retained: " + repr(OldBridge.requests))
+if not any(req.get("op") == "handle_retain" and req.get("id") == 502 for req in OldBridge.requests):
+    raise RuntimeError("stream proxy was not retained: " + repr(OldBridge.requests))
+
+omnivm = NewBridge
+if proxy.close() is not False:
+    raise RuntimeError("stale handle close should be a quiet no-op")
+if stream.close() is not False:
+    raise RuntimeError("stale stream close should be a quiet no-op")
+if NewBridge.requests:
+    raise RuntimeError("stale proxy cleanup called replacement bridge: " + repr(NewBridge.requests))
+del proxy
+del stream
+gc.collect()
+gc.collect()
+if NewBridge.requests:
+    raise RuntimeError("stale proxy finalizer called replacement bridge: " + repr(NewBridge.requests))
+old_cleanup = [req for req in OldBridge.requests if req.get("op") in ("handle_release_explicit", "handle_release_finalizer", "stream_cancel")]
+if old_cleanup:
+    raise RuntimeError("stale proxy cleanup called old bridge after replacement: " + repr(old_cleanup))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python stale bridge finalizer check failed: %v\n%s", err, out)
 	}
 }
 
