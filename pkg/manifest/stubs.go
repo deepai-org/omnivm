@@ -2631,6 +2631,9 @@ func runtimeRefFromHandleValue(value interface{}) (RuntimeRef, bool) {
 }
 
 func (e *Executor) runtimeRefProperty(parent handles.ID, ref RuntimeRef, key string) (interface{}, bool, error) {
+	if runtimeRefDescriptorMetadataKey(key) {
+		return nil, false, nil
+	}
 	if ref.Runtime == "ruby" {
 		zeroArg, err := e.runtimeRefRubyZeroArgMethod(ref, key)
 		if err != nil {
@@ -2696,7 +2699,7 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 	if ref.Runtime != "java" {
 		return false, nil
 	}
-	if javaZeroArgCommandMethod(key) {
+	if !javaZeroArgPropertyMethod(key) {
 		return false, nil
 	}
 	expr, ok, err := runtimeRefJavaZeroArgMethodExpr(ref, key)
@@ -2709,6 +2712,18 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 	}
 	zeroArg, _ := value.(bool)
 	return zeroArg, nil
+}
+
+func javaZeroArgPropertyMethod(key string) bool {
+	if strings.HasPrefix(key, "is") && len(key) > 2 && key[2] >= 'A' && key[2] <= 'Z' {
+		return true
+	}
+	switch key {
+	case "done", "cancelled", "status":
+		return true
+	default:
+		return false
+	}
 }
 
 func javaZeroArgCommandMethod(key string) bool {
@@ -2823,6 +2838,9 @@ func (e *Executor) runtimeRefIter(parent handles.ID, ref RuntimeRef, mode string
 }
 
 func (e *Executor) runtimeRefContains(ref RuntimeRef, key interface{}) (bool, bool, error) {
+	if text, ok := key.(string); ok && runtimeRefDescriptorMetadataKey(text) {
+		return true, false, nil
+	}
 	builder := &runtimeExprBuilder{executor: e, targetRuntime: ref.Runtime}
 	expr, ok, err := runtimeRefContainsExprWithBuilder(ref, key, builder)
 	if err != nil || !ok {
@@ -2840,6 +2858,9 @@ func (e *Executor) runtimeRefContains(ref RuntimeRef, key interface{}) (bool, bo
 }
 
 func (e *Executor) runtimeRefCallable(ref RuntimeRef, key string) (bool, error) {
+	if runtimeRefDescriptorMetadataKey(key) {
+		return false, nil
+	}
 	expr, ok, err := runtimeRefCallableExpr(ref, key)
 	if err != nil || !ok {
 		return false, err
@@ -2850,6 +2871,22 @@ func (e *Executor) runtimeRefCallable(ref RuntimeRef, key string) (bool, error) 
 	}
 	callable, _ := value.(bool)
 	return callable, nil
+}
+
+func runtimeRefDescriptorMetadataKey(key string) bool {
+	switch key {
+	case "__omnivm_callable__",
+		"__omnivm_resource__",
+		"__omnivm_table__",
+		"__omnivm_job__",
+		"__omnivm_stream__",
+		"__omnivm_channel__",
+		"__omnivm_runtime_ref__",
+		"__omnivm_materialized__":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Executor) runtimeRefCall(parent handles.ID, ref RuntimeRef, key string, args []interface{}, kwargs map[string]interface{}) (interface{}, bool, error) {

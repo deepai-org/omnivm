@@ -4588,19 +4588,15 @@ func runtimeArgRefReleaseCode(runtimeName, key string) (string, bool) {
 
 func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref RuntimeRef) (string, error) {
 	if ref.SnapshotKnown && !ref.Opaque && isBridgePrimitive(ref.Value) {
-		if _, rubyString := ref.Value.(string); !(ref.Runtime == "ruby" && rubyString) {
-			if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
-				return jsonVal, err
-			}
+		if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
+			return jsonVal, err
 		}
 	}
 	if jsonVal, ok, err := e.runtimeRefBulkTableCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
 		return jsonVal, err
 	}
-	if _, rubyString := ref.Value.(string); !(ref.Runtime == "ruby" && rubyString) {
-		if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
-			return jsonVal, err
-		}
+	if jsonVal, ok, err := e.knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
+		return jsonVal, err
 	}
 	if jsonVal, ok, err := e.runtimeRefStreamCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
 		return jsonVal, err

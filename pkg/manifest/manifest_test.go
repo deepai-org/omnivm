@@ -4958,6 +4958,9 @@ func TestRuntimePrimitiveSnapshotExprProbesCallableShape(t *testing.T) {
 	if !strings.Contains(rb, ".parameters") || !strings.Contains(rb, ":keyrest") || !strings.Contains(rb, "parameterNames") {
 		t.Fatalf("Ruby primitive snapshot should inspect callable parameters, got %q", rb)
 	}
+	if !strings.Contains(rb, "Encoding::ASCII_8BIT") {
+		t.Fatalf("Ruby primitive snapshot should keep binary strings out of text captures, got %q", rb)
+	}
 	java := runtimePrimitiveSnapshotExpr("java", "handler")
 	if !strings.Contains(java, "primitiveSnapshot(handler)") {
 		t.Fatalf("Java primitive snapshot should delegate to Java reflection helper, got %q", java)
@@ -14452,6 +14455,27 @@ func TestResolveRuntimeRefCaptureExportsBufferProtocolAsArrowTable(t *testing.T)
 	}
 }
 
+func TestResolveRuntimeRefCapturePreservesRubyTextPrimitive(t *testing.T) {
+	e, _ := makeExecutor("ruby", "python")
+
+	jsonVal, err := e.resolveRuntimeRefCapture("payload", "python", RuntimeRef{
+		Runtime:       "ruby",
+		VarName:       "payload",
+		Value:         "he",
+		SnapshotKnown: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeRefCapture: %v", err)
+	}
+	if jsonVal != `"he"` {
+		t.Fatalf("Ruby text RuntimeRef capture = %s, want JSON string", jsonVal)
+	}
+	stats := e.BoundaryStats()
+	if stats.TableProxyCaptures != 0 || stats.ArrowTransfers != 0 || stats.ResourceProxyCaptures != 0 || stats.JSONFallbacks != 0 {
+		t.Fatalf("Ruby text RuntimeRef stats = %+v, want direct primitive capture", stats)
+	}
+}
+
 func TestResolveRuntimeRefCaptureProxiesUnsupportedNativeMemory(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	mocks["python"].evalFn = func(code string) pkg.Result {
@@ -15538,6 +15562,41 @@ func TestRuntimeRefProxyComplexPropertyStaysProxied(t *testing.T) {
 	child, ok := runtimeRefFromHandleValue(entry.Value)
 	if !ok || child.Runtime != "python" || !strings.HasPrefix(child.VarName, "__omnivm_ref_") {
 		t.Fatalf("items proxy value = %#v, want live RuntimeRef child", entry.Value)
+	}
+}
+
+func TestRuntimeRefProxyKeepsDescriptorMetadataPrivate(t *testing.T) {
+	e, mocks := makeExecutor("javascript", "java")
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "__omnivm_callable__") {
+			t.Fatalf("descriptor metadata key should not be evaluated against owner runtime, got %q", code)
+		}
+		return pkg.Result{Value: "false"}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "javascript", VarName: "payload", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	if _, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"__omnivm_callable__"}`); err == nil || !strings.Contains(err.Error(), `has no property "__omnivm_callable__"`) {
+		t.Fatalf("metadata handle_get error = %v, want missing local descriptor key", err)
+	}
+	result, err := e.HandleCall(`{"op":"handle_contains","id":` + strconv.FormatUint(uint64(id), 10) + `,"value":"__omnivm_callable__"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_contains metadata: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("metadata contains envelope = %#v, want false", env)
 	}
 }
 
@@ -16889,6 +16948,16 @@ func TestRuntimeRefProxyKeepsJavaLibraryMethodsCallable(t *testing.T) {
 		if env.Kind != "json" || !jsonEqual(env.Value, want) {
 			t.Fatalf("live Java library method %s descriptor = %#v, want %#v", key, env, want)
 		}
+	}
+
+	result, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"payload"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get payload: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	want := map[string]interface{}{"__omnivm_callable__": true, "key": "payload"}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java payload method descriptor = %#v, want %#v", env, want)
 	}
 }
 
