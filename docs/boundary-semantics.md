@@ -749,7 +749,10 @@ owner object has a real `close` field or method.
 For retained handle proxies, natural reads of owner fields named `close` or
 `dispose` still prefer the owner field; lifecycle release uses
 `omnivm.proxy_close(value)`, `omnivm.omnivm_close(value)`, or the generated
-`proxy_close(value)`/`omnivm_close(value)` helpers.
+`proxy_close(value)`/`omnivm_close(value)` helpers. Python retained handle
+proxies, stream iterators, and embedded local stream proxies also support
+`with` and `async with`; context exit runs the same explicit release or
+`stream_cancel` path and preserves body exceptions.
 The embedded Python `omnivm` module installs the same collision-safe
 `proxy_close(value)` and `omnivm_close(value)` helpers, so code running directly
 inside the embedded interpreter does not have to rely on proxy finalizers for

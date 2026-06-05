@@ -562,11 +562,14 @@ Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
 `omnivm.omnivm_close(proxy)`. Owner fields named `close` or `dispose` remain
 ordinary fields on retained Python proxies; use `proxy_close()` or
-`omnivm_close()` for lifecycle release. For ordinary local objects, the same helpers
-honor descriptor-defined `close()` and `dispose()` without triggering dynamic
-attribute lookup; `omnivm.aproxy_close(value)` also awaits async close,
-`aclose()`, and dispose results. Generated Python manifest snippets expose the
-same `proxy_close(value)`/`omnivm_close(value)` close-helper pair.
+`omnivm_close()` for lifecycle release. Python retained handle proxies, stream
+iterators, and embedded local stream proxies also support `with` and
+`async with` for deterministic release/cancel. For ordinary local objects, the
+same helpers honor descriptor-defined `close()` and `dispose()` without
+triggering dynamic attribute lookup; `omnivm.aproxy_close(value)` also awaits
+async close, `aclose()`, and dispose results. Generated Python manifest
+snippets expose the same `proxy_close(value)`/`omnivm_close(value)`
+close-helper pair.
 Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,

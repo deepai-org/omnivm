@@ -6829,6 +6829,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if object.__getattribute__(self, \"_closed\"):\n            return False") ||
 		!contains(code, "finalizer.detach()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
+		strings.Count(code, "async def __aenter__(self):\n        return self") < 2 ||
+		strings.Count(code, "async def __aexit__(self, exc_type, exc, tb):\n        return self.__exit__(exc_type, exc, tb)") < 2 ||
 		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
 		!contains(code, "if _exc_type is None:\n            self._omnivm_close()") ||
 		!contains(code, "try:\n            self._omnivm_close()") ||
@@ -6904,6 +6906,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if released:\n            self._mark_closed()\n        return released") ||
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
+		strings.Count(code, "async def __aenter__(self):\n        return self") < 2 ||
+		strings.Count(code, "async def __aexit__(self, exc_type, exc, tb):\n        return self.__exit__(exc_type, exc, tb)") < 2 ||
 		!contains(code, "def __exit__(self, _exc_type, exc, _tb):") ||
 		!contains(code, "f\"OmniVM stream close failed during exception cleanup: {close_exc}\"") {
 		t.Fatalf("Python stream proxy close should be explicit, idempotent, return the manifest release result, and detach finalizers after success, got %q", code)

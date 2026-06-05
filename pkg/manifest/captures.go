@@ -1135,6 +1135,9 @@ class __OmniVMHandleProxy:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, exc, _tb):
         if _exc_type is None:
             self._omnivm_close()
@@ -1148,6 +1151,9 @@ class __OmniVMHandleProxy:
                 f"OmniVM proxy close failed during exception cleanup: {close_exc}",
             )
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
     def __getitem__(self, key):
         self._ensure_open("index")
@@ -1492,6 +1498,9 @@ class __OmniVMStreamProxy:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, exc, _tb):
         if _exc_type is None:
             self.close()
@@ -1505,6 +1514,9 @@ class __OmniVMStreamProxy:
                 f"OmniVM stream close failed during exception cleanup: {close_exc}",
             )
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
 def __omnivm_materialize_capture(value):
     if isinstance(value, dict) and (

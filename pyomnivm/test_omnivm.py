@@ -2219,6 +2219,77 @@ class TestCallWithMockLib(unittest.TestCase):
         cleanup.clear()
         assert str(omnivm_mod.cleanup_errors(ctx.exception)[0]) == "release failed"
 
+    def test_async_manifest_proxy_context_closes_on_exit(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 57,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_explicit":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        async def run():
+            async with proxy as scoped:
+                assert scoped is proxy
+
+        asyncio.run(run())
+        assert proxy._omnivm_close() is False
+        assert [request for request in requests if request.get("op") == "handle_release_explicit"] == [
+            {"op": "handle_release_explicit", "id": 57}
+        ]
+
+    def test_async_manifest_proxy_context_preserves_body_exception_when_close_fails(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 58,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_release_explicit":
+                raise RuntimeError("release failed")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        async def run():
+            async with proxy:
+                raise ValueError("body failed")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            asyncio.run(run())
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("release failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "release failed"
+
     def test_manifest_stream_proxy_close_cancels_stream_once(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
@@ -2406,6 +2477,21 @@ class TestCallWithMockLib(unittest.TestCase):
             with stream:
                 raise ValueError("body failed")
 
+        assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
+    def test_async_embedded_local_stream_context_closes_on_exit(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        async def run():
+            async with stream as scoped:
+                assert scoped is stream
+                assert next(iter(scoped)) == "row-1"
+
+        asyncio.run(run())
         assert omnivm_mod.proxy_close(stream) is False
         assert list(stream) == []
 
@@ -2680,6 +2766,41 @@ class TestCallWithMockLib(unittest.TestCase):
         assert str(cleanup[0]) == "cancel failed"
         cleanup.clear()
         assert str(omnivm_mod.cleanup_errors(ctx.exception)[0]) == "cancel failed"
+
+    def test_async_manifest_stream_iterator_context_preserves_body_exception_when_close_fails(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 59,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_cancel":
+                raise RuntimeError("cancel failed")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        async def run():
+            async with iter(proxy):
+                raise ValueError("body failed")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            asyncio.run(run())
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("cancel failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "cancel failed"
 
     def test_manifest_call_wraps_nested_complex_return_proxies(self):
         def envelope(value, kind="json"):

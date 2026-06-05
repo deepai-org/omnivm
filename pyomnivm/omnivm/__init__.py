@@ -1581,6 +1581,9 @@ class ManifestProxy:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, exc, _tb):
         if _exc_type is None:
             self._omnivm_close()
@@ -1594,6 +1597,9 @@ class ManifestProxy:
                 f"OmniVM proxy close failed during exception cleanup: {close_exc}",
             )
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
     def __repr__(self):
         descriptor = object.__getattribute__(self, "_descriptor")
@@ -1742,9 +1748,15 @@ class _LocalManifestStreamProxy:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, _exc, _tb):
         self.close()
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
     def __repr__(self):
         return f"<omnivm.LocalManifestStream remaining={len(self)}>"
@@ -2081,6 +2093,9 @@ class _ManifestStreamIterator:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, exc, _tb):
         if _exc_type is None:
             self.close()
@@ -2094,6 +2109,9 @@ class _ManifestStreamIterator:
                 f"OmniVM stream close failed during exception cleanup: {close_exc}",
             )
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
 
 def set_task_timeout(ms):
