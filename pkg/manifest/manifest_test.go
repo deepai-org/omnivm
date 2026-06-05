@@ -10372,11 +10372,14 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby materializer should let remote then fields beat Object#then, got %q", code)
 	}
 	if !contains(code, "def class") || !contains(code, `__omnivm_data_key_value("class")`) ||
+		!contains(code, "__omnivm_previous_verbose = $VERBOSE") ||
+		!contains(code, "$VERBOSE = nil") ||
 		!contains(code, "def object_id") || !contains(code, `__omnivm_data_key_value("object_id")`) ||
+		!contains(code, "$VERBOSE = __omnivm_previous_verbose") ||
 		!contains(code, "def inspect") || !contains(code, `__omnivm_data_key_value("inspect")`) ||
 		!contains(code, "def hash") || !contains(code, `__omnivm_data_key_value("hash")`) ||
 		!contains(code, "def to_s") || !contains(code, `__omnivm_data_key_value("to_s")`) {
-		t.Fatalf("Ruby materializer should let remote identity-name fields beat local Object methods, got %q", code)
+		t.Fatalf("Ruby materializer should let remote identity-name fields beat local Object methods without object_id redefinition warnings, got %q", code)
 	}
 	if !contains(code, "def __omnivm_internal_descriptor_key?(key)") ||
 		!contains(code, `@value["__omnivm_resource__"] == true || @value["__omnivm_table__"] == true || @value["__omnivm_job__"] == true`) ||

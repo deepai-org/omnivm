@@ -4158,9 +4158,15 @@ class OmniVMHandleProxy
     super
   end
 
-  def object_id
-    return __omnivm_data_key_value("object_id") if __omnivm_data_key?("object_id")
-    super
+  begin
+    __omnivm_previous_verbose = $VERBOSE
+    $VERBOSE = nil
+    def object_id
+      return __omnivm_data_key_value("object_id") if __omnivm_data_key?("object_id")
+      super
+    end
+  ensure
+    $VERBOSE = __omnivm_previous_verbose
   end
 
   def inspect
