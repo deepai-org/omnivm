@@ -28264,6 +28264,135 @@ def test_manifest_closed_table_proxy_reports_owner_lifecycle_error():
             pass
 
 
+def test_manifest_closed_stream_proxy_reports_owner_lifecycle_error():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "def make_stream(label):\n"
+                    "    yield {'name': label + '-first'}\n"
+                    "    yield {'name': label + '-second'}\n"
+                    "rows_for_js = make_stream('js')\n"
+                    "rows_for_ruby = make_stream('ruby')\n"
+                    "rows_for_java = make_stream('java')\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rows_for_js": "rows_for_js"},
+                "code": (
+                    "globalThis.staleJSStream = rows_for_js; "
+                    "const first = rows_for_js[Symbol.iterator]().next(); "
+                    "if (first.done || first.value.name !== 'js-first') throw new Error('bad JS first stream row: ' + JSON.stringify(first));"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"rows_for_js": "rows_for_js"},
+                "code": "rows_for_js.to_a",
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "try { globalThis.staleJSStream[Symbol.iterator]().next(); } "
+                    "catch (err) { "
+                    "  let text = String(err && err.message || err); "
+                    "  if (!text.includes('closed stream handle') || !text.includes('runtime=python') || !text.includes('kind=stream')) throw err; "
+                    "  let stream = err && err.details && err.details.stream; "
+                    "  if (err.runtime !== 'python' || err.originRuntime !== 'python' || err.type !== 'RuntimeError' || err.boundaryPath !== 'owner_lifecycle') throw err; "
+                    "  if (!stream || stream.runtime !== 'python' || stream.kind !== 'stream' || stream.closed !== true || stream.owner_lifecycle !== 'closed') throw err; "
+                    "  globalThis.closedStreamProxyErrorSeen = true; "
+                    "} "
+                    "if (!globalThis.closedStreamProxyErrorSeen) throw new Error('closed JS stream proxy pull did not raise');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"rows_for_ruby": "rows_for_ruby"},
+                "code": (
+                    "$stale_ruby_stream = rows_for_ruby\n"
+                    "$stale_ruby_stream_enum = rows_for_ruby.each\n"
+                    "first = $stale_ruby_stream_enum.next\n"
+                    "raise 'bad Ruby first stream row: ' + first.inspect unless first['name'] == 'ruby-first'\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rows_for_ruby": "rows_for_ruby"},
+                "code": "rows_for_ruby.toArray();",
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "begin\n"
+                    "  $stale_ruby_stream_enum.next\n"
+                    "rescue => e\n"
+                    "  raise e unless e.message.include?('closed stream handle') && e.message.include?('runtime=python') && e.message.include?('kind=stream')\n"
+                    "  raise e unless e.runtime == 'python' && e.origin_runtime == 'python' && e.type == 'RuntimeError' && e.boundary_path == 'owner_lifecycle'\n"
+                    "  stream = e.details['stream']\n"
+                    "  raise e unless stream['runtime'] == 'python' && stream['kind'] == 'stream' && stream['closed'] == true && stream['owner_lifecycle'] == 'closed'\n"
+                    "  $closed_stream_proxy_error_seen_ruby = true\n"
+                    "end\n"
+                    "raise 'closed Ruby stream proxy pull did not raise' unless $closed_stream_proxy_error_seen_ruby\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"rows_for_java": "rows_for_java"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"rows_for_java\"); "
+                    "if (!(raw instanceof omnivm.OmniVM.StreamProxy)) throw new RuntimeException(\"rows_for_java should cross as stream proxy: \" + raw); "
+                    "java.util.Iterator<Object> it = ((omnivm.OmniVM.StreamProxy) raw).iterator(); "
+                    "if (!it.hasNext()) throw new RuntimeException(\"Java stream was empty\"); "
+                    "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
+                    "if (!\"java-first\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Java first stream row: \" + row); "
+                    "omnivm.OmniVM.setCaptureObject(\"staleJavaStreamIterator\", it);"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"rows_for_java": "rows_for_java"},
+                "code": "rows_for_java.toArray();",
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "java.util.Iterator<?> it = (java.util.Iterator<?>) omnivm.OmniVM.getCapture(\"staleJavaStreamIterator\"); "
+                    "try { it.hasNext(); } "
+                    "catch (omnivm.OmniVM.RuntimeError err) { "
+                    "  String text = String.valueOf(err.getMessage()); "
+                    "  if (!text.contains(\"closed stream handle\") || !text.contains(\"runtime=python\") || !text.contains(\"kind=stream\")) throw err; "
+                    "  if (!\"python\".equals(err.getRuntime()) || !\"python\".equals(err.getOriginRuntime()) || !\"RuntimeError\".equals(err.getType()) || !\"owner_lifecycle\".equals(err.getBoundaryPath())) throw err; "
+                    "  Object detailsObj = err.getDetails(); "
+                    "  if (!(detailsObj instanceof java.util.Map)) throw err; "
+                    "  java.util.Map<?, ?> details = (java.util.Map<?, ?>) detailsObj; "
+                    "  Object streamObj = details.get(\"stream\"); "
+                    "  if (!(streamObj instanceof java.util.Map)) throw err; "
+                    "  java.util.Map<?, ?> stream = (java.util.Map<?, ?>) streamObj; "
+                    "  if (!\"python\".equals(stream.get(\"runtime\")) || !\"stream\".equals(stream.get(\"kind\")) || !Boolean.TRUE.equals(stream.get(\"closed\")) || !\"closed\".equals(stream.get(\"owner_lifecycle\"))) throw err; "
+                    "  omnivm.OmniVM.setCaptureObject(\"closedStreamProxyErrorSeenJava\", Boolean.TRUE); "
+                    "} "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedStreamProxyErrorSeenJava\"))) throw new RuntimeException(\"closed Java stream proxy pull did not raise\");"
+                ),
+            },
+        ],
+    }
+    run_manifest_dict(manifest)
+
+
 def test_manifest_returned_proxy_finalizer_releases_transfer():
     before = omnivm.status().get("handles", {})
     manifest = {
@@ -30584,6 +30713,7 @@ def main():
         check("Manifest stream items preserve complex runtime refs", test_manifest_stream_items_preserve_complex_runtime_refs)
         check("Manifest Python generator capture is lazy stream", test_manifest_python_generator_capture_is_lazy_stream)
         check("Manifest function returns generator as transfer stream", test_manifest_function_returned_generator_is_transfer_stream)
+        check("Manifest closed stream proxy reports owner lifecycle error", test_manifest_closed_stream_proxy_reports_owner_lifecycle_error)
         check("Manifest runtime iterators capture as lazy streams", test_manifest_runtime_iterators_capture_as_lazy_streams)
         check("Manifest runtime readers capture as lazy streams", test_manifest_runtime_readers_capture_as_lazy_streams)
         check("Manifest Java iterable body capture is lazy stream", test_manifest_java_iterable_body_capture_as_lazy_stream)
