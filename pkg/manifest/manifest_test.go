@@ -9531,6 +9531,13 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def self.__omnivm_missing_bridge_error?(error)") || !contains(code, "raise unless __omnivm_missing_bridge_error?(e)") {
 		t.Fatalf("Ruby materializer should propagate owner lifecycle errors while preserving ordinary missing-field fallbacks, got %q", code)
 	}
+	if !contains(code, "def __omnivm_closed_operation_error(op)") ||
+		!contains(code, "def __omnivm_ensure_open(op)") ||
+		!contains(code, `raise __omnivm_closed_operation_error(op) if @__omnivm_closed == true`) ||
+		!contains(code, `"OmniVM Ruby handle proxy #{op} on closed #{kind} handle#{suffix}"`) ||
+		!contains(code, `"proxy_lifecycle"`) {
+		t.Fatalf("Ruby materializer should reject stale closed proxy operations locally, got %q", code)
+	}
 	if !contains(code, "chatty cross-runtime proxy access detected") {
 		t.Fatalf("Ruby materializer should warn on chatty proxy access, got %q", code)
 	}
@@ -9596,6 +9603,15 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
 		t.Fatalf("Ruby materializer should forward generic index/set/call/len/iter/contains operations, got %q", code)
+	}
+	if !contains(code, "__omnivm_ensure_open(\"index\")") ||
+		!contains(code, "__omnivm_ensure_open(\"set\")") ||
+		!contains(code, "__omnivm_ensure_open(\"call\")") ||
+		!contains(code, "__omnivm_ensure_open(\"len\")") ||
+		!contains(code, "__omnivm_ensure_open(\"iterate\")") ||
+		!contains(code, "__omnivm_ensure_open(\"contains\")") ||
+		!contains(code, "__omnivm_ensure_open(\"get\")") {
+		t.Fatalf("Ruby materializer should guard user operations after proxy close, got %q", code)
 	}
 	if !contains(code, `value["zeroArg"] == true`) {
 		t.Fatalf("Ruby materializer should invoke zero-arg callable descriptors as property access, got %q", code)
@@ -9798,6 +9814,20 @@ end
 descriptor = {"__omnivm_resource__" => true, "id" => 91, "runtime" => "ruby", "kind" => "object", "transfer" => true}
 first = __omnivm_materialize_capture(descriptor)
 raise "first close failed" unless OmniVM.proxy_close(first) == true
+before_closed_access = OmniVM.requests.dup
+begin
+  first.omnivm_get("path")
+  raise "closed proxy get unexpectedly succeeded"
+rescue => err
+  raise "closed proxy diagnostic mismatch: #{err.message}" unless err.message.include?("closed object handle #91")
+end
+begin
+  first["path"]
+  raise "closed proxy index unexpectedly succeeded"
+rescue => err
+  raise "closed proxy index diagnostic mismatch: #{err.message}" unless err.message.include?("closed object handle #91")
+end
+raise "closed proxy access reached bridge: #{OmniVM.requests[before_closed_access.length..].inspect}" unless OmniVM.requests == before_closed_access
 second = __omnivm_materialize_capture(descriptor)
 raise "closed proxy was reused" if second.equal?(first)
 raise "second close failed" unless OmniVM.proxy_close(second) == true

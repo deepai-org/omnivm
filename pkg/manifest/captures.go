@@ -3459,6 +3459,7 @@ class OmniVMHandleProxy
   end
 
   def __omnivm_record(kind = "property")
+    return nil if @__omnivm_closed == true
     begin
       if defined?(OmniVM) && OmniVM.respond_to?(:call)
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_access", id: @value["id"], kind: kind}))
@@ -3473,7 +3474,24 @@ class OmniVMHandleProxy
     nil
   end
 
+  def __omnivm_closed_operation_error(op)
+    runtime = (@value["runtime"] || "unknown").to_s
+    kind = (@value["kind"] || "object").to_s
+    id = @value["id"]
+    suffix = id.nil? ? "" : " ##{id}"
+    __omnivm_runtime_error(
+      "OmniVM Ruby handle proxy #{op} on closed #{kind} handle#{suffix}",
+      "proxy_lifecycle",
+      {"proxy" => {"id" => id, "runtime" => runtime, "kind" => kind, "closed" => true}}
+    )
+  end
+
+  def __omnivm_ensure_open(op)
+    raise __omnivm_closed_operation_error(op) if @__omnivm_closed == true
+  end
+
   def __omnivm_data_key?(key)
+    __omnivm_ensure_open("get")
     text_key = key.to_s
     return true if __omnivm_local_key?(key)
     begin
@@ -3509,6 +3527,7 @@ class OmniVMHandleProxy
   end
 
   def __omnivm_data_key_value(key, default = OMNIVM_MISSING)
+    __omnivm_ensure_open("get")
     text_key = key.to_s
     local = __omnivm_local_value(key)
     return local unless local.equal?(OMNIVM_MISSING)
@@ -3539,6 +3558,7 @@ class OmniVMHandleProxy
   end
 
   def __omnivm_materialize_chatty
+    __omnivm_ensure_open("iterate")
     begin
       return if @value["__omnivm_materialized__"] == true
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "items", materialize: true}))
@@ -3578,11 +3598,13 @@ class OmniVMHandleProxy
   def __omnivm_materialize_bridge_value(value)
     if value.is_a?(Hash) && value["__omnivm_callable__"] == true
       if value["zeroArg"] == true
+        __omnivm_ensure_open("call")
         raw_call = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: value["key"], args: []}))
         env_call = JSON.parse(raw_call)
         return env_call.is_a?(Hash) && env_call["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env_call["value"]) : raw_call
       end
       return proc do |*call_args|
+        __omnivm_ensure_open("call")
         raw_call = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: value["key"], args: call_args.map { |arg| __omnivm_encode_arg(arg) }}))
         env_call = JSON.parse(raw_call)
         env_call.is_a?(Hash) && env_call["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env_call["value"]) : raw_call
@@ -3607,6 +3629,7 @@ class OmniVMHandleProxy
   end
 
   def [](key)
+    __omnivm_ensure_open("index")
     local = __omnivm_local_value(key)
     return local unless local.equal?(OMNIVM_MISSING)
     report = __omnivm_record("index")
@@ -3630,12 +3653,14 @@ class OmniVMHandleProxy
   end
 
   def omnivm_get(key)
+    __omnivm_ensure_open("get")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_get", id: @value["id"], key: key.to_s}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
   end
 
   def omnivm_set(key, value)
+    __omnivm_ensure_open("set")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_set", id: @value["id"], key: key.to_s, value: __omnivm_encode_arg(value)}))
     env = JSON.parse(raw)
     if env.is_a?(Hash) && env["__omnivm_result__"] == true
@@ -3648,18 +3673,21 @@ class OmniVMHandleProxy
   end
 
   def omnivm_call(key, *args)
+    __omnivm_ensure_open("call")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: key.to_s, args: args.map { |arg| __omnivm_encode_arg(arg) }}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
   end
 
   def omnivm_len
+    __omnivm_ensure_open("len")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_len", id: @value["id"]}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : raw
   end
 
   def omnivm_iter(mode = "values")
+    __omnivm_ensure_open("iterate")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: mode.to_s}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
@@ -3678,6 +3706,7 @@ class OmniVMHandleProxy
   end
 
   def omnivm_contains(key)
+    __omnivm_ensure_open("contains")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_contains", id: @value["id"], value: __omnivm_encode_arg(key)}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? !!env["value"] : false
@@ -3699,6 +3728,7 @@ class OmniVMHandleProxy
   end
 
   def []=(key, value)
+    __omnivm_ensure_open("set")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_set", id: @value["id"], key: key.to_s, value: __omnivm_encode_arg(value)}))
     env = JSON.parse(raw)
     if env.is_a?(Hash) && env["__omnivm_result__"] == true
@@ -3711,6 +3741,7 @@ class OmniVMHandleProxy
   end
 
   def key?(key)
+    __omnivm_ensure_open("contains")
     begin
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_contains", id: @value["id"], value: key}))
       env = JSON.parse(raw)
@@ -3725,6 +3756,7 @@ class OmniVMHandleProxy
   alias include? key?
 
   def each(&block)
+    __omnivm_ensure_open("iterate")
     return __omnivm_data_key_value("each") if !block_given? && __omnivm_data_key?("each")
     begin
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "values"}))
@@ -3740,6 +3772,7 @@ class OmniVMHandleProxy
   end
 
   def keys
+    __omnivm_ensure_open("iterate")
     return __omnivm_data_key_value("keys") if __omnivm_data_key?("keys")
     begin
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "keys"}))
@@ -3753,6 +3786,7 @@ class OmniVMHandleProxy
   end
 
   def values
+    __omnivm_ensure_open("iterate")
     return __omnivm_data_key_value("values") if __omnivm_data_key?("values")
     begin
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "values"}))
@@ -3766,6 +3800,7 @@ class OmniVMHandleProxy
   end
 
   def length
+    __omnivm_ensure_open("len")
     return __omnivm_data_key_value("length") if __omnivm_data_key?("length")
     begin
       raw = OmniVM.call("__manifest", JSON.generate({op: "handle_len", id: @value["id"]}))
@@ -3831,6 +3866,7 @@ class OmniVMHandleProxy
   def method_missing(name, *args, &block)
     key = name.to_s
     if key.end_with?("=") && args.length == 1 && defined?(OmniVM) && OmniVM.respond_to?(:call)
+      __omnivm_ensure_open("set")
       begin
         target_key = key[0...-1]
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_set", id: @value["id"], key: target_key, value: __omnivm_encode_arg(args[0])}))
@@ -3852,6 +3888,7 @@ class OmniVMHandleProxy
     if args.empty? && __omnivm_local_key?(key)
       __omnivm_local_value(key)
     elsif args.empty? && defined?(OmniVM) && OmniVM.respond_to?(:call)
+      __omnivm_ensure_open("get")
       begin
         report = __omnivm_record("property")
         if report.is_a?(Hash) && report["chatty"] == true
@@ -3869,6 +3906,7 @@ class OmniVMHandleProxy
       end
       super
     elsif defined?(OmniVM) && OmniVM.respond_to?(:call)
+      __omnivm_ensure_open("call")
       begin
         __omnivm_record("call")
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: key, args: args.map { |arg| __omnivm_encode_arg(arg) }}))
@@ -3891,6 +3929,7 @@ end
 
 class OmniVMCallableHandleProxy < OmniVMHandleProxy
   def call(*args)
+    __omnivm_ensure_open("call")
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_call", id: @value["id"], key: "", args: args.map { |arg| __omnivm_encode_arg(arg) }}))
     env = JSON.parse(raw)
     env.is_a?(Hash) && env["__omnivm_result__"] == true ? __omnivm_materialize_bridge_value(env["value"]) : raw
