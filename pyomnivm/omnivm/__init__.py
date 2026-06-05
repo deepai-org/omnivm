@@ -455,7 +455,10 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return None
     parsed_boundary = text_field(field("boundary_path", "boundaryPath"))
     default_boundary = f"call[{runtime_name}]" if runtime_name else ""
-    if boundary_path and (not parsed_boundary or parsed_boundary == default_boundary):
+    fallback_matches_runtime = runtime_name == str(runtime or "")
+    if not parsed_boundary:
+        parsed_boundary = boundary_path or default_boundary
+    elif boundary_path and fallback_matches_runtime and parsed_boundary == default_boundary:
         parsed_boundary = boundary_path
     stack_frames = field("stack_frames", "stackFrames")
     if not isinstance(stack_frames, list) or not all(isinstance(frame, str) for frame in stack_frames):

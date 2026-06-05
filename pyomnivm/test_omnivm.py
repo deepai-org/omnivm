@@ -823,6 +823,26 @@ class TestRuntimeError(unittest.TestCase):
         assert err.message == "division by zero"
         assert err.boundary_path == "call[python]"
 
+    def test_prefixed_structured_envelope_preserves_rethrown_source_boundary(self):
+        err = omnivm_mod.RuntimeError(
+            "jvm: "
+            + json.dumps(
+                {
+                    "runtime": "python",
+                    "origin_runtime": "python",
+                    "type": "ZeroDivisionError",
+                    "message": "division by zero",
+                    "traceback": "Traceback\nZeroDivisionError: division by zero",
+                    "boundary_path": "call[python]",
+                }
+            ),
+            runtime="java",
+            boundary_path="call[java]",
+        )
+        assert err.runtime == "python"
+        assert err.type == "ZeroDivisionError"
+        assert err.boundary_path == "call[python]"
+
     def test_parsed_boundary_path_overrides_fallback(self):
         err = omnivm_mod.RuntimeError(
             "execute manifest: exec [python]: python: ValidationError: bad input",
