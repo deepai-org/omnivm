@@ -213,8 +213,14 @@ native Ruby thread scheduling, so true in-process Puma support remains open.
 data (`mode=single_vm_thread`, native threads unsupported, native-threaded app
 servers such as Puma should run out of process), and
 `omnivm.ruby_threading_status()` plus
-`omnivm.assert_ruby_native_threads_supported(label)` give host integrations a
-startup guard without first invoking `Thread.new`.
+`omnivm.assert_ruby_native_threads_supported(label)` give Python host
+integrations a startup guard without first invoking `Thread.new`; embedded Ruby
+exposes the same check as `OmniVM.ruby_threading_status` and
+`OmniVM.assert_ruby_native_threads_supported(label)`, while embedded JavaScript
+and Java expose `omnivm.rubyThreadingStatus()` /
+`omnivm.assertRubyNativeThreadsSupported(label)` and
+`OmniVM.rubyThreadingStatus()` /
+`OmniVM.assertRubyNativeThreadsSupported(label)`.
 Java `CompletableFuture` callback affinity
 is covered for both default async dispatch and explicit custom executors, and
 `CompletableFuture`/`ExecutorService` Future/`FutureTask`/`ScheduledFuture`/Guava
