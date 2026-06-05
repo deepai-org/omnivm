@@ -609,7 +609,7 @@ def omnivm_close(value):
         return True if result is None else result
     return False
 
-async def omnivm_aclose(value):
+async def aproxy_close(value):
     import inspect as __omnivm_inspect
     close = __omnivm_actual_public_method(value, "_omnivm_close")
     if callable(close):
@@ -628,6 +628,9 @@ async def omnivm_aclose(value):
             result = await result
         return True if result is None else result
     return False
+
+async def omnivm_aclose(value):
+    return await aproxy_close(value)
 
 def _omnivm_record_cleanup_error(error, cleanup_error, note):
     try:

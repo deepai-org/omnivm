@@ -6162,6 +6162,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
 	if !contains(code, "def omnivm_close(value):") ||
+		!contains(code, "async def aproxy_close(value):") ||
 		!contains(code, "async def omnivm_aclose(value):") ||
 		!contains(code, `def __omnivm_actual_public_method(value, name):`) ||
 		!contains(code, `__inspect.getattr_static(value, name)`) ||
@@ -6177,6 +6178,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "aclose")`) ||
 		!contains(code, `__omnivm_inspect.isawaitable(result)`) ||
+		!contains(code, "return await aproxy_close(value)") ||
 		!contains(code, "result = close()\n        return True if result is None else result") ||
 		!contains(code, "def cleanup_errors(error):") ||
 		!contains(code, "def _omnivm_record_cleanup_error(error, cleanup_error, note):") ||
@@ -6551,6 +6553,70 @@ if trap.dynamic_lookup_count != 0:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python generated omnivm_close return preservation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonCaptureOmnivmAclosePreservesAsyncCloseResult(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := code + `
+import asyncio
+
+class AsyncClose:
+    async def close(self):
+        return "async-close"
+
+class AsyncNoneClose:
+    async def close(self):
+        return None
+
+class AsyncAclose:
+    def __init__(self):
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
+
+class BothAsyncClosers:
+    async def _omnivm_close(self):
+        return "omnivm-async-closed"
+
+    async def aclose(self):
+        raise RuntimeError("aclose should not run when _omnivm_close exists")
+
+class DynamicAcloseTrap:
+    dynamic_lookup_count = 0
+
+    def __getattr__(self, name):
+        if name == "aclose":
+            self.dynamic_lookup_count += 1
+            return lambda: "dynamic-aclose"
+        raise AttributeError(name)
+
+async def main():
+    if await aproxy_close(AsyncClose()) != "async-close":
+        raise RuntimeError("async close result was not preserved")
+    if await aproxy_close(AsyncNoneClose()) is not True:
+        raise RuntimeError("None async close result should normalize to true")
+    closer = AsyncAclose()
+    if await aproxy_close(closer) is not True or closer.closed is not True:
+        raise RuntimeError("aclose was not awaited")
+    if await omnivm_aclose(BothAsyncClosers()) != "omnivm-async-closed":
+        raise RuntimeError("omnivm_aclose alias did not prefer _omnivm_close")
+    trap = DynamicAcloseTrap()
+    if await aproxy_close(trap) is not False:
+        raise RuntimeError("dynamic aclose lookup should not be used")
+    if trap.dynamic_lookup_count != 0:
+        raise RuntimeError("dynamic aclose lookup was invoked")
+
+asyncio.run(main())
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python generated omnivm_aclose return preservation check failed: %v\n%s", err, out)
 	}
 }
 
