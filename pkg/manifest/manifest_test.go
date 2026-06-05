@@ -6852,8 +6852,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"if (this.released === true) return false",
 		"var finishSuccess = function(value)",
 		"var result = callback(owner)",
-		"result instanceof Promise",
-		"return result.then(finishSuccess, finishError)",
+		"typeof result.then === 'function'",
+		"return Promise.resolve(result).then(finishSuccess, finishError)",
 		"bodyError.omnivmCleanupErrors",
 		"Object.defineProperty(omnivm, \"cleanupErrors\"",
 		"return Array.isArray(errors) ? errors.slice() : []",
@@ -7096,12 +7096,32 @@ var thenFieldOwnerResult = omnivm.bufferOwner("then-field", function() {
 });
 if (thenFieldOwnerResult !== thenFieldResult) throw new Error("then data field was treated as a Promise");
 
+var beforeThenable = omnivm.events.slice();
+var thenableSettled = false;
+var thenableResult = omnivm.bufferOwner("thenable", function(scoped) {
+  return {
+    then: function(resolve) {
+      setTimeout(function() {
+        thenableSettled = true;
+        resolve(scoped.name + "-result");
+      }, 0);
+    }
+  };
+});
+if (!(thenableResult instanceof Promise)) throw new Error("thenable callback did not return a Promise");
+if (JSON.stringify(omnivm.events) !== JSON.stringify(beforeThenable)) throw new Error("thenable buffer released before settle: " + JSON.stringify(omnivm.events));
+thenableResult.then(function(value) {
+  if (value !== "thenable-result") throw new Error("thenable value mismatch: " + value);
+  if (thenableSettled !== true) throw new Error("thenable release ran before settlement");
+  var expectedThenable = beforeThenable.concat([["release", "thenable"]]);
+  if (JSON.stringify(omnivm.events) !== JSON.stringify(expectedThenable)) throw new Error("thenable release mismatch: " + JSON.stringify(omnivm.events));
+
 var beforePromise = omnivm.events.slice();
 var promiseResult = omnivm.bufferOwner("async", function(scoped) {
   return Promise.resolve(scoped.name + "-result");
 });
 if (!(promiseResult instanceof Promise)) throw new Error("Promise callback did not return a Promise");
-promiseResult.then(function(value) {
+return promiseResult.then(function(value) {
   if (value !== "async-result") throw new Error("Promise value mismatch: " + value);
   var expectedPromise = beforePromise.concat([["release", "async"]]);
   if (JSON.stringify(omnivm.events) !== JSON.stringify(expectedPromise)) throw new Error("Promise release mismatch: " + JSON.stringify(omnivm.events));
@@ -7122,6 +7142,7 @@ promiseResult.then(function(value) {
     cleanupErrors.length = 0;
     if (omnivm.cleanupErrors(err)[0].message !== "release failed") throw new Error("cleanupErrors returned internal storage");
   }
+});
 }).catch(function(err) {
   console.error(err && err.stack || err);
   process.exit(1);
@@ -10177,8 +10198,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return Array.isArray(errors) ? errors.slice() : []",
 		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"globalThis.omnivm.releaseBuffer(this.name)",
-		"result instanceof Promise",
-		"return result.then(finishSuccess, finishError)",
+		"typeof result.then === 'function'",
+		"return Promise.resolve(result).then(finishSuccess, finishError)",
 		"bodyError.omnivmCleanupErrors",
 		"register_omnivm_proxy_helpers(isolate, context)",
 	} {

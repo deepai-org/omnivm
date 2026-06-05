@@ -1866,8 +1866,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
         };
         try {
           var result = callback(owner);
-          if (typeof Promise !== 'undefined' && result instanceof Promise) {
-            return result.then(finishSuccess, finishError);
+          if (typeof Promise !== 'undefined' && result != null && typeof result.then === 'function') {
+            return Promise.resolve(result).then(finishSuccess, finishError);
           }
           return finishSuccess(result);
         } catch (bodyError) {
