@@ -7129,6 +7129,8 @@ try {
 } catch (err) {
   if (err.name !== "OmniVMRuntimeError") throw new Error("unknown target used generic error: " + err.name);
   if (err.boundary_path !== "owner_dispatch_target") throw new Error("bad unknown target boundary: " + err.boundary_path);
+  if (err.details.target !== "unknown_loop") throw new Error("missing top-level unknown target");
+  if (err.details.requested_target !== "unknown-loop") throw new Error("missing top-level requested unknown target");
   if (!err.details || err.details.owner_dispatch_target.target !== "unknown_loop") throw new Error("missing unknown target details");
   if (err.details.owner_dispatch_target.requested_target !== "unknown-loop") throw new Error("missing requested unknown target");
   if (err.details.owner_dispatch_target.known_targets.indexOf("javascript_event_loop") < 0) throw new Error("missing known targets");
@@ -7194,6 +7196,8 @@ try {
 } catch (err) {
   if (err.message.indexOf("async bridge: owner dispatch target unsupported: ruby_fiber_thread") < 0) throw new Error("bad target message: " + err.message);
   if (err.boundary_path !== "owner_dispatch_target") throw new Error("bad target boundary: " + err.boundary_path);
+  if (err.details.target !== "ruby_fiber_thread") throw new Error("missing top-level target");
+  if (err.details.requested_target !== "ruby") throw new Error("missing top-level requested target");
   if (!err.details || err.details.owner_dispatch_target.target !== "ruby_fiber_thread") throw new Error("missing target details");
 }
 `
@@ -9835,6 +9839,8 @@ public final class OwnerDispatchCheck {
             require(err.getMessage().contains("unknown owner dispatch target: unknown-loop"), "bad unknown target message: " + err.getMessage());
             require("owner_dispatch_target".equals(err.getBoundaryPath()), "bad unknown target boundary: " + err.getBoundaryPath());
             Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            require("unknown_loop".equals(details.get("target")), "missing top-level unknown target: " + details);
+            require("unknown-loop".equals(details.get("requested_target")), "missing top-level requested unknown target: " + details);
             Map<String, Object> dispatch = (Map<String, Object>) details.get("owner_dispatch_target");
             require("unknown_loop".equals(dispatch.get("target")), "missing unknown target: " + details);
             require("unknown-loop".equals(dispatch.get("requested_target")), "missing requested unknown target: " + details);
@@ -9879,6 +9885,8 @@ public final class OwnerDispatchCheck {
             require(err.getMessage().contains("async bridge: owner dispatch target unsupported: ruby_fiber_thread"), "bad target message: " + err.getMessage());
             require("owner_dispatch_target".equals(err.getBoundaryPath()), "bad target boundary: " + err.getBoundaryPath());
             Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            require("ruby_fiber_thread".equals(details.get("target")), "missing top-level target details: " + details);
+            require("ruby".equals(details.get("requested_target")), "missing top-level requested target details: " + details);
             Map<String, Object> dispatch = (Map<String, Object>) details.get("owner_dispatch_target");
             require("ruby_fiber_thread".equals(dispatch.get("target")), "missing target details: " + details);
         }
@@ -10194,7 +10202,9 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		`boundary_path: \"owner_dispatch\"`,
 		`details: {\"owner_dispatch\" => info}`,
 		`boundary_path: \"owner_dispatch_target\"`,
-		`details: {\"owner_dispatch_target\" => info}`,
+		`\"target\" => info[\"target\"]`,
+		`\"requested_target\" => info[\"requested_target\"]`,
+		`\"owner_dispatch_target\" => info`,
 		"def push(value, non_block = false)",
 		"raise ThreadError, 'queue full' if non_block",
 		"Ruby SizedQueue#push would block in OmniVM embedded Ruby",

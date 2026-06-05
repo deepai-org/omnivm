@@ -222,11 +222,16 @@ public class OmniVM {
             throw runtimeError(
                 "unknown owner dispatch target: " + requested,
                 "owner_dispatch_target",
-                ownerDispatchMap("owner_dispatch_target", ownerDispatchMap(
+                ownerDispatchMap(
                     "target", name,
                     "requested_target", requested,
                     "known_targets", knownTargets,
-                    "owner_dispatch_targets", targets)));
+                    "owner_dispatch_targets", targets,
+                    "owner_dispatch_target", ownerDispatchMap(
+                        "target", name,
+                        "requested_target", requested,
+                        "known_targets", knownTargets,
+                        "owner_dispatch_targets", targets)));
         }
         Map<String, Object> info = (Map<String, Object>) RuntimeError.copyJsonValue(targetMap.get(name));
         info.put("requested_target", requested);
@@ -279,7 +284,10 @@ public class OmniVM {
         throw runtimeError(
             prefix + "owner dispatch target unsupported: " + String.valueOf(info.get("target")) + ": " + String.valueOf(info.get("diagnostic")),
             "owner_dispatch_target",
-            ownerDispatchMap("owner_dispatch_target", info));
+            ownerDispatchMap(
+                "target", info.get("target"),
+                "requested_target", info.get("requested_target"),
+                "owner_dispatch_target", info));
     }
 
     private static RuntimeError runtimeError(String message, String boundaryPath, Object details) {

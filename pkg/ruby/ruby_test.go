@@ -274,6 +274,8 @@ begin
 rescue OmniVM::RuntimeError => e
   raise "target message #{e.message.inspect}" unless e.message.include?("async bridge: owner dispatch target unsupported: ruby_fiber_thread")
   raise "target boundary #{e.boundary_path.inspect}" unless e.boundary_path == "owner_dispatch_target"
+  raise "top-level target details #{e.details.inspect}" unless e.details["target"] == "ruby_fiber_thread"
+  raise "top-level requested target details #{e.details.inspect}" unless e.details["requested_target"] == "ruby"
   raise "target details #{e.details.inspect}" unless e.details["owner_dispatch_target"]["target"] == "ruby_fiber_thread"
 end
 puts "ok"

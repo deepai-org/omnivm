@@ -1964,13 +1964,18 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           var status = globalThis.omnivm.ownerDispatchStatus();
           var info = status.owner_dispatch_targets[name];
           if (!info) {
+            var unknownTarget = {
+              target: name,
+              requested_target: requested,
+              known_targets: Object.keys(status.owner_dispatch_targets || {}).sort(),
+              owner_dispatch_targets: status.owner_dispatch_targets || {}
+            };
             throw globalThis.__omnivm_owner_dispatch_error("unknown owner dispatch target: " + requested, "owner_dispatch_target", {
-              owner_dispatch_target: {
-                target: name,
-                requested_target: requested,
-                known_targets: Object.keys(status.owner_dispatch_targets || {}).sort(),
-                owner_dispatch_targets: status.owner_dispatch_targets || {}
-              }
+              target: unknownTarget.target,
+              requested_target: unknownTarget.requested_target,
+              known_targets: unknownTarget.known_targets,
+              owner_dispatch_targets: unknownTarget.owner_dispatch_targets,
+              owner_dispatch_target: unknownTarget
             });
           }
           info.requested_target = requested;
@@ -2048,7 +2053,7 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           var info = globalThis.omnivm.ownerDispatchTargetStatus(target);
           if (info.supported === true) return true;
           var prefix = label == null || String(label) === "" ? "" : String(label) + ": ";
-          throw globalThis.__omnivm_owner_dispatch_error(prefix + "owner dispatch target unsupported: " + info.target + ": " + info.diagnostic, "owner_dispatch_target", {owner_dispatch_target: info});
+          throw globalThis.__omnivm_owner_dispatch_error(prefix + "owner dispatch target unsupported: " + info.target + ": " + info.diagnostic, "owner_dispatch_target", {target: info.target, requested_target: info.requested_target, owner_dispatch_target: info});
         }
       });
     }
