@@ -3331,6 +3331,18 @@ func rubyCaptureMaterializer() string {
 $__omnivm_proxy_cache ||= {}
 $__omnivm_proxy_cache_limit ||= 4096
 
+def __omnivm_bridge_module
+  defined?(OmniVM) && OmniVM.respond_to?(:call) ? OmniVM : nil
+end
+
+def __omnivm_bridge_active?(bridge_token)
+  bridge_token.nil? || __omnivm_bridge_module.equal?(bridge_token)
+end
+
+def __omnivm_bridge_cache_id(bridge_token)
+  bridge_token.nil? ? nil : bridge_token.object_id
+end
+
 def __omnivm_prune_proxy_cache(force = false)
   return unless force || $__omnivm_proxy_cache.length > $__omnivm_proxy_cache_limit
   $__omnivm_proxy_cache.delete_if do |_key, ref|
@@ -3347,7 +3359,8 @@ end
 def __omnivm_cached_proxy(kind, value)
   id = value["id"] if value.is_a?(Hash)
   return yield if id.nil?
-  key = [kind, id]
+  bridge_token = __omnivm_bridge_module
+  key = [kind, __omnivm_bridge_cache_id(bridge_token), id]
   begin
     ref = $__omnivm_proxy_cache[key]
     if ref
@@ -3612,11 +3625,12 @@ class OmniVMHandleProxy
   def initialize(value)
     @value = value
     @__omnivm_closed = false
+    @__omnivm_bridge_token = __omnivm_bridge_module
     id = @value["id"]
     if !id.nil?
       @value["transfer"] == true ? OmniVMHandleProxy.omnivm_adopt(id) : OmniVMHandleProxy.omnivm_retain(id)
     end
-    ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id)) unless id.nil?
+    ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id, @__omnivm_bridge_token)) unless id.nil?
   end
 
   def self.omnivm_retain(id)
@@ -3645,11 +3659,12 @@ class OmniVMHandleProxy
     false
   end
 
-  def self.omnivm_finalizer(id)
+  def self.omnivm_finalizer(id, bridge_token = nil)
     proc do
       begin
-        if defined?(OmniVM) && OmniVM.respond_to?(:call)
-          OmniVM.call("__manifest", JSON.generate({op: "handle_release_finalizer", id: id}))
+        caller = __omnivm_bridge_module
+        if (bridge_token.nil? || caller.equal?(bridge_token)) && !caller.nil?
+          caller.call("__manifest", JSON.generate({op: "handle_release_finalizer", id: id}))
         end
       rescue
       end
@@ -3675,6 +3690,7 @@ class OmniVMHandleProxy
 
   def __omnivm_record(kind = "property")
     return nil if @__omnivm_closed == true
+    return nil unless __omnivm_bridge_active?(@__omnivm_bridge_token)
     begin
       if defined?(OmniVM) && OmniVM.respond_to?(:call)
         raw = OmniVM.call("__manifest", JSON.generate({op: "handle_access", id: @value["id"], kind: kind}))
@@ -3703,6 +3719,7 @@ class OmniVMHandleProxy
 
   def __omnivm_ensure_open(op)
     raise __omnivm_closed_operation_error(op) if @__omnivm_closed == true
+    raise __omnivm_closed_operation_error(op) unless __omnivm_bridge_active?(@__omnivm_bridge_token)
   end
 
   def __omnivm_data_key?(key)
@@ -3929,6 +3946,14 @@ class OmniVMHandleProxy
 
   def omnivm_close
     return false if @__omnivm_closed == true
+    unless __omnivm_bridge_active?(@__omnivm_bridge_token)
+      @__omnivm_closed = true
+      begin
+        ObjectSpace.undefine_finalizer(self)
+      rescue
+      end
+      return false
+    end
     raw = OmniVM.call("__manifest", JSON.generate({op: "handle_release_explicit", id: @value["id"]}))
     env = JSON.parse(raw)
     released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true
@@ -4198,11 +4223,12 @@ class OmniVMStreamProxy
     @value = value
     @local_values = value["values"].is_a?(Array) ? value["values"] : nil
     @__omnivm_closed = false
+    @__omnivm_bridge_token = __omnivm_bridge_module
     id = @value["id"]
     if !id.nil?
       @value["transfer"] == true ? OmniVMHandleProxy.omnivm_adopt(id) : OmniVMHandleProxy.omnivm_retain(id)
     end
-    ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id)) unless id.nil?
+    ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id, @__omnivm_bridge_token)) unless id.nil?
   end
 
   def __omnivm_mark_closed
@@ -4228,6 +4254,10 @@ class OmniVMStreamProxy
       end
       loop do
         break if @__omnivm_closed == true
+        unless __omnivm_bridge_active?(@__omnivm_bridge_token)
+          __omnivm_mark_closed
+          break
+        end
         begin
           raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
           env = JSON.parse(raw)
@@ -4269,6 +4299,10 @@ class OmniVMStreamProxy
   def close
     return false if @__omnivm_closed == true
     return __omnivm_mark_closed if @local_values
+    unless __omnivm_bridge_active?(@__omnivm_bridge_token)
+      __omnivm_mark_closed
+      return false
+    end
     raw = OmniVM.call("__manifest", JSON.generate({op: "stream_cancel", id: @value["id"]}))
     env = JSON.parse(raw)
     released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true

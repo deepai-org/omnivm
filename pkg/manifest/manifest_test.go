@@ -10156,11 +10156,27 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "OmniVMHandleProxy.__omnivm_missing_bridge_error?(error)") ||
 		!contains(code, "OmniVMHandleProxy.omnivm_adopt(id)") ||
 		!contains(code, "OmniVMHandleProxy.omnivm_retain(id)") ||
-		!contains(code, "OmniVMHandleProxy.omnivm_finalizer(id)") ||
+		!contains(code, "OmniVMHandleProxy.omnivm_finalizer(id, @__omnivm_bridge_token)") ||
 		contains(code, "self.class.__omnivm_missing_bridge_error?") ||
 		contains(code, "self.class.omnivm_retain") ||
 		contains(code, "self.class.omnivm_finalizer") {
 		t.Fatalf("Ruby handle proxy internals should bypass remote class field collisions, got %q", code)
+	}
+	for _, want := range []string{
+		"def __omnivm_bridge_module",
+		"def __omnivm_bridge_active?(bridge_token)",
+		"def __omnivm_bridge_cache_id(bridge_token)",
+		"key = [kind, __omnivm_bridge_cache_id(bridge_token), id]",
+		"@__omnivm_bridge_token = __omnivm_bridge_module",
+		"def self.omnivm_finalizer(id, bridge_token = nil)",
+		"caller = __omnivm_bridge_module",
+		"caller.equal?(bridge_token)",
+		"return nil unless __omnivm_bridge_active?(@__omnivm_bridge_token)",
+		"raise __omnivm_closed_operation_error(op) unless __omnivm_bridge_active?(@__omnivm_bridge_token)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Ruby materializer should bind proxies and cache entries to bridge identity, missing %q", want)
+		}
 	}
 	if !contains(code, `op: "handle_access"`) {
 		t.Fatalf("Ruby materializer should record handle access, got %q", code)
@@ -10289,6 +10305,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby materializer should queue finalizer releases, got %q", code)
 	}
 	if !contains(code, "@__omnivm_closed = false") ||
+		!contains(code, "unless __omnivm_bridge_active?(@__omnivm_bridge_token)\n      @__omnivm_closed = true") ||
 		!contains(code, `JSON.generate({op: "handle_release_explicit", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "if released\n      @__omnivm_closed = true") ||
@@ -10306,9 +10323,11 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "begin\n          close\n        rescue => cleanup_error") ||
 		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
+		!contains(code, "unless __omnivm_bridge_active?(@__omnivm_bridge_token)\n          __omnivm_mark_closed\n          break\n        end") ||
 		!contains(code, "loop do\n        break if @__omnivm_closed == true") ||
 		!contains(code, "rescue\n          __omnivm_mark_closed\n          raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
+		!contains(code, "unless __omnivm_bridge_active?(@__omnivm_bridge_token)\n      __omnivm_mark_closed\n      return false\n    end") ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "__omnivm_mark_closed if released") ||
 		!contains(code, "def omnivm_close\n    close\n  end") ||
@@ -10512,6 +10531,77 @@ raise "release requests mismatch: #{releases.inspect}" unless releases == expect
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby closed proxy cache check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyProxyFinalizersIgnoreReplacedBridge(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+Object.send(:remove_const, :OmniVM) if defined?(OmniVM)
+
+class OldBridge
+  @requests = []
+  class << self
+    attr_reader :requests
+    def call(runtime, payload)
+      raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+      req = JSON.parse(payload)
+      @requests << req
+      return JSON.generate({"__omnivm_result__" => true, "value" => true}) if ["handle_retain", "handle_adopt", "handle_release_explicit", "handle_release_finalizer", "stream_cancel"].include?(req["op"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => {"done" => false, "value" => "old-row"}}) if req["op"] == "stream_next"
+      raise "unexpected old manifest op #{req["op"]}"
+    end
+  end
+end
+
+class NewBridge
+  @requests = []
+  class << self
+    attr_reader :requests
+    def call(runtime, payload)
+      raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+      req = JSON.parse(payload)
+      @requests << req
+      return JSON.generate({"__omnivm_result__" => true, "value" => true}) if ["handle_retain", "handle_adopt", "handle_release_explicit", "handle_release_finalizer", "stream_cancel", "handle_contains", "handle_get"].include?(req["op"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => {"done" => true}}) if req["op"] == "stream_next"
+      raise "unexpected new manifest op #{req["op"]}"
+    end
+  end
+end
+
+Object.const_set(:OmniVM, OldBridge)
+` + code + `
+proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 701, "runtime" => "ruby", "kind" => "request"})
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 702, "runtime" => "ruby", "kind" => "queryset"})
+raise "handle proxy was not retained: #{OldBridge.requests.inspect}" unless OldBridge.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 701 }
+raise "stream proxy was not retained: #{OldBridge.requests.inspect}" unless OldBridge.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 702 }
+
+Object.send(:remove_const, :OmniVM)
+Object.const_set(:OmniVM, NewBridge)
+replacement = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 701, "runtime" => "ruby", "kind" => "request"})
+raise "bridge replacement reused stale cached proxy" if replacement.equal?(proxy)
+raise "replacement bridge proxy was not retained: #{NewBridge.requests.inspect}" unless NewBridge.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 701 }
+NewBridge.requests.clear
+
+raise "stale handle close should be a quiet no-op" unless proxy.omnivm_close == false
+raise "stale stream close should be a quiet no-op" unless stream.close == false
+OmniVMHandleProxy.omnivm_finalizer(701, OldBridge).call
+OmniVMHandleProxy.omnivm_finalizer(702, OldBridge).call
+raise "stale proxy cleanup called replacement bridge: #{NewBridge.requests.inspect}" unless NewBridge.requests.empty?
+old_cleanup = OldBridge.requests.select { |req| ["handle_release_explicit", "handle_release_finalizer", "stream_cancel"].include?(req["op"]) }
+raise "stale proxy cleanup called old bridge after replacement: #{old_cleanup.inspect}" unless old_cleanup.empty?
+
+raise "active replacement proxy close should release through replacement bridge" unless replacement.omnivm_close == true
+raise "replacement proxy did not release through replacement bridge: #{NewBridge.requests.inspect}" unless NewBridge.requests.any? { |req| req["op"] == "handle_release_explicit" && req["id"] == 701 }
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby stale bridge finalizer check failed: %v\n%s", err, out)
 	}
 }
 
