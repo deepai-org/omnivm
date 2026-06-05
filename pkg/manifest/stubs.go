@@ -2485,7 +2485,7 @@ globalThis.%s = undefined;
 Promise.resolve((function() {
   const __omnivm_stream_obj = %s;
   const __omnivm_iter = %s;
-  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name) {
+  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name, maxRequiredArgs) {
     if (value == null) return null;
     let cursor = Object(value);
     let depth = 0;
@@ -2497,7 +2497,7 @@ Promise.resolve((function() {
         return null;
       }
       if (descriptor) {
-        return typeof descriptor.value === 'function' && descriptor.value.length === 0 ? descriptor.value.bind(value) : null;
+        return typeof descriptor.value === 'function' && descriptor.value.length <= maxRequiredArgs ? descriptor.value.bind(value) : null;
       }
       try {
         cursor = Object.getPrototypeOf(cursor);
@@ -2507,10 +2507,10 @@ Promise.resolve((function() {
     }
     return null;
   };
-  const __omnivm_iter_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "return");
-  const __omnivm_iter_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "cancel");
-  const __omnivm_stream_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "return");
-  const __omnivm_stream_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "cancel");
+  const __omnivm_iter_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "return", 1);
+  const __omnivm_iter_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "cancel", 1);
+  const __omnivm_stream_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "return", 1);
+  const __omnivm_stream_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "cancel", 1);
   let __omnivm_close_step;
   if (__omnivm_iter_return) __omnivm_close_step = __omnivm_iter_return();
   else if (__omnivm_iter_cancel) __omnivm_close_step = __omnivm_iter_cancel();
@@ -2519,7 +2519,7 @@ Promise.resolve((function() {
   return __omnivm_close_step;
 })()).then(function() {
   const __omnivm_iter = %s;
-  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name) {
+  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name, maxRequiredArgs) {
     if (value == null) return null;
     let cursor = Object(value);
     let depth = 0;
@@ -2531,7 +2531,7 @@ Promise.resolve((function() {
         return null;
       }
       if (descriptor) {
-        return typeof descriptor.value === 'function' && descriptor.value.length === 0 ? descriptor.value.bind(value) : null;
+        return typeof descriptor.value === 'function' && descriptor.value.length <= maxRequiredArgs ? descriptor.value.bind(value) : null;
       }
       try {
         cursor = Object.getPrototypeOf(cursor);
@@ -2541,7 +2541,7 @@ Promise.resolve((function() {
     }
     return null;
   };
-  const __omnivm_releaseLock = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "releaseLock");
+  const __omnivm_releaseLock = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "releaseLock", 0);
   if (__omnivm_releaseLock) {
     try { __omnivm_releaseLock(); } catch (__omnivm_release_err) {}
   }
