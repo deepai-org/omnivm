@@ -7910,11 +7910,13 @@ body_stream.close()
     after = omnivm.status()
     boundary = after.get("boundary", {})
     before_boundary = before.get("boundary", {})
-    if boundary.get("json_fallbacks", 0) != 0:
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Django closed request body test used JSON fallback: before={before_boundary}, after={boundary}")
-    if boundary.get("resource_proxy_captures", 0) < 1:
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_capture_delta < 1:
         raise AssertionError(f"Django closed request did not cross as a live proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Django closed request object should not cross as stream: before={before_boundary}, after={boundary}")
 
 
