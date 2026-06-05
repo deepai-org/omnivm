@@ -718,11 +718,11 @@ collision-free symbol property
 `proxy[omnivm.proxyLength]`; data fields remain available through
 `omnivm.proxyGet(proxy, "length")`. `toJSON` is local proxy bookkeeping for
 `JSON.stringify(proxy)`, so a remote field or method named `toJSON` should be
-read with `omnivm.proxyGet(proxy, "toJSON")`. Callable remote `then` fields are
-hidden from natural property access so proxies do not become Promise thenables;
-use `omnivm.proxyGet(proxy, "then")` or `omnivm.proxyCall(proxy, "then", args)`
-for the owner field or method. Non-callable remote `then` fields remain
-naturally readable. JavaScript handle and stream proxies also expose
+read with `omnivm.proxyGet(proxy, "toJSON")`. Remote `then` fields are hidden
+from natural property access so proxies never become Promise thenables or trigger
+foreign bridge calls while Promise resolution checks `.then`; use
+`omnivm.proxyGet(proxy, "then")` or `omnivm.proxyCall(proxy, "then", args)` for
+the owner field or method. JavaScript handle and stream proxies also expose
 `Symbol.dispose` and `Symbol.asyncDispose` when the runtime supports them, and
 `omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor both symbols
 before falling back to a descriptor-safe public `close` method. Remote data

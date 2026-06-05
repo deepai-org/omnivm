@@ -365,11 +365,11 @@ common ORM shapes already covered. JavaScript proxy field access also checks the
 remote owner before inherited identity properties such as `constructor`,
 `toString`, and `valueOf`, so real owner fields with those names do not silently
 fall back to `Object`/`Function` prototype behavior.
-Non-callable `then` data fields are covered so `Promise.resolve(proxy)` resolves
-to the proxy instead of treating the field as a thenable. Callable `then` fields are
-deliberately hidden from natural `.then` access so promise resolution cannot
-accidentally call a foreign-runtime field; users can still call them explicitly
-with `omnivm.proxyGet(proxy, "then")`. Indexed proxy `length` writes now either
+Remote `then` fields are deliberately hidden from natural `.then` access so
+`Promise.resolve(proxy)` resolves to the proxy without consulting the foreign
+bridge or accidentally calling a foreign-runtime field; users can still read or
+call those fields explicitly with `omnivm.proxyGet(proxy, "then")` or
+`omnivm.proxyCall(proxy, "then", args)`. Indexed proxy `length` writes now either
 resize mutable remote Python, Ruby, and Java sequences, or fail with
 runtime/kind/id context instead of creating a local-only array length shadow.
 Java fixed arrays, ByteBuffer table proxies, and tensor-shaped NumPy table
