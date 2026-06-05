@@ -8538,6 +8538,20 @@ globalThis.omnivm = {
 var descriptor = {__omnivm_resource__: true, id: 91, runtime: "javascript", kind: "object", transfer: true};
 var first = globalThis.__omnivm_materialize_capture(descriptor);
 if (omnivm.proxyClose(first) !== true) throw new Error("first close failed");
+var beforeClosedAccess = JSON.stringify(omnivm.calls);
+try {
+  first.path;
+  throw new Error("closed proxy get unexpectedly succeeded");
+} catch (err) {
+  if (String(err && err.message || err).indexOf("closed object handle #91") < 0) throw new Error("closed proxy diagnostic mismatch: " + String(err && err.message || err));
+}
+try {
+  omnivm.proxyGet(first, "path");
+  throw new Error("closed proxy proxyGet unexpectedly succeeded");
+} catch (err) {
+  if (String(err && err.message || err).indexOf("closed object handle #91") < 0) throw new Error("closed proxyGet diagnostic mismatch: " + String(err && err.message || err));
+}
+if (JSON.stringify(omnivm.calls) !== beforeClosedAccess) throw new Error("closed proxy access reached bridge: " + JSON.stringify(omnivm.calls));
 var second = globalThis.__omnivm_materialize_capture(descriptor);
 if (second === first) throw new Error("closed proxy was reused");
 if (omnivm.proxyClose(second) !== true) throw new Error("second close failed");

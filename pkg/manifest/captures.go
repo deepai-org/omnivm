@@ -2380,6 +2380,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return raw;
   };
   var bridge = function(payload, options) {
+    ensureOpen(payload.op || "operation");
     payload.id = globalThis.__omnivm_proxy_handle_id(target);
     return decode(omnivm.call("__manifest", JSON.stringify(payload)), options);
   };
@@ -2432,6 +2433,20 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     var text = remoteDescription();
     return text ? "[object OmniVMProxy" + text + "]" : "[object OmniVMProxy]";
   };
+  var closedOperationError = function(op) {
+    var handleId = globalThis.__omnivm_proxy_handle_id(target);
+    var runtime = descriptor && descriptor.runtime != null ? String(descriptor.runtime) : "unknown";
+    var kind = descriptor && descriptor.kind != null ? String(descriptor.kind) : "object";
+    var suffix = handleId == null ? "" : " #" + String(handleId);
+    var details = {proxy: {id: handleId, runtime: runtime, kind: kind, closed: true}};
+    var message = "OmniVM JavaScript handle proxy " + op + " on closed " + kind + " handle" + suffix;
+    return typeof globalThis.__omnivm_runtime_error === 'function'
+      ? globalThis.__omnivm_runtime_error(message, "proxy_lifecycle", details)
+      : new Error(message);
+  };
+  var ensureOpen = function(op) {
+    if (target.__omnivm_closed__ === true) throw closedOperationError(op);
+  };
   var lengthSetDiagnostic = function(reason, cause) {
     var message = "OmniVM cannot resize remote indexed proxy" + remoteDescription() + ": " + reason;
     if (cause && cause.message) message += ": " + cause.message;
@@ -2447,6 +2462,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return null;
   };
   var bridgeGet = function(key, defaultValue, remoteFirst) {
+    ensureOpen("get");
     var textKey = String(key);
     var idx = numericIndex(key);
     if (remoteFirst === true) {
@@ -2492,6 +2508,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     }
   };
   var bridgeLen = function(defaultValue) {
+    ensureOpen("len");
     try {
       return bridge({op: "handle_len"});
     } catch (_e) {
@@ -2500,6 +2517,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     }
   };
   var bridgeSet = function(key, value) {
+    ensureOpen("set");
     var textKey = String(key);
     if (textKey === 'length' && isIndexedDescriptor()) {
       var lengthValue = Number(value);
@@ -2522,13 +2540,16 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     }
   };
   var bridgeCall = function(key, args) {
+    ensureOpen("call");
     var callArgs = Array.isArray(args) ? args : [];
     return bridge({op: "handle_call", key: key == null ? "" : String(key), args: callArgs.map(globalThis.__omnivm_encode_arg)});
   };
   var bridgeIter = function(mode) {
+    ensureOpen("iterate");
     return bridge({op: "handle_iter", mode: mode || "values"});
   };
   var bridgeContains = function(key) {
+    ensureOpen("contains");
     return !!bridge({op: "handle_contains", value: globalThis.__omnivm_encode_arg(key)});
   };
   var primitiveCoercion = function(hint) {
@@ -2573,6 +2594,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
       if (prop === 'then') return undefined;
+      if (target.__omnivm_closed__ === true && prop !== 'toJSON' && !isProxyBookkeepingProp(prop)) throw closedOperationError("get");
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!(descriptor && descriptor.__omnivm_table__ === true)) {
           try {
@@ -2644,6 +2666,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return Reflect.get(obj, prop, receiver);
     },
     set: function(obj, prop, value, receiver) {
+      if (target.__omnivm_closed__ === true) throw closedOperationError("set");
       if (typeof prop === 'string' && !isProxyBookkeepingProp(prop) && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (bridgeSet(prop, value)) {
           if (hasLocalProp(obj, prop)) Reflect.set(obj, prop, value, receiver);
@@ -2653,9 +2676,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return Reflect.set(obj, prop, value, receiver);
     },
     apply: function(obj, thisArg, args) {
+      ensureOpen("call");
       return bridgeCall("", Array.prototype.slice.call(args));
     },
     has: function(obj, prop) {
+      if (target.__omnivm_closed__ === true) throw closedOperationError("contains");
       if (typeof prop === 'string' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           return !!bridge({op: "handle_contains", value: prop});
@@ -2691,6 +2716,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return undefined;
     },
     ownKeys: function(obj) {
+      ensureOpen("iterate");
       if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         try {
           var keys = bridge({op: "handle_iter", mode: "keys"});
