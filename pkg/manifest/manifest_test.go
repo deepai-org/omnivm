@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -2402,6 +2404,44 @@ func TestGoStreamProxyCloseErrorRemainsRetryable(t *testing.T) {
 	stats := e.handleTable.Stats(time.Now())
 	if stats.Live != 0 || stats.FinalizerQueued != 0 {
 		t.Fatalf("Go stream proxy failed close cleanup stats = %+v, want no live handle and no queued finalizer cleanup", stats)
+	}
+}
+
+func TestGoStreamProxyConcurrentCloseCancelsOnce(t *testing.T) {
+	table := handles.NewTable()
+	id, err := table.Register("stream", handles.RegisterOptions{Runtime: "go", Kind: "stream"})
+	if err != nil {
+		t.Fatalf("register stream handle: %v", err)
+	}
+	var cancels atomic.Int32
+	stream := newGoStreamProxy(id, table, nil, func(handles.ID) error {
+		cancels.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	const callers = 16
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- stream.Close()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Close returned error: %v", err)
+		}
+	}
+	if got := cancels.Load(); got != 1 {
+		t.Fatalf("concurrent Go stream close cancelled owner %d times, want 1", got)
+	}
+	if value, ok, err := stream.Next(); err != nil || ok || value != nil {
+		t.Fatalf("Next after concurrent close = (%#v, %v, %v), want nil,false,nil", value, ok, err)
 	}
 }
 

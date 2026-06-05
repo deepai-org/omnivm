@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/omnivm/omnivm/pkg/handles"
@@ -685,6 +686,7 @@ func (p *GoHandleProxy) materialize(value interface{}) interface{} {
 // partial consumption, and queues release through the handle table when the
 // proxy is finalized.
 type GoStreamProxy struct {
+	mu          sync.Mutex
 	id          handles.ID
 	table       *handles.Table
 	next        func(handles.ID) (interface{}, bool, bool, error)
@@ -713,7 +715,12 @@ func newGoLocalStreamProxy(values []interface{}, normalize func(interface{}) int
 // Next returns the next stream value, whether a value was produced, and any
 // owner-side read error. EOF and closed streams return ok=false with nil error.
 func (p *GoStreamProxy) Next() (interface{}, bool, error) {
-	if p == nil || p.closed {
+	if p == nil {
+		return nil, false, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
 		return nil, false, nil
 	}
 	if p.localValues != nil {
@@ -767,7 +774,12 @@ func (p *GoStreamProxy) ValuesWithError() ([]interface{}, error) {
 // Close cancels a partially consumed stream and releases all refs for the
 // underlying stream handle. It is safe to call more than once.
 func (p *GoStreamProxy) Close() error {
-	if p == nil || p.closed {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
 		return nil
 	}
 	if p.localValues != nil {
@@ -793,7 +805,12 @@ func (p *GoStreamProxy) Close() error {
 }
 
 func (p *GoStreamProxy) ReleaseFromFinalizer() {
-	if p == nil || p.closed {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
 		return
 	}
 	if p.localValues != nil {
