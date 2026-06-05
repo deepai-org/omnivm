@@ -549,7 +549,8 @@ Python retained manifest proxies expose the same escape hatches as
 `omnivm.omnivm_close(proxy)`. For ordinary local objects, the same helpers
 honor descriptor-defined `close()` and `dispose()` without triggering dynamic
 attribute lookup; `omnivm.aproxy_close(value)` also awaits async close,
-dispose, and `aclose()` results.
+dispose, and `aclose()` results. Generated Python manifest snippets expose the
+same `proxy_close(value)`/`omnivm_close(value)` close-helper pair.
 Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,

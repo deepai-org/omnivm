@@ -613,6 +613,9 @@ def omnivm_close(value):
         return True if result is None else result
     return False
 
+def proxy_close(value):
+    return omnivm_close(value)
+
 async def aproxy_close(value):
     import inspect as __omnivm_inspect
     close = __omnivm_actual_public_method(value, "_omnivm_close")

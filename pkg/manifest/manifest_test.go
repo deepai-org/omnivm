@@ -6162,6 +6162,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
 	if !contains(code, "def omnivm_close(value):") ||
+		!contains(code, "def proxy_close(value):") ||
 		!contains(code, "async def aproxy_close(value):") ||
 		!contains(code, "async def omnivm_aclose(value):") ||
 		!contains(code, `def __omnivm_actual_public_method(value, name):`) ||
@@ -6179,6 +6180,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `close = __omnivm_actual_public_method(value, "dispose")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "aclose")`) ||
 		!contains(code, `__omnivm_inspect.isawaitable(result)`) ||
+		!contains(code, "return omnivm_close(value)") ||
 		!contains(code, "return await aproxy_close(value)") ||
 		!contains(code, "result = close()\n        return True if result is None else result") ||
 		!contains(code, "def cleanup_errors(error):") ||
@@ -6581,6 +6583,8 @@ if omnivm_close(NoneDispose()) is not True:
     raise RuntimeError("None dispose result should normalize to true")
 if omnivm_close(CloseAndDispose()) != "closed":
     raise RuntimeError("close should take priority over dispose")
+if proxy_close(TextCloser()) != "closed":
+    raise RuntimeError("proxy_close alias did not preserve close result")
 if omnivm_close(BothClosers()) != "omnivm-closed":
     raise RuntimeError("collision-safe _omnivm_close was not preferred")
 if omnivm_close(trap) is not False:
