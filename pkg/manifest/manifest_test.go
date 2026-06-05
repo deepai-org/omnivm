@@ -10361,6 +10361,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"return self.cause_chain",
 		"def details(self):",
 		"return _copy_json_value(self._details)",
+		"self.details_json = _runtime_error_details_json(self._details)",
 		"def originRuntime(self):",
 		"return self.origin_runtime",
 		"def boundaryPath(self):",

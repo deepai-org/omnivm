@@ -157,6 +157,7 @@ class RuntimeError(_builtins.RuntimeError):
     @details.setter
     def details(self, value):
         self._details = _copy_json_value(value)
+        self.details_json = _runtime_error_details_json(self._details)
 
     @property
     def originRuntime(self):

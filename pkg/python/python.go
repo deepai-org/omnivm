@@ -113,6 +113,7 @@ static const char* omnivm_py_runtime_error_code =
 "    @details.setter\n"
 "    def details(self, value):\n"
 "        self._details = _copy_json_value(value)\n"
+"        self.details_json = _runtime_error_details_json(self._details)\n"
 "    @property\n"
 "    def originRuntime(self):\n"
 "        return self.origin_runtime\n"

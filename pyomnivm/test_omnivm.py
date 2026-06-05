@@ -346,6 +346,25 @@ class TestRuntimeError(unittest.TestCase):
         assert err.original_error_handle == "ruby-error-9"
         assert err.details_json == "{\"code\":\"E_ALIAS\"}"
 
+    def test_details_assignment_updates_details_json(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "python",
+                    "type": "ValidationError",
+                    "message": "invalid",
+                    "details": {"field": "old"},
+                }
+            ),
+            runtime="python",
+        )
+
+        err.details = {"field": "age", "errors": [{"code": "too_small"}]}
+
+        assert err.details == {"field": "age", "errors": [{"code": "too_small"}]}
+        assert err.details_json == '{"field":"age","errors":[{"code":"too_small"}]}'
+        assert err.to_dict()["details_json"] == err.details_json
+
     def test_parses_details_json_structured_error_envelope(self):
         err = omnivm_mod.RuntimeError(
             json.dumps(
