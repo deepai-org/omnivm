@@ -420,7 +420,7 @@ C pthread watchdog (independent of Go scheduler)
 
 Node.js is embedded via the C++ Embedder API with manual libuv pumping — `uv_run(loop, UV_RUN_NOWAIT)` gives JavaScript cooperative CPU time without starving other runtimes. This means `require()`, npm packages, `setTimeout`, Promises, and the full Node.js API all work.
 
-On Linux, the dispatcher uses **epoll** with eventfd (task wakeup), timerfd (heartbeat), and the libuv backend fd (V8 I/O) — replacing the 1ms polling ticker with event-driven wakeups. A **C pthread watchdog** independently monitors task execution time and dispatches runtime-specific interrupts (Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby trace hook interrupt).
+On Linux, the dispatcher uses **epoll** with eventfd (task wakeup), timerfd (heartbeat), and the libuv backend fd (V8 I/O) — replacing the 1ms polling ticker with event-driven wakeups. A **C pthread watchdog** independently monitors task execution time and dispatches runtime-specific interrupts (Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby trace hook interrupt, Java `Thread.interrupt()`).
 
 ### How a Cross-Runtime Call Works (Internals)
 
@@ -457,7 +457,7 @@ The C pthread watchdog (`pkg/watchdog/`) runs independently of Go's scheduler us
 
 1. The dispatcher sets `active_runtime` before each task
 2. If the task exceeds the timeout, the watchdog fires the runtime-specific interrupt
-3. The interrupt fires repeatedly until the task completes or the watchdog is disarmed
+3. The interrupt fires once for the timed-out task; callers re-arm the watchdog for the next task
 4. A generation counter prevents stale timeouts after rapid arm/disarm cycles
 
 ## Cross-Runtime Calls
@@ -1014,7 +1014,7 @@ make test-libomnivm-stress
 - **Bridge gateway affinity**: The OmniVM binary bridge supports foreign-thread calls by entering the target runtime through the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), the Ruby VM execution lane, or `AttachCurrentThreadAsDaemon` (JVM). In c-shared Python-hosted mode, CPython owns the worker thread state, so runtime, manifest, plugin, and typed-call entrypoints reject non-host threads with structured `thread_affinity` diagnostics instead of attempting universal owner-loop dispatch.
 - **Ruby single-VM-thread boundary**: Ruby runs through one OmniVM-owned VM execution lane. Ruby 3.3's M:N threading breaks `Thread.new` and `rb_thread_call_without_gvl` in this embedded shape, so native Ruby thread creation raises an explicit diagnostic instead of hanging. Ruby `fork`, `Kernel.fork`, `Process.fork`, `Process.daemon`, `Process.spawn`, `Kernel.spawn`, `Kernel.system`, `Kernel.exec`, backticks, and `IO.popen` also raise explicit diagnostics after OmniVM initializes; Ruby code that needs preforking, daemonization, or subprocess launch must do so before loading OmniVM or run that component out of process. `omnivm.status()["ruby_threading"]` and `omnivm.ruby_threading_status()` report this boundary (`mode=single_vm_thread`, native threads unsupported), and `omnivm.assert_ruby_native_threads_supported(label)` is the fail-fast guard for host apps that need an out-of-process Puma deployment before loading a threaded Ruby app server.
 - **Epoll dispatcher (Linux)**: eventfd for task wakeup, timerfd for heartbeat, libuv backend fd for V8 I/O. Replaces the 1ms polling ticker with event-driven wakeups — zero CPU when idle.
-- **C pthread watchdog**: Independent of the Go scheduler. `pthread_cond_timedwait` with `CLOCK_MONOTONIC` (immune to NTP jumps). Temporal signal routing dispatches runtime-specific interrupts: Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby trace hook interrupt.
+- **C pthread watchdog**: Independent of the Go scheduler. `pthread_cond_timedwait` with `CLOCK_MONOTONIC` (immune to NTP jumps). Temporal signal routing dispatches runtime-specific interrupts: Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby trace hook interrupt, and Java `Thread.interrupt()`.
 - **Error enhancement**: Missing module errors get "pip install" / "npm install" / "gem install" hints. Python tracebacks are reformatted with `file:line` references. Go compile errors get "Did you mean?" suggestions.
 - **Node.js over Duktape**: Duktape was ES5.1 — no `const`/`let`, no arrow functions, no `require()`, no npm. Node.js (via `libnode-dev` / `libnode127`) gives full ES2024+, the npm ecosystem, and built-in modules.
 - **Skip `Py_FinalizeEx`, `ruby_cleanup()`, `V8::Dispose()`**: All crash in a polyglot process. Process exit reclaims resources.

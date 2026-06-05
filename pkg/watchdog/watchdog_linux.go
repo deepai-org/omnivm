@@ -29,6 +29,9 @@ static pthread_cond_t wd_cond;
 static int wd_armed = 0;
 static int wd_timeout_ms = 0;
 static int wd_running = 0;
+static int wd_thread_started = 0;
+static int wd_shutting_down = 0;
+static int wd_cond_initialized = 0;
 static int wd_generation = 0;
 static pthread_t golden_tid;
 
@@ -88,7 +91,7 @@ static void* watchdog_loop(void* arg) {
 		case 3: // Ruby — sets volatile flag checked by trace hook
 			if (rb_interrupt_fn) rb_interrupt_fn();
 			break;
-		case 4: // JVM — future: JNI Thread.interrupt()
+		case 4: // JVM — JNI Thread.interrupt() on the active Java thread
 			if (jvm_interrupt_fn) jvm_interrupt_fn();
 			break;
 		}
@@ -100,18 +103,35 @@ static void* watchdog_loop(void* arg) {
 }
 
 static void omnivm_watchdog_init(pthread_t golden) {
+	pthread_mutex_lock(&wd_mutex);
+	if (wd_running || wd_shutting_down) {
+		golden_tid = golden;
+		pthread_mutex_unlock(&wd_mutex);
+		return;
+	}
+
+	if (!wd_cond_initialized) {
+		// Use CLOCK_MONOTONIC for the condvar so the watchdog is immune to
+		// NTP syncs and wall-clock jumps.
+		pthread_condattr_t attr;
+		pthread_condattr_init(&attr);
+		pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+		pthread_cond_init(&wd_cond, &attr);
+		pthread_condattr_destroy(&attr);
+		wd_cond_initialized = 1;
+	}
+
 	golden_tid = golden;
+	wd_armed = 0;
 	wd_running = 1;
+	wd_generation++;
 
-	// Use CLOCK_MONOTONIC for the condvar so the watchdog is immune to
-	// NTP syncs and wall-clock jumps.
-	pthread_condattr_t attr;
-	pthread_condattr_init(&attr);
-	pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
-	pthread_cond_init(&wd_cond, &attr);
-	pthread_condattr_destroy(&attr);
-
-	pthread_create(&watchdog_thread, NULL, watchdog_loop, NULL);
+	if (pthread_create(&watchdog_thread, NULL, watchdog_loop, NULL) == 0) {
+		wd_thread_started = 1;
+	} else {
+		wd_running = 0;
+	}
+	pthread_mutex_unlock(&wd_mutex);
 }
 
 static void omnivm_watchdog_arm(int timeout_ms) {
@@ -156,10 +176,25 @@ static void omnivm_watchdog_set_jvm_interrupt(void (*fn)(void)) {
 
 static void omnivm_watchdog_shutdown(void) {
 	pthread_mutex_lock(&wd_mutex);
+	if (!wd_thread_started) {
+		wd_running = 0;
+		wd_armed = 0;
+		pthread_mutex_unlock(&wd_mutex);
+		return;
+	}
+	wd_shutting_down = 1;
 	wd_running = 0;
-	pthread_cond_signal(&wd_cond);
+	wd_armed = 0;
+	wd_generation++;
+	pthread_cond_broadcast(&wd_cond);
 	pthread_mutex_unlock(&wd_mutex);
+
 	pthread_join(watchdog_thread, NULL);
+
+	pthread_mutex_lock(&wd_mutex);
+	wd_thread_started = 0;
+	wd_shutting_down = 0;
+	pthread_mutex_unlock(&wd_mutex);
 }
 */
 import "C"
