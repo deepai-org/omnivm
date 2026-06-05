@@ -10294,6 +10294,12 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"def initialize(message, runtime: nil, boundary_path: nil, details: nil)",
 		"@details = details.nil? ? parsed[:details] : OmniVM.__copy_json_value(details)",
 		"@details_json = details.nil? ? parsed[:details_json] : nil",
+		"alias originRuntime origin_runtime",
+		"alias stackFrames stack_frames",
+		"alias causeChain cause_chain",
+		"alias boundaryPath boundary_path",
+		"alias originalErrorHandle original_error_handle",
+		"alias detailsJson details_json",
 		"details_json: @details_json",
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {

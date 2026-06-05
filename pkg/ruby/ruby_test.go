@@ -153,11 +153,22 @@ raise "cause #{err.cause_chain.inspect}" unless err.cause_chain == expected_caus
 raise "boundary #{err.boundary_path.inspect}" unless err.boundary_path == "call[javascript] > callback[python]"
 raise "handle #{err.original_error_handle.inspect}" unless err.original_error_handle == "py-error-7"
 raise "details #{err.details.inspect}" unless err.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+raise "camel origin #{err.originRuntime.inspect}" unless err.originRuntime == err.origin_runtime
+raise "camel stack #{err.stackFrames.inspect}" unless err.stackFrames == err.stack_frames
+raise "camel cause #{err.causeChain.inspect}" unless err.causeChain == err.cause_chain
+raise "camel boundary #{err.boundaryPath.inspect}" unless err.boundaryPath == err.boundary_path
+raise "camel handle #{err.originalErrorHandle.inspect}" unless err.originalErrorHandle == err.original_error_handle
+raise "camel details json #{err.detailsJson.inspect}" unless err.detailsJson == err.details_json
 stack_reader = err.stack_frames
 stack_reader[0] = "changed"
+camel_stack_reader = err.stackFrames
+camel_stack_reader[0] = "changed"
 cause_reader = err.cause_chain
 cause_reader[0][:message] = "changed"
 cause_reader[0][:details]["code"] = "changed"
+camel_cause_reader = err.causeChain
+camel_cause_reader[0][:message] = "changed"
+camel_cause_reader[0][:details]["code"] = "changed"
 details_reader = err.details
 details_reader[0]["code"] = "changed"
 raise "stack reader leaked" unless err.stack_frames == ["at parse (<anonymous>:1:2)"]
