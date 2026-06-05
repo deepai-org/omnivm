@@ -7011,6 +7011,15 @@ descriptor = {"__omnivm_resource__": True, "id": 91, "runtime": "python", "kind"
 first = __omnivm_materialize_capture(descriptor)
 if first._omnivm_close() is not True:
     raise RuntimeError("first close failed")
+before_closed_access = list(Bridge.requests)
+try:
+    first.get("path")
+    raise RuntimeError("closed proxy get unexpectedly succeeded")
+except RuntimeError as err:
+    if "closed object handle #91" not in str(err):
+        raise RuntimeError("closed proxy diagnostic mismatch: " + str(err))
+if Bridge.requests != before_closed_access:
+    raise RuntimeError("closed proxy get reached bridge: " + repr(Bridge.requests[len(before_closed_access):]))
 second = __omnivm_materialize_capture(descriptor)
 if second is first:
     raise RuntimeError("closed proxy was reused")

@@ -2783,6 +2783,48 @@ class TestCallWithMockLib(unittest.TestCase):
             {"op": "handle_release_explicit", "id": 7},
         ]
 
+    def test_manifest_proxy_closed_operations_fail_locally(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "lookup":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 9,
+                    "runtime": "python",
+                    "kind": "request",
+                    "transfer": True,
+                })
+            if request.get("op") in {"handle_adopt", "handle_release_explicit"}:
+                return envelope(True, "bool")
+            raise AssertionError("closed proxy operation reached bridge: " + repr(request))
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "lookup")
+        assert proxy._omnivm_close() is True
+        before = list(requests)
+
+        checks = (
+            lambda: proxy.path,
+            lambda: proxy["path"],
+            lambda: setattr(proxy, "path", "next"),
+            lambda: len(proxy),
+            lambda: "path" in proxy,
+            lambda: omnivm_mod.proxy_call(proxy, "path"),
+        )
+        for check in checks:
+            with self.assertRaisesRegex(omnivm_mod.RuntimeError, "closed request handle #9") as ctx:
+                check()
+            assert ctx.exception.boundary_path == "proxy_lifecycle"
+            assert ctx.exception.details["proxy"]["closed"] is True
+
+        assert requests == before
+
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0
         omnivm_mod.set_buffer("payload", b"abc", 7)

@@ -944,6 +944,8 @@ class __OmniVMHandleProxy:
             pass
 
     def _record(self, kind="property"):
+        if object.__getattribute__(self, "_closed"):
+            return None
         try:
             caller = globals()["__omnivm_bridge_module"]()
             if caller is not None and hasattr(caller, "call"):
@@ -1004,6 +1006,7 @@ class __OmniVMHandleProxy:
         raise KeyError(key)
 
     def _bridge(self, payload):
+        self._ensure_open(payload.get("op") or "operation")
         caller = globals()["__omnivm_bridge_module"]()
         if caller is None or not hasattr(caller, "call"):
             raise AttributeError(payload.get("key"))
@@ -1086,6 +1089,17 @@ class __OmniVMHandleProxy:
     def _is_proxy_method_key(self, key):
         return key in ("get", "keys", "items", "values", "copy", "update", "to_json")
 
+    def _closed_operation_error(self, op):
+        runtime = str(self._value.get("runtime") or "unknown") if isinstance(self._value, dict) else "unknown"
+        kind = str(self._value.get("kind") or "object") if isinstance(self._value, dict) else "object"
+        handle_id = self._value.get("id") if isinstance(self._value, dict) else None
+        suffix = "" if handle_id is None else " #%s" % handle_id
+        return RuntimeError("OmniVM Python handle proxy %s on closed %s handle%s" % (op, kind, suffix))
+
+    def _ensure_open(self, op):
+        if object.__getattribute__(self, "_closed"):
+            raise self._closed_operation_error(op)
+
     def _release_from_finalizer(self):
         try:
             finalizer = object.__getattribute__(self, "_finalizer")
@@ -1136,6 +1150,7 @@ class __OmniVMHandleProxy:
         return False
 
     def __getitem__(self, key):
+        self._ensure_open("index")
         try:
             return self._local_value(key)
         except KeyError:
@@ -1150,6 +1165,7 @@ class __OmniVMHandleProxy:
         return self._bridge_index(key)
 
     def __setitem__(self, key, value):
+        self._ensure_open("set")
         result = self._bridge_set(str(key), value)
         text_key = str(key)
         if self._has_local_text_value(text_key):
@@ -1165,6 +1181,7 @@ class __OmniVMHandleProxy:
         if key.startswith("_"):
             object.__setattr__(self, key, value)
             return None
+        self._ensure_open("set")
         result = self._bridge_set(key, value)
         if self._has_local_text_value(key):
             self._value[key] = value
@@ -1179,6 +1196,10 @@ class __OmniVMHandleProxy:
             return object.__getattribute__(self, key)
 
     def __getattr__(self, key):
+        if object.__getattribute__(self, "_closed"):
+            if self._is_proxy_method_key(key) or key in ("close", "dispose"):
+                raise AttributeError(key)
+            raise self._closed_operation_error("get")
         try:
             return self._local_value(key)
         except KeyError:
@@ -1203,6 +1224,7 @@ class __OmniVMHandleProxy:
         raise AttributeError(key)
 
     def __contains__(self, key):
+        self._ensure_open("contains")
         try:
             return bool(self._bridge_contains(key))
         except _OmniVMBridgeMissing:
@@ -1210,6 +1232,7 @@ class __OmniVMHandleProxy:
             return self._has_local_value(key) or self._has_local_text_value(key)
 
     def __iter__(self):
+        self._ensure_open("iterate")
         try:
             if self._value.get("kind") == "mapping":
                 self._materialize_chatty()
@@ -1221,6 +1244,7 @@ class __OmniVMHandleProxy:
             return iter(self._value)
 
     def __len__(self):
+        self._ensure_open("len")
         try:
             value = self._bridge_len()
             if isinstance(value, int):
@@ -1231,6 +1255,7 @@ class __OmniVMHandleProxy:
         return len(self._value)
 
     def get(self, key, default=None):
+        self._ensure_open("get")
         text_key = str(key)
         try:
             return self._local_value(key)
@@ -1260,6 +1285,7 @@ class __OmniVMHandleProxy:
             return default
 
     def keys(self):
+        self._ensure_open("iterate")
         self._materialize_chatty()
         self._sync_mapping_cache()
         try:
@@ -1269,6 +1295,7 @@ class __OmniVMHandleProxy:
             return self._value.keys()
 
     def items(self):
+        self._ensure_open("iterate")
         self._materialize_chatty()
         self._sync_mapping_cache()
         try:
@@ -1278,6 +1305,7 @@ class __OmniVMHandleProxy:
             return self._value.items()
 
     def values(self):
+        self._ensure_open("iterate")
         self._materialize_chatty()
         self._sync_mapping_cache()
         try:
@@ -1287,6 +1315,7 @@ class __OmniVMHandleProxy:
             return self._value.values()
 
     def to_json(self):
+        self._ensure_open("get")
         self._materialize_chatty()
         self._sync_mapping_cache()
         return dict(self._value)

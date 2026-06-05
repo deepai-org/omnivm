@@ -1505,6 +1505,29 @@ class ManifestProxy:
             finalizer.detach()
         self._release_arg_finalizers()
 
+    def _closed_operation_error(self, op):
+        descriptor = object.__getattribute__(self, "_descriptor")
+        runtime = str(descriptor.get("runtime") or "unknown")
+        kind = str(descriptor.get("kind") or ("stream" if self._is_stream_proxy() else "object"))
+        handle_id = object.__getattribute__(self, "_handle_id")
+        return RuntimeError(
+            f"OmniVM proxy {op} on closed {kind} handle #{handle_id}",
+            runtime=runtime,
+            boundary_path="proxy_lifecycle",
+            details={
+                "proxy": {
+                    "id": handle_id,
+                    "runtime": runtime,
+                    "kind": kind,
+                    "closed": True,
+                }
+            },
+        )
+
+    def _ensure_open(self, op):
+        if object.__getattribute__(self, "_closed"):
+            raise self._closed_operation_error(op)
+
     @property
     def __omnivm_descriptor__(self):
         return dict(self._descriptor)
@@ -1580,15 +1603,18 @@ class ManifestProxy:
         return object.__getattribute__(self, key)
 
     def __getattr__(self, key):
+        self._ensure_open("get")
         result = self._op({"op": "handle_get", "id": self._handle_id, "key": key})
         if isinstance(result, dict) and result.get("__omnivm_callable__") is True:
             return _ManifestProxyMethod(self, key)
         return result
 
     def __getitem__(self, key):
+        self._ensure_open("index")
         return self._op({"op": "handle_index", "id": self._handle_id, "value": key})
 
     def __setitem__(self, key, value):
+        self._ensure_open("set")
         retained_keys = []
         try:
             self._op({"op": "handle_set", "id": self._handle_id, "key": str(key), "value": self._arg(value, retained_keys)})
@@ -1599,6 +1625,7 @@ class ManifestProxy:
         if key.startswith("_"):
             object.__setattr__(self, key, value)
             return
+        self._ensure_open("set")
         retained_keys = []
         try:
             self._op({"op": "handle_set", "id": self._handle_id, "key": key, "value": self._arg(value, retained_keys)})
@@ -1606,15 +1633,18 @@ class ManifestProxy:
             _release_manifest_args(retained_keys)
 
     def __len__(self):
+        self._ensure_open("len")
         return int(self._op({"op": "handle_len", "id": self._handle_id}))
 
     def __iter__(self):
         if self._descriptor.get("__omnivm_stream__") is True or self._descriptor.get("__omnivm_channel__") is True:
             return _ManifestStreamIterator(self)
+        self._ensure_open("iterate")
         mode = "values" if self._descriptor.get("kind") == "sequence" or self._descriptor.get("__omnivm_table__") is True else "keys"
         return iter(self._op({"op": "handle_iter", "id": self._handle_id, "mode": mode}))
 
     def __contains__(self, value):
+        self._ensure_open("contains")
         retained_keys = []
         try:
             return bool(self._op({"op": "handle_contains", "id": self._handle_id, "value": self._arg(value, retained_keys)}))
@@ -1622,6 +1652,7 @@ class ManifestProxy:
             _release_manifest_args(retained_keys)
 
     def _method_call(self, key, args, kwargs=None):
+        self._ensure_open("call")
         retained_keys = []
         try:
             payload = {
