@@ -6670,6 +6670,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`python_async_stream_pull`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`boundary_path = boundaryPath`,
+		`original_error_handle: err.original_error_handle`,
 		`details_json = JSON.stringify(err.details)`,
 	} {
 		if !contains(code, want) {
@@ -6835,6 +6836,7 @@ try {
   if (envelope.type !== "RuntimeError") throw new Error("bad envelope type: " + envelope.type);
   if (envelope.message !== err.message) throw new Error("bad envelope message: " + envelope.message);
   if (envelope.boundary_path !== "owner_dispatch") throw new Error("bad envelope boundary: " + envelope.boundary_path);
+  if (envelope.original_error_handle !== null) throw new Error("bad envelope original error handle: " + envelope.original_error_handle);
   if (!envelope.traceback || envelope.traceback.indexOf("OmniVMRuntimeError") < 0) throw new Error("missing envelope traceback");
   if (!Array.isArray(envelope.stack_frames) || envelope.stack_frames.length === 0) throw new Error("missing envelope stack frames");
   if (!Array.isArray(envelope.cause_chain) || envelope.cause_chain.length !== 0) throw new Error("bad envelope cause chain");
@@ -9943,6 +9945,7 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`err.toJSON = function()`,
 		`stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; })`,
 		`cause_chain: []`,
+		`original_error_handle: err.original_error_handle`,
 		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",

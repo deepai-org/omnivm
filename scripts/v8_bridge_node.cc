@@ -1961,6 +1961,8 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.type = "RuntimeError";
       err.boundary_path = boundaryPath;
       err.boundaryPath = boundaryPath;
+      err.original_error_handle = null;
+      err.originalErrorHandle = null;
       err.details = globalThis.__omnivm_clone_json(details);
       err.details_json = JSON.stringify(err.details);
       err.detailsJson = err.details_json;
@@ -1975,6 +1977,7 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; }),
           cause_chain: [],
           boundary_path: err.boundary_path,
+          original_error_handle: err.original_error_handle,
           details: globalThis.__omnivm_clone_json(err.details),
           details_json: err.details_json
         };
