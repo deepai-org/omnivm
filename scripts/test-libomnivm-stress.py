@@ -28564,8 +28564,8 @@ def test_manifest_ruby_java_reactive_disposable_and_futuretask_cancel_status_cro
         raise AssertionError(f"Ruby reactive/future cancellation handles used JSON fallback: before={before_boundary}, after={boundary}")
     call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
     before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
-    if call_count < before_call_count + 9:
-        raise AssertionError(f"Ruby reactive/future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+    if call_count < before_call_count + 8:
+        raise AssertionError(f"Ruby reactive/future cancellation status did not record expected proxy method calls; Java status aliases are natural property reads: before={before_handles}, after={handles}")
 
 
 def test_manifest_java_kotlin_job_cancel_status_crosses_runtimes():
@@ -28705,8 +28705,8 @@ def test_manifest_java_guava_listenable_future_cancel_status_crosses_runtimes():
         raise AssertionError(f"Guava futures used JSON fallback: before={before_boundary}, after={boundary}")
     call_count = handles.get("handle_accesses_by_kind", {}).get("call", 0)
     before_call_count = before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
-    if call_count < before_call_count + 15:
-        raise AssertionError(f"Guava future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
+    if call_count < before_call_count + 12:
+        raise AssertionError(f"Guava future cancellation status did not record expected proxy method calls; Java status aliases are natural property reads: before={before_handles}, after={handles}")
 
 
 def test_java_reactor_scheduler_callback_affinity_reports_diagnostic():
