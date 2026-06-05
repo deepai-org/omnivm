@@ -99,6 +99,33 @@ class TestPolyScriptCommands(unittest.TestCase):
         self.assertEqual(result.stdout, "ok")
         self.assertEqual(calls, [("init", ["javascript"]), ("run", str(manifest))])
 
+    @patch.dict(os.environ, {"POLYSCRIPT_PYTHON": "1"}, clear=True)
+    def test_run_manifest_preserves_status_errors_after_initialization(self):
+        fake = types.ModuleType("omnivm")
+        calls = []
+
+        class OmniError(RuntimeError):
+            pass
+
+        def status():
+            raise OmniError("thread affinity violation: current OS thread is not libomnivm host thread")
+
+        def init_runtimes(runtimes):
+            calls.append(("init", list(runtimes)))
+
+        fake.RuntimeError = OmniError
+        fake.status = status
+        fake.init_runtimes = init_runtimes
+        fake.run_manifest = lambda path: "ok"
+
+        with patch.dict(sys.modules, {"omnivm": fake}):
+            with self.assertRaises(polyscript.PolyScriptError) as ctx:
+                polyscript.run_manifest("/tmp/demo.manifest.json")
+
+        self.assertIn("checking libomnivm status", str(ctx.exception))
+        self.assertIn("thread affinity violation", str(ctx.exception))
+        self.assertEqual(calls, [])
+
     @patch("subprocess.run")
     def test_compile_failure_is_actionable(self, run):
         run.return_value.returncode = 2

@@ -296,11 +296,20 @@ def _load_manifest_module_in_process(module_id: str, manifest: Path) -> subproce
 def _ensure_omnivm_initialized(omnivm, manifest: Path) -> None:
     try:
         omnivm.status()
-    except Exception:
+    except Exception as exc:
+        if not _is_omnivm_not_initialized_error(exc):
+            raise PolyScriptError(f"PolyScript run failed while checking libomnivm status: {exc}") from exc
         try:
             omnivm.init_runtimes(_configured_runtimes(manifest))
-        except Exception as exc:
-            raise PolyScriptError(f"PolyScript run failed during libomnivm initialization: {exc}") from exc
+        except Exception as init_exc:
+            raise PolyScriptError(f"PolyScript run failed during libomnivm initialization: {init_exc}") from init_exc
+
+
+def _is_omnivm_not_initialized_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "not initialized" in message and (
+        "init_runtimes" in message or message.strip() == "not initialized"
+    )
 
 
 def _configured_runtimes(manifest: Path) -> list[str]:
