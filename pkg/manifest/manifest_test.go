@@ -6764,6 +6764,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def _omnivm_traceback_frames(error):") ||
 		!contains(code, "return __tb.format_tb(error.__traceback__) if error.__traceback__ is not None else []") ||
 		!contains(code, "def traceback(self):") ||
+		!contains(code, "def originRuntime(self):") ||
 		!contains(code, "def to_json(self):") ||
 		!contains(code, "def details_json(self, value):") ||
 		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
@@ -7126,6 +7127,8 @@ except RuntimeError as exc:
         raise
     if getattr(exc, "runtime", None) != "python":
         raise RuntimeError("malformed stream runtime mismatch: " + repr(getattr(exc, "runtime", None)))
+    if getattr(exc, "originRuntime", None) != "python":
+        raise RuntimeError("malformed stream originRuntime alias mismatch: " + repr(getattr(exc, "originRuntime", None)))
     if getattr(exc, "boundary_path", None) != "stream_next":
         raise RuntimeError("malformed stream boundary mismatch: " + repr(getattr(exc, "boundary_path", None)))
     if not exc.stack_frames:

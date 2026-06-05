@@ -576,6 +576,10 @@ class _OmniVMRuntimeError(RuntimeError):
         return self.stack_frames
 
     @property
+    def originRuntime(self):
+        return self.origin_runtime
+
+    @property
     def cause_chain(self):
         return _omnivm_copy_json_value(self._cause_chain)
 
