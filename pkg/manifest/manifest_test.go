@@ -17125,6 +17125,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
 		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
 	}
+	if !strings.Contains(pythonProp, "DESCRIPTOR") || !strings.Contains(pythonProp, "fields_by_name") {
+		t.Fatalf("python property lookup should prefer Protobuf descriptor fields before same-named methods, got %q", pythonProp)
+	}
 	if !strings.Contains(pythonProp, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonProp, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonProp, "model_fields") {
 		t.Fatalf("python property lookup should prefer static _mapping row fields before attributes, got %q", pythonProp)
 	}
@@ -17181,6 +17184,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonCallable, "model_fields") || strings.Index(pythonCallable, "Mapping) and __k in __o") > strings.Index(pythonCallable, "model_fields") || strings.Index(pythonCallable, "model_fields") > strings.LastIndex(pythonCallable, "hasattr(__o, __k)") {
 		t.Fatalf("python callable lookup should inspect Pydantic fields before same-named methods, got %q", pythonCallable)
 	}
+	if !strings.Contains(pythonCallable, "DESCRIPTOR") || !strings.Contains(pythonCallable, "fields_by_name") {
+		t.Fatalf("python callable lookup should inspect Protobuf descriptor fields before same-named methods, got %q", pythonCallable)
+	}
 
 	pythonCall, ok, err := runtimeRefCallExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items", []interface{}{})
 	if err != nil || !ok {
@@ -17188,6 +17194,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 	if !strings.Contains(pythonCall, "model_fields") || strings.Index(pythonCall, "Mapping) and __k in __o") > strings.Index(pythonCall, "model_fields") || strings.Index(pythonCall, "model_fields") > strings.LastIndex(pythonCall, "hasattr(__o, __k)") {
 		t.Fatalf("python call lookup should inspect Pydantic fields before same-named methods, got %q", pythonCall)
+	}
+	if !strings.Contains(pythonCall, "DESCRIPTOR") || !strings.Contains(pythonCall, "fields_by_name") {
+		t.Fatalf("python call lookup should inspect Protobuf descriptor fields before same-named methods, got %q", pythonCall)
 	}
 	if !strings.Contains(pythonCall, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonCall, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonCall, "model_fields") {
 		t.Fatalf("python call lookup should inspect static _mapping row fields before attributes, got %q", pythonCall)
@@ -17339,6 +17348,9 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	}
 	if !strings.Contains(pythonCode, "model_fields") || strings.Index(pythonCode, "MutableMapping") > strings.Index(pythonCode, "model_fields") || strings.Index(pythonCode, "model_fields") > strings.Index(pythonCode, "hasattr(__o, __k)") {
 		t.Fatalf("python RuntimeRef set should prefer Pydantic fields before same-named methods, got %q", pythonCode)
+	}
+	if !strings.Contains(pythonCode, "DESCRIPTOR") || !strings.Contains(pythonCode, "fields_by_name") {
+		t.Fatalf("python RuntimeRef set should prefer Protobuf descriptor fields before same-named methods, got %q", pythonCode)
 	}
 
 	rubyCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "ruby", VarName: "items"}, "0", "updated")

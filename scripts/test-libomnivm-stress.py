@@ -3510,13 +3510,13 @@ class WrongEndianArrayInterfaceOnly:
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) <= before.get("resource_proxy_captures", 0):
         raise AssertionError(f"wrong-endian array-interface capture did not create a live proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"wrong-endian array-interface capture should not create a table proxy: before={before}, after={after}")
-    if after.get("arrow_transfers", 0) != 0:
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
         raise AssertionError(f"wrong-endian array-interface capture should not use Arrow/shared memory: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"wrong-endian array-interface capture used JSON fallback: before={before}, after={after}")
 
 
@@ -5134,13 +5134,13 @@ payload = GPUOnlyDLPack()
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) <= before.get("resource_proxy_captures", 0):
         raise AssertionError(f"non-CPU DLPack did not remain a resource proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"non-CPU DLPack should not create a table proxy: before={before}, after={after}")
-    if after.get("arrow_transfers", 0) != 0:
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
         raise AssertionError(f"non-CPU DLPack should not use Arrow/shared memory: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"non-CPU DLPack capture used JSON fallback: before={before}, after={after}")
 
 
@@ -5491,6 +5491,7 @@ def test_manifest_numpy_strided_view_capture_uses_arrow():
 
 
 def test_manifest_numpy_wrong_endian_buffer_capture_uses_proxy():
+    before = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -5521,14 +5522,14 @@ def test_manifest_numpy_wrong_endian_buffer_capture_uses_proxy():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"wrong-endian buffer capture did not create a live proxy: {after}")
-    if after.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"wrong-endian buffer capture should not create a table proxy: {after}")
-    if after.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"wrong-endian buffer capture should not use Arrow/shared memory: {after}")
-    if after.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"wrong-endian buffer capture used JSON fallback: {after}")
+    if after.get("resource_proxy_captures", 0) <= before.get("resource_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian buffer capture did not create a live proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian buffer capture should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"wrong-endian buffer capture should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"wrong-endian buffer capture used JSON fallback: before={before}, after={after}")
 
 
 def test_manifest_pandas_series_array_protocol_capture_uses_arrow():
@@ -15270,12 +15271,12 @@ def test_manifest_ruby_utf8_string_capture_stays_text():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"Ruby UTF-8 text capture should not create a table proxy: after={after}")
-    if after.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Ruby UTF-8 text capture should not use Arrow/shared memory: after={after}")
-    if after.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Ruby UTF-8 text capture should not use JSON fallback: after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+        raise AssertionError(f"Ruby UTF-8 text capture should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"Ruby UTF-8 text capture should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"Ruby UTF-8 text capture should not use JSON fallback: before={before}, after={after}")
 
 
 def test_manifest_ruby_array_capture_uses_proxy_not_json():
@@ -15619,6 +15620,7 @@ def test_manifest_java_direct_floatbuffer_capture_uses_arrow():
 
 
 def test_manifest_java_wrong_endian_direct_intbuffer_capture_uses_proxy():
+    before = omnivm.status().get("boundary", {})
     java_expr = (
         "((java.util.function.Supplier<java.nio.IntBuffer>)(() -> { "
         "java.nio.ByteOrder wrong = java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.BIG_ENDIAN ? java.nio.ByteOrder.LITTLE_ENDIAN : java.nio.ByteOrder.BIG_ENDIAN; "
@@ -15658,17 +15660,18 @@ def test_manifest_java_wrong_endian_direct_intbuffer_capture_uses_proxy():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"wrong-endian Java IntBuffer capture did not create a live proxy: {after}")
-    if after.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"wrong-endian Java IntBuffer capture should not create a table proxy: {after}")
-    if after.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"wrong-endian Java IntBuffer capture should not use Arrow/shared memory: {after}")
-    if after.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"wrong-endian Java IntBuffer capture used JSON fallback: {after}")
+    if after.get("resource_proxy_captures", 0) <= before.get("resource_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian Java IntBuffer capture did not create a live proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian Java IntBuffer capture should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"wrong-endian Java IntBuffer capture should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"wrong-endian Java IntBuffer capture used JSON fallback: before={before}, after={after}")
 
 
 def test_manifest_java_wrong_endian_heap_view_intbuffer_capture_uses_proxy():
+    before = omnivm.status().get("boundary", {})
     java_expr = (
         "((java.util.function.Supplier<java.nio.IntBuffer>)(() -> { "
         "java.nio.ByteOrder wrong = java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.BIG_ENDIAN ? java.nio.ByteOrder.LITTLE_ENDIAN : java.nio.ByteOrder.BIG_ENDIAN; "
@@ -15708,14 +15711,14 @@ def test_manifest_java_wrong_endian_heap_view_intbuffer_capture_uses_proxy():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture did not create a live proxy: {after}")
-    if after.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture should not create a table proxy: {after}")
-    if after.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture should not use Arrow/shared memory: {after}")
-    if after.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture used JSON fallback: {after}")
+    if after.get("resource_proxy_captures", 0) <= before.get("resource_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture did not create a live proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture should not create a table proxy: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture should not use Arrow/shared memory: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"wrong-endian Java heap-view IntBuffer capture used JSON fallback: before={before}, after={after}")
 
 
 def test_repeated_crossings():
@@ -26579,13 +26582,13 @@ pydantic_collision = CollisionModel(
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
+    if boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
         raise AssertionError(f"Pydantic collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Pydantic collision model used JSON fallback: before={before_boundary}, after={boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"Pydantic collision model crossed as stream: before={before_boundary}, after={boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0:
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
         raise AssertionError(f"Pydantic collision model crossed as table: before={before_boundary}, after={boundary}")
     accesses = handles.get("handle_accesses_by_kind", {})
     before_accesses = before_handles.get("handle_accesses_by_kind", {})
@@ -26703,7 +26706,7 @@ protobuf_collision = CollisionMessage(
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) == 0:
+    if boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
         raise AssertionError(f"Protobuf collision message did not cross as live proxy: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"Protobuf collision message used JSON fallback: before={before_boundary}, after={boundary}")
@@ -26817,13 +26820,13 @@ attrs_collision = CollisionAttrs(
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
+    if boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
         raise AssertionError(f"attrs collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"attrs collision model used JSON fallback: before={before_boundary}, after={boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"attrs collision model crossed as stream: before={before_boundary}, after={boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0:
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
         raise AssertionError(f"attrs collision model crossed as table: before={before_boundary}, after={boundary}")
     accesses = handles.get("handle_accesses_by_kind", {})
     before_accesses = before_handles.get("handle_accesses_by_kind", {})
@@ -26931,7 +26934,7 @@ dataclass_collision = CollisionDataclass(
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
+    if boundary.get("resource_proxy_captures", 0) <= before_boundary.get("resource_proxy_captures", 0):
         raise AssertionError(f"dataclass collision model did not cross as live proxy: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"dataclass collision model used JSON fallback: before={before_boundary}, after={boundary}")
