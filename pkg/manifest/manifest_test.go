@@ -10994,13 +10994,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("read Java runtime helper: %v", err)
 	}
 	code := string(data)
-	if !contains(code, `\"op\":\"handle_adopt\"`) || !contains(code, "private static boolean adopt(Object id)") {
+	if !contains(code, `\"op\":\"handle_adopt\"`) || !contains(code, "private static boolean adopt(Object id, long bridgeToken)") {
 		t.Fatalf("Java runtime should expose internal handle adoption for returned proxies")
 	}
 	if !contains(code, `Boolean.TRUE.equals(value.get("transfer"))`) ||
-		!contains(code, "adopt(value.get(\"id\"))") ||
+		!contains(code, "adopt(value.get(\"id\"), bridgeToken)") ||
 		!contains(code, "if (id != null && Boolean.TRUE.equals(value.get(\"transfer\")))") ||
-		!contains(code, "HandleProxy.adopt(id)") {
+		!contains(code, "HandleProxy.adopt(id, bridgeToken)") {
 		t.Fatalf("Java runtime should adopt transfer handles for handle and stream proxies")
 	}
 	if !contains(code, "public static List<Object> proxyIter") || !contains(code, "public static List<Object> proxyKeys") || !contains(code, "public static List<Object> proxyValues") || !contains(code, "public static List<Object> proxyItems") || !contains(code, "public static boolean proxyContains") || !contains(code, "public static boolean proxyClose") || !contains(code, "public static boolean omnivmClose") || !contains(code, "return proxyClose(target);") || !contains(code, "public static boolean proxyCallable") {
@@ -11056,7 +11056,11 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "return !(disposeResult instanceof Boolean) || Boolean.TRUE.equals(disposeResult);") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
-		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
+		!contains(code, "new FinalizerState(value.get(\"id\"), released, bridgeToken)") ||
+		!contains(code, "private static final AtomicLong captureBridgeGeneration = new AtomicLong(1);") ||
+		!contains(code, "private static boolean isCaptureBridgeActive(long token)") ||
+		!contains(code, "private final long bridgeToken;") ||
+		!contains(code, "String key = kind + \":\" + bridgeToken + \":\" + String.valueOf(id);") {
 		t.Fatalf("Java proxyClose should use explicit release markers while keeping Cleaner cleanup idempotent")
 	}
 	if !contains(code, "if (id == null || !released.compareAndSet(false, true))") ||
@@ -11071,8 +11075,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`"proxy_lifecycle"`,
 		`ownerDispatchMap("proxy", proxy)`,
 		"private void ensureOpen(String op)",
-		"if (released.get()) {\n                throw closedOperationError(op);\n            }",
-		"if (released.get()) {\n                return null;\n            }",
+		"if (released.get() || !isBridgeActive()) {\n                throw closedOperationError(op);\n            }",
+		"if (released.get() || !isBridgeActive()) {\n                return null;\n            }",
 		"private boolean isReleased() {\n            return released.get();\n        }",
 		"cached instanceof HandleProxy handleProxy && handleProxy.isReleased()",
 		"cached instanceof StreamProxy streamProxy && streamProxy.isReleased()",
@@ -11090,7 +11094,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		}
 	}
 	if !contains(code, "public String toString()") ||
-		!contains(code, "if (released.get()) {\n                return value.toString();\n            }") ||
+		!contains(code, "if (released.get() || !isBridgeActive()) {\n                return value.toString();\n            }") ||
 		!contains(code, `if (hasLocalValue("toString")) {`) ||
 		!contains(code, `return String.valueOf(localValue("toString"));`) ||
 		!contains(code, `return String.valueOf(bridgeGet("toString"));`) ||
@@ -11125,7 +11129,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
 		!contains(code, "if (localValues != null) {\n                        if (released.get() || localIndex >= localValues.size())") ||
 		!contains(code, "next = materializeCapture(localValues.get(localIndex++));") ||
-		!contains(code, "if (released.get()) {\n                        done = true;\n                        return;\n                    }") ||
+		!contains(code, "if (released.get() || !isBridgeActive()) {\n                        done = true;\n                        return;\n                    }") ||
 		!contains(code, "if (cleanable != null) {\n                cleanable.clean();\n            }") {
 		t.Fatalf("Java stream proxy should consume embedded local stream values without manifest next/cancel calls")
 	}
@@ -11967,6 +11971,91 @@ public final class ClosedProxyCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ClosedProxyCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java closed proxy check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaProxyFinalizersIgnoreReplacedBridge(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/StaleBridgeProxyCheck.java"
+	check := `package omnivm;
+
+public final class StaleBridgeProxyCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static void expectStale(Runnable body, String operation) {
+        try {
+            body.run();
+            throw new AssertionError(operation + " unexpectedly succeeded");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("handle #801"), operation + " message mismatch: " + err.getMessage());
+            require("proxy_lifecycle".equals(err.getBoundaryPath()), operation + " boundary mismatch: " + err.getBoundaryPath());
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.setCapture("req", "{\"__omnivm_resource__\":true,\"id\":801,\"runtime\":\"python\",\"kind\":\"request\",\"path\":\"old\"}");
+        OmniVM.HandleProxy proxy = (OmniVM.HandleProxy) OmniVM.getCapture("req");
+        require("old".equals(proxy.get("path")), "old proxy local field mismatch");
+
+        OmniVM.setCapture("rows", "{\"__omnivm_stream__\":true,\"id\":802,\"runtime\":\"python\",\"kind\":\"stream\"}");
+        OmniVM.StreamProxy stream = (OmniVM.StreamProxy) OmniVM.getCapture("rows");
+
+        OmniVM.clearCaptures();
+        require(!proxy.releaseExplicit(), "stale handle close should be a quiet no-op");
+        require(!stream.releaseExplicit(), "stale stream close should be a quiet no-op");
+
+        OmniVM.setCapture("req", "{\"__omnivm_resource__\":true,\"id\":801,\"runtime\":\"python\",\"kind\":\"request\",\"path\":\"new\"}");
+        OmniVM.HandleProxy replacement = (OmniVM.HandleProxy) OmniVM.getCapture("req");
+        require(replacement != proxy, "bridge replacement reused stale cached proxy");
+        require("new".equals(replacement.get("path")), "replacement proxy local field mismatch");
+
+        OmniVM.clearCaptures();
+        expectStale(() -> replacement.get("path"), "get");
+        replacement.releaseFromFinalizer();
+
+        OmniVM.setCapture("stream", "{\"__omnivm_stream__\":true,\"id\":802,\"runtime\":\"python\",\"kind\":\"stream\"}");
+        OmniVM.StreamProxy replacementStream = (OmniVM.StreamProxy) OmniVM.getCapture("stream");
+        require(replacementStream != stream, "bridge replacement reused stale cached stream proxy");
+        OmniVM.clearCaptures();
+        replacementStream.releaseFromFinalizer();
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java stale bridge proxy check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java stale bridge proxy check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.StaleBridgeProxyCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java stale bridge proxy check: %v\n%s", err, out)
 	}
 }
 

@@ -1106,11 +1106,15 @@ public class OmniVM {
     private static final Cleaner captureCleaner = Cleaner.create();
     private static final Map<String, WeakReference<Object>> proxyCache = new ConcurrentHashMap<>();
     private static final int proxyCachePruneThreshold = 4096;
+    private static final AtomicLong captureBridgeGeneration = new AtomicLong(1);
 
     /**
      * Set a capture value (called by manifest executor before Java code runs).
      */
     public static void setCapture(String name, String jsonValue) {
+        if (captureJson.isEmpty()) {
+            captureBridgeGeneration.incrementAndGet();
+        }
         captureJson.put(name, jsonValue);
         captures.put(name, materializeCapture(parseJson(jsonValue)));
     }
@@ -1143,6 +1147,7 @@ public class OmniVM {
     public static void clearCaptures() {
         captures.clear();
         captureJson.clear();
+        captureBridgeGeneration.incrementAndGet();
     }
 
     /**
@@ -1151,6 +1156,14 @@ public class OmniVM {
     public static void clearCapture(String name) {
         captures.remove(name);
         captureJson.remove(name);
+    }
+
+    private static long activeCaptureBridgeToken() {
+        return captureBridgeGeneration.get();
+    }
+
+    private static boolean isCaptureBridgeActive(long token) {
+        return captureBridgeGeneration.get() == token;
     }
 
     public static Object fromJson(String json) {
@@ -2104,20 +2117,25 @@ public class OmniVM {
         private static final Set<String> chattyProxyWarned = Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
         private static final int chattyProxyWarnedLimit = 4096;
         private final Map<String, Object> value;
+        private final long bridgeToken;
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
-        private HandleProxy(Map<String, Object> value) {
+        private HandleProxy(Map<String, Object> value, long bridgeToken) {
             this.value = value;
+            this.bridgeToken = bridgeToken;
             if (Boolean.TRUE.equals(value.get("transfer"))) {
-                adopt(value.get("id"));
+                adopt(value.get("id"), bridgeToken);
             } else {
-                retain(value.get("id"));
+                retain(value.get("id"), bridgeToken);
             }
-            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id"), released));
+            this.cleanable = captureCleaner.register(this, new FinalizerState(value.get("id"), released, bridgeToken));
         }
 
-        private static boolean retain(Object id) {
+        private static boolean retain(Object id, long bridgeToken) {
+            if (!isCaptureBridgeActive(bridgeToken)) {
+                return false;
+            }
             try {
                 Object env = parseJson(OmniVM.call("__manifest", "{\"op\":\"handle_retain\",\"id\":" + jsonScalar(id) + "}"));
                 if (env instanceof Map<?, ?>) {
@@ -2129,7 +2147,10 @@ public class OmniVM {
             return false;
         }
 
-        private static boolean adopt(Object id) {
+        private static boolean adopt(Object id, long bridgeToken) {
+            if (!isCaptureBridgeActive(bridgeToken)) {
+                return false;
+            }
             try {
                 Object env = parseJson(OmniVM.call("__manifest", "{\"op\":\"handle_adopt\",\"id\":" + jsonScalar(id) + "}"));
                 if (env instanceof Map<?, ?>) {
@@ -2176,6 +2197,12 @@ public class OmniVM {
             if (id == null || !released.compareAndSet(false, true)) {
                 return false;
             }
+            if (!isCaptureBridgeActive(bridgeToken)) {
+                if (cleanable != null) {
+                    cleanable.clean();
+                }
+                return false;
+            }
             Object result;
             try {
                 result = bridgeManifestOp("{\"op\":\"handle_release_explicit\",\"id\":" + jsonScalar(id) + "}");
@@ -2195,6 +2222,10 @@ public class OmniVM {
 
         private boolean isReleased() {
             return released.get();
+        }
+
+        private boolean isBridgeActive() {
+            return isCaptureBridgeActive(bridgeToken);
         }
 
         @Override
@@ -2355,7 +2386,7 @@ public class OmniVM {
 
         @Override
         public String toString() {
-            if (released.get()) {
+            if (released.get() || !isBridgeActive()) {
                 return value.toString();
             }
             if (hasLocalValue("toString")) {
@@ -2390,13 +2421,13 @@ public class OmniVM {
         }
 
         private void ensureOpen(String op) {
-            if (released.get()) {
+            if (released.get() || !isBridgeActive()) {
                 throw closedOperationError(op);
             }
         }
 
         private Map<?, ?> record(String kind) {
-            if (released.get()) {
+            if (released.get() || !isBridgeActive()) {
                 return null;
             }
             Object id = value.get("id");
@@ -2557,6 +2588,9 @@ public class OmniVM {
 
         @SuppressWarnings("unchecked")
         private Object bridgeOp(String payload) {
+            if (!isBridgeActive()) {
+                throw closedOperationError("bridge");
+            }
             try {
                 String raw = OmniVM.call("__manifest", payload);
                 if (raw != null && raw.startsWith("ERR:")) {
@@ -2579,15 +2613,20 @@ public class OmniVM {
     private static final class FinalizerState implements Runnable {
         private final Object id;
         private final AtomicBoolean released;
+        private final long bridgeToken;
 
-        private FinalizerState(Object id, AtomicBoolean released) {
+        private FinalizerState(Object id, AtomicBoolean released, long bridgeToken) {
             this.id = id;
             this.released = released;
+            this.bridgeToken = bridgeToken;
         }
 
         @Override
         public void run() {
             if (id == null || !released.compareAndSet(false, true)) {
+                return;
+            }
+            if (!isCaptureBridgeActive(bridgeToken)) {
                 return;
             }
             try {
@@ -2766,21 +2805,23 @@ public class OmniVM {
     public static final class StreamProxy implements Iterable<Object>, AutoCloseable {
         private final Map<String, Object> value;
         private final List<?> localValues;
+        private final long bridgeToken;
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
-        private StreamProxy(Map<String, Object> value) {
+        private StreamProxy(Map<String, Object> value, long bridgeToken) {
             this.value = value;
+            this.bridgeToken = bridgeToken;
             Object values = value.get("values");
             this.localValues = values instanceof List<?> ? (List<?>) values : null;
             Object id = value.get("id");
             if (id != null && Boolean.TRUE.equals(value.get("transfer"))) {
-                HandleProxy.adopt(id);
+                HandleProxy.adopt(id, bridgeToken);
             } else if (id != null) {
-                HandleProxy.retain(id);
+                HandleProxy.retain(id, bridgeToken);
             }
             if (id != null) {
-                this.cleanable = captureCleaner.register(this, new FinalizerState(id, released));
+                this.cleanable = captureCleaner.register(this, new FinalizerState(id, released, bridgeToken));
             } else {
                 this.cleanable = null;
             }
@@ -2812,12 +2853,22 @@ public class OmniVM {
             return released.get();
         }
 
+        private boolean isBridgeActive() {
+            return isCaptureBridgeActive(bridgeToken);
+        }
+
         public boolean cancel() {
             if (localValues != null) {
                 return markReleased();
             }
             Object id = value.get("id");
             if (id == null || !released.compareAndSet(false, true)) {
+                return false;
+            }
+            if (!isBridgeActive()) {
+                if (cleanable != null) {
+                    cleanable.clean();
+                }
                 return false;
             }
             Object result;
@@ -2910,7 +2961,7 @@ public class OmniVM {
                         }
                         return;
                     }
-                    if (released.get()) {
+                    if (released.get() || !isBridgeActive()) {
                         done = true;
                         return;
                     }
@@ -3082,11 +3133,12 @@ public class OmniVM {
     }
 
     private static Object cachedProxy(String kind, Map<String, Object> value, boolean stream) {
+        long bridgeToken = activeCaptureBridgeToken();
         Object id = value.get("id");
         if (id == null) {
-            return stream ? new StreamProxy(value) : new HandleProxy(value);
+            return stream ? new StreamProxy(value, bridgeToken) : new HandleProxy(value, bridgeToken);
         }
-        String key = kind + ":" + String.valueOf(id);
+        String key = kind + ":" + bridgeToken + ":" + String.valueOf(id);
         WeakReference<Object> ref = proxyCache.get(key);
         Object cached = ref == null ? null : ref.get();
         if ((cached instanceof HandleProxy handleProxy && handleProxy.isReleased())
@@ -3100,7 +3152,7 @@ public class OmniVM {
         if (ref != null) {
             proxyCache.remove(key, ref);
         }
-        Object proxy = stream ? new StreamProxy(value) : new HandleProxy(value);
+        Object proxy = stream ? new StreamProxy(value, bridgeToken) : new HandleProxy(value, bridgeToken);
         proxyCache.put(key, new WeakReference<>(proxy));
         pruneProxyCache();
         return proxy;
