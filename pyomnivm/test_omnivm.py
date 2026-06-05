@@ -1497,6 +1497,83 @@ class TestCallWithMockLib(unittest.TestCase):
         assert proxy._omnivm_close() is False
         assert releases == 2
 
+    def test_manifest_proxy_close_remains_fallback_when_owner_has_no_close_field(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 53,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_contains" and request.get("value") in {"close", "dispose"}:
+                return envelope(False, "bool")
+            if request.get("op") == "handle_get" and request.get("key") in {"close", "dispose"}:
+                raise AssertionError("missing lifecycle field should not be fetched")
+            if request.get("op") == "handle_release_explicit":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        assert proxy.close() is True
+        assert proxy.close() is False
+        assert [request for request in requests if request.get("op") == "handle_release_explicit"] == [
+            {"op": "handle_release_explicit", "id": 53}
+        ]
+
+    def test_manifest_proxy_callable_close_field_stays_owner_method(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "tool":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 54,
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_contains" and request.get("value") == "close":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_get" and request.get("key") == "close":
+                return envelope({"__omnivm_callable__": True, "key": "close"})
+            if request.get("op") == "handle_call" and request.get("key") == "close":
+                return envelope("owner-close:" + request["args"][0])
+            if request.get("op") == "handle_release_explicit":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+
+        assert proxy.close("field") == "owner-close:field"
+        assert omnivm_mod.proxy_close(proxy) is True
+        assert [request for request in requests if request.get("op") == "handle_release_explicit"] == [
+            {"op": "handle_release_explicit", "id": 54}
+        ]
+        assert [request for request in requests if request.get("op") == "handle_call" and request.get("key") == "close"] == [
+            {"op": "handle_call", "id": 54, "key": "close", "args": ["field"]}
+        ]
+
     def test_proxy_close_preserves_public_close_result_without_dynamic_lookup(self):
         class FalseCloser:
             def close(self):
