@@ -35,6 +35,7 @@ import java.util.stream.StreamSupport;
  * Native methods are registered by Go via JNI RegisterNatives during initialization.
  */
 public class OmniVM {
+    private static final Object PROXY_LIFECYCLE_METHOD_MISSING = new Object();
 
     /**
      * Call another runtime to evaluate an expression.
@@ -1415,22 +1416,34 @@ public class OmniVM {
                 throw new RuntimeException("proxy close failed", err);
             }
         }
-        for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
-            if (method.getName().equals("close") && method.getParameterCount() == 0
-                && java.lang.reflect.Modifier.isPublic(method.getModifiers())) {
-                try {
-                    Object result = invokeProxyMethod(method, target);
-                    return !(result instanceof Boolean) || Boolean.TRUE.equals(result);
-                } catch (ReflectiveOperationException err) {
-                    throw new RuntimeException("proxy close failed", err);
-                }
-            }
+        Object closeResult = invokePublicProxyLifecycleMethod(target, "close");
+        if (closeResult != PROXY_LIFECYCLE_METHOD_MISSING) {
+            return !(closeResult instanceof Boolean) || Boolean.TRUE.equals(closeResult);
+        }
+        Object disposeResult = invokePublicProxyLifecycleMethod(target, "dispose");
+        if (disposeResult != PROXY_LIFECYCLE_METHOD_MISSING) {
+            return !(disposeResult instanceof Boolean) || Boolean.TRUE.equals(disposeResult);
         }
         return false;
     }
 
     public static boolean omnivmClose(Object target) {
         return proxyClose(target);
+    }
+
+    private static Object invokePublicProxyLifecycleMethod(Object target, String name) {
+        for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
+            if (method.getName().equals(name) && method.getParameterCount() == 0
+                && java.lang.reflect.Modifier.isPublic(method.getModifiers())) {
+                try {
+                    Object result = invokeProxyMethod(method, target);
+                    return result;
+                } catch (ReflectiveOperationException err) {
+                    throw new RuntimeException("proxy close failed", err);
+                }
+            }
+        }
+        return PROXY_LIFECYCLE_METHOD_MISSING;
     }
 
     public static boolean proxyCallable(Object target, Object keyValue) {

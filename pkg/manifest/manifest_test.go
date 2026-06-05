@@ -8602,7 +8602,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "public void close()") ||
 		!contains(code, "java.lang.reflect.Modifier.isPublic(method.getModifiers())") ||
 		!contains(code, "Object result = invokeProxyMethod(method, target);") ||
-		!contains(code, "return !(result instanceof Boolean) || Boolean.TRUE.equals(result);") ||
+		!contains(code, `invokePublicProxyLifecycleMethod(target, "close")`) ||
+		!contains(code, `invokePublicProxyLifecycleMethod(target, "dispose")`) ||
+		!contains(code, "return !(disposeResult instanceof Boolean) || Boolean.TRUE.equals(disposeResult);") ||
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
 		!contains(code, "new FinalizerState(value.get(\"id\"), released)") {
@@ -8835,6 +8837,43 @@ public final class ProxyCloseCheck {
         }
     }
 
+    public static final class TextDispose {
+        public String dispose() {
+            return "disposed";
+        }
+    }
+
+    public static final class FalseDispose {
+        public Boolean dispose() {
+            return Boolean.FALSE;
+        }
+    }
+
+    public static final class VoidDispose {
+        public int calls = 0;
+        public void dispose() {
+            calls++;
+        }
+    }
+
+    public static final class PrivateDispose {
+        private boolean disposed = false;
+        private Boolean dispose() {
+            disposed = true;
+            return Boolean.TRUE;
+        }
+    }
+
+    public static final class CloseAndDispose {
+        public String close() {
+            return "closed";
+        }
+
+        public Boolean dispose() {
+            throw new AssertionError("dispose should not run when close is available");
+        }
+    }
+
     public static final class NoClose {
     }
 
@@ -8859,6 +8898,19 @@ public final class ProxyCloseCheck {
         PrivateClose privateClose = new PrivateClose();
         require(!OmniVM.proxyClose(privateClose), "private close should not be invoked as a lifecycle hook");
         require(!privateClose.closed, "private close was invoked");
+
+        require(OmniVM.proxyClose(new TextDispose()), "truthy non-boolean dispose result should normalize true");
+        require(!OmniVM.proxyClose(new FalseDispose()), "false dispose result was not preserved");
+
+        VoidDispose voidDispose = new VoidDispose();
+        require(OmniVM.proxyClose(voidDispose), "void dispose should normalize true");
+        require(voidDispose.calls == 1, "void dispose call count mismatch");
+
+        PrivateDispose privateDispose = new PrivateDispose();
+        require(!OmniVM.proxyClose(privateDispose), "private dispose should not be invoked as a lifecycle hook");
+        require(!privateDispose.disposed, "private dispose was invoked");
+
+        require(OmniVM.proxyClose(new CloseAndDispose()), "close should take priority over dispose");
 
         require(!OmniVM.proxyClose(new NoClose()), "object without close should return false");
         require(!OmniVM.proxyClose(null), "null close should return false");
