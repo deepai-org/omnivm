@@ -8764,18 +8764,40 @@ var descriptor = {__omnivm_resource__: true, id: 91, runtime: "javascript", kind
 var first = globalThis.__omnivm_materialize_capture(descriptor);
 if (omnivm.proxyClose(first) !== true) throw new Error("first close failed");
 var beforeClosedAccess = JSON.stringify(omnivm.calls);
+function assertClosedProxyError(err, operation) {
+  if (String(err && err.message || err).indexOf("closed object handle #91") < 0) {
+    throw new Error("closed proxy " + operation + " diagnostic mismatch: " + String(err && err.message || err));
+  }
+  if (err.boundary_path !== "proxy_lifecycle") throw new Error("closed proxy " + operation + " boundary mismatch: " + String(err.boundary_path));
+  if (!err.details || !err.details.proxy || err.details.proxy.id !== 91 || err.details.proxy.runtime !== "javascript" || err.details.proxy.kind !== "object" || err.details.proxy.closed !== true) {
+    throw new Error("closed proxy " + operation + " details mismatch: " + JSON.stringify(err.details));
+  }
+}
 try {
   first.path;
   throw new Error("closed proxy get unexpectedly succeeded");
 } catch (err) {
-  if (String(err && err.message || err).indexOf("closed object handle #91") < 0) throw new Error("closed proxy diagnostic mismatch: " + String(err && err.message || err));
+  assertClosedProxyError(err, "get");
 }
 try {
   omnivm.proxyGet(first, "path");
   throw new Error("closed proxy proxyGet unexpectedly succeeded");
 } catch (err) {
-  if (String(err && err.message || err).indexOf("closed object handle #91") < 0) throw new Error("closed proxyGet diagnostic mismatch: " + String(err && err.message || err));
+  assertClosedProxyError(err, "proxyGet");
 }
+try {
+  first.then;
+  throw new Error("closed proxy then unexpectedly succeeded");
+} catch (err) {
+  assertClosedProxyError(err, "then");
+}
+var closedPromiseRejected = false;
+Promise.resolve(first).then(function() {
+  throw new Error("closed proxy Promise.resolve unexpectedly fulfilled");
+}, function(err) {
+  assertClosedProxyError(err, "Promise.resolve");
+  closedPromiseRejected = true;
+});
 if (JSON.stringify(omnivm.calls) !== beforeClosedAccess) throw new Error("closed proxy access reached bridge: " + JSON.stringify(omnivm.calls));
 var second = globalThis.__omnivm_materialize_capture(descriptor);
 if (second === first) throw new Error("closed proxy was reused");
@@ -8788,6 +8810,12 @@ if (JSON.stringify(adopts) !== JSON.stringify([{op: "handle_adopt", id: 91}, {op
 if (JSON.stringify(releases) !== JSON.stringify([{op: "handle_release_explicit", id: 91}, {op: "handle_release_explicit", id: 91}])) {
   throw new Error("release requests mismatch: " + JSON.stringify(releases));
 }
+setImmediate(function() {
+  if (!closedPromiseRejected) throw new Error("closed proxy Promise.resolve did not reject");
+  if (JSON.stringify(omnivm.calls) !== JSON.stringify(JSON.parse(beforeClosedAccess).concat([{op: "handle_adopt", id: 91}, {op: "handle_release_explicit", id: 91}]))) {
+    throw new Error("closed proxy Promise.resolve reached bridge: " + JSON.stringify(omnivm.calls));
+  }
+});
 `
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {

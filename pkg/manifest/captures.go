@@ -2638,8 +2638,8 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
-      if (prop === 'then') return bridgeThenForNaturalAccess();
       if (target.__omnivm_closed__ === true && prop !== 'toJSON' && !isProxyBookkeepingProp(prop)) throw closedOperationError("get");
+      if (prop === 'then') return bridgeThenForNaturalAccess();
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!(descriptor && descriptor.__omnivm_table__ === true)) {
           try {
