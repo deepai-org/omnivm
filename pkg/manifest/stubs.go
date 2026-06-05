@@ -2371,6 +2371,28 @@ const pythonRuntimeRefLifecycleMethodHelpers = `def __omnivm_actual_public_lifec
     return None
 `
 
+const rubyRuntimeRefLifecycleMethodHelpers = `__omnivm_actual_public_method = lambda do |value, name|
+  method_name = name.to_sym
+  begin
+    next true if value.singleton_class.public_instance_methods.include?(method_name)
+  rescue Exception
+  end
+  begin
+    value.class.public_instance_methods.include?(method_name)
+  rescue Exception
+    false
+  end
+end
+__omnivm_lifecycle_without_required_args = lambda do |value, name|
+  begin
+    next false unless value && __omnivm_actual_public_method.call(value, name)
+    arity = value.method(name).arity
+    arity == 0 || arity == -1
+  rescue Exception
+    false
+  end
+end`
+
 func runtimeRefPythonStreamCloseStepCode(ref RuntimeRef, stateVar, readyVar, errVar string) (string, bool) {
 	if ref.Runtime != "python" {
 		return "", false
@@ -3578,15 +3600,7 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
 	case "ruby":
 		return fmt.Sprintf(`begin
   __omnivm_stream_obj = %s
-  __omnivm_lifecycle_without_required_args = lambda do |value, name|
-    begin
-      next false unless value && value.respond_to?(name)
-      arity = value.method(name).arity
-      arity == 0 || arity == -1
-    rescue Exception
-      false
-    end
-  end
+  %s
   __omnivm_close_without_required_args = lambda do |value|
     if __omnivm_lifecycle_without_required_args.call(value, :close)
       value.close
@@ -3629,7 +3643,7 @@ rescue StopIteration, EOFError
     __omnivm_close_without_required_args.call(__omnivm_stream_obj) if defined?(__omnivm_stream_obj)
   rescue
   end
-end`, base, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
+end`, base, rubyRuntimeRefLifecycleMethodHelpers, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "java":
 		return runtimeRefJavaStreamNextCode(base, valueVar, doneVar, stateVar), true
 	case "__java_legacy":
@@ -3876,15 +3890,7 @@ globals()[%q] = None`, base, stateVar, pythonRuntimeRefLifecycleMethodHelpers, s
 	case "ruby":
 		return fmt.Sprintf(`begin
   __omnivm_stream_obj = %s
-  __omnivm_lifecycle_without_required_args = lambda do |value, name|
-    begin
-      next false unless value && value.respond_to?(name)
-      arity = value.method(name).arity
-      arity == 0 || arity == -1
-    rescue Exception
-      false
-    end
-  end
+  %s
   __omnivm_io = __omnivm_stream_obj.respond_to?(:to_io) ? __omnivm_stream_obj.to_io : nil
   if __omnivm_lifecycle_without_required_args.call(__omnivm_stream_obj, :close)
     __omnivm_stream_obj.close
@@ -3894,7 +3900,7 @@ globals()[%q] = None`, base, stateVar, pythonRuntimeRefLifecycleMethodHelpers, s
     __omnivm_io.close
   end
   %s = nil
-end`, base, stateRef), true
+end`, base, rubyRuntimeRefLifecycleMethodHelpers, stateRef), true
 	case "java":
 		return runtimeRefJavaStreamCloseCode(base, stateVar), true
 	default:

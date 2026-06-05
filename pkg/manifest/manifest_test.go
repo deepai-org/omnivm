@@ -5629,6 +5629,8 @@ func TestRuntimeRefRubyStreamCloseSkipsRequiredArgCloseMethods(t *testing.T) {
 		t.Fatal("runtimeRefStreamCloseCode(ruby) unsupported")
 	}
 	for _, want := range []string{
+		"__omnivm_actual_public_method",
+		"public_instance_methods.include?(method_name)",
 		"__omnivm_lifecycle_without_required_args",
 		"value.method(name).arity",
 		"arity == 0 || arity == -1",
@@ -5643,6 +5645,9 @@ func TestRuntimeRefRubyStreamCloseSkipsRequiredArgCloseMethods(t *testing.T) {
 	if contains(code, "__omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close") ||
 		contains(code, "__omnivm_stream_obj.respond_to?(:return); __omnivm_stream_obj.return") {
 		t.Fatalf("runtimeRefStreamCloseCode(ruby) should not close from respond_to? alone: %q", code)
+	}
+	if contains(code, "value.respond_to?(name)") {
+		t.Fatalf("runtimeRefStreamCloseCode(ruby) lifecycle helper should not trust respond_to_missing?: %q", code)
 	}
 
 	ruby, err := exec.LookPath("ruby")
@@ -5699,10 +5704,34 @@ class IOFallbackWrapper
   end
 end
 
-$rows = IOFallbackWrapper.new
-` + code + `
-raise "to_io close fallback was not invoked" unless $rows.io.closed?
-`
+	$rows = IOFallbackWrapper.new
+	` + code + `
+	raise "to_io close fallback was not invoked" unless $rows.io.closed?
+
+	class RespondToMissingTrap
+	  attr_reader :respond_missing_calls, :close_calls
+	  def initialize
+	    @respond_missing_calls = 0
+	    @close_calls = 0
+	  end
+	  def respond_to_missing?(name, include_private = false)
+	    @respond_missing_calls += 1 if [:close, :return].include?(name)
+	    [:close, :return].include?(name) || super
+	  end
+	  def method_missing(name, *args)
+	    if [:close, :return].include?(name)
+	      @close_calls += 1
+	      raise "dynamic lifecycle should not run"
+	    end
+	    super
+	  end
+	end
+
+	$rows = RespondToMissingTrap.new
+	` + code + `
+	raise "respond_to_missing was trusted" unless $rows.respond_missing_calls == 0
+	raise "dynamic lifecycle was invoked" unless $rows.close_calls == 0
+	`
 	if out, err := exec.Command(ruby, "-e", script).CombinedOutput(); err != nil {
 		t.Fatalf("ruby stream close required-arg guard failed: %v\n%s", err, out)
 	}
@@ -5714,6 +5743,8 @@ func TestRuntimeRefRubyStreamNextSkipsRequiredArgCloseOnEOF(t *testing.T) {
 		t.Fatal("runtimeRefStreamNextCode(ruby) unsupported")
 	}
 	for _, want := range []string{
+		"__omnivm_actual_public_method",
+		"public_instance_methods.include?(method_name)",
 		"__omnivm_lifecycle_without_required_args",
 		"value.method(name).arity",
 		"__omnivm_close_without_required_args",
@@ -5726,6 +5757,7 @@ func TestRuntimeRefRubyStreamNextSkipsRequiredArgCloseOnEOF(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		"value.respond_to?(name)",
 		"__omnivm_stream_obj.close if $__omnivm_stream_done && __omnivm_stream_obj.respond_to?(:close)",
 		"if __omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close",
 		"__omnivm_stream_obj.close if defined?(__omnivm_stream_obj) && __omnivm_stream_obj.respond_to?(:close)",
@@ -5793,11 +5825,39 @@ class RequiredIteratorClose
   end
 end
 
-$rows = RequiredIteratorClose.new
-` + code + `
-raise "required iterator close was invoked" unless $rows.close_calls == 0
-raise "iterator EOF did not report done" unless $__omnivm_stream_done == true
-`
+	$rows = RequiredIteratorClose.new
+	` + code + `
+	raise "required iterator close was invoked" unless $rows.close_calls == 0
+	raise "iterator EOF did not report done" unless $__omnivm_stream_done == true
+
+	class ReadEOFWithDynamicClose
+	  attr_reader :respond_missing_calls, :close_calls
+	  def initialize
+	    @respond_missing_calls = 0
+	    @close_calls = 0
+	  end
+	  def read(_size = nil)
+	    ""
+	  end
+	  def respond_to_missing?(name, include_private = false)
+	    @respond_missing_calls += 1 if name == :close
+	    name == :close || super
+	  end
+	  def method_missing(name, *args)
+	    if name == :close
+	      @close_calls += 1
+	      raise "dynamic close should not run"
+	    end
+	    super
+	  end
+	end
+
+	$rows = ReadEOFWithDynamicClose.new
+	` + code + `
+	raise "dynamic close respond_to_missing was trusted" unless $rows.respond_missing_calls == 0
+	raise "dynamic close was invoked" unless $rows.close_calls == 0
+	raise "read EOF did not report done" unless $__omnivm_stream_done == true
+	`
 	if out, err := exec.Command(ruby, "-e", script).CombinedOutput(); err != nil {
 		t.Fatalf("ruby stream next required-arg close guard failed: %v\n%s", err, out)
 	}
