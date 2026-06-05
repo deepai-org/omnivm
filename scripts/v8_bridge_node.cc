@@ -1938,7 +1938,14 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           var status = globalThis.omnivm.ownerDispatchStatus();
           var info = status.owner_dispatch_targets[name];
           if (!info) {
-            throw new Error("unknown owner dispatch target: " + requested);
+            throw globalThis.__omnivm_owner_dispatch_error("unknown owner dispatch target: " + requested, "owner_dispatch_target", {
+              owner_dispatch_target: {
+                target: name,
+                requested_target: requested,
+                known_targets: Object.keys(status.owner_dispatch_targets || {}).sort(),
+                owner_dispatch_targets: status.owner_dispatch_targets || {}
+              }
+            });
           }
           info.requested_target = requested;
           info.target = name;

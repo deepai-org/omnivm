@@ -2522,10 +2522,12 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.owner_dispatch_target_status("python_asyncio")
         assert "known targets: java_executor" in str(ctx.exception)
-        assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.boundary_path == "owner_dispatch_target"
         assert ctx.exception.details["target"] == "python_asyncio"
         assert ctx.exception.details["known_targets"] == ["java_executor"]
         assert ctx.exception.details["owner_dispatch_targets"] == {"java_executor": {"supported": False}}
+        assert ctx.exception.details["owner_dispatch_target"]["target"] == "python_asyncio"
+        assert ctx.exception.details["owner_dispatch_target"]["known_targets"] == ["java_executor"]
 
     def test_owner_dispatch_target_status_unknown_alias_reports_requested_target(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -2536,8 +2538,10 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.owner_dispatch_target_status("asyncio")
         assert "owner dispatch target 'python_asyncio'" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "owner_dispatch_target"
         assert ctx.exception.details["target"] == "python_asyncio"
         assert ctx.exception.details["requested_target"] == "asyncio"
+        assert ctx.exception.details["owner_dispatch_target"]["requested_target"] == "asyncio"
 
     def test_assert_owner_dispatch_target_supported_reports_diagnostic(self):
         self.mock_lib.OmniStatus.return_value = (

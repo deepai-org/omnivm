@@ -6668,6 +6668,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`owner_dispatch_supported: false`,
 		`javascript_event_loop`,
 		`python_async_stream_pull`,
+		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`boundary_path = boundaryPath`,
 		`details_json = JSON.stringify(err.details)`,
 	} {
@@ -6809,6 +6810,17 @@ if (target.target !== "javascript_event_loop") throw new Error("alias did not no
 if (target.requested_target !== "js") throw new Error("requested target missing");
 target.supported = true;
 if (omnivm.ownerDispatchTargetStatus("js").supported !== false) throw new Error("target status leaked mutable state");
+try {
+  omnivm.ownerDispatchTargetStatus("unknown-loop");
+  throw new Error("missing unknown target diagnostic");
+} catch (err) {
+  if (err.name !== "OmniVMRuntimeError") throw new Error("unknown target used generic error: " + err.name);
+  if (err.boundary_path !== "owner_dispatch_target") throw new Error("bad unknown target boundary: " + err.boundary_path);
+  if (!err.details || err.details.owner_dispatch_target.target !== "unknown_loop") throw new Error("missing unknown target details");
+  if (err.details.owner_dispatch_target.requested_target !== "unknown-loop") throw new Error("missing requested unknown target");
+  if (err.details.owner_dispatch_target.known_targets.indexOf("javascript_event_loop") < 0) throw new Error("missing known targets");
+  if (JSON.stringify(err).indexOf('"boundary_path":"owner_dispatch_target"') < 0) throw new Error("unknown target envelope missing boundary");
+}
 try {
   omnivm.assertOwnerDispatchSupported("express startup");
   throw new Error("missing universal dispatch diagnostic");
@@ -9116,6 +9128,19 @@ public final class OwnerDispatchCheck {
         require(Boolean.FALSE.equals(OmniVM.ownerDispatchTargetStatus("js").get("supported")), "target leaked mutable state");
 
         try {
+            OmniVM.ownerDispatchTargetStatus("unknown-loop");
+            throw new AssertionError("missing unknown target diagnostic");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("unknown owner dispatch target: unknown-loop"), "bad unknown target message: " + err.getMessage());
+            require("owner_dispatch_target".equals(err.getBoundaryPath()), "bad unknown target boundary: " + err.getBoundaryPath());
+            Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            Map<String, Object> dispatch = (Map<String, Object>) details.get("owner_dispatch_target");
+            require("unknown_loop".equals(dispatch.get("target")), "missing unknown target: " + details);
+            require("unknown-loop".equals(dispatch.get("requested_target")), "missing requested unknown target: " + details);
+            require(((java.util.List<?>) dispatch.get("known_targets")).contains("java_executor"), "missing known targets: " + details);
+        }
+
+        try {
             OmniVM.assertOwnerDispatchSupported("servlet startup");
             throw new AssertionError("missing universal diagnostic");
         } catch (OmniVM.RuntimeError err) {
@@ -9439,6 +9464,8 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		"def self.owner_dispatch_target_status(target)",
 		"def self.assert_owner_dispatch_supported(label = nil)",
 		"def self.assert_owner_dispatch_target_supported(target, label = nil)",
+		`RuntimeError.new(\"unknown owner dispatch target: #{requested}\"`,
+		`\"known_targets\" => targets.keys.sort`,
 		`boundary_path: \"owner_dispatch\"`,
 		`details: {\"owner_dispatch\" => info}`,
 		`boundary_path: \"owner_dispatch_target\"`,
@@ -9558,7 +9585,9 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		"normalized = target_name.strip().lower().replace('-', '_').replace(' ', '_')",
 		"def owner_dispatch_target_status(target):",
 		"requested_target = str(target)",
+		"boundary_path='owner_dispatch_target'",
 		"'requested_target': requested_target",
+		"'owner_dispatch_target': {'target': target_name",
 		"def assert_owner_dispatch_supported(label=''):",
 		"def assert_owner_dispatch_target_supported(target, label=''):",
 		"def ruby_threading_status():",
@@ -9901,6 +9930,7 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`owner_dispatch_supported: false`,
 		`javascript_event_loop`,
 		`owner_dispatch_target`,
+		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`err.details_json = JSON.stringify(err.details)`,
 		`err.toJSON = function()`,
 		`stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; })`,

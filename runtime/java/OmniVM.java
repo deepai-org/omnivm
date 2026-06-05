@@ -164,8 +164,17 @@ public class OmniVM {
         String name = ownerDispatchTargetName(requested);
         Map<String, Object> status = ownerDispatchStatus();
         Object targets = status.get("owner_dispatch_targets");
-        if (!(targets instanceof Map<?, ?> targetMap) || !targetMap.containsKey(name)) {
-            throw new IllegalArgumentException("unknown owner dispatch target: " + requested);
+        Map<?, ?> targetMap = targets instanceof Map<?, ?> map ? map : null;
+        if (targetMap == null || !targetMap.containsKey(name)) {
+            List<Object> knownTargets = targetMap == null ? ownerDispatchList() : ownerDispatchList(targetMap.keySet().toArray());
+            throw runtimeError(
+                "unknown owner dispatch target: " + requested,
+                "owner_dispatch_target",
+                ownerDispatchMap("owner_dispatch_target", ownerDispatchMap(
+                    "target", name,
+                    "requested_target", requested,
+                    "known_targets", knownTargets,
+                    "owner_dispatch_targets", targets)));
         }
         Map<String, Object> info = (Map<String, Object>) RuntimeError.copyJsonValue(targetMap.get(name));
         info.put("requested_target", requested);

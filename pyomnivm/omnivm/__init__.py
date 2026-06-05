@@ -1966,12 +1966,18 @@ def owner_dispatch_target_status(target):
                 f"libomnivm status omitted owner dispatch target {target_name!r}; "
                 f"known targets: {', '.join(known_targets) if known_targets else 'none'}"
             ),
-            boundary_path="thread_affinity",
+            boundary_path="owner_dispatch_target",
             details={
                 "target": target_name,
                 "requested_target": requested_target,
                 "known_targets": known_targets,
                 "owner_dispatch_targets": targets,
+                "owner_dispatch_target": {
+                    "target": target_name,
+                    "requested_target": requested_target,
+                    "known_targets": known_targets,
+                    "owner_dispatch_targets": targets,
+                },
             },
         )
     return info

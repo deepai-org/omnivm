@@ -428,7 +428,7 @@ static const char* omnivm_py_pymode_status_helpers_code =
 "    info = targets.get(target_name)\n"
 "    if not isinstance(info, dict):\n"
 "        known_targets = sorted(str(name) for name in targets.keys())\n"
-"        raise RuntimeError('omnivm.status omitted owner dispatch target %r; known targets: %s' % (target_name, ', '.join(known_targets) if known_targets else 'none'), boundary_path='thread_affinity', details={'target': target_name, 'requested_target': requested_target, 'known_targets': known_targets, 'owner_dispatch_targets': targets})\n"
+"        raise RuntimeError('omnivm.status omitted owner dispatch target %r; known targets: %s' % (target_name, ', '.join(known_targets) if known_targets else 'none'), boundary_path='owner_dispatch_target', details={'target': target_name, 'requested_target': requested_target, 'known_targets': known_targets, 'owner_dispatch_targets': targets, 'owner_dispatch_target': {'target': target_name, 'requested_target': requested_target, 'known_targets': known_targets, 'owner_dispatch_targets': targets}})\n"
 "    return info\n"
 "def assert_owner_dispatch_supported(label=''):\n"
 "    info = owner_dispatch_status()\n"
