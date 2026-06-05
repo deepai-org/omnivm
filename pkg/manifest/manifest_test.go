@@ -5664,6 +5664,101 @@ raise "to_io close fallback was not invoked" unless $rows.io.closed?
 	}
 }
 
+func TestRuntimeRefRubyStreamNextSkipsRequiredArgCloseOnEOF(t *testing.T) {
+	code, ok := runtimeRefStreamNextCode(RuntimeRef{Runtime: "ruby", VarName: "rows"}, "__omnivm_stream_value", "__omnivm_stream_done", "__omnivm_stream_state")
+	if !ok {
+		t.Fatal("runtimeRefStreamNextCode(ruby) unsupported")
+	}
+	for _, want := range []string{
+		"__omnivm_lifecycle_without_required_args",
+		"value.method(name).arity",
+		"__omnivm_close_without_required_args",
+		"__omnivm_close_without_required_args.call(__omnivm_stream_obj) if $__omnivm_stream_done",
+		"__omnivm_close_without_required_args.call(__omnivm_io)",
+		"__omnivm_close_without_required_args.call(__omnivm_stream_obj) if defined?(__omnivm_stream_obj)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefStreamNextCode(ruby) missing %q in %q", want, code)
+		}
+	}
+	for _, forbidden := range []string{
+		"__omnivm_stream_obj.close if $__omnivm_stream_done && __omnivm_stream_obj.respond_to?(:close)",
+		"if __omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close",
+		"__omnivm_stream_obj.close if defined?(__omnivm_stream_obj) && __omnivm_stream_obj.respond_to?(:close)",
+	} {
+		if contains(code, forbidden) {
+			t.Fatalf("runtimeRefStreamNextCode(ruby) should not close from respond_to? alone, found %q in %q", forbidden, code)
+		}
+	}
+
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	script := `
+class RequiredReadClose
+  attr_reader :close_calls
+  def initialize
+    @close_calls = 0
+  end
+  def read(_size)
+    ""
+  end
+  def close(reason)
+    @close_calls += 1
+    raise "required close should not run"
+  end
+end
+
+$rows = RequiredReadClose.new
+` + code + `
+raise "required read close was invoked" unless $rows.close_calls == 0
+raise "required read stream did not report done" unless $__omnivm_stream_done == true
+
+class OptionalReadClose
+  attr_reader :close_calls
+  def initialize
+    @close_calls = 0
+  end
+  def read(_size)
+    ""
+  end
+  def close(reason = nil)
+    @close_calls += 1
+  end
+end
+
+$rows = OptionalReadClose.new
+` + code + `
+raise "optional read close was not invoked" unless $rows.close_calls == 1
+
+class RequiredIteratorClose
+  attr_reader :close_calls
+  def initialize
+    @close_calls = 0
+  end
+  def each
+    self
+  end
+  def next
+    raise StopIteration
+  end
+  def close(reason)
+    @close_calls += 1
+    raise "required iterator close should not run"
+  end
+end
+
+$rows = RequiredIteratorClose.new
+` + code + `
+raise "required iterator close was invoked" unless $rows.close_calls == 0
+raise "iterator EOF did not report done" unless $__omnivm_stream_done == true
+`
+	if out, err := exec.Command(ruby, "-e", script).CombinedOutput(); err != nil {
+		t.Fatalf("ruby stream next required-arg close guard failed: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeRefJavaStreamNextClosesBaseStreamAtEOF(t *testing.T) {
 	code := runtimeRefJavaStreamNextCode("rows", "__omnivm_stream_value", "__omnivm_stream_done", "__omnivm_stream_state")
 	for _, want := range []string{

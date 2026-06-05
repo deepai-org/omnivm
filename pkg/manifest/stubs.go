@@ -3453,7 +3453,60 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
 	case "python":
 		return fmt.Sprintf("__omnivm_stream_obj = %s\n__omnivm_http_message = %s\ntry:\n    if not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, '__next__', None)):\n        %s = next(__omnivm_stream_obj)\n        %s = False\n    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):\n        try:\n            %s = __omnivm_stream_obj.read(8192)\n        except TypeError:\n            %s = __omnivm_stream_obj.read()\n        %s = (%s is None or %s == b'' or %s == '')\n    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):\n        %s = globals().get(%q) or iter(__omnivm_stream_obj)\n        %s = next(%s)\n        %s = False\n    else:\n        %s = None\n        %s = True\nexcept StopIteration:\n    %s = None\n    %s = None\n    %s = True", base, pythonHTTPMessageProbeExpr("__omnivm_stream_obj"), valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, stateRef, stateVar, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "ruby":
-		return fmt.Sprintf("begin; __omnivm_stream_obj = %s; __omnivm_method_like = __omnivm_stream_obj.respond_to?(:request_method) || (begin; __omnivm_stream_obj.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__omnivm_stream_obj.method(:method).owner); rescue; false; end); __omnivm_http_message = __omnivm_method_like && (__omnivm_stream_obj.respond_to?(:path) || __omnivm_stream_obj.respond_to?(:url) || __omnivm_stream_obj.respond_to?(:headers) || __omnivm_stream_obj.respond_to?(:env) || __omnivm_stream_obj.respond_to?(:path_info)); __omnivm_io = (!__omnivm_http_message && __omnivm_stream_obj.respond_to?(:to_io)) ? __omnivm_stream_obj.to_io : nil; if !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:next); $%s = __omnivm_stream_obj.next; $%s = false; elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:read); $%s = __omnivm_stream_obj.read(8192); $%s = ($%s.nil? || $%s == \"\"); __omnivm_stream_obj.close if $%s && __omnivm_stream_obj.respond_to?(:close); elsif __omnivm_io.respond_to?(:read); $%s = __omnivm_io.read(8192); $%s = ($%s.nil? || $%s == \"\"); if $%s; if __omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close; elsif __omnivm_io.respond_to?(:close); __omnivm_io.close; end; end; elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String); %s ||= __omnivm_stream_obj.each; $%s = %s.next; $%s = false; else; $%s = nil; $%s = true; end; rescue StopIteration, EOFError; %s = nil; $%s = nil; $%s = true; begin; __omnivm_stream_obj.close if defined?(__omnivm_stream_obj) && __omnivm_stream_obj.respond_to?(:close); rescue; end; end", base, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
+		return fmt.Sprintf(`begin
+  __omnivm_stream_obj = %s
+  __omnivm_lifecycle_without_required_args = lambda do |value, name|
+    begin
+      next false unless value && value.respond_to?(name)
+      arity = value.method(name).arity
+      arity == 0 || arity == -1
+    rescue Exception
+      false
+    end
+  end
+  __omnivm_close_without_required_args = lambda do |value|
+    if __omnivm_lifecycle_without_required_args.call(value, :close)
+      value.close
+      true
+    else
+      false
+    end
+  end
+  __omnivm_method_like = __omnivm_stream_obj.respond_to?(:request_method) || (begin; __omnivm_stream_obj.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__omnivm_stream_obj.method(:method).owner); rescue; false; end)
+  __omnivm_http_message = __omnivm_method_like && (__omnivm_stream_obj.respond_to?(:path) || __omnivm_stream_obj.respond_to?(:url) || __omnivm_stream_obj.respond_to?(:headers) || __omnivm_stream_obj.respond_to?(:env) || __omnivm_stream_obj.respond_to?(:path_info))
+  __omnivm_io = (!__omnivm_http_message && __omnivm_stream_obj.respond_to?(:to_io)) ? __omnivm_stream_obj.to_io : nil
+  if !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:next)
+    $%s = __omnivm_stream_obj.next
+    $%s = false
+  elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:read)
+    $%s = __omnivm_stream_obj.read(8192)
+    $%s = ($%s.nil? || $%s == "")
+    __omnivm_close_without_required_args.call(__omnivm_stream_obj) if $%s
+  elsif __omnivm_io.respond_to?(:read)
+    $%s = __omnivm_io.read(8192)
+    $%s = ($%s.nil? || $%s == "")
+    if $%s
+      unless __omnivm_close_without_required_args.call(__omnivm_stream_obj)
+        __omnivm_close_without_required_args.call(__omnivm_io)
+      end
+    end
+  elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String)
+    %s ||= __omnivm_stream_obj.each
+    $%s = %s.next
+    $%s = false
+  else
+    $%s = nil
+    $%s = true
+  end
+rescue StopIteration, EOFError
+  %s = nil
+  $%s = nil
+  $%s = true
+  begin
+    __omnivm_close_without_required_args.call(__omnivm_stream_obj) if defined?(__omnivm_stream_obj)
+  rescue
+  end
+end`, base, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, doneVar, valueVar, valueVar, doneVar, stateRef, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "java":
 		return runtimeRefJavaStreamNextCode(base, valueVar, doneVar, stateVar), true
 	case "__java_legacy":
