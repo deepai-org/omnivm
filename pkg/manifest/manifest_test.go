@@ -7641,6 +7641,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`get: function() { return globalThis.__omnivm_clone_json(causeChain); }`,
 		`Object.defineProperty(err, "details"`,
 		`get: function() { return globalThis.__omnivm_clone_json(detailsSnapshot); }`,
+		`if (typeof value === 'string')`,
+		`detailsSnapshot = globalThis.__omnivm_clone_json(JSON.parse(value));`,
+		`err.details_json = value;`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
 	} {
 		if !contains(code, want) {
@@ -7872,6 +7875,12 @@ try {
   if (serialized.indexOf('"boundary_path":"owner_dispatch"') < 0) throw new Error("serialized envelope missing boundary: " + serialized);
   if (serialized.indexOf('"message":"express startup: owner dispatch unsupported') < 0) throw new Error("serialized envelope missing message: " + serialized);
   if (JSON.parse(err.details_json).owner_dispatch.mode !== "diagnostic_only") throw new Error("details_json was not stable");
+  err.details_json = '{"owner_dispatch":{"mode":"json-set"}}';
+  if (err.details.owner_dispatch.mode !== "json-set") throw new Error("details_json string setter did not update details");
+  if (err.toJSON().details.owner_dispatch.mode !== "json-set") throw new Error("details_json string setter did not update envelope details");
+  err.detailsJson = {owner_dispatch: {mode: "alias-object-set"}};
+  if (JSON.parse(err.details_json).owner_dispatch.mode !== "alias-object-set") throw new Error("detailsJson object setter did not update details_json");
+  if (err.details.owner_dispatch.mode !== "alias-object-set") throw new Error("detailsJson object setter did not update details");
 }
 try {
   omnivm.assertRubyNativeThreadsSupported("puma startup");
@@ -12123,6 +12132,9 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`get: function() { return globalThis.__omnivm_clone_json(causeChain); }`,
 		`Object.defineProperty(err, "details"`,
 		`get: function() { return globalThis.__omnivm_clone_json(detailsSnapshot); }`,
+		`if (typeof value === 'string')`,
+		`detailsSnapshot = globalThis.__omnivm_clone_json(JSON.parse(value));`,
+		`err.details_json = value;`,
 		`stack_frames: stackFrames.slice()`,
 		`cause_chain: globalThis.__omnivm_clone_json(causeChain)`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,

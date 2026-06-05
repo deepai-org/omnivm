@@ -1887,13 +1887,32 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       enumerable: true,
       configurable: true,
       get: function() { return detailsJson; },
-      set: function(value) { detailsJson = value == null ? value : String(value); }
+      set: function(value) {
+        if (value == null) {
+          detailsSnapshot = value;
+          detailsJson = value;
+          return;
+        }
+        if (typeof value === 'string') {
+          detailsJson = value;
+          try {
+            detailsSnapshot = globalThis.__omnivm_clone_json(JSON.parse(value));
+          } catch (_detailsJsonParseError) {
+            detailsSnapshot = value;
+          }
+          return;
+        }
+        detailsSnapshot = globalThis.__omnivm_clone_json(value);
+        detailsJson = JSON.stringify(detailsSnapshot);
+      }
     });
     Object.defineProperty(err, "detailsJson", {
       enumerable: true,
       configurable: true,
       get: function() { return detailsJson; },
-      set: function(value) { detailsJson = value == null ? value : String(value); }
+      set: function(value) {
+        err.details_json = value;
+      }
     });
     err.toJSON = function() {
       return {
