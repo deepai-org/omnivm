@@ -556,7 +556,8 @@ Ruby manifest proxies expose `proxy.omnivm_get(key)`,
 `proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
 `proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
 `proxy.omnivm_close`; generated snippets also provide
-`OmniVM.proxy_close(proxy)` and `omnivm_close(proxy)`. Embedded Ruby also
+`OmniVM.proxy_close(proxy)`, `OmniVM.omnivm_close(proxy)`, and
+`omnivm_close(proxy)`. Embedded Ruby also
 provides `OmniVM.buffer_owner(name[, data], dtype: 0)` for scoped named-buffer
 ownership with single-active-use entry and idempotent release. Owners expose
 `status()`, and `OmniVM.buffer_status(name)` returns the same per-name lifecycle

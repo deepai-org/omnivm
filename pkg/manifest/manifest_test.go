@@ -8332,6 +8332,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	}
 	if !contains(code, "def omnivm_close(value)") ||
 		!contains(code, "def proxy_close(value)") ||
+		!contains(code, "def omnivm_close(value)\n      proxy_close(value)\n    end") ||
 		!contains(code, "def __omnivm_actual_public_method?(value, name)") ||
 		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)") ||
 		!contains(code, "if __omnivm_actual_public_method?(value, :close)") ||
@@ -8463,6 +8464,7 @@ raise "omnivm_get did not recover remote close" unless proxy.omnivm_get("close")
 raise "omnivm_get did not recover remote dispose" unless proxy.omnivm_get("dispose") == "remote-dispose-field"
 raise "proxy_close did not release the proxy" unless OmniVM.proxy_close(proxy) == true
 raise "proxy_close was not idempotent after release" unless OmniVM.proxy_close(proxy) == false
+raise "module omnivm_close alias was not idempotent after release" unless OmniVM.omnivm_close(proxy) == false
 class TextDispose
   def dispose
     "disposed"
@@ -8487,6 +8489,7 @@ class CloseAndDispose
   end
 end
 raise "dispose result was not preserved" unless OmniVM.proxy_close(TextDispose.new) == "disposed"
+raise "module omnivm_close alias did not preserve dispose result" unless OmniVM.omnivm_close(TextDispose.new) == "disposed"
 raise "false dispose result was not preserved" unless OmniVM.proxy_close(FalseDispose.new) == false
 raise "nil dispose result did not normalize true" unless OmniVM.proxy_close(NilDispose.new) == true
 raise "close did not take priority over dispose" unless OmniVM.proxy_close(CloseAndDispose.new) == "closed"

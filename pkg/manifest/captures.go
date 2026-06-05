@@ -2702,6 +2702,10 @@ if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
       false
     end
 
+    def omnivm_close(value)
+      proxy_close(value)
+    end
+
     def __record_cleanup_error(error, cleanup_error)
       errors = error.instance_variable_get(:@omnivm_cleanup_errors)
       errors = [] unless errors.is_a?(Array)
