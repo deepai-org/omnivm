@@ -9642,6 +9642,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "begin\n          close\n        rescue => cleanup_error") ||
 		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
+		!contains(code, "loop do\n        break if @__omnivm_closed == true") ||
 		!contains(code, "rescue\n          __omnivm_mark_closed\n          raise") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
@@ -10042,6 +10043,46 @@ raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.lengt
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby remote stream early-break lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyRemoteStreamCloseStopsFuturePulls(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "stream_cancel"
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"done" => false, "value" => "late"}}) if req["op"] == "stream_next"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 91, "runtime" => "ruby", "kind" => "stream"})
+raise "remote stream close failed" unless stream.close == true
+seen = []
+stream.each { |item| seen << item }
+raise "closed stream yielded items: #{seen.inspect}" unless seen.empty?
+raise "closed stream called stream_next: #{OmniVM.requests.inspect}" if OmniVM.requests.any? { |req| req["op"] == "stream_next" }
+raise "stream close was not idempotent" unless stream.close == false
+cancels = OmniVM.requests.select { |req| req["op"] == "stream_cancel" }
+raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.length == 1 && cancels[0]["id"] == 91
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby remote stream closed-pull check failed: %v\n%s", err, out)
 	}
 }
 

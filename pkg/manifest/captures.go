@@ -4007,6 +4007,7 @@ class OmniVMStreamProxy
         return
       end
       loop do
+        break if @__omnivm_closed == true
         begin
           raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
           env = JSON.parse(raw)
