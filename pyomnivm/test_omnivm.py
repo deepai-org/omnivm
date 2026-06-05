@@ -2079,6 +2079,32 @@ class TestCallWithMockLib(unittest.TestCase):
         assert stream._omnivm_close() is False
         assert list(stream) == []
 
+    def test_embedded_local_stream_context_closes_on_exit(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        with stream as scoped:
+            assert scoped is stream
+            assert next(iter(scoped)) == "row-1"
+
+        assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
+    def test_embedded_local_stream_context_preserves_body_exception(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "body failed"):
+            with stream:
+                raise ValueError("body failed")
+
+        assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
     def test_manifest_stream_iterator_cancels_on_early_break(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

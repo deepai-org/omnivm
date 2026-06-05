@@ -1609,6 +1609,13 @@ class _LocalManifestStreamProxy:
         remaining = len(self._values) - self._cursor
         return remaining if remaining > 0 and not self._closed else 0
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
+        return False
+
     def __repr__(self):
         return f"<omnivm.LocalManifestStream remaining={len(self)}>"
 
