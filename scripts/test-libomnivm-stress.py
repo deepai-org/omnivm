@@ -15746,7 +15746,7 @@ def test_status_observability():
         omnivm.assert_owner_dispatch_supported("status test")
     except omnivm.RuntimeError as exc:
         error = exc.to_dict()
-        if error.get("boundary_path") != "thread_affinity":
+        if error.get("boundary_path") != "owner_dispatch":
             raise AssertionError(f"owner dispatch guard lost boundary path: {error}")
         if "status test: owner dispatch unsupported" not in error.get("message", ""):
             raise AssertionError(f"owner dispatch guard lost label: {error}")
