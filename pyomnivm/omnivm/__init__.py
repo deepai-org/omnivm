@@ -60,7 +60,9 @@ __all__ = [
     "proxy_items",
     "proxy_contains",
     "proxy_close",
+    "aproxy_close",
     "omnivm_close",
+    "omnivm_aclose",
     "cleanup_errors",
     "set_task_timeout",
     "host_thread_id",
@@ -1730,9 +1732,38 @@ def proxy_close(value):
     return False
 
 
+async def aproxy_close(value):
+    """Async close helper for proxy leases and Python objects exposing close/aclose."""
+    if isinstance(value, ManifestProxy):
+        result = value.close()
+        return await result if inspect.isawaitable(result) else result
+    close = _actual_public_method(value, "_omnivm_close")
+    if callable(close):
+        result = close()
+        return await result if inspect.isawaitable(result) else result
+    close = _actual_public_method(value, "close")
+    if callable(close):
+        result = close()
+        if inspect.isawaitable(result):
+            result = await result
+        return True if result is None else result
+    close = _actual_public_method(value, "aclose")
+    if callable(close):
+        result = close()
+        if inspect.isawaitable(result):
+            result = await result
+        return True if result is None else result
+    return False
+
+
 def omnivm_close(value):
     """Alias for proxy_close(), matching generated Python manifest snippets."""
     return proxy_close(value)
+
+
+async def omnivm_aclose(value):
+    """Alias for aproxy_close(), matching generated Python manifest snippets."""
+    return await aproxy_close(value)
 
 
 def _record_cleanup_error(error, cleanup_error, note):

@@ -5,6 +5,7 @@ without requiring libomnivm.so to be present.
 """
 
 import builtins
+import asyncio
 import ctypes
 import gc
 import json
@@ -1479,6 +1480,54 @@ class TestCallWithMockLib(unittest.TestCase):
 
         assert "omnivm_close" in omnivm_mod.__all__
         assert omnivm_mod.omnivm_close(BothClosers()) == "omnivm-closed"
+
+    def test_aproxy_close_awaits_close_and_aclose_without_dynamic_lookup(self):
+        class AsyncClose:
+            async def close(self):
+                return "async-close"
+
+        class AsyncNoneClose:
+            async def close(self):
+                return None
+
+        class AsyncAclose:
+            def __init__(self):
+                self.closed = False
+
+            async def aclose(self):
+                self.closed = True
+
+        class BothAsyncClosers:
+            async def _omnivm_close(self):
+                return "omnivm-async-closed"
+
+            async def aclose(self):
+                raise AssertionError("aclose should not run when _omnivm_close exists")
+
+        class DynamicAcloseTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "aclose":
+                    self.dynamic_lookup_count += 1
+                    return lambda: "dynamic-aclose"
+                raise AttributeError(name)
+
+        async def run():
+            assert await omnivm_mod.aproxy_close(AsyncClose()) == "async-close"
+            assert await omnivm_mod.aproxy_close(AsyncNoneClose()) is True
+            aclose = AsyncAclose()
+            assert await omnivm_mod.aproxy_close(aclose) is True
+            assert aclose.closed is True
+            assert await omnivm_mod.omnivm_aclose(BothAsyncClosers()) == "omnivm-async-closed"
+            trap = DynamicAcloseTrap()
+            assert await omnivm_mod.aproxy_close(trap) is False
+            assert trap.dynamic_lookup_count == 0
+
+        assert "aproxy_close" in omnivm_mod.__all__
+        assert "omnivm_aclose" in omnivm_mod.__all__
+        assert omnivm_mod.proxy_close(AsyncAclose()) is False
+        asyncio.run(run())
 
     def test_proxy_close_preserves_static_class_and_instance_methods(self):
         class StaticCloser:

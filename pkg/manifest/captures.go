@@ -609,6 +609,26 @@ def omnivm_close(value):
         return True if result is None else result
     return False
 
+async def omnivm_aclose(value):
+    import inspect as __omnivm_inspect
+    close = __omnivm_actual_public_method(value, "_omnivm_close")
+    if callable(close):
+        result = close()
+        return await result if __omnivm_inspect.isawaitable(result) else result
+    close = __omnivm_actual_public_method(value, "close")
+    if callable(close):
+        result = close()
+        if __omnivm_inspect.isawaitable(result):
+            result = await result
+        return True if result is None else result
+    close = __omnivm_actual_public_method(value, "aclose")
+    if callable(close):
+        result = close()
+        if __omnivm_inspect.isawaitable(result):
+            result = await result
+        return True if result is None else result
+    return False
+
 def _omnivm_record_cleanup_error(error, cleanup_error, note):
     try:
         errors = getattr(error, "omnivm_cleanup_errors", None)

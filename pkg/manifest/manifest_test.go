@@ -6162,6 +6162,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python materializer should retain handles for guest proxy lifetime, got %q", code)
 	}
 	if !contains(code, "def omnivm_close(value):") ||
+		!contains(code, "async def omnivm_aclose(value):") ||
 		!contains(code, `def __omnivm_actual_public_method(value, name):`) ||
 		!contains(code, `__inspect.getattr_static(value, name)`) ||
 		!contains(code, `isinstance(raw, (staticmethod, classmethod))`) ||
@@ -6174,6 +6175,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `__inspect.ismethoddescriptor(raw)`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
+		!contains(code, `close = __omnivm_actual_public_method(value, "aclose")`) ||
+		!contains(code, `__omnivm_inspect.isawaitable(result)`) ||
 		!contains(code, "result = close()\n        return True if result is None else result") ||
 		!contains(code, "def cleanup_errors(error):") ||
 		!contains(code, "def _omnivm_record_cleanup_error(error, cleanup_error, note):") ||
@@ -9730,12 +9733,16 @@ func TestEmbeddedPythonRegistersCoreProxyCloseHelper(t *testing.T) {
 		"__omnivm_inspect.isfunction(raw)",
 		"__omnivm_inspect.ismethoddescriptor(raw)",
 		"def proxy_close(value):",
+		"async def aproxy_close(value):",
 		"def omnivm_close(value):",
+		"async def omnivm_aclose(value):",
 		"def cleanup_errors(error):",
 		"return list(errors) if isinstance(errors, list) else []",
-		"('proxy_close', 'omnivm_close', 'cleanup_errors')",
+		"('proxy_close', 'aproxy_close', 'omnivm_close', 'omnivm_aclose', 'cleanup_errors')",
 		"close = __omnivm_actual_public_method(value, '_omnivm_close')",
 		"close = __omnivm_actual_public_method(value, 'close')",
+		"close = __omnivm_actual_public_method(value, 'aclose')",
+		"__omnivm_inspect.isawaitable(result)",
 		"return True if result is None else result",
 		"static void omnivm_py_install_proxy_close_helpers(PyObject* module)",
 		"omnivm_py_install_proxy_close_helpers(module)",
