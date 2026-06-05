@@ -2479,9 +2479,9 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.assert_owner_dispatch_supported("django startup")
         assert "django startup: owner dispatch unsupported" in str(ctx.exception)
         assert "diagnostic_only" in str(ctx.exception)
-        assert ctx.exception.boundary_path == "thread_affinity"
-        assert ctx.exception.details["thread_affinity"]["owner_dispatch_supported"] is False
-        assert "c-shared mode" in ctx.exception.details["thread_affinity"]["reason"]
+        assert ctx.exception.boundary_path == "owner_dispatch"
+        assert ctx.exception.details["owner_dispatch"]["owner_dispatch_supported"] is False
+        assert "c-shared mode" in ctx.exception.details["owner_dispatch"]["reason"]
 
     def test_assert_owner_dispatch_supported_accepts_supported_status(self):
         self.mock_lib.OmniStatus.return_value = (

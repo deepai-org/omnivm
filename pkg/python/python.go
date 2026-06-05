@@ -440,7 +440,7 @@ static const char* omnivm_py_pymode_status_helpers_code =
 "    prefix = (str(label) + ': ') if label else ''\n"
 "    mode = info.get('mode') or 'unknown'\n"
 "    reason = info.get('reason') or 'owner dispatch is not supported by this OmniVM build'\n"
-"    raise RuntimeError('%sowner dispatch unsupported: mode=%s: %s' % (prefix, mode, reason), boundary_path='thread_affinity', details={'thread_affinity': info})\n"
+"    raise RuntimeError('%sowner dispatch unsupported: mode=%s: %s' % (prefix, mode, reason), boundary_path='owner_dispatch', details={'owner_dispatch': info})\n"
 "def assert_owner_dispatch_target_supported(target, label=''):\n"
 "    requested_target = str(target)\n"
 "    target_name = _owner_dispatch_target_name(requested_target)\n"

@@ -2001,8 +2001,8 @@ def assert_owner_dispatch_supported(label=""):
     reason = info.get("reason") or "owner dispatch is not supported by this libomnivm build"
     raise RuntimeError(
         f"{prefix}owner dispatch unsupported: mode={mode}: {reason}",
-        boundary_path="thread_affinity",
-        details={"thread_affinity": info},
+        boundary_path="owner_dispatch",
+        details={"owner_dispatch": info},
     )
 
 
