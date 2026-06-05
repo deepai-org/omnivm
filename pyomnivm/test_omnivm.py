@@ -2460,6 +2460,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert info["owner_dispatch_targets"]["javascript_event_loop"]["supported"] is False
         assert info["owner_dispatch_targets"]["java_executor"]["supported"] is False
         assert info["owner_dispatch_targets"]["ruby_fiber_thread"]["supported"] is False
+        info["owner_dispatch_targets"]["python_asyncio"]["supported"] = True
+        assert omnivm_mod.owner_dispatch_status()["owner_dispatch_targets"]["python_asyncio"]["supported"] is False
 
     def test_owner_dispatch_status_requires_status_capability(self):
         self.mock_lib.OmniStatus.return_value = b'{"initialized":true}'
@@ -2498,6 +2500,10 @@ class TestCallWithMockLib(unittest.TestCase):
         info = omnivm_mod.owner_dispatch_target_status("python_asyncio")
         assert info["supported"] is False
         assert info["diagnostic"] == "loop not owned"
+        assert info["target"] == "python_asyncio"
+        assert info["requested_target"] == "python_asyncio"
+        info["supported"] = True
+        assert omnivm_mod.owner_dispatch_target_status("python_asyncio")["supported"] is False
 
     def test_owner_dispatch_target_status_accepts_common_aliases(self):
         self.mock_lib.OmniStatus.return_value = (
@@ -2508,10 +2514,26 @@ class TestCallWithMockLib(unittest.TestCase):
             b'"java_executor":{"supported":false},'
             b'"ruby_fiber_thread":{"supported":false}}}}'
         )
-        assert omnivm_mod.owner_dispatch_target_status("asyncio") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("JavaScript") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("java-executor") == {"supported": False}
-        assert omnivm_mod.owner_dispatch_target_status("ruby fiber") == {"supported": False}
+        assert omnivm_mod.owner_dispatch_target_status("asyncio") == {
+            "supported": False,
+            "requested_target": "asyncio",
+            "target": "python_asyncio",
+        }
+        assert omnivm_mod.owner_dispatch_target_status("JavaScript") == {
+            "supported": False,
+            "requested_target": "JavaScript",
+            "target": "javascript_event_loop",
+        }
+        assert omnivm_mod.owner_dispatch_target_status("java-executor") == {
+            "supported": False,
+            "requested_target": "java-executor",
+            "target": "java_executor",
+        }
+        assert omnivm_mod.owner_dispatch_target_status("ruby fiber") == {
+            "supported": False,
+            "requested_target": "ruby fiber",
+            "target": "ruby_fiber_thread",
+        }
 
     def test_owner_dispatch_target_status_requires_known_target(self):
         self.mock_lib.OmniStatus.return_value = (

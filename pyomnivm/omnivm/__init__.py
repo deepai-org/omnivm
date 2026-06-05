@@ -1891,7 +1891,7 @@ def affinity_status():
             "loop_id": id(loop),
             "closed": loop.is_closed(),
         }
-    return info
+    return _copy_json_value(info)
 
 
 def owner_dispatch_status():
@@ -1910,7 +1910,7 @@ def owner_dispatch_status():
             boundary_path="thread_affinity",
             details={"status": status_info},
         )
-    return info
+    return _copy_json_value(info)
 
 
 _OWNER_DISPATCH_TARGET_ALIASES = {
@@ -1980,6 +1980,9 @@ def owner_dispatch_target_status(target):
                 },
             },
         )
+    info = _copy_json_value(info)
+    info["requested_target"] = requested_target
+    info["target"] = target_name
     return info
 
 
