@@ -1738,6 +1738,40 @@ class TestCallWithMockLib(unittest.TestCase):
         assert requests[-1] == {"op": "stream_cancel", "id": 45}
         assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
 
+    def test_manifest_stream_iterator_stops_after_proxy_close(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 46,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "stream_cancel":
+                return envelope(True, "bool")
+            if request.get("op") == "stream_next":
+                raise AssertionError("closed iterator should not request another chunk")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+        iterator = iter(proxy)
+
+        assert proxy.close() is True
+        with self.assertRaises(StopIteration):
+            next(iterator)
+        assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
+
     def test_manifest_stream_iterator_detaches_on_eof(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

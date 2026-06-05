@@ -1781,6 +1781,9 @@ class _ManifestStreamIterator:
             finalizer.detach()
 
     def __next__(self):
+        if object.__getattribute__(self._proxy, "_closed"):
+            self._detach_finalizer()
+            raise StopIteration
         try:
             item = _manifest_bridge_call_unwrapped(
                 self._proxy._module_id,

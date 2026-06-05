@@ -1175,6 +1175,8 @@ class __OmniVMStreamProxy:
         return __omnivm_iter()
 
     def __next__(self):
+        if self._closed:
+            raise StopIteration
         if self._cursor >= len(self._cache) and not self._pull_next():
             raise StopIteration
         value = self._cache[self._cursor]

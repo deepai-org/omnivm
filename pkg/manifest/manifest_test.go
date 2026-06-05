@@ -6089,6 +6089,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python stream proxy should auto-materialize for len/index operations, got %q", code)
 	}
 	if !contains(code, "def _mark_closed(self):") ||
+		!contains(code, "def __next__(self):\n        if self._closed:\n            raise StopIteration") ||
 		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
@@ -6355,6 +6356,19 @@ if not any(req.get("op") == "handle_retain" and req.get("id") == 88 for req in B
 cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
 if len(cancels) != 1 or cancels[0].get("id") != 88:
     raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+loaded = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 89, "runtime": "python", "kind": "stream"})
+if loaded._pull_next() is not True:
+    raise RuntimeError("prefetch did not load an item")
+if loaded.close() is not True:
+    raise RuntimeError("prefetched stream did not close")
+try:
+    next(loaded)
+    raise RuntimeError("closed stream returned prefetched item")
+except StopIteration:
+    pass
+loaded_cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel" and req.get("id") == 89]
+if len(loaded_cancels) != 1:
+    raise RuntimeError("prefetched close cancel mismatch: " + repr(loaded_cancels))
 `
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
