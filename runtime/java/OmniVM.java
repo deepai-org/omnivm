@@ -373,6 +373,28 @@ public class OmniVM {
         return out;
     }
 
+    private static boolean runtimeErrorBufferWasReleased(RuntimeError err) {
+        Object details = err.getDetails();
+        if (bufferStatusIsReleased(details)) {
+            return true;
+        }
+        if (details instanceof Map<?, ?> map) {
+            return bufferStatusIsReleased(map.get("buffer"));
+        }
+        return false;
+    }
+
+    private static boolean bufferStatusIsReleased(Object status) {
+        if (!(status instanceof Map<?, ?> map)) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(map.get("released"))) {
+            return true;
+        }
+        Object state = map.get("state");
+        return "released".equals(String.valueOf(state)) || "released_detached".equals(String.valueOf(state));
+    }
+
     public static final class BufferOwner implements AutoCloseable {
         private final String name;
         private final byte[] data;
@@ -427,7 +449,15 @@ public class OmniVM {
             if (released) {
                 return false;
             }
-            releaseBuffer(name);
+            try {
+                releaseBuffer(name);
+            } catch (RuntimeError err) {
+                if (runtimeErrorBufferWasReleased(err)) {
+                    released = true;
+                    entered = false;
+                }
+                throw err;
+            }
             released = true;
             entered = false;
             return true;

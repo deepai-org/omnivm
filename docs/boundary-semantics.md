@@ -861,7 +861,10 @@ same owner while active, or after release, raises a native-memory
 JSON lifecycle diagnostics from the same shared store. `release()` returns
 `true` only for the first owner release, `close()` delegates to `release()`, and
 release failures propagate through the same user-initiated
-`OmniVM.releaseBuffer(name)` diagnostic path.
+`OmniVM.releaseBuffer(name)` diagnostic path. If that diagnostic reports that
+the shared-store name is already `released` or `released_detached`, the Java
+owner is marked locally released so later `close()`/`release()` calls remain
+idempotent while the original failure still reaches the caller.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel
 backlog and the overflow spill map, while `deferred_release_overflow_names`

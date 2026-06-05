@@ -9237,6 +9237,7 @@ func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) 
     public static String lastSetName = "";
     public static int lastSetDtype = -1;
     public static boolean failRelease = false;
+    public static boolean failReleaseWithTombstone = false;
 `, 1)
 	runtimeCode = strings.Replace(runtimeCode, `    public static void setBuffer(String name, byte[] data, int dtype) {
         nativeSetBuffer(name, data, dtype);
@@ -9249,6 +9250,18 @@ func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) 
         nativeReleaseBuffer(name);
     }`, `    public static void releaseBuffer(String name) {
         releaseBufferCalls++;
+        if (failReleaseWithTombstone) {
+            throw runtimeError(
+                "release failed for " + name,
+                "native_memory",
+                ownerDispatchMap(
+                    "buffer",
+                    ownerDispatchMap(
+                        "name", name,
+                        "state", "released_detached",
+                        "released", true,
+                        "release_error", "producer release failed")));
+        }
         if (failRelease) {
             throw new RuntimeException("release failed for " + name);
         }
@@ -9327,6 +9340,20 @@ public final class ScopedBufferOwnerCheck {
             require(String.valueOf(suppressed[0].getMessage()).contains("release failed for failing"), "suppressed cleanup mismatch: " + suppressed[0]);
         }
         require(OmniVM.releaseBufferCalls == 3, "release calls mismatch after failure: " + OmniVM.releaseBufferCalls);
+        OmniVM.failRelease = false;
+        OmniVM.failReleaseWithTombstone = true;
+        OmniVM.BufferOwner tombstoned = OmniVM.bufferOwner("tombstoned", new byte[] {6}, 1);
+        try {
+            tombstoned.release();
+            throw new AssertionError("tombstone release failure was not raised");
+        } catch (OmniVM.RuntimeError err) {
+            require("native_memory".equals(err.getBoundaryPath()), "tombstone boundary mismatch: " + err.getBoundaryPath());
+            require(String.valueOf(err.getDetails()).contains("released=true"), "tombstone details mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("release_error=producer release failed"), "tombstone release_error missing: " + err.getDetails());
+        }
+        require(tombstoned.isReleased(), "tombstoned owner did not mark released after release failure");
+        require(!tombstoned.release(), "tombstoned owner second release was not idempotent");
+        require(OmniVM.releaseBufferCalls == 4, "release calls mismatch after tombstone failure: " + OmniVM.releaseBufferCalls);
     }
 }
 `
