@@ -2546,6 +2546,10 @@ static char* get_stringio_value(PyObject* sio) {
     return result;
 }
 
+// Inner fetch traceback error: retrieves current Python error including stack.
+// Must be called with GIL held. Caller must free.
+static char* omnivm_py_fetch_traceback_error_inner();
+
 // Inner helper: runs Python code and captures stdout/stderr via StringIO redirect.
 // Must be called with GIL held. Returns output (caller must free) or NULL on error.
 // On error, returns "ERR:<traceback>" so the Go side can extract the error message.
@@ -2574,8 +2578,11 @@ static char* omnivm_py_exec_inner(const char* code) {
     PyObject_SetAttrString(sys_module, "stdout", stdout_io);
     PyObject_SetAttrString(sys_module, "stderr", stderr_io);
 
-    // Execute code
-    int result = PyRun_SimpleString(code);
+    PyObject* main_module = PyImport_AddModule("__main__");
+    PyObject* globals = main_module ? PyModule_GetDict(main_module) : NULL;
+
+    // Execute code while preserving the active exception object on failure.
+    PyObject* result = globals ? PyRun_String(code, Py_file_input, globals, globals) : NULL;
 
     // Restore stdout and stderr
     if (old_stdout) {
@@ -2588,19 +2595,30 @@ static char* omnivm_py_exec_inner(const char* code) {
     }
 
     char* output = NULL;
-    if (result == 0) {
+    if (result) {
+        Py_DECREF(result);
         output = get_stringio_value(stdout_io);
     } else {
-        // On error, return the captured traceback from stderr as ERR: prefix
+        char* rich_err_text = omnivm_py_fetch_traceback_error_inner();
+        if (rich_err_text && strlen(rich_err_text) > 0) {
+            size_t len = strlen(rich_err_text) + 5; // "ERR:" + null
+            output = (char*)malloc(len);
+            if (output) {
+                snprintf(output, len, "ERR:%s", rich_err_text);
+            }
+        }
+        free(rich_err_text);
+
+        // Fall back to captured stderr if rich exception formatting was unavailable.
         char* err_text = get_stringio_value(stderr_io);
-        if (err_text && strlen(err_text) > 0) {
+        if (!output && err_text && strlen(err_text) > 0) {
             size_t len = strlen(err_text) + 5; // "ERR:" + null
             output = (char*)malloc(len);
             if (output) {
                 snprintf(output, len, "ERR:%s", err_text);
             }
-            free(err_text);
         }
+        free(err_text);
         // If no stderr captured, output stays NULL
     }
 
@@ -3456,7 +3474,8 @@ static char* omnivm_py_error_details_json(PyObject* value) {
     PyObject* details = omnivm_py_get_validation_details(value);
     if (!details) return NULL;
     PyObject* wrapped = NULL;
-    if (!PyMapping_Check(details)) {
+    int mapping_like = PyMapping_Check(details) && PyObject_HasAttrString(details, "keys");
+    if (!mapping_like) {
         wrapped = PyDict_New();
         if (wrapped && PyDict_SetItemString(wrapped, "errors", details) != 0) {
             Py_DECREF(wrapped);

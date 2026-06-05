@@ -86,6 +86,38 @@ func TestPythonExecuteError(t *testing.T) {
 	}
 }
 
+func TestPythonExecuteErrorPreservesValidationDetails(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+class ValidationError(Exception):
+    def errors(self):
+        return [{"loc": ["age"], "type": "greater_than"}, {"loc": ["name"], "type": "missing"}]
+
+raise ValidationError("2 validation errors for User")
+`)
+	if result.Err == nil {
+		t.Fatal("expected validation error")
+	}
+	text := result.Err.Error()
+	for _, want := range []string{
+		"Traceback",
+		"ValidationError: 2 validation errors for User",
+		`Details: {"errors": [{"loc": ["age"], "type": "greater_than"}, {"loc": ["name"], "type": "missing"}]}`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Execute validation error missing %q in %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Details: [{") {
+		t.Fatalf("Execute validation error exposed raw error list instead of errors envelope: %s", text)
+	}
+}
+
 func TestPythonRuntimeErrorPreludeStructuredEnvelopeSource(t *testing.T) {
 	for _, want := range []string{
 		"self.origin_runtime = parsed['origin_runtime']",
