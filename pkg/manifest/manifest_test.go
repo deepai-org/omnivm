@@ -10260,12 +10260,37 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		strings.Index(code, "if (id == null || !released.compareAndSet(false, true))") > strings.Index(code, `bridgeManifestOp("{\"op\":\"handle_release_explicit\"`) {
 		t.Fatalf("Java explicit close should claim released before owner calls and reset it only after failed calls")
 	}
+	for _, want := range []string{
+		"private RuntimeError closedOperationError(String op)",
+		`"OmniVM Java handle proxy " + op + " on closed " + kind + " handle" + suffix`,
+		`"proxy_lifecycle"`,
+		`ownerDispatchMap("proxy", proxy)`,
+		"private void ensureOpen(String op)",
+		"if (released.get()) {\n                throw closedOperationError(op);\n            }",
+		"if (released.get()) {\n                return null;\n            }",
+		"private boolean isReleased() {\n            return released.get();\n        }",
+		"cached instanceof HandleProxy handleProxy && handleProxy.isReleased()",
+		"cached instanceof StreamProxy streamProxy && streamProxy.isReleased()",
+		"proxyCache.remove(key, ref);",
+		"ensureOpen(\"get\");",
+		"ensureOpen(\"index\");",
+		"ensureOpen(\"set\");",
+		"ensureOpen(\"call\");",
+		"ensureOpen(\"len\");",
+		"ensureOpen(\"iterate\");",
+		"ensureOpen(\"contains\");",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Java closed HandleProxy operations should fail locally, missing %q", want)
+		}
+	}
 	if !contains(code, "public String toString()") ||
+		!contains(code, "if (released.get()) {\n                return value.toString();\n            }") ||
 		!contains(code, `if (hasLocalValue("toString")) {`) ||
 		!contains(code, `return String.valueOf(localValue("toString"));`) ||
 		!contains(code, `return String.valueOf(bridgeGet("toString"));`) ||
 		!contains(code, "if (!isMissingBridgeError(err)) {\n                    throw err;\n                }") {
-		t.Fatalf("Java HandleProxy.toString should prefer materialized then remote toString fields with missing-bridge fallback")
+		t.Fatalf("Java HandleProxy.toString should prefer materialized then remote toString fields while avoiding closed-proxy bridge calls")
 	}
 	if !contains(code, `catch (RuntimeException err)`) ||
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
@@ -10836,6 +10861,118 @@ public final class ProxyToStringCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyToStringCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java proxy toString check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaHandleProxyClosedOperationsFailLocally(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static String nativeCall(String runtime, String code) {
+        ClosedProxyCheck.calls.add(code);
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_retain\"") || code.contains("\"op\":\"handle_adopt\"") || code.contains("\"op\":\"handle_release_explicit\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"handle_access\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":{\"id\":91,\"chatty\":false}}";
+        }
+        throw new RuntimeException("closed proxy reached bridge: " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/ClosedProxyCheck.java"
+	check := `package omnivm;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public final class ClosedProxyCheck {
+    static final List<String> calls = new ArrayList<>();
+
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static void expectClosed(Runnable body, String operation) {
+        try {
+            body.run();
+            throw new AssertionError(operation + " unexpectedly succeeded");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("closed object handle #91"), operation + " message mismatch: " + err.getMessage());
+            require("proxy_lifecycle".equals(err.getBoundaryPath()), operation + " boundary mismatch: " + err.getBoundaryPath());
+            require(String.valueOf(err.getDetails()).contains("closed=true"), operation + " details mismatch: " + err.getDetails());
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.HandleProxy first = (OmniVM.HandleProxy) OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":91,\"runtime\":\"python\",\"kind\":\"object\",\"path\":\"cached\",\"transfer\":true}");
+        require(OmniVM.proxyClose(first), "first close failed");
+        int beforeClosedAccess = calls.size();
+
+        expectClosed(() -> first.get("path"), "get");
+        expectClosed(() -> OmniVM.proxyGet(first, "path"), "proxyGet");
+        expectClosed(() -> first.index(0), "index");
+        expectClosed(() -> first.set("path", "next"), "set");
+        expectClosed(() -> first.call("run"), "call");
+        expectClosed(() -> first.apply(), "apply");
+        expectClosed(() -> first.size(), "size");
+        expectClosed(() -> first.values(), "values");
+        expectClosed(() -> first.entrySet(), "entrySet");
+        expectClosed(() -> first.containsKey("path"), "containsKey");
+        expectClosed(() -> first.asMap(), "asMap");
+        expectClosed(() -> first.id(), "id");
+        String text = String.valueOf(first);
+        require(text.contains("__omnivm_resource__"), "closed toString should remain local descriptor text: " + text);
+
+        require(calls.size() == beforeClosedAccess, "closed proxy access reached bridge: " + calls.subList(beforeClosedAccess, calls.size()));
+        OmniVM.HandleProxy second = (OmniVM.HandleProxy) OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":91,\"runtime\":\"python\",\"kind\":\"object\",\"path\":\"fresh\",\"transfer\":true}");
+        require(second != first, "closed proxy was reused");
+        require(OmniVM.proxyClose(second), "second close failed");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java closed proxy check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java closed proxy check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ClosedProxyCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java closed proxy check: %v\n%s", err, out)
 	}
 }
 

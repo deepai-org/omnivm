@@ -2032,23 +2032,27 @@ public class OmniVM {
         }
 
         public Object id() {
+            ensureOpen("get");
             record("property");
             return value.get("id");
         }
 
         public String runtime() {
+            ensureOpen("get");
             record("property");
             Object runtime = value.get("runtime");
             return runtime == null ? null : runtime.toString();
         }
 
         public String kind() {
+            ensureOpen("get");
             record("property");
             Object kind = value.get("kind");
             return kind == null ? null : kind.toString();
         }
 
         public Map<String, Object> asMap() {
+            ensureOpen("iterate");
             record("iterate");
             return Collections.unmodifiableMap(value);
         }
@@ -2079,6 +2083,10 @@ public class OmniVM {
             return true;
         }
 
+        private boolean isReleased() {
+            return released.get();
+        }
+
         @Override
         public void close() {
             releaseExplicit();
@@ -2086,6 +2094,7 @@ public class OmniVM {
 
         @Override
         public Object get(Object key) {
+            ensureOpen("get");
             if (isIndexedDescriptor() && numericIndex(key) != null) {
                 try {
                     return index(key);
@@ -2127,6 +2136,7 @@ public class OmniVM {
         }
 
         public Object index(Object key) {
+            ensureOpen("index");
             if (hasLocalValue(key)) {
                 return localValue(key);
             }
@@ -2141,23 +2151,27 @@ public class OmniVM {
         }
 
         public boolean set(String key, Object next) {
+            ensureOpen("set");
             record("mutation");
             Object result = bridgeOp("{\"op\":\"handle_set\",\"id\":" + jsonScalar(value.get("id")) + ",\"key\":\"" + jsonEscape(key) + "\",\"value\":" + jsonValue(encodeArg(next)) + "}");
             return Boolean.TRUE.equals(result);
         }
 
         public Object call(String key, Object... args) {
+            ensureOpen("call");
             record("call");
             return bridgeOp("{\"op\":\"handle_call\",\"id\":" + jsonScalar(value.get("id")) + ",\"key\":\"" + jsonEscape(key) + "\",\"args\":" + jsonArray(args) + "}");
         }
 
         public Object apply(Object... args) {
+            ensureOpen("call");
             record("call");
             return bridgeOp("{\"op\":\"handle_call\",\"id\":" + jsonScalar(value.get("id")) + ",\"key\":\"\",\"args\":" + jsonArray(args) + "}");
         }
 
         @Override
         public int size() {
+            ensureOpen("len");
             try {
                 Object length = bridgeOp("{\"op\":\"handle_len\",\"id\":" + jsonScalar(value.get("id")) + "}");
                 if (length instanceof Number) {
@@ -2175,6 +2189,7 @@ public class OmniVM {
         @Override
         @SuppressWarnings("unchecked")
         public Collection<Object> values() {
+            ensureOpen("iterate");
             try {
                 Object values = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"values\"}");
                 if (values instanceof List<?>) {
@@ -2190,6 +2205,7 @@ public class OmniVM {
 
         @Override
         public Set<Entry<String, Object>> entrySet() {
+            ensureOpen("iterate");
             try {
                 Object items = bridgeOp("{\"op\":\"handle_iter\",\"id\":" + jsonScalar(value.get("id")) + ",\"mode\":\"items\"}");
                 if (items instanceof List<?>) {
@@ -2212,6 +2228,7 @@ public class OmniVM {
 
         @Override
         public boolean containsKey(Object key) {
+            ensureOpen("contains");
             try {
                 Object contains = bridgeOp("{\"op\":\"handle_contains\",\"id\":" + jsonScalar(value.get("id")) + ",\"value\":" + jsonValue(key) + "}");
                 if (contains instanceof Boolean) {
@@ -2228,6 +2245,9 @@ public class OmniVM {
 
         @Override
         public String toString() {
+            if (released.get()) {
+                return value.toString();
+            }
             if (hasLocalValue("toString")) {
                 return String.valueOf(localValue("toString"));
             }
@@ -2241,7 +2261,34 @@ public class OmniVM {
             return value.toString();
         }
 
+        private RuntimeError closedOperationError(String op) {
+            Object rawID = value.get("id");
+            Object rawKind = value.get("kind");
+            String kind = rawKind == null ? "object" : String.valueOf(rawKind);
+            Object rawRuntime = value.get("runtime");
+            String runtime = rawRuntime == null ? "unknown" : String.valueOf(rawRuntime);
+            String suffix = rawID == null ? "" : " #" + rawID;
+            Map<String, Object> proxy = ownerDispatchMap(
+                "id", rawID,
+                "runtime", runtime,
+                "kind", kind,
+                "closed", true);
+            return runtimeError(
+                "OmniVM Java handle proxy " + op + " on closed " + kind + " handle" + suffix,
+                "proxy_lifecycle",
+                ownerDispatchMap("proxy", proxy));
+        }
+
+        private void ensureOpen(String op) {
+            if (released.get()) {
+                throw closedOperationError(op);
+            }
+        }
+
         private Map<?, ?> record(String kind) {
+            if (released.get()) {
+                return null;
+            }
             Object id = value.get("id");
             if (id == null) {
                 return null;
@@ -2325,6 +2372,7 @@ public class OmniVM {
         }
 
         private void materializeChatty() {
+            ensureOpen("iterate");
             if (Boolean.TRUE.equals(value.get("__omnivm_materialized__"))) {
                 return;
             }
@@ -2650,6 +2698,10 @@ public class OmniVM {
             return true;
         }
 
+        private boolean isReleased() {
+            return released.get();
+        }
+
         public boolean cancel() {
             if (localValues != null) {
                 return markReleased();
@@ -2923,6 +2975,11 @@ public class OmniVM {
         String key = kind + ":" + String.valueOf(id);
         WeakReference<Object> ref = proxyCache.get(key);
         Object cached = ref == null ? null : ref.get();
+        if ((cached instanceof HandleProxy handleProxy && handleProxy.isReleased())
+            || (cached instanceof StreamProxy streamProxy && streamProxy.isReleased())) {
+            proxyCache.remove(key, ref);
+            cached = null;
+        }
         if (cached != null) {
             return cached;
         }
