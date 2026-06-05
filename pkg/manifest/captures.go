@@ -1458,6 +1458,22 @@ class __OmniVMStreamProxy:
                         pass
         return __omnivm_iter()
 
+    def __aiter__(self):
+        async def __omnivm_aiter():
+            try:
+                while True:
+                    try:
+                        yield self.__next__()
+                    except StopIteration:
+                        return
+            finally:
+                if not self._closed:
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+        return __omnivm_aiter()
+
     def __next__(self):
         if self._closed:
             raise StopIteration

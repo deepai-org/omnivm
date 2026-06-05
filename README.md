@@ -564,8 +564,10 @@ Python retained manifest proxies expose the same escape hatches as
 ordinary fields on retained Python proxies; use `proxy_close()` or
 `omnivm_close()` for lifecycle release. Python retained handle proxies, stream
 iterators, and embedded local stream proxies also support `with` and
-`async with` for deterministic release/cancel. For ordinary local objects, the
-same helpers honor descriptor-defined `close()` and `dispose()` without
+`async with` for deterministic release/cancel, and Python stream proxies support
+`async for` with the same early-break cancellation as sync iteration. For
+ordinary local objects, the same helpers honor descriptor-defined `close()` and
+`dispose()` without
 triggering dynamic attribute lookup; `omnivm.aproxy_close(value)` also awaits
 async close, `aclose()`, and dispose results. Generated Python manifest
 snippets expose the same `proxy_close(value)`/`omnivm_close(value)`

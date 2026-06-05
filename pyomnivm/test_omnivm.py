@@ -2495,6 +2495,23 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(stream) is False
         assert list(stream) == []
 
+    def test_embedded_local_stream_async_iteration_closes_on_early_break(self):
+        stream = omnivm_mod._wrap_manifest_value(
+            "demo",
+            {"__omnivm_stream__": True, "runtime": "python", "kind": "stream", "values": ["row-1", "row-2"]},
+        )
+
+        async def run():
+            seen = []
+            async for row in stream:
+                seen.append(row)
+                break
+            return seen
+
+        assert asyncio.run(run()) == ["row-1"]
+        assert omnivm_mod.proxy_close(stream) is False
+        assert list(stream) == []
+
     def test_manifest_stream_iterator_cancels_on_early_break(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
@@ -2541,6 +2558,49 @@ class TestCallWithMockLib(unittest.TestCase):
         assert proxy.close() is False
         cancels = [request for request in requests if request.get("op") == "stream_cancel"]
         assert cancels == [{"op": "stream_cancel", "id": 49}]
+
+    def test_manifest_stream_async_iteration_cancels_on_early_break(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        rows = iter(["row-1", "row-2"])
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 54,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                return envelope({"done": False, "value": next(rows)})
+            if request_payload.get("op") == "stream_cancel":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "handle_release_finalizer":
+                raise AssertionError("async early break should cancel, not queue quiet finalizer cleanup")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        async def run():
+            seen = []
+            async for row in proxy:
+                seen.append(row)
+                break
+            return seen
+
+        assert asyncio.run(run()) == ["row-1"]
+        cancels = [request for request in requests if request.get("op") == "stream_cancel"]
+        assert cancels == [{"op": "stream_cancel", "id": 54}]
+        assert sum(1 for request in requests if request.get("op") == "stream_next") == 1
 
     def test_manifest_stream_iterator_cancels_on_chunk_materialization_error(self):
         def envelope(value, kind="json"):

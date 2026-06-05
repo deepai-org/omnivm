@@ -1656,6 +1656,27 @@ class ManifestProxy:
         mode = "values" if self._descriptor.get("kind") == "sequence" or self._descriptor.get("__omnivm_table__") is True else "keys"
         return iter(self._op({"op": "handle_iter", "id": self._handle_id, "mode": mode}))
 
+    def __aiter__(self):
+        if self._descriptor.get("__omnivm_stream__") is not True and self._descriptor.get("__omnivm_channel__") is not True:
+            raise TypeError(f"{type(self).__name__} is not an async iterable")
+        iterator = _ManifestStreamIterator(self)
+
+        async def _omnivm_async_iter():
+            try:
+                while True:
+                    try:
+                        yield next(iterator)
+                    except StopIteration:
+                        return
+            finally:
+                if not object.__getattribute__(self, "_closed"):
+                    try:
+                        iterator.close()
+                    except BaseException:
+                        pass
+
+        return _omnivm_async_iter()
+
     def __contains__(self, value):
         self._ensure_open("contains")
         retained_keys = []
@@ -1740,6 +1761,21 @@ class _LocalManifestStreamProxy:
         finally:
             if not self._closed:
                 self.close()
+
+    def __aiter__(self):
+        async def _omnivm_async_iter():
+            try:
+                while not self._closed and self._cursor < len(self._values):
+                    item = self._values[self._cursor]
+                    self._cursor += 1
+                    yield _wrap_manifest_value(self._module_id, item)
+                if not self._closed:
+                    self.close()
+            finally:
+                if not self._closed:
+                    self.close()
+
+        return _omnivm_async_iter()
 
     def __len__(self):
         remaining = len(self._values) - self._cursor
@@ -2027,6 +2063,15 @@ class _ManifestStreamIterator:
 
     def __iter__(self):
         return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return self.__next__()
+        except StopIteration:
+            raise StopAsyncIteration
 
     def _detach_finalizer(self):
         finalizer = object.__getattribute__(self, "_finalizer")

@@ -330,7 +330,10 @@ Python retained manifest stream iterators also attach a quiet iterator-finalizer
 cancel path, so a normal `for` loop that breaks early uses `stream_cancel`
 instead of falling back to the handle finalizer release queue. They also
 separate owner `stream_next` from chunk proxy wrapping, so a failed chunk adopt
-or retain cancels the stream while preserving the wrapping error.
+or retain cancels the stream while preserving the wrapping error. Python stream
+proxies also support `async for` with the same early-break `stream_cancel`
+behavior as sync iteration; this is an async-consumption surface, not owner-loop
+dispatch.
 JavaScript stream proxies that are adapted to Node `Readable` streams serialize
 pending owner pulls; a second `_read` while `iterator.next()` is unresolved does
 not issue another `stream_next`. The adapter also listens for explicit

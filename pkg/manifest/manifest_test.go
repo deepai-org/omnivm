@@ -6894,6 +6894,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
 		!contains(code, "f\"OmniVM stream close failed during chunk materialization cleanup: {close_exc}\"") ||
 		!contains(code, "def __iter__(self):\n        def __omnivm_iter():") ||
+		!contains(code, "def __aiter__(self):\n        async def __omnivm_aiter():") ||
+		!contains(code, "yield self.__next__()") ||
 		!contains(code, "finally:\n                if not self._closed:") ||
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
@@ -7705,6 +7707,57 @@ if len(cancels) != 1 or cancels[0].get("id") != 90:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream context close-failure check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonRemoteStreamAsyncIterationCancelsOnEarlyBreak(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import asyncio
+import json
+class Bridge:
+    requests = []
+    values = iter(["row-1", "row-2"])
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            return json.dumps({"__omnivm_result__": True, "value": {"done": False, "value": next(Bridge.values)}})
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 94, "runtime": "python", "kind": "stream"})
+async def run():
+    seen = []
+    async for row in stream:
+        seen.append(row)
+        break
+    return seen
+if asyncio.run(run()) != ["row-1"]:
+    raise RuntimeError("async stream did not yield first row")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 94:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+nexts = [req for req in Bridge.requests if req.get("op") == "stream_next"]
+if len(nexts) != 1:
+    raise RuntimeError("stream next requests mismatch: " + repr(nexts))
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed")
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream async iteration cancellation check failed: %v\n%s", err, out)
 	}
 }
 
