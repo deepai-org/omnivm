@@ -5602,7 +5602,9 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 		ref  RuntimeRef
 		want string
 	}{
-		{RuntimeRef{Runtime: "python", VarName: "rows"}, "getattr(__omnivm_stream_obj, 'close', None)"},
+		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_actual_public_lifecycle_method"},
+		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__inspect.getattr_static"},
+		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_types.AsyncGeneratorType"},
 		{RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_close_frame_iterators"},
 		{RuntimeRef{Runtime: "ruby", VarName: "rows"}, "to_io"},
 		{RuntimeRef{Runtime: "java", VarName: "rows"}, "AutoCloseable"},
@@ -5874,6 +5876,39 @@ __omnivm_stream_state = rows
 if rows.calls != 1:
     raise RuntimeError(f"optional close call count mismatch: {rows.calls}")
 
+class DynamicCloseTrap:
+    def __init__(self):
+        self.lookups = []
+    def __getattr__(self, name):
+        self.lookups.append(name)
+        if name in ("close", "aclose", "ag_frame", "gi_frame"):
+            raise RuntimeError(f"dynamic lifecycle lookup should not run: {name}")
+        raise AttributeError(name)
+
+rows = DynamicCloseTrap()
+__omnivm_stream_state = rows
+` + code + `
+if rows.lookups:
+    raise RuntimeError(f"dynamic lifecycle lookup was invoked: {rows.lookups}")
+
+class StaticAndClassClose:
+    static_calls = 0
+    class_calls = 0
+    @staticmethod
+    def close():
+        StaticAndClassClose.static_calls += 1
+    @classmethod
+    def dispose(cls):
+        cls.class_calls += 1
+
+rows = StaticAndClassClose()
+__omnivm_stream_state = rows
+` + code + `
+if StaticAndClassClose.static_calls != 1:
+    raise RuntimeError(f"static close was not invoked: {StaticAndClassClose.static_calls}")
+if StaticAndClassClose.class_calls != 0:
+    raise RuntimeError(f"dispose should not run when close exists: {StaticAndClassClose.class_calls}")
+
 closed = []
 def generator_rows():
     try:
@@ -5965,6 +6000,24 @@ if not __omnivm_close_ready or __omnivm_close_error is not None:
     raise RuntimeError(f"optional aclose task failed: ready={__omnivm_close_ready} error={__omnivm_close_error}")
 if rows.calls != 1:
     raise RuntimeError(f"optional aclose call count mismatch: {rows.calls}")
+
+class DynamicAsyncCloseTrap:
+    def __init__(self):
+        self.lookups = []
+    def __getattr__(self, name):
+        self.lookups.append(name)
+        if name in ("close", "aclose", "ag_frame", "gi_frame"):
+            raise RuntimeError(f"dynamic lifecycle lookup should not run: {name}")
+        raise AttributeError(name)
+
+rows = DynamicAsyncCloseTrap()
+__omnivm_stream_state = rows
+` + code + `
+run_close_task()
+if not __omnivm_close_ready or __omnivm_close_error is not None:
+    raise RuntimeError(f"dynamic trap close task failed: ready={__omnivm_close_ready} error={__omnivm_close_error}")
+if rows.lookups:
+    raise RuntimeError(f"dynamic lifecycle lookup was invoked: {rows.lookups}")
 
 closed = []
 async def async_generator_rows():
