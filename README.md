@@ -409,7 +409,7 @@ Go main goroutine (runtime.LockOSThread)
        ├─ Python (CPython 3.14)  — GIL-wrapped entry, pipe-based interrupt
        ├─ JavaScript (Node.js 22 / V8) — v8::Locker, TerminateExecution
        ├─ Java (JVM 21 / JNI)   — AttachCurrentThreadAsDaemon
-       ├─ Ruby (MRI 3.3)        — proxy pthread, trace hook interrupt
+       ├─ Ruby (MRI 3.3)        — single VM thread, native Thread.new disabled
        └─ Go (plugins)          — compiled as .so, loaded via plugin.Open
 
 C pthread watchdog (independent of Go scheduler)
@@ -438,14 +438,14 @@ Main OS thread (Golden Thread):
   runtime.LockOSThread() — pinned for lifetime of process
   Runs: dispatcher loop, all scheduled tasks, V8/Python/Java direct calls
 
-Ruby proxy pthread:
-  Holds GVL permanently, processes requests via condvar
-  Ruby 3.3's M:N scheduler can't schedule threads on non-main pthreads
-  All Ruby calls (Golden Thread or foreign) route through this proxy
+Ruby VM execution lane:
+  One Ruby execution lane is active inside OmniVM
+  Native Ruby Thread.new/Thread.start/Thread.fork are diagnostic-only
+  Puma-style in-process native thread ownership must run out of process
 
 Foreign threads (JVM threads, Python threads, Go goroutines):
-  Can call any runtime directly via thread-safe entry points
-  Each runtime entry acquires its own lock (GIL/Locker/GVL-proxy/JNI attach)
+  In binary bridge mode, can call runtimes through thread-safe bridge entry points
+  In c-shared Python-hosted mode, runtime entrypoints stay pinned to the host worker thread
   Watchdog timeout protection only applies to Golden Thread tasks
 ```
 
@@ -460,7 +460,12 @@ The C pthread watchdog (`pkg/watchdog/`) runs independently of Go's scheduler us
 
 ## Cross-Runtime Calls
 
-The bridge function `omnivm.call(runtime, code)` is available from every runtime and from any thread:
+The bridge function `omnivm.call(runtime, code)` is available from every runtime.
+In the OmniVM binary/REPL bridge it is thread-safe; in c-shared Python-hosted
+deployments, direct runtime, manifest, plugin, and typed-call entrypoints are
+pinned to the initialized CPython worker thread and expose
+`omnivm.owner_dispatch_status()` / `omnivm.assert_host_thread(label)` for
+startup and callback checks.
 
 ```python
 # Python calling JavaScript
@@ -469,14 +474,18 @@ result = omnivm.call("javascript", "Math.sqrt(144)")
 # JavaScript calling Ruby
 var result = omnivm.call("ruby", "('hello' + ' world').upcase");
 
-# Java calling Python (works from JVM-spawned threads too)
+# Java calling Python (JVM-spawned threads are supported in binary bridge mode)
 String result = omnivm.OmniVM.call("python", "2 ** 100");
 
 # Go calling Python (via plugin bridge)
 result := OmniVM.Call("python", "2 ** 100")
 ```
 
-All calls execute synchronously — no marshalling, no IPC, no serialization. Golden Thread calls are direct C function calls. Foreign thread calls automatically acquire the target runtime's lock (GIL, GVL, v8::Locker, or JNI AttachCurrentThread).
+All calls execute synchronously — no marshalling, no IPC, no serialization.
+Golden Thread calls are direct C function calls. Binary bridge foreign-thread
+calls acquire the target runtime's entry lock where that mode supports them;
+c-shared host calls fail fast from non-host threads instead of trying to migrate
+work onto an owner loop.
 
 ## REPL Commands
 
@@ -984,8 +993,8 @@ make test-libomnivm-stress
 - **Lazy runtime initialization**: Only the runtime needed for the target file is started. `omnivm run main.go` skips all embedded runtimes. `omnivm run script.py` only starts CPython.
 - **Java file execution**: `omnivm run App.java` compiles in-memory via `javax.tools.JavaCompiler` and runs on the embedded JVM with real `main(String[] args)` and direct stdout/stderr. Supports `.class` and `.jar` files. Classpath auto-detects Maven (`target/dependency/`), Gradle (`build/libs/`), and `lib/`/`libs/` directories — downloaded JARs just work.
 - **Go as equal peer**: Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and executed — not via subprocess. `func main()` is transformed to an exported `func Main()` via the Go AST, compiled, and called via `plugin.Open`/`Lookup`. Go plugins can call other runtimes through the bridge (`OmniVM.Call("python", "...")`) and participate in the REPL and inline execution (`omnivm -go 'code'`). Go is the host because its runtime was the pickiest about embedding, not because it has special status.
-- **Thread-safe bridge gateway**: Any thread can call `omnivm.call()` — not just the Golden Thread. Each runtime's entry point acquires the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), `rb_thread_call_with_gvl` or proxy submit (Ruby), `AttachCurrentThreadAsDaemon` (JVM). Bridge hops release the source lock so no thread ever holds two runtime locks simultaneously — deadlock-free by construction.
-- **Ruby proxy pthread**: Ruby is initialized on a dedicated pthread that doubles as the execution thread. All Ruby calls route through condvar-based dispatch to this pthread, which holds the GVL permanently. Ruby 3.3's M:N threading breaks `Thread.new` and `rb_thread_call_without_gvl` on non-main pthreads, so we avoid Ruby threads entirely — the pthread runs a simple request loop. `omnivm.status()["ruby_threading"]` and `omnivm.ruby_threading_status()` report this boundary (`mode=single_vm_thread`, native threads unsupported), and `omnivm.assert_ruby_native_threads_supported(label)` is the fail-fast guard for host apps that need an out-of-process Puma deployment before loading a threaded Ruby app server.
+- **Bridge gateway affinity**: The OmniVM binary bridge supports foreign-thread calls by entering the target runtime through the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), the Ruby VM execution lane, or `AttachCurrentThreadAsDaemon` (JVM). In c-shared Python-hosted mode, CPython owns the worker thread state, so runtime, manifest, plugin, and typed-call entrypoints reject non-host threads with structured `thread_affinity` diagnostics instead of attempting universal owner-loop dispatch.
+- **Ruby single-VM-thread boundary**: Ruby runs through one OmniVM-owned VM execution lane. Ruby 3.3's M:N threading breaks `Thread.new` and `rb_thread_call_without_gvl` in this embedded shape, so native Ruby thread creation raises an explicit diagnostic instead of hanging. `omnivm.status()["ruby_threading"]` and `omnivm.ruby_threading_status()` report this boundary (`mode=single_vm_thread`, native threads unsupported), and `omnivm.assert_ruby_native_threads_supported(label)` is the fail-fast guard for host apps that need an out-of-process Puma deployment before loading a threaded Ruby app server.
 - **Epoll dispatcher (Linux)**: eventfd for task wakeup, timerfd for heartbeat, libuv backend fd for V8 I/O. Replaces the 1ms polling ticker with event-driven wakeups — zero CPU when idle.
 - **C pthread watchdog**: Independent of the Go scheduler. `pthread_cond_timedwait` with `CLOCK_MONOTONIC` (immune to NTP jumps). Temporal signal routing dispatches runtime-specific interrupts: Python pipe write, `v8::Isolate::TerminateExecution()`, Ruby trace hook interrupt.
 - **Error enhancement**: Missing module errors get "pip install" / "npm install" / "gem install" hints. Python tracebacks are reformatted with `file:line` references. Go compile errors get "Did you mean?" suggestions.
