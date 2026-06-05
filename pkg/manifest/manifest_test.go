@@ -6764,7 +6764,15 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def _omnivm_traceback_frames(error):") ||
 		!contains(code, "return __tb.format_tb(error.__traceback__) if error.__traceback__ is not None else []") ||
 		!contains(code, "def traceback(self):") ||
+		!contains(code, "def traceback(self, value):") ||
+		!contains(code, "def stack_frames(self, value):") ||
+		!contains(code, "def stackFrames(self, value):") ||
 		!contains(code, "def originRuntime(self):") ||
+		!contains(code, "def originRuntime(self, value):") ||
+		!contains(code, "def cause_chain(self, value):") ||
+		!contains(code, "def causeChain(self, value):") ||
+		!contains(code, "def boundaryPath(self, value):") ||
+		!contains(code, "def originalErrorHandle(self, value):") ||
 		!contains(code, "def to_json(self):") ||
 		!contains(code, "def details_json(self, value):") ||
 		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
@@ -7135,6 +7143,12 @@ except RuntimeError as exc:
         raise RuntimeError("malformed stream error missing stack frames")
     if "in _pull_next" not in exc.traceback:
         raise RuntimeError("malformed stream traceback missing origin frame: " + repr(exc.traceback))
+    exc.originRuntime = "owner-python"
+    exc.boundaryPath = "stream_next > normalized"
+    exc.originalErrorHandle = "py-stream-90"
+    exc.stackFrames = ["normalized stack"]
+    exc.causeChain = [{"runtime": "python", "message": "inner"}]
+    exc.traceback = "normalized traceback"
     if exc.details != {"stream": {"id": 90, "chunk": ""}}:
         raise RuntimeError("malformed stream details mismatch: " + repr(exc.details))
     details = exc.details
@@ -7148,10 +7162,18 @@ except RuntimeError as exc:
     if json.loads(exc.details_json) != {"stream": {"id": 92, "chunk": "alias"}}:
         raise RuntimeError("detailsJson setter did not update details_json: " + repr(exc.details_json))
     envelope = json.loads(exc.to_json())
-    if envelope["boundary_path"] != "stream_next":
+    if envelope["origin_runtime"] != "owner-python":
+        raise RuntimeError("malformed stream json originRuntime mismatch: " + repr(envelope))
+    if envelope["boundary_path"] != "stream_next > normalized":
         raise RuntimeError("malformed stream json boundary mismatch: " + repr(envelope))
-    if not envelope["stack_frames"]:
+    if envelope["original_error_handle"] != "py-stream-90":
+        raise RuntimeError("malformed stream json original handle mismatch: " + repr(envelope))
+    if envelope["traceback"] != "normalized traceback":
+        raise RuntimeError("malformed stream json traceback mismatch: " + repr(envelope))
+    if envelope["stack_frames"] != ["normalized stack"]:
         raise RuntimeError("malformed stream json stack_frames missing: " + repr(envelope))
+    if envelope["cause_chain"] != [{"runtime": "python", "message": "inner"}]:
+        raise RuntimeError("malformed stream json cause_chain mismatch: " + repr(envelope))
     if envelope["details"] != {"stream": {"id": 92, "chunk": "alias"}}:
         raise RuntimeError("malformed stream json details mismatch: " + repr(envelope))
 if not stream._closed:

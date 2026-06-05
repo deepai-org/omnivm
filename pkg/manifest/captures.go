@@ -563,37 +563,69 @@ class _OmniVMRuntimeError(RuntimeError):
 
     @property
     def traceback(self):
-        frames = _omnivm_traceback_frames(self)
+        frames = [] if self._traceback else _omnivm_traceback_frames(self)
         return "".join(frames) if frames else self._traceback
+
+    @traceback.setter
+    def traceback(self, value):
+        self._traceback = "" if value is None else str(value)
 
     @property
     def stack_frames(self):
-        frames = _omnivm_traceback_frames(self)
+        frames = [] if self._stack_frames else _omnivm_traceback_frames(self)
         return list(frames) if frames else list(self._stack_frames)
+
+    @stack_frames.setter
+    def stack_frames(self, value):
+        self._stack_frames = list(value) if isinstance(value, list) else []
 
     @property
     def stackFrames(self):
         return self.stack_frames
 
+    @stackFrames.setter
+    def stackFrames(self, value):
+        self.stack_frames = value
+
     @property
     def originRuntime(self):
         return self.origin_runtime
+
+    @originRuntime.setter
+    def originRuntime(self, value):
+        self.origin_runtime = value
 
     @property
     def cause_chain(self):
         return _omnivm_copy_json_value(self._cause_chain)
 
+    @cause_chain.setter
+    def cause_chain(self, value):
+        self._cause_chain = _omnivm_copy_json_value(value if isinstance(value, list) else [])
+
     @property
     def causeChain(self):
         return self.cause_chain
+
+    @causeChain.setter
+    def causeChain(self, value):
+        self.cause_chain = value
 
     @property
     def boundaryPath(self):
         return self.boundary_path
 
+    @boundaryPath.setter
+    def boundaryPath(self, value):
+        self.boundary_path = value
+
     @property
     def originalErrorHandle(self):
         return self.original_error_handle
+
+    @originalErrorHandle.setter
+    def originalErrorHandle(self, value):
+        self.original_error_handle = value
 
     @property
     def details(self):
