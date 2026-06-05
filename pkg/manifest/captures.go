@@ -2224,15 +2224,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
-      if (prop === 'then' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-        try {
-          var thenValue = bridge({op: "handle_get", key: "then"}, {preserveCallable: true});
-          return typeof thenValue === 'function' ? undefined : thenValue;
-        } catch (_thenError) {
-          if (!globalThis.__omnivm_is_missing_bridge_error(_thenError)) throw _thenError;
-          return Reflect.get(obj, prop, receiver);
-        }
-      }
+      if (prop === 'then') return undefined;
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!(descriptor && descriptor.__omnivm_table__ === true)) {
           try {
