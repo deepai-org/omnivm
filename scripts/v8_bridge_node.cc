@@ -1958,12 +1958,15 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.details_json = JSON.stringify(err.details);
       err.detailsJson = err.details_json;
       err.toJSON = function() {
+        var traceback = err.stack || "";
         return {
           runtime: err.runtime,
           origin_runtime: err.origin_runtime,
           type: err.type,
           message: err.message,
-          traceback: err.stack || "",
+          traceback: traceback,
+          stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; }),
+          cause_chain: [],
           boundary_path: err.boundary_path,
           details: globalThis.__omnivm_clone_json(err.details),
           details_json: err.details_json

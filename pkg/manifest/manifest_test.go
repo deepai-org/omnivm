@@ -6824,6 +6824,8 @@ try {
   if (envelope.message !== err.message) throw new Error("bad envelope message: " + envelope.message);
   if (envelope.boundary_path !== "owner_dispatch") throw new Error("bad envelope boundary: " + envelope.boundary_path);
   if (!envelope.traceback || envelope.traceback.indexOf("OmniVMRuntimeError") < 0) throw new Error("missing envelope traceback");
+  if (!Array.isArray(envelope.stack_frames) || envelope.stack_frames.length === 0) throw new Error("missing envelope stack frames");
+  if (!Array.isArray(envelope.cause_chain) || envelope.cause_chain.length !== 0) throw new Error("bad envelope cause chain");
   if (!envelope.details || envelope.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing envelope details");
   envelope.details.owner_dispatch.mode = "mutated-envelope";
   if (err.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("toJSON leaked mutable details");
@@ -9901,6 +9903,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`owner_dispatch_target`,
 		`err.details_json = JSON.stringify(err.details)`,
 		`err.toJSON = function()`,
+		`stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; })`,
+		`cause_chain: []`,
 		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",
