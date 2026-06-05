@@ -939,7 +939,19 @@ public class OmniVM {
         String lower = safeString(line).toLowerCase(Locale.ROOT);
         return lower.startsWith("caused by:")
             || lower.startsWith("details:")
+            || lower.startsWith("details_json:")
+            || lower.startsWith("detailsjson:")
             || isOriginalErrorHandleLine(line);
+    }
+
+    private static String detailsMetadataLabel(String line) {
+        String text = safeString(line).trim();
+        int colon = text.indexOf(':');
+        if (colon < 0) {
+            return "";
+        }
+        String label = text.substring(0, colon).trim().toLowerCase(Locale.ROOT);
+        return "details".equals(label) || "details_json".equals(label) || "detailsjson".equals(label) ? label : "";
     }
 
     private static List<Map<String, Object>> parseCauseChain(String text, String fallbackRuntime) {
@@ -1005,8 +1017,9 @@ public class OmniVM {
         String[] lines = text.split("\\R");
         for (String rawLine : lines) {
             String line = rawLine.trim();
-            if (line.startsWith("Details: ")) {
-                String details = line.substring("Details: ".length()).trim();
+            String label = detailsMetadataLabel(line);
+            if (!label.isEmpty()) {
+                String details = line.substring(line.indexOf(':') + 1).trim();
                 return details.isEmpty() ? null : details;
             }
         }

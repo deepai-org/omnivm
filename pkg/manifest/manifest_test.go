@@ -10170,6 +10170,11 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private static String detailsJsonValue(Map<?, ?> envelope)",
 		`Object rawDetails = jsonValue(envelope, "details_json", "detailsJson")`,
 		"private static Object detailsObjectValue(Map<?, ?> source)",
+		`lower.startsWith("details_json:")`,
+		`lower.startsWith("detailsjson:")`,
+		"private static String detailsMetadataLabel(String line)",
+		`return "details".equals(label) || "details_json".equals(label) || "detailsjson".equals(label) ? label : ""`,
+		"String label = detailsMetadataLabel(line)",
 		"private static List<String> stringListJsonValue",
 		"private static List<Map<String, Object>> causeChainJsonValue(Object value, String fallbackRuntime)",
 		`private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey)`,
@@ -11143,6 +11148,31 @@ public final class RuntimeErrorCheck {
         require(json.contains("\"origin_runtime\":\"python\""), "toJson missing origin runtime: " + json);
         require(json.contains("\"cause_chain\":[{\"type\":\"TypeError\""), "toJson missing cause chain: " + json);
         require(json.contains("\"details_json\":\"[{\\\"path\\\":[\\\"user\\\",\\\"age\\\"]}]\""), "toJson missing raw details_json: " + json);
+
+        OmniVM.RuntimeError textDetails = OmniVM.RuntimeError.fromBridge(
+            "ERR:javascript: AggregateError: invalid\n"
+                + "    at parse (<anonymous>:1:2)\n"
+                + "details_json: [{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]",
+            "javascript",
+            "call[javascript]",
+            null
+        );
+        require(textDetails.getDetails() instanceof List<?>, "text details_json was not parsed as a list: " + textDetails.getDetails());
+        List<Object> textItems = (List<Object>) textDetails.getDetails();
+        require("too_small".equals(((Map<String, Object>) textItems.get(0)).get("code")), "text details_json details mismatch: " + textDetails.getDetails());
+        require("[{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]".equals(textDetails.getDetailsJson()), "text details_json raw mismatch: " + textDetails.getDetailsJson());
+        require(textDetails.getStackFrames().equals(List.of("at parse (<anonymous>:1:2)")), "text details_json leaked into stack frames: " + textDetails.getStackFrames());
+
+        OmniVM.RuntimeError rawDetails = OmniVM.RuntimeError.fromBridge(
+            "ERR:javascript: AggregateError: invalid\n"
+                + "detailsJson: not json",
+            "javascript",
+            "call[javascript]",
+            null
+        );
+        require("not json".equals(rawDetails.getDetails()), "raw detailsJson was not preserved as text: " + rawDetails.getDetails());
+        require("not json".equals(rawDetails.getDetailsJson()), "raw detailsJson payload mismatch: " + rawDetails.getDetailsJson());
+        require(rawDetails.getStackFrames().isEmpty(), "raw detailsJson leaked into stack frames: " + rawDetails.getStackFrames());
     }
 }
 `
