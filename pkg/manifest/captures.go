@@ -524,6 +524,138 @@ __omnivm_proxy_cache = globals().setdefault("__omnivm_proxy_cache", __omnivm_wea
 class _OmniVMBridgeMissing(Exception):
     pass
 
+def _omnivm_copy_json_value(value):
+    if isinstance(value, dict):
+        return {key: _omnivm_copy_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_omnivm_copy_json_value(item) for item in value]
+    return value
+
+def _omnivm_runtime_error_details_json(value):
+    if value is None:
+        return None
+    try:
+        import json as __j
+        return __j.dumps(value, separators=(",", ":"))
+    except Exception:
+        return str(value)
+
+class _OmniVMRuntimeError(RuntimeError):
+    def __init__(self, message, boundary_path=None, details=None):
+        super().__init__(message)
+        self.runtime = "python"
+        self.origin_runtime = "python"
+        self.type = "RuntimeError"
+        self.traceback = ""
+        self._stack_frames = []
+        self._cause_chain = []
+        self.boundary_path = boundary_path
+        self.original_error_handle = None
+        self._details = _omnivm_copy_json_value(details)
+        self._details_json = _omnivm_runtime_error_details_json(self._details)
+
+    @property
+    def stack_frames(self):
+        return list(self._stack_frames)
+
+    @property
+    def stackFrames(self):
+        return self.stack_frames
+
+    @property
+    def cause_chain(self):
+        return _omnivm_copy_json_value(self._cause_chain)
+
+    @property
+    def causeChain(self):
+        return self.cause_chain
+
+    @property
+    def boundaryPath(self):
+        return self.boundary_path
+
+    @property
+    def originalErrorHandle(self):
+        return self.original_error_handle
+
+    @property
+    def details(self):
+        return _omnivm_copy_json_value(self._details)
+
+    @details.setter
+    def details(self, value):
+        self._details = _omnivm_copy_json_value(value)
+        self._details_json = _omnivm_runtime_error_details_json(self._details)
+
+    @property
+    def details_json(self):
+        return self._details_json
+
+    @details_json.setter
+    def details_json(self, value):
+        if value is None:
+            self._details = None
+            self._details_json = None
+            return
+        if isinstance(value, str):
+            self._details_json = value
+            try:
+                import json as __j
+                self._details = _omnivm_copy_json_value(__j.loads(value))
+            except Exception:
+                self._details = value
+            return
+        self._details = _omnivm_copy_json_value(value)
+        self._details_json = _omnivm_runtime_error_details_json(self._details)
+
+    @property
+    def detailsJson(self):
+        return self.details_json
+
+    @detailsJson.setter
+    def detailsJson(self, value):
+        self.details_json = value
+
+    def to_dict(self):
+        return {
+            "runtime": self.runtime,
+            "origin_runtime": self.origin_runtime,
+            "type": self.type,
+            "message": str(self),
+            "traceback": self.traceback,
+            "stack_frames": self.stack_frames,
+            "cause_chain": self.cause_chain,
+            "boundary_path": self.boundary_path,
+            "original_error_handle": self.original_error_handle,
+            "details": self.details,
+            "details_json": self.details_json,
+        }
+
+    def as_dict(self):
+        return self.to_dict()
+
+    def to_json(self):
+        import json as __j
+        return __j.dumps(self.to_dict(), separators=(",", ":"))
+
+def _omnivm_runtime_error(message, boundary_path, details=None):
+    runtime_error = None
+    caller = globals().get("omnivm")
+    if caller is not None:
+        runtime_error = getattr(caller, "RuntimeError", None)
+    if runtime_error is None:
+        try:
+            import omnivm as __omnivm_mod
+            runtime_error = getattr(__omnivm_mod, "RuntimeError", None)
+        except Exception:
+            runtime_error = None
+    if runtime_error is not None:
+        try:
+            return runtime_error(message, runtime="python", boundary_path=boundary_path, details=details)
+        except TypeError:
+            pass
+    return _OmniVMRuntimeError(message, boundary_path, details)
+
 def _omnivm_is_missing_bridge_error(exc):
     text = str(exc)
     return (
@@ -1184,8 +1316,10 @@ class __OmniVMStreamProxy:
             self._mark_closed()
             raise
         if not isinstance(item, dict) or "done" not in item:
-            err = RuntimeError(
-                f"OmniVM stream_next returned malformed chunk for handle {self._value.get('id')}: expected an object with a done flag"
+            err = _omnivm_runtime_error(
+                f"OmniVM stream_next returned malformed chunk for handle {self._value.get('id')}: expected an object with a done flag",
+                "stream_next",
+                {"stream": {"id": self._value.get("id"), "chunk": item}},
             )
             try:
                 self.close()

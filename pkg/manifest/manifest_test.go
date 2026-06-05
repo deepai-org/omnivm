@@ -6756,6 +6756,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](item.get(\"value\"))") ||
 		!contains(code, "self._cache.append(materialized)") ||
+		!contains(code, "class _OmniVMRuntimeError(RuntimeError):") ||
+		!contains(code, "def _omnivm_runtime_error(message, boundary_path, details=None):") ||
+		!contains(code, "return runtime_error(message, runtime=\"python\", boundary_path=boundary_path, details=details)") ||
+		!contains(code, "err = _omnivm_runtime_error(") ||
+		!contains(code, `{"stream": {"id": self._value.get("id"), "chunk": item}}`) ||
+		!contains(code, "def to_json(self):") ||
+		!contains(code, "def details_json(self, value):") ||
 		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
 		!contains(code, "f\"OmniVM stream close failed during chunk materialization cleanup: {close_exc}\"") ||
 		!contains(code, "def __iter__(self):\n        def __omnivm_iter():") ||
@@ -7114,6 +7121,27 @@ try:
 except RuntimeError as exc:
     if "stream_next returned malformed chunk" not in str(exc):
         raise
+    if getattr(exc, "runtime", None) != "python":
+        raise RuntimeError("malformed stream runtime mismatch: " + repr(getattr(exc, "runtime", None)))
+    if getattr(exc, "boundary_path", None) != "stream_next":
+        raise RuntimeError("malformed stream boundary mismatch: " + repr(getattr(exc, "boundary_path", None)))
+    if exc.details != {"stream": {"id": 90, "chunk": ""}}:
+        raise RuntimeError("malformed stream details mismatch: " + repr(exc.details))
+    details = exc.details
+    details["stream"]["id"] = -1
+    if exc.details != {"stream": {"id": 90, "chunk": ""}}:
+        raise RuntimeError("malformed stream details reader leaked mutable state")
+    exc.details_json = '{"stream":{"id":91,"chunk":"json"}}'
+    if exc.details != {"stream": {"id": 91, "chunk": "json"}}:
+        raise RuntimeError("details_json setter did not update details: " + repr(exc.details))
+    exc.detailsJson = {"stream": {"id": 92, "chunk": "alias"}}
+    if json.loads(exc.details_json) != {"stream": {"id": 92, "chunk": "alias"}}:
+        raise RuntimeError("detailsJson setter did not update details_json: " + repr(exc.details_json))
+    envelope = json.loads(exc.to_json())
+    if envelope["boundary_path"] != "stream_next":
+        raise RuntimeError("malformed stream json boundary mismatch: " + repr(envelope))
+    if envelope["details"] != {"stream": {"id": 92, "chunk": "alias"}}:
+        raise RuntimeError("malformed stream json details mismatch: " + repr(envelope))
 if not stream._closed:
     raise RuntimeError("stream was not marked closed after malformed chunk")
 if stream.close() is not False:
