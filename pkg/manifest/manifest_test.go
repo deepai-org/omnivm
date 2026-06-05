@@ -7899,7 +7899,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 			t.Fatalf("JS bufferOwner helper contract missing %q", want)
 		}
 	}
-	if !contains(code, `return value.__omnivm_get(key, defaultValue, true);`) ||
+	if !contains(code, `var proxyGet = globalThis.__omnivm_actual_public_method(value, "__omnivm_get");`) ||
+		!contains(code, `if (proxyGet) return proxyGet(key, defaultValue, true);`) ||
 		!contains(code, `return function(key, defaultValue, remoteFirst) { return bridgeGet(key, defaultValue, remoteFirst === true); };`) ||
 		!contains(code, `if (remoteFirst === true)`) {
 		t.Fatalf("JS proxyGet should force remote-first lookup for descriptor/identity-name collisions, got %q", code)
@@ -7924,7 +7925,7 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `env.value.zeroArg === true`) || !contains(code, `return bridge({op: "handle_call", key: env.value.key, args: []});`) {
 		t.Fatalf("JS materializer should invoke zero-arg callable descriptors as property access, got %q", code)
 	}
-	if !contains(code, `preserveCallable`) || !contains(code, `return value.__omnivm_get(key, defaultValue, true);`) {
+	if !contains(code, `preserveCallable`) || !contains(code, `if (proxyGet) return proxyGet(key, defaultValue, true);`) {
 		t.Fatalf("JS proxyGet should preserve callable then descriptors through the explicit escape hatch, got %q", code)
 	}
 	if !contains(code, `op: "handle_index"`) || !contains(code, `op: "handle_set"`) || !contains(code, `op: "handle_call"`) || !contains(code, `op: "handle_len"`) || !contains(code, `op: "handle_iter"`) || !contains(code, `op: "handle_contains"`) {
@@ -8184,6 +8185,45 @@ if (requiredSymbolAsyncDispose !== false) throw new Error("required Symbol.async
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node proxyClose return preservation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSCaptureProxyHelpersAvoidDynamicInternalGetters(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {};
+` + code + `
+var getterCalls = [];
+var target = {
+  present: "value",
+  length: 3,
+  method: function(arg) { return "called:" + arg; }
+};
+["__omnivm_get", "__omnivm_set", "__omnivm_call", "__omnivm_len", "__omnivm_iter", "__omnivm_contains"].forEach(function(name) {
+  Object.defineProperty(target, name, {
+    configurable: true,
+    get: function() {
+      getterCalls.push(name);
+      throw new Error(name + " getter invoked");
+    }
+  });
+});
+if (omnivm.proxyGet(target, "present") !== "value") throw new Error("proxyGet ordinary field mismatch");
+if (omnivm.proxyGet(target, "missing", "fallback") !== "fallback") throw new Error("proxyGet fallback mismatch");
+if (omnivm.proxySet(target, "added", 4) !== true || target.added !== 4) throw new Error("proxySet fallback mismatch");
+if (omnivm.proxyCall(target, "method", ["ok"]) !== "called:ok") throw new Error("proxyCall ordinary method mismatch");
+if (omnivm.proxyLen(target, -1) !== 3) throw new Error("proxyLen fallback mismatch");
+if (JSON.stringify(omnivm.proxyKeys(target).sort()) !== JSON.stringify(["added", "length", "method", "present"])) throw new Error("proxyKeys fallback mismatch: " + JSON.stringify(omnivm.proxyKeys(target).sort()));
+if (omnivm.proxyContains(target, "present") !== true) throw new Error("proxyContains fallback mismatch");
+if (getterCalls.length !== 0) throw new Error("internal helper getter was invoked: " + getterCalls.join(","));
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node proxy helper getter guard failed: %v\n%s", err, out)
 	}
 }
 

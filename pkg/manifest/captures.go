@@ -1745,7 +1745,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxyGet", {
       configurable: true,
       value: function(value, key, defaultValue) {
-        if (value && typeof value.__omnivm_get === 'function') return value.__omnivm_get(key, defaultValue, true);
+        var proxyGet = globalThis.__omnivm_actual_public_method(value, "__omnivm_get");
+        if (proxyGet) return proxyGet(key, defaultValue, true);
         if (value != null && Object.prototype.hasOwnProperty.call(Object(value), key)) return value[key];
         return defaultValue;
       }
@@ -1755,7 +1756,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxySet", {
       configurable: true,
       value: function(value, key, nextValue) {
-        if (value && typeof value.__omnivm_set === 'function') return value.__omnivm_set(key, nextValue);
+        var proxySet = globalThis.__omnivm_actual_public_method(value, "__omnivm_set");
+        if (proxySet) return proxySet(key, nextValue);
         if (value == null) return false;
         value[key] = nextValue;
         return true;
@@ -1767,7 +1769,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       configurable: true,
       value: function(value, key, args) {
         var callArgs = Array.isArray(args) ? args : [];
-        if (value && typeof value.__omnivm_call === 'function') return value.__omnivm_call(key, callArgs);
+        var proxyCall = globalThis.__omnivm_actual_public_method(value, "__omnivm_call");
+        if (proxyCall) return proxyCall(key, callArgs);
         if (value == null) throw new TypeError("OmniVM cannot call a method on null or undefined");
         if (key === null || key === undefined || key === "") {
           if (typeof value !== 'function') throw new TypeError("OmniVM target is not callable");
@@ -1783,7 +1786,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxyLen", {
       configurable: true,
       value: function(value, defaultValue) {
-        if (value && typeof value.__omnivm_len === 'function') return value.__omnivm_len(defaultValue);
+        var proxyLen = globalThis.__omnivm_actual_public_method(value, "__omnivm_len");
+        if (proxyLen) return proxyLen(defaultValue);
         if (value != null && typeof value.length === 'number') return value.length;
         return defaultValue;
       }
@@ -1794,7 +1798,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       configurable: true,
       value: function(value, mode) {
         var iterMode = mode || "values";
-        if (value && typeof value.__omnivm_iter === 'function') return value.__omnivm_iter(iterMode);
+        var proxyIter = globalThis.__omnivm_actual_public_method(value, "__omnivm_iter");
+        if (proxyIter) return proxyIter(iterMode);
         if (value == null) return [];
         if (value instanceof Map) {
           if (iterMode === "keys") return Array.from(value.keys());
@@ -1830,7 +1835,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "proxyContains", {
       configurable: true,
       value: function(value, key) {
-        if (value && typeof value.__omnivm_contains === 'function') return value.__omnivm_contains(key);
+        var proxyContains = globalThis.__omnivm_actual_public_method(value, "__omnivm_contains");
+        if (proxyContains) return proxyContains(key);
         if (value == null) return false;
         if (value instanceof Map || value instanceof Set) return value.has(key);
         if (Array.isArray(value)) return value.indexOf(key) !== -1;
@@ -2632,6 +2638,12 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       return Reflect.has(obj, prop);
     },
     getOwnPropertyDescriptor: function(obj, prop) {
+      if (prop === "__omnivm_get") return {value: function(key, defaultValue, remoteFirst) { return bridgeGet(key, defaultValue, remoteFirst === true); }, enumerable: false, configurable: true};
+      if (prop === "__omnivm_set") return {value: function(key, value) { return bridgeSet(key, value); }, enumerable: false, configurable: true};
+      if (prop === "__omnivm_call") return {value: function(key, args) { return bridgeCall(key, args); }, enumerable: false, configurable: true};
+      if (prop === "__omnivm_len") return {value: function(defaultValue) { return bridgeLen(defaultValue); }, enumerable: false, configurable: true};
+      if (prop === "__omnivm_iter") return {value: function(mode) { return bridgeIter(mode); }, enumerable: false, configurable: true};
+      if (prop === "__omnivm_contains") return {value: function(key) { return bridgeContains(key); }, enumerable: false, configurable: true};
       if (prop === "__omnivm_close") return {value: releaseProxyLease, enumerable: false, configurable: true};
       if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
       if (typeof Symbol !== 'undefined' && Symbol.asyncDispose && prop === Symbol.asyncDispose) return {value: releaseProxyLease, enumerable: false, configurable: true};
