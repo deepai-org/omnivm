@@ -9896,9 +9896,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
 		!contains(code, "private void cancelAfterLoadFailure(RuntimeException err)") ||
 		!contains(code, "if (!StreamProxy.this.cancel()) {\n                    markReleased();\n                }") ||
+		!contains(code, "OmniVM stream_next returned malformed chunk for handle") ||
+		!contains(code, `"stream_next"`) ||
+		!contains(code, `ownerDispatchMap("stream", ownerDispatchMap("id", id, "chunk", result))`) ||
 		!contains(code, "err.addSuppressed(closeErr);") ||
 		!contains(code, "throw err;") {
-		t.Fatalf("Java stream proxy should cancel remote streams after terminal owner stream errors")
+		t.Fatalf("Java stream proxy should cancel remote streams after terminal owner stream errors and malformed chunks")
 	}
 	streamClass := strings.Index(code, "public static final class StreamProxy")
 	streamRelease := -1
@@ -10762,6 +10765,106 @@ public final class RemoteStreamOwnerReadFailureCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RemoteStreamOwnerReadFailureCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java remote stream read-failure check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaRemoteStreamRejectsMalformedNextChunk(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static int streamCancelCalls = 0;
+    public static String nativeCall(String runtime, String code) {
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"stream_next\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":\"\"}";
+        }
+        if (code.contains("\"op\":\"stream_cancel\"")) {
+            streamCancelCalls++;
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"handle_retain\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/RemoteStreamMalformedChunkCheck.java"
+	check := `package omnivm;
+
+import java.util.Map;
+
+public final class RemoteStreamMalformedChunkCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Object rows = OmniVM.materializeJsonCapture("{\"__omnivm_stream__\":true,\"id\":90,\"runtime\":\"python\",\"kind\":\"stream\"}");
+        require(rows instanceof OmniVM.StreamProxy, "capture did not materialize a stream proxy");
+        OmniVM.StreamProxy stream = (OmniVM.StreamProxy) rows;
+        try {
+            stream.iterator().hasNext();
+            throw new AssertionError("malformed stream chunk was treated as a value or EOF");
+        } catch (OmniVM.RuntimeError err) {
+            require(String.valueOf(err.getMessage()).contains("stream_next returned malformed chunk"), "malformed chunk message mismatch: " + err.getMessage());
+            require("stream_next".equals(err.getBoundaryPath()), "malformed chunk boundary mismatch: " + err.getBoundaryPath());
+            Object details = err.getDetails();
+            require(details instanceof Map<?, ?>, "malformed chunk details were not a map: " + details);
+            Object streamDetails = ((Map<?, ?>) details).get("stream");
+            require(streamDetails instanceof Map<?, ?>, "malformed chunk stream details were not a map: " + streamDetails);
+            Object streamId = ((Map<?, ?>) streamDetails).get("id");
+            require(streamId instanceof Number && ((Number) streamId).longValue() == 90L, "malformed chunk id mismatch: " + streamDetails);
+            require("".equals(((Map<?, ?>) streamDetails).get("chunk")), "malformed chunk value mismatch: " + streamDetails);
+            require(String.valueOf(err.toJson()).contains("\"boundary_path\":\"stream_next\""), "malformed chunk JSON missing boundary: " + err.toJson());
+        }
+        require(OmniVM.streamCancelCalls == 1, "malformed chunk did not cancel exactly once: " + OmniVM.streamCancelCalls);
+        require(!stream.cancel(), "stream cancel after malformed chunk should be idempotent false");
+        require(OmniVM.streamCancelCalls == 1, "second cancel retried owner cancel: " + OmniVM.streamCancelCalls);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java remote stream malformed-chunk check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java remote stream malformed-chunk check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RemoteStreamMalformedChunkCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java remote stream malformed-chunk check: %v\n%s", err, out)
 	}
 }
 

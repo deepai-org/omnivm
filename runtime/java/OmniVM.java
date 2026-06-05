@@ -2742,10 +2742,14 @@ public class OmniVM {
                         cancelAfterLoadFailure(err);
                         throw err;
                     }
-                    if (!(result instanceof Map<?, ?> item)) {
+                    if (!(result instanceof Map<?, ?> item) || !item.containsKey("done")) {
                         done = true;
-                        markReleased();
-                        return;
+                        RuntimeError err = runtimeError(
+                            "OmniVM stream_next returned malformed chunk for handle " + String.valueOf(id) + ": expected an object with a done flag",
+                            "stream_next",
+                            ownerDispatchMap("stream", ownerDispatchMap("id", id, "chunk", result)));
+                        cancelAfterLoadFailure(err);
+                        throw err;
                     }
                     if (Boolean.TRUE.equals(item.get("done"))) {
                         done = true;
