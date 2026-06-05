@@ -18817,6 +18817,123 @@ def test_javascript_native_django_form_error_fields_cross_runtime_call():
             raise AssertionError(f"JS Django form structured detail {part!r} lost: {envelope}")
 
 
+def test_javascript_native_marshmallow_jsonschema_error_fields_cross_runtime_call():
+    marshmallow_source = (
+        "from marshmallow import Schema, fields, validate\n"
+        "class User(Schema):\n"
+        "    age = fields.Integer(required=True, validate=validate.Range(min=1))\n"
+        "    name = fields.String(required=True)\n"
+        "User().load({'age': 0})\n"
+    )
+    jsonschema_source = (
+        "from jsonschema import Draft202012Validator\n"
+        "schema = {'type': 'object', 'properties': {'age': {'type': 'integer', 'minimum': 1}}}\n"
+        "errors = list(Draft202012Validator(schema).iter_errors({'age': 0}))\n"
+        "raise next(err for err in errors if err.validator == 'minimum')\n"
+    )
+    result = omnivm.call(
+        "javascript",
+        f'''
+(() => {{
+  const out = {{}};
+  try {{
+    omnivm.call("python", {json.dumps(marshmallow_source)});
+  }} catch (err) {{
+    out.marshmallow = {{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      originRuntime: err.originRuntime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      stackFrames: err.stackFrames,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle,
+      details: err.details
+    }};
+  }}
+  try {{
+    omnivm.call("python", {json.dumps(jsonschema_source)});
+  }} catch (err) {{
+    out.jsonschema = {{
+      isError: err instanceof Error,
+      runtime: err.runtime,
+      originRuntime: err.originRuntime,
+      type: err.type,
+      message: err.message,
+      traceback: err.traceback,
+      stackFrames: err.stackFrames,
+      boundaryPath: err.boundaryPath,
+      causeChain: err.causeChain,
+      originalErrorHandle: err.originalErrorHandle,
+      details: err.details
+    }};
+  }}
+  return JSON.stringify(out);
+}})()
+'''
+    )
+    envelope = json.loads(result)
+    marshmallow = envelope.get("marshmallow") or {}
+    if not marshmallow.get("isError"):
+        raise AssertionError(f"JS catch did not receive native Error for Marshmallow failure: {envelope}")
+    if marshmallow.get("runtime") != "python" or marshmallow.get("originRuntime") != "python":
+        raise AssertionError(f"JS Marshmallow error runtime/origin lost: {envelope}")
+    if marshmallow.get("type") != "ValidationError":
+        raise AssertionError(f"JS Marshmallow error type lost: {envelope}")
+    marshmallow_detail = (marshmallow.get("message") or "") + "\n" + (marshmallow.get("traceback") or "")
+    for part in ("age", "greater than or equal to 1", "name", "Missing data"):
+        if part not in marshmallow_detail:
+            raise AssertionError(f"JS Marshmallow error detail {part!r} lost: {envelope}")
+    if "ValidationError" not in marshmallow.get("traceback", ""):
+        raise AssertionError(f"JS Marshmallow traceback lost: {envelope}")
+    if not isinstance(marshmallow.get("stackFrames"), list) or not marshmallow["stackFrames"]:
+        raise AssertionError(f"JS Marshmallow stack frames lost: {envelope}")
+    if marshmallow.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS Marshmallow boundary path lost: {envelope}")
+    if marshmallow.get("causeChain") != []:
+        raise AssertionError(f"JS Marshmallow should not invent a cause chain: {envelope}")
+    if marshmallow.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS Marshmallow should not invent original handle: {envelope}")
+    marshmallow_details = marshmallow.get("details")
+    if not isinstance(marshmallow_details, dict) or "age" not in marshmallow_details:
+        raise AssertionError(f"JS Marshmallow structured details lost: {envelope}")
+    marshmallow_details_text = json.dumps(marshmallow_details, sort_keys=True)
+    for part in ("greater than or equal to 1", "name", "Missing data"):
+        if part not in marshmallow_details_text:
+            raise AssertionError(f"JS Marshmallow structured detail {part!r} lost: {envelope}")
+
+    jsonschema = envelope.get("jsonschema") or {}
+    if not jsonschema.get("isError"):
+        raise AssertionError(f"JS catch did not receive native Error for jsonschema failure: {envelope}")
+    if jsonschema.get("runtime") != "python" or jsonschema.get("originRuntime") != "python":
+        raise AssertionError(f"JS jsonschema error runtime/origin lost: {envelope}")
+    if jsonschema.get("type") != "ValidationError":
+        raise AssertionError(f"JS jsonschema error type lost: {envelope}")
+    jsonschema_detail = (jsonschema.get("message") or "") + "\n" + (jsonschema.get("traceback") or "")
+    for part in ("0 is less than the minimum of 1", "minimum", "age"):
+        if part not in jsonschema_detail:
+            raise AssertionError(f"JS jsonschema error detail {part!r} lost: {envelope}")
+    if "ValidationError" not in jsonschema.get("traceback", ""):
+        raise AssertionError(f"JS jsonschema traceback lost: {envelope}")
+    if not isinstance(jsonschema.get("stackFrames"), list) or not jsonschema["stackFrames"]:
+        raise AssertionError(f"JS jsonschema stack frames lost: {envelope}")
+    if jsonschema.get("boundaryPath") != "call[python]":
+        raise AssertionError(f"JS jsonschema boundary path lost: {envelope}")
+    if jsonschema.get("causeChain") != []:
+        raise AssertionError(f"JS jsonschema should not invent a cause chain: {envelope}")
+    if jsonschema.get("originalErrorHandle") is not None:
+        raise AssertionError(f"JS jsonschema should not invent original handle: {envelope}")
+    jsonschema_details = jsonschema.get("details")
+    if not isinstance(jsonschema_details, dict) or jsonschema_details.get("validator") != "minimum":
+        raise AssertionError(f"JS jsonschema structured details lost: {envelope}")
+    jsonschema_details_text = json.dumps(jsonschema_details, sort_keys=True)
+    for part in ("age", "schema_path", "validator_value"):
+        if part not in jsonschema_details_text:
+            raise AssertionError(f"JS jsonschema structured detail {part!r} lost: {envelope}")
+
+
 def test_javascript_native_python_to_dict_error_details_cross_runtime_call():
     python_source = (
         "class ApiError(Exception):\n"
@@ -30317,6 +30434,7 @@ def main():
         check("Validation/error-rich library error fidelity", test_validation_error_fidelity_popular_libraries)
         check("JavaScript native SQLAlchemy error fields cross runtime call", test_javascript_native_sqlalchemy_error_fields_cross_runtime_call)
         check("JavaScript native Django form error fields cross runtime call", test_javascript_native_django_form_error_fields_cross_runtime_call)
+        check("JavaScript native Marshmallow and jsonschema error fields cross runtime call", test_javascript_native_marshmallow_jsonschema_error_fields_cross_runtime_call)
         check("JavaScript native Python to_dict error details cross runtime call", test_javascript_native_python_to_dict_error_details_cross_runtime_call)
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
         check("JavaScript native ActiveRecord validation details cross runtime call", test_javascript_native_activerecord_validation_details_cross_runtime_call)
