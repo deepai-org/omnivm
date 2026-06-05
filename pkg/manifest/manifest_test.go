@@ -6296,6 +6296,12 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if contains(code, `getattr(value, "close", None)`) || contains(code, `getattr(value, "_omnivm_close", None)`) || contains(code, `getattr(value, name, None)`) || contains(code, `getattr(value, name)`) {
 		t.Fatalf("Python proxy close helper should not invoke dynamic attribute lookup for lifecycle methods")
 	}
+	apreferred := code[strings.Index(code, "async def aproxy_close(value):"):]
+	apreferred = apreferred[:strings.Index(apreferred, "async def omnivm_aclose(value):")]
+	if strings.Index(apreferred, `close = __omnivm_actual_public_method(value, "aclose")`) >
+		strings.Index(apreferred, `close = __omnivm_actual_public_method(value, "dispose")`) {
+		t.Fatalf("Python async close helper should prefer aclose before dispose, got %q", apreferred)
+	}
 	if !contains(code, `"op": "handle_adopt"`) || !contains(code, "__omnivm_adopt_handle_id") || !contains(code, `value.get("transfer") is True`) {
 		t.Fatalf("Python materializer should adopt returned transfer handles, got %q", code)
 	}
@@ -6740,6 +6746,13 @@ class AsyncAclose:
     async def aclose(self):
         self.closed = True
 
+class AcloseAndDispose:
+    async def aclose(self):
+        return "async-aclose"
+
+    async def dispose(self):
+        raise RuntimeError("dispose should not run when aclose exists")
+
 class BothAsyncClosers:
     async def _omnivm_close(self):
         return "omnivm-async-closed"
@@ -6781,6 +6794,8 @@ async def main():
     closer = AsyncAclose()
     if await aproxy_close(closer) is not True or closer.closed is not True:
         raise RuntimeError("aclose was not awaited")
+    if await aproxy_close(AcloseAndDispose()) != "async-aclose":
+        raise RuntimeError("aclose should take priority over dispose")
     if await omnivm_aclose(BothAsyncClosers()) != "omnivm-async-closed":
         raise RuntimeError("omnivm_aclose alias did not prefer _omnivm_close")
     trap = DynamicAcloseTrap()
@@ -10413,6 +10428,12 @@ func TestEmbeddedPythonRegistersCoreProxyCloseHelper(t *testing.T) {
 		contains(code, `getattr(value, name, None)`) ||
 		contains(code, `getattr(value, name)`) {
 		t.Fatalf("embedded Python close helpers should not invoke dynamic close attribute lookup")
+	}
+	apreferred := code[strings.Index(code, "async def aproxy_close(value):"):]
+	apreferred = apreferred[:strings.Index(apreferred, "async def omnivm_aclose(value):")]
+	if strings.Index(apreferred, "close = __omnivm_actual_public_method(value, 'aclose')") >
+		strings.Index(apreferred, "close = __omnivm_actual_public_method(value, 'dispose')") {
+		t.Fatalf("embedded Python async close helper should prefer aclose before dispose, got %q", apreferred)
 	}
 }
 

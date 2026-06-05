@@ -1801,13 +1801,13 @@ async def aproxy_close(value):
         if inspect.isawaitable(result):
             result = await result
         return True if result is None else result
-    close = _actual_public_method(value, "dispose")
+    close = _actual_public_method(value, "aclose")
     if callable(close):
         result = close()
         if inspect.isawaitable(result):
             result = await result
         return True if result is None else result
-    close = _actual_public_method(value, "aclose")
+    close = _actual_public_method(value, "dispose")
     if callable(close):
         result = close()
         if inspect.isawaitable(result):

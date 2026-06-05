@@ -628,13 +628,13 @@ async def aproxy_close(value):
         if __omnivm_inspect.isawaitable(result):
             result = await result
         return True if result is None else result
-    close = __omnivm_actual_public_method(value, "dispose")
+    close = __omnivm_actual_public_method(value, "aclose")
     if callable(close):
         result = close()
         if __omnivm_inspect.isawaitable(result):
             result = await result
         return True if result is None else result
-    close = __omnivm_actual_public_method(value, "aclose")
+    close = __omnivm_actual_public_method(value, "dispose")
     if callable(close):
         result = close()
         if __omnivm_inspect.isawaitable(result):
