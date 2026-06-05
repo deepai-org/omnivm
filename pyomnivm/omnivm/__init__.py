@@ -114,9 +114,9 @@ class RuntimeError(_builtins.RuntimeError):
         self.boundary_path = parsed["boundary_path"]
         self.original_error_handle = parsed["original_error_handle"]
         self._details = _copy_json_value(details) if details is not None else _copy_json_value(parsed["details"])
-        self.details_json = _runtime_error_details_json(self._details) if details is not None else parsed.get("details_json")
-        if self.details_json is None and self._details is not None:
-            self.details_json = _runtime_error_details_json(self._details)
+        self._details_json = _runtime_error_details_json(self._details) if details is not None else parsed.get("details_json")
+        if self._details_json is None and self._details is not None:
+            self._details_json = _runtime_error_details_json(self._details)
 
     @property
     def stack_frames(self):
@@ -157,7 +157,7 @@ class RuntimeError(_builtins.RuntimeError):
     @details.setter
     def details(self, value):
         self._details = _copy_json_value(value)
-        self.details_json = _runtime_error_details_json(self._details)
+        self._details_json = _runtime_error_details_json(self._details)
 
     @property
     def details_json(self):
