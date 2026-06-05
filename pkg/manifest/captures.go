@@ -1094,7 +1094,11 @@ class __OmniVMHandleProxy:
         kind = str(self._value.get("kind") or "object") if isinstance(self._value, dict) else "object"
         handle_id = self._value.get("id") if isinstance(self._value, dict) else None
         suffix = "" if handle_id is None else " #%s" % handle_id
-        return RuntimeError("OmniVM Python handle proxy %s on closed %s handle%s" % (op, kind, suffix))
+        return _omnivm_runtime_error(
+            "OmniVM Python handle proxy %s on closed %s handle%s" % (op, kind, suffix),
+            "proxy_lifecycle",
+            {"proxy": {"id": handle_id, "runtime": runtime, "kind": kind, "closed": True}},
+        )
 
     def _ensure_open(self, op):
         if object.__getattribute__(self, "_closed"):

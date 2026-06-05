@@ -6798,6 +6798,12 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "class _OmniVMBridgeMissing") || !contains(code, "def _omnivm_is_missing_bridge_error") || !contains(code, "raise globals()[\"_OmniVMBridgeMissing\"]") {
 		t.Fatalf("Python materializer should distinguish missing remote fields from lifecycle bridge failures, got %q", code)
 	}
+	if !contains(code, "def _closed_operation_error(self, op)") ||
+		!contains(code, "return _omnivm_runtime_error(") ||
+		!contains(code, `"proxy_lifecycle"`) ||
+		!contains(code, `"closed": True`) {
+		t.Fatalf("Python materializer should reject stale closed proxy operations with structured proxy_lifecycle errors, got %q", code)
+	}
 	if !contains(code, `value.get("zeroArg") is True`) || !contains(code, `return self._bridge_call(key, (), {})`) {
 		t.Fatalf("Python materializer should invoke zero-arg callable descriptors as property access, got %q", code)
 	}
@@ -7064,6 +7070,13 @@ try:
 except RuntimeError as err:
     if "closed object handle #91" not in str(err):
         raise RuntimeError("closed proxy diagnostic mismatch: " + str(err))
+    if getattr(err, "boundary_path", None) != "proxy_lifecycle":
+        raise RuntimeError("closed proxy boundary mismatch: " + repr(getattr(err, "boundary_path", None)))
+    if getattr(err, "details", None) != {"proxy": {"id": 91, "runtime": "python", "kind": "object", "closed": True}}:
+        raise RuntimeError("closed proxy details mismatch: " + repr(getattr(err, "details", None)))
+    envelope = err.to_dict()
+    if envelope.get("details") != err.details or envelope.get("boundary_path") != "proxy_lifecycle":
+        raise RuntimeError("closed proxy envelope mismatch: " + repr(envelope))
 if Bridge.requests != before_closed_access:
     raise RuntimeError("closed proxy get reached bridge: " + repr(Bridge.requests[len(before_closed_access):]))
 second = __omnivm_materialize_capture(descriptor)
