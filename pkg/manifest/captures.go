@@ -2065,6 +2065,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var isIndexedDescriptor = function() {
     return descriptor && (descriptor.__omnivm_table__ === true || descriptor.kind === "sequence");
   };
+  var isPrimitiveValue = function(value) {
+    return value === null || (typeof value !== 'object' && typeof value !== 'function');
+  };
   var remoteDescription = function() {
     if (!descriptor) return "";
     var parts = [];
@@ -2073,6 +2076,10 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     else if (descriptor.__omnivm_table__ === true) parts.push("kind=table");
     if (descriptor.id != null) parts.push("id=" + descriptor.id);
     return parts.length ? " (" + parts.join(", ") + ")" : "";
+  };
+  var primitiveDescription = function() {
+    var text = remoteDescription();
+    return text ? "[object OmniVMProxy" + text + "]" : "[object OmniVMProxy]";
   };
   var lengthSetDiagnostic = function(reason, cause) {
     var message = "OmniVM cannot resize remote indexed proxy" + remoteDescription() + ": " + reason;
@@ -2173,6 +2180,20 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var bridgeContains = function(key) {
     return !!bridge({op: "handle_contains", value: globalThis.__omnivm_encode_arg(key)});
   };
+  var primitiveCoercion = function(hint) {
+    var keys = hint === 'number' ? ['valueOf', 'toString'] : ['toString', 'valueOf'];
+    var missing = {};
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        var value = bridgeGet(keys[i], missing, true);
+        if (value === missing) continue;
+        if (isPrimitiveValue(value)) return value;
+      } catch (_primitiveError) {
+        if (!globalThis.__omnivm_is_missing_bridge_error(_primitiveError)) throw _primitiveError;
+      }
+    }
+    return primitiveDescription();
+  };
   var releaseProxyLease = function() {
     var handleId = globalThis.__omnivm_proxy_handle_id(target);
     if (handleId == null || target.__omnivm_closed__ === true) return false;
@@ -2196,6 +2217,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (prop === "__omnivm_close") return releaseProxyLease;
       if (typeof Symbol !== 'undefined' && Symbol.dispose && prop === Symbol.dispose) return releaseProxyLease;
       if (typeof Symbol !== 'undefined' && Symbol.asyncDispose && prop === Symbol.asyncDispose) return releaseProxyLease;
+      if (typeof Symbol !== 'undefined' && Symbol.toPrimitive && prop === Symbol.toPrimitive) return primitiveCoercion;
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }

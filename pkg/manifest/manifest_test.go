@@ -7144,6 +7144,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, `return Reflect.get(obj, prop, receiver);`) {
 		t.Fatalf("JS materializer should prefer remote fields before inherited identity properties such as constructor/toString/valueOf, got %q", code)
 	}
+	if !contains(code, `Symbol.toPrimitive && prop === Symbol.toPrimitive`) ||
+		!contains(code, `var keys = hint === 'number' ? ['valueOf', 'toString'] : ['toString', 'valueOf'];`) ||
+		!contains(code, `if (value === missing) continue;`) ||
+		!contains(code, `return primitiveDescription();`) {
+		t.Fatalf("JS materializer should keep primitive coercion collision-safe for remote toString/valueOf fields, got %q", code)
+	}
 	if !contains(code, `prop === globalThis.__omnivm_proxy_length_symbol`) {
 		t.Fatalf("JS materializer should expose collection length through a collision-free symbol, got %q", code)
 	}
@@ -7548,6 +7554,9 @@ globalThis.omnivm = {
       }
       throw new Error("resource has no property " + payload.key);
     }
+    if (payload.op === "handle_index") {
+      throw new Error("resource has no index " + payload.value);
+    }
     throw new Error("unexpected op " + payload.op);
   }
 };
@@ -7557,6 +7566,21 @@ if (proxy.constructor !== "remote-constructor") throw new Error("constructor was
 if (proxy.toString !== "remote-toString") throw new Error("toString was not remote-first: " + String(proxy.toString));
 if (proxy.valueOf !== "remote-valueOf") throw new Error("valueOf was not remote-first: " + String(proxy.valueOf));
 if (proxy.inspect !== "remote-inspect") throw new Error("inspect was not remote-first: " + String(proxy.inspect));
+if (typeof proxy[Symbol.toPrimitive] !== "function") throw new Error("missing Symbol.toPrimitive coercion helper");
+if (String(proxy) !== "remote-toString") throw new Error("String(proxy) did not use remote toString field: " + String(proxy));
+if (` + "`" + `${proxy}` + "`" + ` !== "remote-toString") throw new Error("template coercion did not use remote toString field");
+if (proxy[Symbol.toPrimitive]("number") !== "remote-valueOf") throw new Error("number-hint primitive did not use remote valueOf field");
+omnivm.fields = {};
+var fallbackProxy = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 78, runtime: "python", kind: "object"});
+var fallbackText = String(fallbackProxy);
+if (fallbackText !== "[object OmniVMProxy (runtime=python, kind=object, id=78)]") throw new Error("missing identity fields did not use stable fallback: " + fallbackText);
+omnivm.fields = {
+  constructor: "remote-constructor",
+  toString: "remote-toString",
+  valueOf: "remote-valueOf",
+  inspect: "remote-inspect",
+  toJSON: "remote-toJSON"
+};
 var localToJSON = proxy.toJSON();
 if (!localToJSON || localToJSON.id !== 77 || localToJSON.runtime !== "python") throw new Error("local toJSON bookkeeping changed");
 var remoteToJSON = omnivm.proxyGet(proxy, "toJSON");
