@@ -12762,6 +12762,71 @@ func TestRuntimeRefProxyCallableDispatchesLiveMethod(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefProxyLifecycleNamedPythonMethodIsContainedAndCallable(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	var evalCodes []string
+	mocks["python"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		evalCodes = append(evalCodes, code)
+		switch {
+		case strings.Contains(code, "hasattr(__o, __k)") && strings.Contains(code, "close"):
+			return pkg.Result{Value: "true"}
+		case strings.Contains(code, "callable(") && strings.Contains(code, "close"):
+			return pkg.Result{Value: "true"}
+		case strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_"):
+			return pkg.Result{Value: `{"primitive":true,"value":"closed-remotely"}`}
+		default:
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "python", VarName: "owner", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	containsResult, err := e.HandleCall(`{"op":"handle_contains","id":` + strconv.FormatUint(uint64(id), 10) + `,"value":"close"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_contains close: %v", err)
+	}
+	containsEnv := decodeResultEnvelopeForTest(t, containsResult)
+	if containsEnv.Kind != "bool" || containsEnv.Value != true {
+		t.Fatalf("handle_contains close envelope = %#v, want true", containsEnv)
+	}
+
+	getResult, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get close: %v", err)
+	}
+	getEnv := decodeResultEnvelopeForTest(t, getResult)
+	if getEnv.Kind != "json" || !jsonEqual(getEnv.Value, map[string]interface{}{"__omnivm_callable__": true, "key": "close"}) {
+		t.Fatalf("handle_get close envelope = %#v, want callable descriptor", getEnv)
+	}
+
+	callResult, err := e.HandleCall(`{"op":"handle_call","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close","args":["user"]}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_call close: %v", err)
+	}
+	callEnv := decodeResultEnvelopeForTest(t, callResult)
+	if callEnv.Kind != "string" || callEnv.Value != "closed-remotely" {
+		t.Fatalf("handle_call close envelope = %#v, want remote close result", callEnv)
+	}
+	joinedEval := strings.Join(evalCodes, "\n")
+	if !strings.Contains(joinedEval, "hasattr(__o, __k)") || !strings.Contains(joinedEval, "callable(") {
+		t.Fatalf("close collision path did not exercise contains and callable probes, evals=%q", joinedEval)
+	}
+}
+
 func TestRuntimeRefRubyZeroArgMethodsReadAsProperties(t *testing.T) {
 	e, mocks := makeExecutor("ruby", "python")
 	var execCodes []string
