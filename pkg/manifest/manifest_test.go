@@ -7009,7 +7009,10 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"Object.defineProperty(omnivm, \"bufferOwner\"",
 		"omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"omnivm.releaseBuffer(this.name)",
+		"cannot be re-entered after release",
+		"is already active",
 		"if (this.released === true) return false",
+		"this.__omnivm_entered = false",
 		"var finishSuccess = function(value)",
 		"var result = callback(owner)",
 		"typeof result.then === 'function'",
@@ -7263,9 +7266,22 @@ var owner = omnivm.bufferOwner("payload", "abc", 7);
 if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7]])) throw new Error("set event mismatch: " + JSON.stringify(omnivm.events));
 var ownerStatus = owner.status();
 if (ownerStatus.name !== "payload" || ownerStatus.lease_state !== "owned") throw new Error("owner status mismatch: " + JSON.stringify(ownerStatus));
+try {
+  owner.enter();
+  throw new Error("active owner re-enter did not fail");
+} catch (err) {
+  if (err.message.indexOf("already active") < 0) throw err;
+}
 if (owner.release() !== true) throw new Error("release did not return true");
 if (owner.release() !== false) throw new Error("second release was not idempotent");
 if (owner.released !== true) throw new Error("released flag mismatch");
+try {
+  owner.enter();
+  throw new Error("released owner re-enter did not fail");
+} catch (err) {
+  if (err.message.indexOf("cannot be re-entered after release") < 0) throw err;
+}
+if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7], ["status", "payload"], ["release", "payload"]])) throw new Error("re-enter changed owner events: " + JSON.stringify(omnivm.events));
 
 var beforeBlock = omnivm.events.slice();
 var blockResult = omnivm.bufferOwner("block", function(scoped) {
@@ -10596,6 +10612,9 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return Array.isArray(errors) ? errors.slice() : []",
 		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"globalThis.omnivm.releaseBuffer(this.name)",
+		"cannot be re-entered after release",
+		"is already active",
+		"this.__omnivm_entered = false",
 		"typeof result.then === 'function'",
 		"return Promise.resolve(result).then(finishSuccess, finishError)",
 		"bodyError.omnivmCleanupErrors",

@@ -533,7 +533,7 @@ also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
 `omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor those symbols
 through descriptor-safe lookup. Embedded JavaScript also provides
 `omnivm.bufferOwner(name[, data], dtype[, callback])` for scoped named-buffer
-ownership with idempotent release. Owners expose `status()`, and
+ownership with single-active-use entry and idempotent release. Owners expose `status()`, and
 `omnivm.bufferStatus(name)` returns the same per-name lifecycle diagnostics.
 JavaScript code that needs owner-loop routing can preflight the current
 diagnostic-only boundary with `omnivm.ownerDispatchStatus()`,

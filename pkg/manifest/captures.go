@@ -1842,7 +1842,8 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       }
     });
     globalThis.__omnivm_BufferOwner.prototype.enter = function() {
-      if (this.__omnivm_entered) return this;
+      if (this.released === true) throw new Error("omnivm.bufferOwner " + JSON.stringify(this.name) + " cannot be re-entered after release");
+      if (this.__omnivm_entered) throw new Error("omnivm.bufferOwner " + JSON.stringify(this.name) + " is already active");
       if (this.__omnivm_data !== globalThis.__omnivm_buffer_owner_unset) {
         omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype);
       }
@@ -1853,6 +1854,7 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       if (this.released === true) return false;
       omnivm.releaseBuffer(this.name);
       this.released = true;
+      this.__omnivm_entered = false;
       return true;
     };
     globalThis.__omnivm_BufferOwner.prototype.close = function() {

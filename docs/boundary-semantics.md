@@ -824,8 +824,10 @@ preserved and the cleanup error is retained on `@omnivm_cleanup_errors`;
 `OmniVM.cleanup_errors(error)` returns a copy of that cleanup-error list.
 Embedded JavaScript provides the same owner shape as
 `omnivm.bufferOwner(name[, data], dtype[, callback])`; without a callback it
-returns an entered owner with idempotent `release()`/`close()`, and with a
-callback it releases after the callback while returning the callback result.
+returns an entered single-active-use owner with idempotent `release()`/`close()`,
+and with a callback it releases after the callback while returning the callback
+result. Re-entering the same owner while active, or after release, throws before
+publishing data again.
 `owner.status()` and `omnivm.bufferStatus(name)` expose the same per-name
 lifecycle diagnostics as a JavaScript object.
 Native `Promise` results release after settlement without probing arbitrary
