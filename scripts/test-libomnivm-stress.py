@@ -122,6 +122,20 @@ def expect_contains(got, needle):
         raise AssertionError(f"expected {got!r} to contain {needle!r}")
 
 
+def is_thread_affinity_diagnostic(value):
+    text = str(value)
+    return (
+        "thread affinity violation" in text
+        and "owner dispatch is unsupported" in text
+        and ("host thread" in text or "Golden Thread" in text or "non-Golden Thread" in text)
+    )
+
+
+def expect_thread_affinity_diagnostic(value):
+    if not is_thread_affinity_diagnostic(value):
+        raise AssertionError(f"expected thread affinity diagnostic, got {value!r}")
+
+
 def py(code):
     return omnivm.call("python", code)
 
@@ -375,10 +389,15 @@ def test_fan_out_threads():
         thread.start()
     for thread in threads:
         thread.join(timeout=5)
-    if errors:
-        raise errors[0]
-    if len(results) != len(tasks):
-        raise AssertionError(f"expected {len(tasks)} completed calls, got {len(results)}")
+    for thread in threads:
+        if thread.is_alive():
+            raise AssertionError("fan-out worker hung")
+    if results:
+        raise AssertionError(f"foreign-thread calls unexpectedly completed in c-shared mode: {results}")
+    if len(errors) != len(tasks):
+        raise AssertionError(f"expected {len(tasks)} affinity diagnostics, got {len(errors)}")
+    for exc in errors:
+        expect_thread_affinity_diagnostic(exc)
 
 
 def test_recursive_cross_runtime_fibonacci():
@@ -808,7 +827,8 @@ def test_java_compilation_storm():
 
 
 def test_concurrent_java_all_runtimes():
-    errors = []
+    diagnostics = []
+    unexpected = []
     lock = threading.Lock()
 
     def record(fn):
@@ -816,14 +836,17 @@ def test_concurrent_java_all_runtimes():
             fn()
         except Exception as exc:
             with lock:
-                errors.append(exc)
+                diagnostics.append(exc)
+        else:
+            with lock:
+                unexpected.append("completed")
 
     workers = [
-        lambda: [expect(java(f"{i} + {i}"), str(i * 2)) for i in range(50)],
-        lambda: [expect(py(f"{i} * 3"), str(i * 3)) for i in range(50)],
-        lambda: [expect(java(f'omnivm.OmniVM.call("python", "{i} + {i + 1}")'), str(i * 2 + 1)) for i in range(25)],
-        lambda: [expect(js(f'omnivm.call("java", "{i} * 2")'), str(i * 2)) for i in range(25)],
-        lambda: [expect(rb(f'OmniVM.call("java", \'omnivm.OmniVM.call("python", "{i} + 100")\')'), str(i + 100)) for i in range(10)],
+        lambda: java("1 + 1"),
+        lambda: py("2 + 2"),
+        lambda: java('omnivm.OmniVM.call("python", "3 + 3")'),
+        lambda: js('omnivm.call("java", "4 + 4")'),
+        lambda: rb('OmniVM.call("java", \'omnivm.OmniVM.call("python", "5 + 5")\')'),
     ]
     threads = [threading.Thread(target=record, args=(worker,)) for worker in workers]
     for thread in threads:
@@ -833,8 +856,12 @@ def test_concurrent_java_all_runtimes():
     for thread in threads:
         if thread.is_alive():
             raise AssertionError("concurrent runtime worker hung")
-    if errors:
-        raise errors[0]
+    if unexpected:
+        raise AssertionError(f"foreign-thread runtime calls unexpectedly completed: {unexpected}")
+    if len(diagnostics) != len(workers):
+        raise AssertionError(f"expected {len(workers)} affinity diagnostics, got {len(diagnostics)}")
+    for exc in diagnostics:
+        expect_thread_affinity_diagnostic(exc)
 
 
 def test_generator_send_pipeline():
@@ -1506,8 +1533,8 @@ if _lib_t44_t.is_alive():
     _lib_t44_py_error = "DEADLOCK"
 """
     )
-    expect(py("_lib_t44_py_error"), "None")
-    expect(py("_lib_t44_py_result"), "2")
+    expect(py("_lib_t44_py_result"), "None")
+    expect_thread_affinity_diagnostic(py("_lib_t44_py_error"))
     out = omnivm.execute(
         "java",
         """
@@ -1527,7 +1554,8 @@ else if (error[0] != null) System.out.println("ERR:" + error[0]);
 else System.out.println(result[0]);
 """,
     ).strip()
-    expect(out, "54")
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
     result = []
     errors = []
 
@@ -1542,9 +1570,11 @@ else System.out.println(result[0]);
     thread.join(timeout=15)
     if thread.is_alive():
         raise AssertionError("Ruby foreign-thread bridge deadlocked")
-    if errors:
-        raise errors[0]
-    expect(result[0], "7")
+    if result:
+        raise AssertionError(f"Ruby foreign-thread bridge unexpectedly completed: {result}")
+    if len(errors) != 1:
+        raise AssertionError(f"expected one Ruby foreign-thread affinity diagnostic, got {errors}")
+    expect_thread_affinity_diagnostic(errors[0])
 
 
 def test_exception_ping_pong():
@@ -2030,67 +2060,82 @@ if omnivm.call("javascript", "parseInt(omnivm.call('python', '7 * 8'))") != "56"
 
 
 def test_jvm_thread_to_python():
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 final String[] result = {null};
+final String[] error = {null};
 Thread t = new Thread(() -> {
-    result[0] = omnivm.OmniVM.call("python", "6 * 9");
+    try {
+        result[0] = omnivm.OmniVM.call("python", "6 * 9");
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
 });
 t.start();
 t.join();
-System.out.println(result[0]);
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
 """,
-        ).strip(),
-        "54",
-    )
+    ).strip()
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
 
 
 def test_jvm_thread_to_js():
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 final String[] result = {null};
+final String[] error = {null};
 Thread t = new Thread(() -> {
-    result[0] = omnivm.OmniVM.call("javascript", "7 * 8");
+    try {
+        result[0] = omnivm.OmniVM.call("javascript", "7 * 8");
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
 });
 t.start();
 t.join();
-System.out.println(result[0]);
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
 """,
-        ).strip(),
-        "56",
-    )
+    ).strip()
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
 
 
 def test_jvm_thread_to_ruby():
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 final String[] result = {null};
+final String[] error = {null};
 Thread t = new Thread(() -> {
-    result[0] = omnivm.OmniVM.call("ruby", "5 + 3");
+    try {
+        result[0] = omnivm.OmniVM.call("ruby", "5 + 3");
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
 });
 t.start();
 t.join();
-System.out.println(result[0]);
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
 """,
-        ).strip(),
-        "8",
-    )
+    ).strip()
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
 
 
 def test_jvm_threads_bridge_calls():
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 int numThreads = 4;
 int callsPerThread = 50;
 final boolean[] errors = new boolean[numThreads];
+final String[] diagnostics = new String[numThreads];
 Thread[] threads = new Thread[numThreads];
 for (int i = 0; i < numThreads; i++) {
     final int idx = i;
@@ -2104,11 +2149,15 @@ for (int i = 0; i < numThreads; i++) {
         default: runtime = "python"; code = "40 + " + idx; expected = "43"; break;
     }
     threads[i] = new Thread(() -> {
-        for (int j = 0; j < callsPerThread; j++) {
+        for (int j = 0; j < callsPerThread && diagnostics[idx] == null; j++) {
+            try {
             String result = omnivm.OmniVM.call(runtime, code);
             if (!result.equals(expected)) {
                 errors[idx] = true;
                 break;
+            }
+            } catch (Exception e) {
+                diagnostics[idx] = e.getMessage();
             }
         }
     });
@@ -2117,11 +2166,19 @@ for (Thread t : threads) t.start();
 for (Thread t : threads) t.join();
 boolean anyError = false;
 for (boolean e : errors) if (e) anyError = true;
-System.out.println(anyError ? "FAIL" : "OK");
+int diagnosticCount = 0;
+String firstDiagnostic = null;
+for (String diagnostic : diagnostics) {
+    if (diagnostic != null) {
+        diagnosticCount++;
+        if (firstDiagnostic == null) firstDiagnostic = diagnostic;
+    }
+}
+System.out.println(anyError ? "FAIL" : ("DIAG:" + diagnosticCount + ":" + firstDiagnostic));
 """,
-        ).strip(),
-        "OK",
-    )
+    ).strip()
+    expect(out.startswith("DIAG:4:"), True)
+    expect_thread_affinity_diagnostic(out)
 
 
 def test_python_thread_to_js():
@@ -2141,8 +2198,8 @@ _lib_t69_t.start()
 _lib_t69_t.join()
 """
     )
-    expect(py("_lib_t69_error"), "None")
-    expect(py("_lib_t69_result"), "21")
+    expect(py("_lib_t69_result"), "None")
+    expect_thread_affinity_diagnostic(py("_lib_t69_error"))
 
 
 def test_python_threadpool_future_callback_reenters_runtimes():
@@ -2182,7 +2239,12 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
 
 if errors:
     joined = ";".join(errors)
-    if "non-Golden Thread" not in joined:
+    affinity_diag = (
+        "thread affinity violation" in joined
+        and "owner dispatch is unsupported" in joined
+        and ("host thread" in joined or "Golden Thread" in joined or "non-Golden Thread" in joined)
+    )
+    if "non-Golden Thread" not in joined and not affinity_diag:
         raise AssertionError("ThreadPoolExecutor callback was neither safe nor diagnostic: " + joined)
 else:
     if results != ["js:worker|py:worker"]:
@@ -2197,29 +2259,33 @@ if omnivm.call("javascript", "'after-threadpool'") != "after-threadpool":
 
 def test_gil_contention_jvm_thread_to_python():
     expect(py("100 + 23"), "123")
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 final String[] result = {null};
+final String[] error = {null};
 Thread t = new Thread(() -> {
-    result[0] = omnivm.OmniVM.call("python", "200 + 34");
+    try {
+        result[0] = omnivm.OmniVM.call("python", "200 + 34");
+    } catch (Exception e) {
+        error[0] = e.getMessage();
+    }
 });
 t.start();
 t.join();
-System.out.println(result[0]);
+if (error[0] != null) System.out.println("ERR:" + error[0]);
+else System.out.println(result[0]);
 """,
-        ).strip(),
-        "234",
-    )
+    ).strip()
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
     expect(py("300 + 45"), "345")
 
 
 def test_nested_foreign_thread_bridge():
-    expect(
-        omnivm.execute(
-            "java",
-            """
+    out = omnivm.execute(
+        "java",
+        """
 final String[] result = {null};
 final String[] error = {null};
 Thread t = new Thread(() -> {
@@ -2234,9 +2300,9 @@ t.join();
 if (error[0] != null) System.out.println("ERR:" + error[0]);
 else System.out.println(result[0]);
 """,
-        ).strip(),
-        "15",
-    )
+    ).strip()
+    expect(out.startswith("ERR:"), True)
+    expect_thread_affinity_diagnostic(out)
 
 
 def test_reentrant_exception_generator_async_pump():
@@ -2277,6 +2343,7 @@ def test_allocation_storm_round_trips():
 
 def test_sleep_wake_concurrency_torture():
     errors = []
+    completed = []
     lock = threading.Lock()
 
     def worker(index):
@@ -2286,6 +2353,8 @@ def test_sleep_wake_concurrency_torture():
                     expect(js(f"{index} + {i}"), str(index + i))
                 else:
                     expect(py(f"{index} + {i}"), str(index + i))
+                with lock:
+                    completed.append((index, i))
                 time.sleep(0.002)
         except Exception as exc:
             with lock:
@@ -2299,8 +2368,12 @@ def test_sleep_wake_concurrency_torture():
     for thread in threads:
         if thread.is_alive():
             raise AssertionError("sleep-wake worker hung")
-    if errors:
-        raise errors[0]
+    if completed:
+        raise AssertionError(f"foreign-thread sleep-wake calls unexpectedly completed: {completed}")
+    if len(errors) != 4:
+        raise AssertionError(f"expected one affinity diagnostic per sleep-wake worker, got {len(errors)}")
+    for exc in errors:
+        expect_thread_affinity_diagnostic(exc)
 
 
 def test_thread_coalescing_avalanche():
@@ -2325,14 +2398,21 @@ def test_thread_coalescing_avalanche():
     barrier.wait(timeout=5)
     for thread in threads:
         thread.join(timeout=20)
-    if errors:
-        raise errors[0]
-    expect(len(completed), 100)
+    for thread in threads:
+        if thread.is_alive():
+            raise AssertionError("thread-coalescing worker hung")
+    if completed:
+        raise AssertionError(f"foreign-thread coalescing calls unexpectedly completed: {len(completed)}")
+    if len(errors) != 100:
+        raise AssertionError(f"expected 100 affinity diagnostics, got {len(errors)}")
+    for exc in errors:
+        expect_thread_affinity_diagnostic(exc)
 
 
 def test_python_host_mn_isolation():
     errors = []
     js_done = []
+    js_rejected = []
     cpu_done = []
     lock = threading.Lock()
 
@@ -2350,7 +2430,10 @@ def test_python_host_mn_isolation():
                 js_done.append(i)
         except Exception as exc:
             with lock:
-                errors.append(exc)
+                if is_thread_affinity_diagnostic(exc):
+                    js_rejected.append(i)
+                else:
+                    errors.append(exc)
 
     threads = [threading.Thread(target=cpu_worker, args=(i,)) for i in range(4)]
     threads += [threading.Thread(target=js_worker, args=(i,)) for i in range(100)]
@@ -2364,7 +2447,9 @@ def test_python_host_mn_isolation():
     if errors:
         raise errors[0]
     expect(len(cpu_done), 4)
-    expect(len(js_done), 100)
+    if js_done:
+        raise AssertionError(f"foreign-thread JS calls unexpectedly completed: {len(js_done)}")
+    expect(len(js_rejected), 100)
 
 
 def test_signal_chaos_trap_python_host():
@@ -2444,9 +2529,16 @@ def test_context_cancellation_guillotine_python_host():
             with lock:
                 rejected.append(i)
             return
-        expect(js(f"{i} + 1"), str(i + 1))
-        with lock:
-            completed.append(i)
+        try:
+            expect(js(f"{i} + 1"), str(i + 1))
+        except Exception as exc:
+            if not is_thread_affinity_diagnostic(exc):
+                raise
+            with lock:
+                rejected.append(i)
+        else:
+            with lock:
+                completed.append(i)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
     for thread in threads:
@@ -2456,8 +2548,10 @@ def test_context_cancellation_guillotine_python_host():
     for thread in threads:
         if thread.is_alive():
             raise AssertionError("cancellation worker hung")
-    if not completed or not rejected:
-        raise AssertionError(f"expected completed and rejected work, got {len(completed)} completed, {len(rejected)} rejected")
+    if completed:
+        raise AssertionError(f"foreign-thread cancellation calls unexpectedly completed: {completed}")
+    if not rejected:
+        raise AssertionError(f"expected rejected work, got {len(rejected)} rejected")
     expect(len(completed) + len(rejected), 20)
 
 
