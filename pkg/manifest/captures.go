@@ -2660,6 +2660,10 @@ def omnivm_close(value)
     result = value.public_send(:close)
     return result.nil? ? true : result
   end
+  if __omnivm_actual_public_method?(value, :dispose)
+    result = value.public_send(:dispose)
+    return result.nil? ? true : result
+  end
   false
 end
 
@@ -2669,6 +2673,10 @@ if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
       return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
       if __omnivm_actual_public_method?(value, :close)
         result = value.public_send(:close)
+        return result.nil? ? true : result
+      end
+      if __omnivm_actual_public_method?(value, :dispose)
+        result = value.public_send(:dispose)
         return result.nil? ? true : result
       end
       false

@@ -8224,6 +8224,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if __omnivm_actual_public_method?(value, :close)") ||
 		!contains(code, "result = value.public_send(:close)\n    return result.nil? ? true : result") ||
 		!contains(code, "result = value.public_send(:close)\n        return result.nil? ? true : result") ||
+		!contains(code, "if __omnivm_actual_public_method?(value, :dispose)") ||
+		!contains(code, "result = value.public_send(:dispose)\n    return result.nil? ? true : result") ||
+		!contains(code, "result = value.public_send(:dispose)\n        return result.nil? ? true : result") ||
 		!contains(code, "def cleanup_errors(error)") ||
 		!contains(code, "def __record_cleanup_error(error, cleanup_error)") ||
 		!contains(code, "error.instance_variable_set(:@omnivm_cleanup_errors, errors)") {
@@ -8347,6 +8350,33 @@ raise "omnivm_get did not recover remote close" unless proxy.omnivm_get("close")
 raise "omnivm_get did not recover remote dispose" unless proxy.omnivm_get("dispose") == "remote-dispose-field"
 raise "proxy_close did not release the proxy" unless OmniVM.proxy_close(proxy) == true
 raise "proxy_close was not idempotent after release" unless OmniVM.proxy_close(proxy) == false
+class TextDispose
+  def dispose
+    "disposed"
+  end
+end
+class FalseDispose
+  def dispose
+    false
+  end
+end
+class NilDispose
+  def dispose
+    nil
+  end
+end
+class CloseAndDispose
+  def close
+    "closed"
+  end
+  def dispose
+    raise "dispose should not run when close is available"
+  end
+end
+raise "dispose result was not preserved" unless OmniVM.proxy_close(TextDispose.new) == "disposed"
+raise "false dispose result was not preserved" unless OmniVM.proxy_close(FalseDispose.new) == false
+raise "nil dispose result did not normalize true" unless OmniVM.proxy_close(NilDispose.new) == true
+raise "close did not take priority over dispose" unless OmniVM.proxy_close(CloseAndDispose.new) == "closed"
 requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
 ["close", "dispose"].each do |key|
   raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
@@ -9734,6 +9764,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"return value.public_send(:omnivm_close) if __actual_public_method?(value, :omnivm_close)",
 		"if __actual_public_method?(value, :close)",
 		"result = value.public_send(:close)",
+		"if __actual_public_method?(value, :dispose)",
+		"result = value.public_send(:dispose)",
 		"return result.nil? ? true : result",
 	} {
 		if !contains(files["../../pkg/ruby/ruby.go"], want) {
@@ -9741,6 +9773,7 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		}
 	}
 	if contains(files["../../pkg/ruby/ruby.go"], "value.respond_to?(:close)") ||
+		contains(files["../../pkg/ruby/ruby.go"], "value.respond_to?(:dispose)") ||
 		contains(files["../../pkg/ruby/ruby.go"], "value.respond_to?(:omnivm_close)") {
 		t.Fatalf("embedded Ruby close helpers should not trust respond_to_missing? for lifecycle methods")
 	}
