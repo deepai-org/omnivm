@@ -544,7 +544,10 @@ func (p *GoHandleProxy) ReleaseFromFinalizer() {
 	if p == nil || p.closed || p.table == nil || p.id == 0 {
 		return
 	}
-	p.table.QueueReleaseFromFinalizer(p.id)
+	if p.table.QueueReleaseFromFinalizer(p.id) {
+		p.closed = true
+		runtime.SetFinalizer(p, nil)
+	}
 }
 
 // Close releases the Go proxy's retained handle reference immediately and
@@ -795,12 +798,16 @@ func (p *GoStreamProxy) ReleaseFromFinalizer() {
 	}
 	if p.localValues != nil {
 		p.closed = true
+		runtime.SetFinalizer(p, nil)
 		return
 	}
 	if p.table == nil || p.id == 0 {
 		return
 	}
-	p.table.QueueReleaseFromFinalizer(p.id)
+	if p.table.QueueReleaseFromFinalizer(p.id) {
+		p.closed = true
+		runtime.SetFinalizer(p, nil)
+	}
 }
 
 func (e *Executor) normalizeGoArgs(args []interface{}) []interface{} {

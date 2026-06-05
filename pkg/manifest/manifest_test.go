@@ -2302,6 +2302,38 @@ func TestGoStreamProxyCloseCancelsWithoutDraining(t *testing.T) {
 	}
 }
 
+func TestGoStreamProxyFinalizerReleaseClosesProxy(t *testing.T) {
+	e, _ := makeExecutor("go")
+	ch := &ChanRef{ch: make(chan interface{}, 1)}
+	ch.ch <- "first"
+	id, err := e.channelStreamHandle(ch)
+	if err != nil {
+		t.Fatalf("channelStreamHandle: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "channel")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "channel")))
+	}
+	stream.ReleaseFromFinalizer()
+	if value, ok := stream.Recv(); ok || value != nil {
+		t.Fatalf("stream Recv after finalizer cleanup = (%#v, %v), want nil,false", value, ok)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("stream Close after finalizer cleanup: %v", err)
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.FinalizerQueued != 1 || stats.FinalizerQueueLen != 1 || stats.ExplicitReleases != 0 {
+		t.Fatalf("Go stream proxy finalizer queue stats = %+v, want one queued cleanup and no explicit release", stats)
+	}
+	if err := e.handleTable.DrainFinalizerReleases(0); err != nil {
+		t.Fatalf("DrainFinalizerReleases: %v", err)
+	}
+	after := e.handleTable.Stats(time.Now())
+	if after.Live != 1 || after.StrongRefs != 1 || after.RetainedRefs != 0 || after.ExplicitReleases != 0 {
+		t.Fatalf("Go stream proxy finalizer cleanup stats = %+v, want only finalizer retain released", after)
+	}
+}
+
 func TestGoStreamProxyCloseReportsExternallyClosedOwner(t *testing.T) {
 	e, _ := makeExecutor("go")
 	ch := &ChanRef{ch: make(chan interface{}, 1)}
@@ -2713,6 +2745,12 @@ func TestGoHandleProxyQueuesFinalizerRelease(t *testing.T) {
 	val, _ := e.getBinding("orders")
 	proxy := e.normalizeGoArg(val).(*GoHandleProxy)
 	proxy.ReleaseFromFinalizer()
+	if value := proxy.Get("format"); value != nil {
+		t.Fatalf("Go handle proxy finalizer cleanup left proxy usable: %#v", value)
+	}
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("Go handle proxy Close after finalizer cleanup: %v", err)
+	}
 	stats := e.handleTable.Stats(time.Now())
 	if stats.FinalizerQueued != 1 || stats.FinalizerQueueLen != 1 {
 		t.Fatalf("Go handle proxy did not queue finalizer release: %+v", stats)
@@ -2722,6 +2760,10 @@ func TestGoHandleProxyQueuesFinalizerRelease(t *testing.T) {
 	}
 	if _, ok := e.handleTable.Get(proxy.id); !ok {
 		t.Fatal("Go proxy finalizer release consumed the scope owner reference")
+	}
+	after := e.handleTable.Stats(time.Now())
+	if after.Live != 1 || after.StrongRefs != 1 || after.RetainedRefs != 0 || after.ExplicitReleases != 0 {
+		t.Fatalf("Go proxy finalizer cleanup stats = %+v, want only finalizer retain released", after)
 	}
 }
 
