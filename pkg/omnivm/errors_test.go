@@ -80,6 +80,48 @@ func TestRuntimeError_ToMapReturnsStructuredEnvelope(t *testing.T) {
 	}
 }
 
+func TestRuntimeError_MarshalJSONReturnsStructuredEnvelope(t *testing.T) {
+	e := &RuntimeError{
+		Runtime:             "javascript",
+		OriginRuntime:       "python",
+		Type:                "TypeError",
+		Message:             "outer",
+		StackFrames:         []string{"at outer (<anonymous>:1:2)"},
+		CauseChain:          []RuntimeErrorCause{{Runtime: "ruby", Type: "RuntimeError", Message: "inner", Details: map[string]interface{}{"code": "E_INNER"}}},
+		BoundaryPath:        "call[javascript] > callback[python]",
+		OriginalErrorHandle: "py-error-7",
+		Details:             map[string]interface{}{"code": "E_OUTER", "items": []interface{}{map[string]interface{}{"path": "user.age"}}},
+	}
+
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal MarshalJSON envelope: %v\n%s", err, data)
+	}
+	if envelope["runtime"] != "javascript" || envelope["origin_runtime"] != "python" || envelope["boundary_path"] != "call[javascript] > callback[python]" || envelope["original_error_handle"] != "py-error-7" {
+		t.Fatalf("MarshalJSON envelope lost top-level metadata: %#v", envelope)
+	}
+	causes, ok := envelope["cause_chain"].([]interface{})
+	if !ok || len(causes) != 1 {
+		t.Fatalf("MarshalJSON cause_chain = %#v, want one cause", envelope["cause_chain"])
+	}
+	cause, ok := causes[0].(map[string]interface{})
+	if !ok || cause["runtime"] != "ruby" || cause["origin_runtime"] != "ruby" {
+		t.Fatalf("MarshalJSON cause metadata = %#v", causes[0])
+	}
+	details, ok := envelope["details"].(map[string]interface{})
+	if !ok || details["code"] != "E_OUTER" {
+		t.Fatalf("MarshalJSON details = %#v", envelope["details"])
+	}
+	details["code"] = "changed"
+	if e.Details.(map[string]interface{})["code"] != "E_OUTER" {
+		t.Fatalf("MarshalJSON exposed mutable details backing storage: %#v", e.Details)
+	}
+}
+
 func TestRuntimeError_ToMapCopiesMutableEnvelopeSlices(t *testing.T) {
 	e := &RuntimeError{
 		Runtime:     "python",

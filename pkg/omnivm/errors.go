@@ -129,6 +129,11 @@ func (e *RuntimeError) ToMap() map[string]interface{} {
 	}
 }
 
+// MarshalJSON returns the same normalized envelope as ToMap.
+func (e *RuntimeError) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.ToMap())
+}
+
 func runtimeErrorDetailsJSON(value interface{}) string {
 	if value == nil {
 		return ""

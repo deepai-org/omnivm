@@ -114,7 +114,9 @@ Runtime error helpers expose that structured envelope directly: Python
 `RuntimeError.to_dict()`/`as_dict()`/`to_json()`, Ruby
 `RuntimeError#to_h`/`#to_json`, Java `RuntimeError#toMap`, and JavaScript
 `toJSON()` all return copied data so callers can log or forward errors without
-mutating the live exception object. Parsers accept structured `details` objects
+mutating the live exception object. Go `*omnivm.RuntimeError` exposes `ToMap()`
+and implements `json.Marshaler` with the same normalized envelope. Parsers accept
+structured `details` objects
 and JSON-string detail fields such as `details_json`/`detailsJson`, including
 inside cause-chain entries. Parsers also accept JavaScript-style `name`/`stack`
 aliases for the normalized `type`/`traceback` fields. Text fallback parsers treat
