@@ -443,8 +443,10 @@ static void* ruby_init_thread_func(void* arg) {
         // Install fork guard
         int state = 0;
         rb_eval_string_protect(
-            "module Process; def self.fork; raise RuntimeError, "
-            "'fork() not safe in OmniVM'; end; end",
+            "module Process; def self.fork(*args, &block); raise RuntimeError, "
+            "'fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes'; end; end; "
+            "module Kernel; def fork(*args, &block); raise RuntimeError, "
+            "'fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes'; end; module_function :fork; end",
             &state
         );
     }
@@ -1918,6 +1920,11 @@ static int omnivm_ruby_init(void) {
         "  end\n"
         "end\n"
         "module Kernel\n"
+        "  alias __omnivm_native_fork fork unless private_method_defined?(:__omnivm_native_fork) || method_defined?(:__omnivm_native_fork) || !private_method_defined?(:fork)\n"
+        "  def fork(*args, &block)\n"
+        "    raise RuntimeError, \"fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes\"\n"
+        "  end\n"
+        "  module_function :fork\n"
         "  alias __omnivm_native_require require unless private_method_defined?(:__omnivm_native_require) || method_defined?(:__omnivm_native_require)\n"
         "  def require(path)\n"
         "    loaded = __omnivm_native_require(path)\n"
@@ -1972,6 +1979,24 @@ static int omnivm_ruby_init(void) {
         "  missing << 'Thread.fork diagnostic'\n"
         "rescue RuntimeError => e\n"
         "  missing << 'Thread.fork diagnostic' unless e.message.include?('Ruby Thread.new is not supported in OmniVM embedded Ruby')\n"
+        "end\n"
+        "begin\n"
+        "  fork { nil }\n"
+        "  missing << 'Kernel#fork diagnostic'\n"
+        "rescue RuntimeError => e\n"
+        "  missing << 'Kernel#fork diagnostic' unless e.message.include?('fork() is not safe in OmniVM embedded Ruby')\n"
+        "end\n"
+        "begin\n"
+        "  Kernel.fork { nil }\n"
+        "  missing << 'Kernel.fork diagnostic'\n"
+        "rescue RuntimeError => e\n"
+        "  missing << 'Kernel.fork diagnostic' unless e.message.include?('fork() is not safe in OmniVM embedded Ruby')\n"
+        "end\n"
+        "begin\n"
+        "  Process.fork { nil }\n"
+        "  missing << 'Process.fork diagnostic'\n"
+        "rescue RuntimeError => e\n"
+        "  missing << 'Process.fork diagnostic' unless e.message.include?('fork() is not safe in OmniVM embedded Ruby')\n"
         "end\n"
         "missing << 'Kernel.warn' unless Kernel.respond_to?(:warn)\n"
         "missing << 'Kernel.require' unless Kernel.respond_to?(:require)\n"
