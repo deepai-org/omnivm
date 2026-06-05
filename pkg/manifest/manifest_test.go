@@ -6761,6 +6761,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "return runtime_error(message, runtime=\"python\", boundary_path=boundary_path, details=details)") ||
 		!contains(code, "err = _omnivm_runtime_error(") ||
 		!contains(code, `{"stream": {"id": self._value.get("id"), "chunk": item}}`) ||
+		!contains(code, "if isinstance(value, tuple):") ||
 		!contains(code, "def _omnivm_traceback_frames(error):") ||
 		!contains(code, "return __tb.format_tb(error.__traceback__) if error.__traceback__ is not None else []") ||
 		!contains(code, "def traceback(self):") ||
@@ -7146,8 +7147,8 @@ except RuntimeError as exc:
     exc.originRuntime = "owner-python"
     exc.boundaryPath = "stream_next > normalized"
     exc.originalErrorHandle = "py-stream-90"
-    exc.stackFrames = ["normalized stack"]
-    exc.causeChain = [{"runtime": "python", "message": "inner"}]
+    exc.stackFrames = ("normalized stack",)
+    exc.causeChain = ({"runtime": "python", "message": "inner"},)
     exc.traceback = "normalized traceback"
     if exc.details != {"stream": {"id": 90, "chunk": ""}}:
         raise RuntimeError("malformed stream details mismatch: " + repr(exc.details))

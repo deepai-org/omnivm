@@ -529,6 +529,8 @@ def _omnivm_copy_json_value(value):
         return {key: _omnivm_copy_json_value(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_omnivm_copy_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_omnivm_copy_json_value(item) for item in value]
     return value
 
 def _omnivm_runtime_error_details_json(value):
@@ -554,7 +556,7 @@ class _OmniVMRuntimeError(RuntimeError):
         self.origin_runtime = "python"
         self.type = "RuntimeError"
         self._traceback = ""
-        self._stack_frames = []
+        self._stack_frames = None
         self._cause_chain = []
         self.boundary_path = boundary_path
         self.original_error_handle = None
@@ -572,12 +574,13 @@ class _OmniVMRuntimeError(RuntimeError):
 
     @property
     def stack_frames(self):
-        frames = [] if self._stack_frames else _omnivm_traceback_frames(self)
-        return list(frames) if frames else list(self._stack_frames)
+        if self._stack_frames is not None:
+            return _omnivm_copy_json_value(self._stack_frames)
+        return _omnivm_traceback_frames(self)
 
     @stack_frames.setter
     def stack_frames(self, value):
-        self._stack_frames = list(value) if isinstance(value, list) else []
+        self._stack_frames = _omnivm_copy_json_value(value)
 
     @property
     def stackFrames(self):
@@ -601,7 +604,7 @@ class _OmniVMRuntimeError(RuntimeError):
 
     @cause_chain.setter
     def cause_chain(self, value):
-        self._cause_chain = _omnivm_copy_json_value(value if isinstance(value, list) else [])
+        self._cause_chain = _omnivm_copy_json_value(value)
 
     @property
     def causeChain(self):
