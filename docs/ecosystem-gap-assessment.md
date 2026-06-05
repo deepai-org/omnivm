@@ -177,8 +177,8 @@ thread can inspect the exact target with
 `omnivm.owner_dispatch_target_status(target)` or call
 `omnivm.assert_owner_dispatch_target_supported(target, label)` or
 `omnivm.assert_owner_dispatch_supported(label)` to reject the in-process
-integration before serving traffic with a structured
-`thread_affinity` diagnostic.
+integration before serving traffic with a structured `owner_dispatch` or
+`owner_dispatch_target` diagnostic.
 
 The remaining risk is framework-owned scheduling. Starlette ASGI app-call
 disconnect, Uvicorn event-loop re-entry during streaming response cancellation,

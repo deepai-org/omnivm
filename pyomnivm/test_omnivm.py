@@ -522,18 +522,18 @@ class TestRuntimeError(unittest.TestCase):
         assert err.original_error_handle == "11"
 
     def test_details_override_supplies_structured_guard_context(self):
-        details = {"thread_affinity": {"owner_dispatch_supported": False}}
+        details = {"owner_dispatch": {"owner_dispatch_supported": False}}
         err = omnivm_mod.RuntimeError(
             "owner dispatch unsupported",
-            boundary_path="thread_affinity",
+            boundary_path="owner_dispatch",
             details=details,
         )
-        details["thread_affinity"]["owner_dispatch_supported"] = True
+        details["owner_dispatch"]["owner_dispatch_supported"] = True
 
-        assert err.details == {"thread_affinity": {"owner_dispatch_supported": False}}
+        assert err.details == {"owner_dispatch": {"owner_dispatch_supported": False}}
         envelope = err.to_dict()
-        envelope["details"]["thread_affinity"]["owner_dispatch_supported"] = True
-        assert err.details == {"thread_affinity": {"owner_dispatch_supported": False}}
+        envelope["details"]["owner_dispatch"]["owner_dispatch_supported"] = True
+        assert err.details == {"owner_dispatch": {"owner_dispatch_supported": False}}
 
     def test_details_override_copies_tuple_payloads_as_json_lists(self):
         details = ({"items": [{"path": "payload.age"}]},)

@@ -641,8 +641,11 @@ and `ruby fiber` to their canonical names before reporting diagnostics.
 `omnivm.assert_owner_dispatch_supported(label)` remains the fail-fast form for
 integrations that require universal dispatch.
 These guard failures attach the relevant status block to
-`RuntimeError.details`, and `omnivm.assert_host_thread(label)` attaches the
-current affinity snapshot there as `details["affinity"]`.
+`RuntimeError.details`: universal owner-dispatch failures use boundary path
+`owner_dispatch` with `details["owner_dispatch"]`, target-specific failures use
+`owner_dispatch_target` with `details["owner_dispatch_target"]`, and
+`omnivm.assert_host_thread(label)` attaches the current affinity snapshot there
+as `details["affinity"]` under boundary path `thread_affinity`.
 The Python interpreter-mode `omnivm` module exposes the same diagnostic status
 and fail-fast guard names, so startup checks behave consistently whether Python
 loads `libomnivm` or runs under the OmniVM Python-compatible interpreter.
