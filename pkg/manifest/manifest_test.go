@@ -12940,13 +12940,36 @@ public final class RuntimeErrorCheck {
             "javascript",
             "call[javascript]",
             null
-        );
-        require("not json".equals(rawDetails.getDetails()), "raw detailsJson was not preserved as text: " + rawDetails.getDetails());
-        require("not json".equals(rawDetails.getDetailsJson()), "raw detailsJson payload mismatch: " + rawDetails.getDetailsJson());
-        require(rawDetails.getStackFrames().isEmpty(), "raw detailsJson leaked into stack frames: " + rawDetails.getStackFrames());
-    }
-}
-`
+	        );
+	        require("not json".equals(rawDetails.getDetails()), "raw detailsJson was not preserved as text: " + rawDetails.getDetails());
+	        require("not json".equals(rawDetails.getDetailsJson()), "raw detailsJson payload mismatch: " + rawDetails.getDetailsJson());
+	        require(rawDetails.getStackFrames().isEmpty(), "raw detailsJson leaked into stack frames: " + rawDetails.getStackFrames());
+
+	        OmniVM.RuntimeError affinity = OmniVM.RuntimeError.fromBridge(
+	            "thread affinity violation: call must run on OmniVM host thread 9, current thread 69; owner dispatch is unsupported in c-shared mode, so OmniVM will not route this call onto the host thread",
+	            "python",
+	            "call[python]",
+	            null
+	        );
+	        require("python".equals(affinity.getRuntime()), "affinity runtime mismatch: " + affinity.getRuntime());
+	        require("python".equals(affinity.getOriginRuntime()), "affinity origin mismatch: " + affinity.getOriginRuntime());
+	        require("RuntimeError".equals(affinity.getType()), "affinity type mismatch: " + affinity.getType());
+	        require(affinity.getMessage().contains("thread affinity violation"), "affinity message mismatch: " + affinity.getMessage());
+	        require("thread_affinity".equals(affinity.getBoundaryPath()), "affinity boundary mismatch: " + affinity.getBoundaryPath());
+	        require(affinity.getStackFrames().isEmpty(), "affinity stack frames should stay empty: " + affinity.getStackFrames());
+	        require(affinity.getCauseChain().isEmpty(), "affinity cause chain should stay empty: " + affinity.getCauseChain());
+	        Map<String, Object> affinityDetails = (Map<String, Object>) affinity.getDetails();
+	        Map<String, Object> affinityInfo = (Map<String, Object>) affinityDetails.get("affinity");
+	        require("call".equals(affinityInfo.get("operation")), "affinity operation mismatch: " + affinityInfo);
+	        require("9".equals(String.valueOf(affinityInfo.get("host_thread_id"))), "affinity host thread mismatch: " + affinityInfo);
+	        require("69".equals(String.valueOf(affinityInfo.get("current_thread_id"))), "affinity current thread mismatch: " + affinityInfo);
+	        require(Boolean.FALSE.equals(affinityInfo.get("on_host_thread")), "affinity on-host mismatch: " + affinityInfo);
+	        require(Boolean.FALSE.equals(affinityInfo.get("owner_dispatch_supported")), "affinity owner dispatch mismatch: " + affinityInfo);
+	        require("reject_runtime_calls".equals(affinityInfo.get("foreign_thread_behavior")), "affinity foreign-thread behavior mismatch: " + affinityInfo);
+	        require(affinity.toJson().contains("\"boundary_path\":\"thread_affinity\""), "affinity json missing boundary: " + affinity.toJson());
+	    }
+	}
+	`
 	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
 		t.Fatalf("write Java runtime error check: %v", err)
 	}

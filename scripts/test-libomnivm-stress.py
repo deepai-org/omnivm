@@ -28393,6 +28393,64 @@ try {
             raise AssertionError(f"Java CompletableFuture custom-executor callback affinity did not report c-shared diagnostic: {result}")
 
 
+def test_java_completable_future_callback_affinity_preserves_structured_error_fields():
+    result = omnivm.call(
+        "java",
+        r'''
+((java.util.concurrent.Callable<String>)(() -> {
+java.util.concurrent.CompletableFuture<String> future =
+    java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+        try {
+            omnivm.OmniVM.call("python", "40 + 2");
+            return "missing-error";
+        } catch (omnivm.OmniVM.RuntimeError e) {
+            Object detailsObj = e.getDetails();
+            if (!(detailsObj instanceof java.util.Map)) return "bad-details:" + detailsObj;
+            java.util.Map<?, ?> details = (java.util.Map<?, ?>) detailsObj;
+            Object affinityObj = details.get("affinity");
+            if (!(affinityObj instanceof java.util.Map)) return "bad-affinity:" + details;
+            java.util.Map<?, ?> affinity = (java.util.Map<?, ?>) affinityObj;
+            return String.join("|",
+                e.getRuntime(),
+                e.getOriginRuntime(),
+                e.getType(),
+                Boolean.toString(e.getMessage().contains("thread affinity violation")),
+                e.getBoundaryPath(),
+                Boolean.toString(e.getStackFrames().isEmpty()),
+                Boolean.toString(e.getCauseChain().isEmpty()),
+                Boolean.toString(e.getOriginalErrorHandle() == null),
+                String.valueOf(affinity.get("operation")),
+                String.valueOf(affinity.get("owner_dispatch_supported")),
+                String.valueOf(affinity.get("foreign_thread_behavior")),
+                Boolean.toString(!String.valueOf(affinity.get("host_thread_id")).equals(String.valueOf(affinity.get("current_thread_id"))))
+            );
+        } catch (Throwable t) {
+            return "wrong-error:" + t.getClass().getName() + ":" + t.getMessage();
+        }
+    });
+return future.get(3, java.util.concurrent.TimeUnit.SECONDS);
+})).call()
+'''
+    )
+    want = [
+        "python",
+        "python",
+        "RuntimeError",
+        "true",
+        "thread_affinity",
+        "true",
+        "true",
+        "true",
+        "call",
+        "false",
+        "reject_runtime_calls",
+        "true",
+    ]
+    got = result.split("|")
+    if got != want:
+        raise AssertionError(f"Java CompletableFuture callback affinity structured error fields lost: got={got!r}, result={result!r}")
+
+
 def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -30551,6 +30609,7 @@ def main():
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity reports diagnostic", test_java_completable_future_callback_affinity_reports_diagnostic)
         check("Java CompletableFuture custom executor callback affinity reports diagnostic", test_java_completable_future_custom_executor_callback_affinity_reports_diagnostic)
+        check("Java CompletableFuture callback affinity preserves structured error fields", test_java_completable_future_callback_affinity_preserves_structured_error_fields)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Manifest Java ScheduledFuture cancellation status crosses runtimes", test_manifest_java_scheduled_future_cancel_status_crosses_runtimes)
         check("Manifest Java ExecutorService Future cancellation interrupts owner", test_manifest_java_executor_service_future_cancel_interrupts_owner)

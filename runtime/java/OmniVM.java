@@ -643,6 +643,9 @@ public class OmniVM {
         text = stripCallBoundary(text, parsed, boundaryParts);
         text = stripRuntimeRefAssignPrefix(text, parsed);
         text = stripRuntimePrefixes(text, parsed);
+        if (classifyThreadAffinityBridgeError(text, parsed)) {
+            return parsed;
+        }
 
         String wrappedBoundary = parsed.boundaryPath;
         if (!boundaryParts.isEmpty()) {
@@ -674,6 +677,81 @@ public class OmniVM {
             parsed.message = text;
         }
         return parsed;
+    }
+
+    private static boolean classifyThreadAffinityBridgeError(String text, ParsedRuntimeError parsed) {
+        String message = safeString(text).trim();
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (!lower.contains("thread affinity violation") || !lower.contains("owner dispatch")) {
+            return false;
+        }
+        parsed.type = "RuntimeError";
+        parsed.message = message;
+        parsed.boundaryPath = "thread_affinity";
+        parsed.originRuntime = parsed.runtime;
+        parsed.traceback = "";
+        parsed.stackFrames = new ArrayList<>();
+        parsed.causeChain = new ArrayList<>();
+
+        Map<String, Object> affinity = ownerDispatchMap(
+            "operation", threadAffinityOperation(message),
+            "on_host_thread", false,
+            "host_thread_required", true,
+            "owner_dispatch_supported", false,
+            "foreign_thread_behavior", "reject_runtime_calls",
+            "diagnostic", "owner dispatch is unsupported, so OmniVM rejected a runtime call from a foreign owner thread");
+        Long hostThreadID = threadAffinityID(message, "host thread ");
+        if (hostThreadID == null) {
+            hostThreadID = threadAffinityID(message, "Golden Thread ");
+        }
+        Long currentThreadID = threadAffinityID(message, "current thread ");
+        if (hostThreadID != null) {
+            affinity.put("host_thread_id", hostThreadID);
+        }
+        if (currentThreadID != null) {
+            affinity.put("current_thread_id", currentThreadID);
+        }
+        parsed.detailsJson = jsonValue(ownerDispatchMap("affinity", affinity));
+        return true;
+    }
+
+    private static String threadAffinityOperation(String message) {
+        String prefix = "thread affinity violation:";
+        String text = safeString(message);
+        if (!text.startsWith(prefix)) {
+            return "";
+        }
+        String rest = text.substring(prefix.length()).trim();
+        String marker = " must run on OmniVM ";
+        int end = rest.indexOf(marker);
+        if (end <= 0) {
+            return "";
+        }
+        return rest.substring(0, end).trim();
+    }
+
+    private static Long threadAffinityID(String message, String marker) {
+        String text = safeString(message);
+        int start = text.indexOf(marker);
+        if (start < 0) {
+            return null;
+        }
+        start += marker.length();
+        while (start < text.length() && Character.isWhitespace(text.charAt(start))) {
+            start++;
+        }
+        int end = start;
+        while (end < text.length() && Character.isDigit(text.charAt(end))) {
+            end++;
+        }
+        if (end == start) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text.substring(start, end));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     @SuppressWarnings("unchecked")
