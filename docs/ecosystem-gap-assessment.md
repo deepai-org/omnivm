@@ -330,9 +330,10 @@ Java value-like zero-arg methods such as `status()`, `count()`, and
 `isClosed()` now read naturally as fields through JavaScript, Python, and Ruby
 guest proxies, while command-style methods such as `close()` remain explicit
 calls.
-Python HTTP request/response objects get an attribute-first path for natural
+Python framework-owned objects keep normal attribute resolution for natural
 fields like `headers`, so Starlette `request.headers.get(...)` does not fall
-through to the raw ASGI scope list.
+through to lower-level backing storage such as the raw ASGI scope list. This is
+proxy member resolution, not an HTTP request/response normalization layer.
 For Python session-like objects that expose `keys()`/`__getitem__` but are not
 registered `Mapping`s, existing contained keys now win over same-named proxy or
 framework methods. That path deliberately avoids broad `__contains__` probes, so
