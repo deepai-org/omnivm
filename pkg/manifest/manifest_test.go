@@ -5579,6 +5579,91 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefRubyStreamCloseSkipsRequiredArgCloseMethods(t *testing.T) {
+	code, ok := runtimeRefStreamCloseCode(RuntimeRef{Runtime: "ruby", VarName: "rows"}, "__omnivm_stream_state")
+	if !ok {
+		t.Fatal("runtimeRefStreamCloseCode(ruby) unsupported")
+	}
+	for _, want := range []string{
+		"__omnivm_lifecycle_without_required_args",
+		"value.method(name).arity",
+		"arity == 0 || arity == -1",
+		"__omnivm_lifecycle_without_required_args.call(__omnivm_stream_obj, :close)",
+		"__omnivm_lifecycle_without_required_args.call(__omnivm_stream_obj, :return)",
+		"__omnivm_lifecycle_without_required_args.call(__omnivm_io, :close)",
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefStreamCloseCode(ruby) missing %q in %q", want, code)
+		}
+	}
+	if contains(code, "__omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close") ||
+		contains(code, "__omnivm_stream_obj.respond_to?(:return); __omnivm_stream_obj.return") {
+		t.Fatalf("runtimeRefStreamCloseCode(ruby) should not close from respond_to? alone: %q", code)
+	}
+
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	script := `
+class RequiredCloseWithReturn
+  attr_reader :close_calls, :return_calls
+  def initialize
+    @close_calls = 0
+    @return_calls = 0
+  end
+  def close(reason)
+    @close_calls += 1
+    raise "required close should not run"
+  end
+  def return
+    @return_calls += 1
+  end
+end
+
+$rows = RequiredCloseWithReturn.new
+` + code + `
+raise "required close was invoked" unless $rows.close_calls == 0
+raise "zero-arg return fallback was not invoked" unless $rows.return_calls == 1
+
+class RequiredOnlyClose
+  attr_reader :close_calls
+  def initialize
+    @close_calls = 0
+  end
+  def close(reason)
+    @close_calls += 1
+    raise "required close should not run"
+  end
+end
+
+$rows = RequiredOnlyClose.new
+` + code + `
+raise "required-only close was invoked" unless $rows.close_calls == 0
+
+require "stringio"
+class IOFallbackWrapper
+  attr_reader :io
+  def initialize
+    @io = StringIO.new("body")
+  end
+  def to_io
+    @io
+  end
+  def close(reason)
+    raise "required wrapper close should not run"
+  end
+end
+
+$rows = IOFallbackWrapper.new
+` + code + `
+raise "to_io close fallback was not invoked" unless $rows.io.closed?
+`
+	if out, err := exec.Command(ruby, "-e", script).CombinedOutput(); err != nil {
+		t.Fatalf("ruby stream close required-arg guard failed: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeRefJavaStreamNextClosesBaseStreamAtEOF(t *testing.T) {
 	code := runtimeRefJavaStreamNextCode("rows", "__omnivm_stream_value", "__omnivm_stream_done", "__omnivm_stream_state")
 	for _, want := range []string{

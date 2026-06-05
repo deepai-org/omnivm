@@ -3692,7 +3692,27 @@ if __omnivm_stream_obj is not __omnivm_stream_iter:
         __omnivm_stream_close()
 globals()[%q] = None`, base, stateVar, stateVar), true
 	case "ruby":
-		return fmt.Sprintf("begin; __omnivm_stream_obj = %s; __omnivm_io = __omnivm_stream_obj.respond_to?(:to_io) ? __omnivm_stream_obj.to_io : nil; if __omnivm_stream_obj.respond_to?(:close); __omnivm_stream_obj.close; elsif __omnivm_stream_obj.respond_to?(:return); __omnivm_stream_obj.return; elsif __omnivm_io.respond_to?(:close); __omnivm_io.close; end; %s = nil; end", base, stateRef), true
+		return fmt.Sprintf(`begin
+  __omnivm_stream_obj = %s
+  __omnivm_lifecycle_without_required_args = lambda do |value, name|
+    begin
+      next false unless value && value.respond_to?(name)
+      arity = value.method(name).arity
+      arity == 0 || arity == -1
+    rescue Exception
+      false
+    end
+  end
+  __omnivm_io = __omnivm_stream_obj.respond_to?(:to_io) ? __omnivm_stream_obj.to_io : nil
+  if __omnivm_lifecycle_without_required_args.call(__omnivm_stream_obj, :close)
+    __omnivm_stream_obj.close
+  elsif __omnivm_lifecycle_without_required_args.call(__omnivm_stream_obj, :return)
+    __omnivm_stream_obj.return
+  elsif __omnivm_lifecycle_without_required_args.call(__omnivm_io, :close)
+    __omnivm_io.close
+  end
+  %s = nil
+end`, base, stateRef), true
 	case "java":
 		return runtimeRefJavaStreamCloseCode(base, stateVar), true
 	default:
