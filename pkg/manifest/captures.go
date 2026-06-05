@@ -2817,6 +2817,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         throw _localMaterializeErr;
       }
     }
+    if (remoteClosed) return {done: true};
     try {
       if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {
         closeRemote();
