@@ -19178,6 +19178,121 @@ public class JavaDetailException extends RuntimeException {
         raise AssertionError(f"JS Java package-private toMap payload lost: {envelope}")
 
 
+def test_javascript_native_node_error_code_details_cross_runtime_calls():
+    js_source = (
+        "(() => { "
+        "const err = new Error('write after end'); "
+        "err.code = 'ERR_STREAM_WRITE_AFTER_END'; "
+        "throw err; "
+        "})()"
+    )
+    try:
+        omnivm.call("javascript", js_source)
+    except omnivm.RuntimeError as exc:
+        if exc.runtime != "javascript" or exc.origin_runtime != "javascript" or exc.type != "Error":
+            raise AssertionError(f"Python Node-style JS error runtime/type lost: {exc.to_dict()}") from exc
+        if "write after end" not in exc.message:
+            raise AssertionError(f"Python Node-style JS error message lost: {exc.to_dict()}") from exc
+        if exc.boundary_path != "call[javascript]":
+            raise AssertionError(f"Python Node-style JS error boundary path lost: {exc.to_dict()}") from exc
+        if not isinstance(exc.details, dict) or exc.details.get("code") != "ERR_STREAM_WRITE_AFTER_END":
+            raise AssertionError(f"Python Node-style JS error code details lost: {exc.to_dict()}") from exc
+        if "ERR_STREAM_WRITE_AFTER_END" not in (exc.details_json or ""):
+            raise AssertionError(f"Python Node-style JS error details_json lost: {exc.to_dict()}") from exc
+        if not exc.stack_frames:
+            raise AssertionError(f"Python Node-style JS error stack frames lost: {exc.to_dict()}") from exc
+        if exc.to_dict().get("details") != exc.details:
+            raise AssertionError(f"Python Node-style JS error to_dict details lost: {exc.to_dict()}") from exc
+    else:
+        raise AssertionError("Python Node-style JS error path did not raise")
+
+    ruby_result = omnivm.call(
+        "ruby",
+        f'''
+begin
+  OmniVM.call("javascript", {json.dumps(js_source)})
+rescue OmniVM::RuntimeError => e
+  details = e.details
+  envelope = e.to_dict
+  [
+    e.runtime,
+    e.origin_runtime,
+    e.type,
+    e.message.include?("write after end"),
+    e.boundary_path,
+    details.is_a?(Hash) ? details["code"] : nil,
+    e.details_json.to_s.include?("ERR_STREAM_WRITE_AFTER_END"),
+    envelope[:details].is_a?(Hash) ? envelope[:details]["code"] : nil
+  ].join("|")
+else
+  "missing"
+end
+'''
+    )
+    ruby_fields = ruby_result.split("|")
+    want_ruby = [
+        "javascript",
+        "javascript",
+        "Error",
+        "true",
+        "call[javascript]",
+        "ERR_STREAM_WRITE_AFTER_END",
+        "true",
+        "ERR_STREAM_WRITE_AFTER_END",
+    ]
+    if ruby_fields != want_ruby:
+        raise AssertionError(f"Ruby Node-style JS error code details lost: {ruby_fields!r}")
+
+    java_result = omnivm.call(
+        "java",
+        f'''
+((java.util.concurrent.Callable<String>)(() -> {{
+    try {{
+        omnivm.OmniVM.call("javascript", {json.dumps(js_source)});
+    }} catch (omnivm.OmniVM.RuntimeError e) {{
+        Object rawDetails = e.getDetails();
+        String code = "";
+        if (rawDetails instanceof java.util.Map) {{
+            Object rawCode = ((java.util.Map<?, ?>) rawDetails).get("code");
+            code = String.valueOf(rawCode);
+        }}
+        java.util.Map<String, Object> envelope = e.toMap();
+        Object rawEnvelopeDetails = envelope.get("details");
+        String envelopeCode = "";
+        if (rawEnvelopeDetails instanceof java.util.Map) {{
+            Object rawCode = ((java.util.Map<?, ?>) rawEnvelopeDetails).get("code");
+            envelopeCode = String.valueOf(rawCode);
+        }}
+        return String.join("|",
+            e.getRuntime(),
+            e.getOriginRuntime(),
+            e.getType(),
+            Boolean.toString(e.getMessage().contains("write after end")),
+            e.getBoundaryPath(),
+            code,
+            Boolean.toString(String.valueOf(e.getDetailsJson()).contains("ERR_STREAM_WRITE_AFTER_END")),
+            envelopeCode
+        );
+    }}
+    return "missing";
+}})).call()
+'''
+    )
+    java_fields = java_result.split("|")
+    want_java = [
+        "javascript",
+        "javascript",
+        "Error",
+        "true",
+        "call[javascript]",
+        "ERR_STREAM_WRITE_AFTER_END",
+        "true",
+        "ERR_STREAM_WRITE_AFTER_END",
+    ]
+    if java_fields != want_java:
+        raise AssertionError(f"Java Node-style JS error code details lost: {java_fields!r}")
+
+
 def test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls():
     pydantic_source = (
         "from pydantic import BaseModel, Field\n"
@@ -30753,6 +30868,7 @@ def main():
         check("JavaScript native ActiveRecord error fields cross runtime call", test_javascript_native_activerecord_error_fields_cross_runtime_call)
         check("JavaScript native ActiveRecord validation details cross runtime call", test_javascript_native_activerecord_validation_details_cross_runtime_call)
         check("JavaScript native Java error details cross runtime call", test_javascript_native_java_error_details_cross_runtime_call)
+        check("JavaScript native Node error code details cross runtime calls", test_javascript_native_node_error_code_details_cross_runtime_calls)
         check("Ruby and Java native ecosystem library error fields cross runtime calls", test_ruby_java_native_ecosystem_library_error_fields_cross_runtime_calls)
         check("Python native RuntimeError fields cross runtime calls", test_python_native_runtime_error_fields_cross_runtime_calls)
         check("JavaScript native RuntimeError fields cross runtime calls", test_javascript_native_runtime_error_fields_cross_runtime_calls)
