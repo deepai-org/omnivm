@@ -5952,16 +5952,98 @@ func TestRuntimeRefJSStreamCloseStepAwaitsCancellation(t *testing.T) {
 	for _, want := range []string{
 		"globalThis.__omnivm_close_ready = false",
 		"globalThis.__omnivm_close_error = undefined",
-		"__omnivm_close_step = __omnivm_iter.cancel()",
-		"__omnivm_close_step = __omnivm_stream_obj.cancel()",
+		"Object.getOwnPropertyDescriptor(cursor, name)",
+		"descriptor.value.length === 0",
+		`__omnivm_iter_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "return")`,
+		`__omnivm_iter_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "cancel")`,
+		"__omnivm_close_step = __omnivm_iter_cancel()",
+		"__omnivm_close_step = __omnivm_stream_cancel()",
+		`__omnivm_releaseLock = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "releaseLock")`,
 		"return __omnivm_close_step",
-		"__omnivm_iter.releaseLock",
 		"globalThis.__omnivm_close_ready = true",
 		"globalThis.__omnivm_close_error = __omnivm_err",
 	} {
 		if !contains(code, want) {
 			t.Fatalf("runtimeRefJSStreamCloseStepCode missing %q in %q", want, code)
 		}
+	}
+}
+
+func TestRuntimeRefJSStreamCloseStepSkipsRequiredArgLifecycleMethods(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code, ok := runtimeRefJSStreamCloseStepCode(RuntimeRef{Runtime: "javascript", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
+	if !ok {
+		t.Fatal("runtimeRefJSStreamCloseStepCode unsupported")
+	}
+	script := `
+(async function() {
+  async function waitClose() {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  globalThis.rows = {
+    returnCalls: 0,
+    cancelCalls: 0,
+    releaseCalls: 0,
+    return: function(reason) {
+      this.returnCalls++;
+      throw new Error("required return should not run: " + reason);
+    },
+    cancel: function() {
+      this.cancelCalls++;
+      return Promise.resolve("cancelled");
+    },
+    releaseLock: function(reason) {
+      this.releaseCalls++;
+      throw new Error("required releaseLock should not run: " + reason);
+    }
+  };
+  globalThis.__omnivm_stream_state = globalThis.rows;
+` + code + `
+  await waitClose();
+  if (globalThis.__omnivm_close_ready !== true || globalThis.__omnivm_close_error !== undefined) {
+    throw new Error("required return close failed: ready=" + globalThis.__omnivm_close_ready + " error=" + globalThis.__omnivm_close_error);
+  }
+  if (globalThis.rows.returnCalls !== 0) throw new Error("required return was invoked");
+  if (globalThis.rows.cancelCalls !== 1) throw new Error("zero-arg cancel fallback was not invoked");
+  if (globalThis.rows.releaseCalls !== 0) throw new Error("required releaseLock was invoked");
+
+  globalThis.rows = {
+    returnCalls: 0,
+    cancelCalls: 0,
+    releaseCalls: 0,
+    return: function(reason = undefined) {
+      this.returnCalls++;
+      return "returned";
+    },
+    cancel: function() {
+      this.cancelCalls++;
+      throw new Error("cancel should not run when optional return exists");
+    },
+    releaseLock: function() {
+      this.releaseCalls++;
+    }
+  };
+  globalThis.__omnivm_stream_state = globalThis.rows;
+` + code + `
+  await waitClose();
+  if (globalThis.__omnivm_close_ready !== true || globalThis.__omnivm_close_error !== undefined) {
+    throw new Error("optional return close failed: ready=" + globalThis.__omnivm_close_ready + " error=" + globalThis.__omnivm_close_error);
+  }
+  if (globalThis.rows.returnCalls !== 1) throw new Error("optional return was not invoked");
+  if (globalThis.rows.cancelCalls !== 0) throw new Error("cancel ran after optional return");
+  if (globalThis.rows.releaseCalls !== 1) throw new Error("zero-arg releaseLock was not invoked");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	if out, err := exec.Command(node, "-e", script).CombinedOutput(); err != nil {
+		t.Fatalf("node JS stream close required-arg guard failed: %v\n%s", err, out)
 	}
 }
 

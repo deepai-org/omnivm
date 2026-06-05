@@ -2412,16 +2412,65 @@ globalThis.%s = undefined;
 Promise.resolve((function() {
   const __omnivm_stream_obj = %s;
   const __omnivm_iter = %s;
+  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name) {
+    if (value == null) return null;
+    let cursor = Object(value);
+    let depth = 0;
+    while (cursor != null && depth++ < 64) {
+      let descriptor = null;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      } catch (__omnivm_descriptor_error) {
+        return null;
+      }
+      if (descriptor) {
+        return typeof descriptor.value === 'function' && descriptor.value.length === 0 ? descriptor.value.bind(value) : null;
+      }
+      try {
+        cursor = Object.getPrototypeOf(cursor);
+      } catch (__omnivm_prototype_error) {
+        return null;
+      }
+    }
+    return null;
+  };
+  const __omnivm_iter_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "return");
+  const __omnivm_iter_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "cancel");
+  const __omnivm_stream_return = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "return");
+  const __omnivm_stream_cancel = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_stream_obj, "cancel");
   let __omnivm_close_step;
-  if (__omnivm_iter && typeof __omnivm_iter.return === 'function') __omnivm_close_step = __omnivm_iter.return();
-  else if (__omnivm_iter && typeof __omnivm_iter.cancel === 'function') __omnivm_close_step = __omnivm_iter.cancel();
-  else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.return === 'function') __omnivm_close_step = __omnivm_stream_obj.return();
-  else if (__omnivm_stream_obj && typeof __omnivm_stream_obj.cancel === 'function') __omnivm_close_step = __omnivm_stream_obj.cancel();
+  if (__omnivm_iter_return) __omnivm_close_step = __omnivm_iter_return();
+  else if (__omnivm_iter_cancel) __omnivm_close_step = __omnivm_iter_cancel();
+  else if (__omnivm_stream_return) __omnivm_close_step = __omnivm_stream_return();
+  else if (__omnivm_stream_cancel) __omnivm_close_step = __omnivm_stream_cancel();
   return __omnivm_close_step;
 })()).then(function() {
   const __omnivm_iter = %s;
-  if (__omnivm_iter && typeof __omnivm_iter.releaseLock === 'function') {
-    try { __omnivm_iter.releaseLock(); } catch (__omnivm_release_err) {}
+  const __omnivm_lifecycleWithoutRequiredArgs = function(value, name) {
+    if (value == null) return null;
+    let cursor = Object(value);
+    let depth = 0;
+    while (cursor != null && depth++ < 64) {
+      let descriptor = null;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      } catch (__omnivm_descriptor_error) {
+        return null;
+      }
+      if (descriptor) {
+        return typeof descriptor.value === 'function' && descriptor.value.length === 0 ? descriptor.value.bind(value) : null;
+      }
+      try {
+        cursor = Object.getPrototypeOf(cursor);
+      } catch (__omnivm_prototype_error) {
+        return null;
+      }
+    }
+    return null;
+  };
+  const __omnivm_releaseLock = __omnivm_lifecycleWithoutRequiredArgs(__omnivm_iter, "releaseLock");
+  if (__omnivm_releaseLock) {
+    try { __omnivm_releaseLock(); } catch (__omnivm_release_err) {}
   }
   %s = undefined;
 }).then(function() {
