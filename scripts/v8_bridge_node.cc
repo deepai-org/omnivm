@@ -2411,6 +2411,9 @@ static void register_omnivm_bridge(v8::Isolate* isolate,
     v8::Local<v8::Object> global = context->Global();
 
     v8::Local<v8::Object> omnivm_obj = v8::Object::New(isolate);
+    omnivm_obj->Set(context,
+        v8::String::NewFromUtf8Literal(isolate, "__omnivm_bridge_id"),
+        v8::String::NewFromUtf8Literal(isolate, "v8-node-bridge")).Check();
     v8::Local<v8::FunctionTemplate> call_tmpl =
         v8::FunctionTemplate::New(isolate, OmnivmCallCallback);
     omnivm_obj->Set(context,

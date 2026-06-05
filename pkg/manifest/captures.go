@@ -1693,13 +1693,30 @@ globalThis.__omnivm_warn_chatty_proxy = globalThis.__omnivm_warn_chatty_proxy ||
 globalThis.__omnivm_bridge_module = globalThis.__omnivm_bridge_module || function() {
   return (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') ? omnivm : null;
 };
+globalThis.__omnivm_bridge_token = globalThis.__omnivm_bridge_token || function(bridge) {
+  if (bridge == null) return null;
+  try {
+    var id = bridge.__omnivm_bridge_id;
+    if (id != null) return "id:" + String(id);
+  } catch (_bridgeIdError) {}
+  return bridge;
+};
+globalThis.__omnivm_current_bridge_token = globalThis.__omnivm_current_bridge_token || function() {
+  return globalThis.__omnivm_bridge_token(globalThis.__omnivm_bridge_module());
+};
+globalThis.__omnivm_bridge_matches = globalThis.__omnivm_bridge_matches || function(bridgeToken, caller) {
+  if (bridgeToken == null) return true;
+  return globalThis.__omnivm_bridge_token(bridgeToken) === globalThis.__omnivm_bridge_token(caller);
+};
 globalThis.__omnivm_bridge_active = globalThis.__omnivm_bridge_active || function(bridgeToken) {
-  return bridgeToken == null || globalThis.__omnivm_bridge_module() === bridgeToken;
+  return globalThis.__omnivm_bridge_matches(bridgeToken, globalThis.__omnivm_bridge_module());
 };
 globalThis.__omnivm_bridge_cache_ids = globalThis.__omnivm_bridge_cache_ids || (typeof WeakMap !== 'undefined' ? new WeakMap() : null);
 globalThis.__omnivm_bridge_cache_id_counter = globalThis.__omnivm_bridge_cache_id_counter || 0;
 globalThis.__omnivm_bridge_cache_id = globalThis.__omnivm_bridge_cache_id || function(bridgeToken) {
-  if (bridgeToken == null || (typeof bridgeToken !== 'object' && typeof bridgeToken !== 'function')) return "none";
+  bridgeToken = globalThis.__omnivm_bridge_token(bridgeToken);
+  if (bridgeToken == null) return "none";
+  if (typeof bridgeToken !== 'object' && typeof bridgeToken !== 'function') return String(bridgeToken);
   if (!globalThis.__omnivm_bridge_cache_ids) return "active";
   var existing = globalThis.__omnivm_bridge_cache_ids.get(bridgeToken);
   if (existing) return existing;
@@ -1710,7 +1727,7 @@ globalThis.__omnivm_bridge_cache_id = globalThis.__omnivm_bridge_cache_id || fun
 globalThis.__omnivm_record_handle_access = globalThis.__omnivm_record_handle_access || function(id, kind, bridgeToken) {
   try {
     var caller = globalThis.__omnivm_bridge_module();
-    if (bridgeToken != null && caller !== bridgeToken) return null;
+    if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) return null;
     if (caller) {
       var raw = caller.call("__manifest", JSON.stringify({op: "handle_access", id: id, kind: kind || "property"}));
       var env = JSON.parse(raw);
@@ -1728,7 +1745,7 @@ globalThis.__omnivm_materialize_chatty_proxy = globalThis.__omnivm_materialize_c
     if (!obj || obj.__omnivm_materialized__ === true || handleId == null) return;
     var caller = globalThis.__omnivm_bridge_module();
     var token = bridgeToken == null ? obj.__omnivm_bridge_token__ : bridgeToken;
-    if (token != null && caller !== token) return;
+    if (!globalThis.__omnivm_bridge_matches(token, caller)) return;
     if (!caller) return;
     var raw = caller.call("__manifest", JSON.stringify({op: "handle_iter", id: handleId, mode: "items", materialize: true}));
     var env = JSON.parse(raw);
@@ -1745,7 +1762,7 @@ globalThis.__omnivm_materialize_chatty_proxy = globalThis.__omnivm_materialize_c
 globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record_handle_release_finalizer || function(id, bridgeToken) {
   try {
     var caller = globalThis.__omnivm_bridge_module();
-    if (bridgeToken != null && caller !== bridgeToken) return;
+    if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) return;
     if (caller) {
       caller.call("__manifest", JSON.stringify({op: "handle_release_finalizer", id: id}));
     }
@@ -1753,7 +1770,7 @@ globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record
 };
 globalThis.__omnivm_release_handle_explicit = globalThis.__omnivm_release_handle_explicit || function(id, bridgeToken) {
   var caller = globalThis.__omnivm_bridge_module();
-  if (bridgeToken != null && caller !== bridgeToken) return false;
+  if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) return false;
   if (!caller) return false;
   var raw = caller.call("__manifest", JSON.stringify({op: "handle_release_explicit", id: id}));
   var env = JSON.parse(raw);
@@ -2444,7 +2461,7 @@ globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(valu
 };
 globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy || function(target, jsonShape) {
   if (typeof Proxy === 'undefined') return target;
-  var bridgeToken = globalThis.__omnivm_bridge_module();
+  var bridgeToken = globalThis.__omnivm_current_bridge_token();
   try {
     Object.defineProperty(target, "__omnivm_bridge_token__", {
       value: bridgeToken,
@@ -2478,7 +2495,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var bridge = function(payload, options) {
     ensureOpen(payload.op || "operation");
     var caller = globalThis.__omnivm_bridge_module();
-    if (bridgeToken != null && caller !== bridgeToken) throw closedOperationError(payload.op || "operation");
+    if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) throw closedOperationError(payload.op || "operation");
     if (!caller) throw closedOperationError(payload.op || "operation");
     payload.id = globalThis.__omnivm_proxy_handle_id(target);
     return decode(caller.call("__manifest", JSON.stringify(payload)), options);
@@ -2710,6 +2727,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
+      if (isProxyBookkeepingProp(prop)) return Reflect.get(obj, prop, receiver);
       if (target.__omnivm_closed__ === true && prop !== 'toJSON' && !isProxyBookkeepingProp(prop)) throw closedOperationError("get");
       if (prop === 'then') return bridgeThenForNaturalAccess();
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
@@ -2863,7 +2881,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   return proxy;
 };
 globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy || function(value) {
-  var bridgeToken = globalThis.__omnivm_bridge_module();
+  var bridgeToken = globalThis.__omnivm_current_bridge_token();
   var localValues = Array.isArray(value && value.values) ? value.values.slice() : null;
   var localIndex = 0;
   var remoteClosed = false;
@@ -2898,7 +2916,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     if (remoteClosed) return false;
     if (localValues) return markRemoteClosed(true);
     var caller = globalThis.__omnivm_bridge_module();
-    if (bridgeToken != null && caller !== bridgeToken) {
+    if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {
       markRemoteClosed(false);
       return false;
     }
@@ -2975,7 +2993,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     if (remoteClosed) return {done: true};
     try {
       var caller = globalThis.__omnivm_bridge_module();
-      if (bridgeToken != null && caller !== bridgeToken) {
+      if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {
         closeRemote();
         return {done: true};
       }
@@ -3246,7 +3264,7 @@ globalThis.__omnivm_stream_chunk_value = globalThis.__omnivm_stream_chunk_value 
   return globalThis.__omnivm_materialize_capture(value);
 };
 globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_capture || function(value) {
-  var bridgeToken = globalThis.__omnivm_bridge_module ? globalThis.__omnivm_bridge_module() : null;
+  var bridgeToken = globalThis.__omnivm_current_bridge_token ? globalThis.__omnivm_current_bridge_token() : null;
   if (value && (value.__omnivm_stream__ === true || value.__omnivm_channel__ === true)) {
     return globalThis.__omnivm_cached_proxy("stream", value.id, function() {
       return globalThis.__omnivm_make_stream_proxy(value);

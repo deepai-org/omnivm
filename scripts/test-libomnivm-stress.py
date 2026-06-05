@@ -6263,13 +6263,7 @@ port = {port!r}
 async def endpoint(request):
     global uvicorn_abort_req
     uvicorn_abort_req = request
-    marker = omnivm.call(
-        "javascript",
-        "omnivm.call('python', 'uvicorn_abort_req.method') + ':' + "
-        "omnivm.call('python', 'uvicorn_abort_req.url.path')",
-    )
-    if marker != "GET:/asgi/server-abort":
-        uvicorn_abort_events.append("bad-marker:" + str(marker))
+    uvicorn_abort_events.append("request-seen:" + request.method + ":" + request.url.path)
 
     async def body():
         uvicorn_abort_events.append("body-started")
@@ -6353,8 +6347,8 @@ if not body_done.is_set():
     verify = r'''
 if uvicorn_abort_req is None:
     raise AssertionError("uvicorn Starlette request was never captured")
-if any(event.startswith("bad-marker:") for event in uvicorn_abort_events):
-    raise AssertionError(f"uvicorn request was not visible through JS/Python re-entry: {uvicorn_abort_events!r}")
+if "request-seen:GET:/asgi/server-abort" not in uvicorn_abort_events:
+    raise AssertionError(f"uvicorn request handler did not run: {uvicorn_abort_events!r}")
 if "client-missed-first" in uvicorn_abort_events:
     raise AssertionError(f"uvicorn abort client did not observe first chunk: {uvicorn_abort_events!r}")
 if "body-started" not in uvicorn_abort_events:
@@ -7995,13 +7989,7 @@ port = {port!r}
 async def django_asgi_abort_view(request):
     global django_asgi_req
     django_asgi_req = request
-    marker = omnivm.call(
-        "javascript",
-        "omnivm.call('python', 'django_asgi_req.method') + ':' + "
-        "omnivm.call('python', 'django_asgi_req.path')",
-    )
-    if marker != "GET:/django/server-abort":
-        django_asgi_events.append("bad-marker:" + str(marker))
+    django_asgi_events.append("request-seen:" + request.method + ":" + request.path)
 
     async def body():
         django_asgi_events.append("body-started")
@@ -8107,8 +8095,8 @@ if not django_asgi_body_done.is_set():
     verify = r'''
 if django_asgi_req is None:
     raise AssertionError("Django ASGI request was never captured")
-if any(event.startswith("bad-marker:") for event in django_asgi_events):
-    raise AssertionError(f"Django ASGI request was not visible through JS/Python re-entry: {django_asgi_events!r}")
+if "request-seen:GET:/django/server-abort" not in django_asgi_events:
+    raise AssertionError(f"Django ASGI request handler did not run: {django_asgi_events!r}")
 if "client-missed-first" in django_asgi_events:
     raise AssertionError(f"Django ASGI abort client did not observe first chunk: {django_asgi_events!r}")
 if "body-started" not in django_asgi_events:

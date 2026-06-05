@@ -7998,8 +7998,8 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "return {done: false, value: globalThis.__omnivm_materialize_capture(localValues[localIndex++])};") ||
 		!contains(code, "catch (_localMaterializeErr) {\n        markRemoteClosed(true);\n        throw _localMaterializeErr;\n      }") ||
 		!contains(code, "}\n    if (remoteClosed) return {done: true};\n    try {") ||
-		!contains(code, "var bridgeToken = globalThis.__omnivm_bridge_module();") ||
-		!contains(code, "if (bridgeToken != null && caller !== bridgeToken) {\n        closeRemote();\n        return {done: true};\n      }") ||
+		!contains(code, "var bridgeToken = globalThis.__omnivm_current_bridge_token();") ||
+		!contains(code, "if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "if (!caller) {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
@@ -8268,11 +8268,13 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	for _, want := range []string{
 		"globalThis.__omnivm_bridge_module",
+		"globalThis.__omnivm_bridge_token",
+		"globalThis.__omnivm_bridge_matches",
 		"globalThis.__omnivm_bridge_active",
 		"globalThis.__omnivm_bridge_cache_id",
 		`var key = kind + ":" + globalThis.__omnivm_bridge_cache_id(bridgeToken) + ":" + id;`,
 		`Object.defineProperty(target, "__omnivm_bridge_token__"`,
-		`if (bridgeToken != null && caller !== bridgeToken) return null;`,
+		`if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) return null;`,
 		`globalThis.__omnivm_record_handle_release_finalizer(id, bridgeToken);`,
 		`globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property", bridgeToken)`,
 		`globalThis.__omnivm_materialize_chatty_proxy(obj, bridgeToken)`,
@@ -8379,6 +8381,56 @@ if (!NewBridge.requests.some((req) => req.op === "handle_release_explicit" && re
 	out, err := exec.Command(node, "--expose-gc", "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node stale bridge finalizer check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSProxySurvivesEquivalentBridgeReregistration(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+function makeBridge(label) {
+  return {
+    __omnivm_bridge_id: "same-runtime-bridge",
+    label,
+    requests: [],
+    call(runtime, payload) {
+      if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+      const req = JSON.parse(payload);
+      this.requests.push(req);
+      if (["handle_retain", "handle_adopt", "handle_release_explicit", "handle_release_finalizer"].includes(req.op)) {
+        return JSON.stringify({__omnivm_result__: true, value: true});
+      }
+      if (req.op === "handle_get" && req.key === "path") {
+        return JSON.stringify({__omnivm_result__: true, value: "/still-live"});
+      }
+      throw new Error("unexpected manifest op for " + this.label + ": " + req.op);
+    }
+  };
+}
+const FirstBridge = makeBridge("first");
+const SecondBridge = makeBridge("second");
+globalThis.omnivm = FirstBridge;
+` + code + `
+let proxy = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 701, runtime: "python", kind: "runtime_ref"});
+if (!FirstBridge.requests.some((req) => req.op === "handle_retain" && req.id === 701)) {
+  throw new Error("first bridge did not retain proxy: " + JSON.stringify(FirstBridge.requests));
+}
+globalThis.omnivm = SecondBridge;
+if (proxy.path !== "/still-live") {
+  throw new Error("proxy failed after equivalent bridge re-registration");
+}
+if (!SecondBridge.requests.some((req) => req.op === "handle_get" && req.key === "path" && req.id === 701)) {
+  throw new Error("proxy did not route through active equivalent bridge: " + JSON.stringify(SecondBridge.requests));
+}
+const replacement = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 701, runtime: "python", kind: "runtime_ref"});
+if (replacement !== proxy) throw new Error("equivalent bridge should reuse cached live proxy");
+`
+	out, err := exec.Command(node, "--expose-gc", "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node equivalent bridge proxy check failed: %v\n%s", err, out)
 	}
 }
 
