@@ -2581,6 +2581,18 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     ensureOpen("contains");
     return !!bridge({op: "handle_contains", value: globalThis.__omnivm_encode_arg(key)});
   };
+  var bridgeThenForNaturalAccess = function() {
+    if (target.__omnivm_closed__ === true) return undefined;
+    var missing = {};
+    try {
+      var value = bridgeGet("then", missing, true);
+      if (value === missing || typeof value === "function") return undefined;
+      return value;
+    } catch (_thenError) {
+      if (!globalThis.__omnivm_is_missing_bridge_error(_thenError)) throw _thenError;
+      return undefined;
+    }
+  };
   var primitiveCoercion = function(hint) {
     var keys = hint === 'number' ? ['valueOf', 'toString'] : ['toString', 'valueOf'];
     var missing = {};
@@ -2622,7 +2634,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       if (globalThis.__omnivm_proxy_length_symbol && prop === globalThis.__omnivm_proxy_length_symbol) {
         return bridgeLen(Reflect.get(obj, 'length', receiver));
       }
-      if (prop === 'then') return undefined;
+      if (prop === 'then') return bridgeThenForNaturalAccess();
       if (target.__omnivm_closed__ === true && prop !== 'toJSON' && !isProxyBookkeepingProp(prop)) throw closedOperationError("get");
       if (prop === 'length' && typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
         if (!(descriptor && descriptor.__omnivm_table__ === true)) {

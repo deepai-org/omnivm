@@ -8089,8 +8089,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	if !contains(code, `prop === globalThis.__omnivm_proxy_length_symbol`) {
 		t.Fatalf("JS materializer should expose collection length through a collision-free symbol, got %q", code)
 	}
-	if !contains(code, `if (prop === 'then') return undefined;`) {
-		t.Fatalf("JS materializer should prevent remote then fields from becoming JS thenables or triggering bridge access, got %q", code)
+	if !contains(code, `var bridgeThenForNaturalAccess = function()`) ||
+		!contains(code, `var value = bridgeGet("then", missing, true);`) ||
+		!contains(code, `if (value === missing || typeof value === "function") return undefined;`) ||
+		!contains(code, `if (prop === 'then') return bridgeThenForNaturalAccess();`) {
+		t.Fatalf("JS materializer should expose non-callable remote then fields while hiding callable thenables, got %q", code)
 	}
 	if !contains(code, `env.value.zeroArg === true`) || !contains(code, `return bridge({op: "handle_call", key: env.value.key, args: []});`) {
 		t.Fatalf("JS materializer should invoke zero-arg callable descriptors as property access, got %q", code)
@@ -8841,19 +8844,16 @@ globalThis.omnivm = {
 ` + code + `
 var callableThen = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 78, runtime: "javascript", kind: "object"});
 if (callableThen.then !== undefined) throw new Error("callable remote then became a JS thenable");
-if (omnivm.calls.some(function(call) { return call.op === "handle_get" && call.key === "then"; })) throw new Error("plain callable then access touched the bridge");
 var thenMethod = omnivm.proxyGet(callableThen, "then");
 if (typeof thenMethod !== "function") throw new Error("proxyGet did not recover callable remote then");
 if (thenMethod("ok") !== "called:ok") throw new Error("callable remote then did not dispatch through handle_call");
 var plainThen = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 79, runtime: "javascript", kind: "object"});
-var beforePlainThen = omnivm.calls.length;
-if (plainThen.then !== undefined) throw new Error("non-callable remote then became a JS thenable");
-if (omnivm.calls.length !== beforePlainThen) throw new Error("plain non-callable then access touched the bridge");
+if (plainThen.then !== "remote-then") throw new Error("non-callable remote then field was not natural: " + String(plainThen.then));
 if (omnivm.proxyGet(plainThen, "then") !== "remote-then") throw new Error("proxyGet did not recover non-callable remote then");
 var beforePromise = omnivm.calls.length;
 var callablePromise = Promise.resolve(callableThen);
 var plainPromise = Promise.resolve(plainThen);
-if (omnivm.calls.length !== beforePromise) throw new Error("Promise.resolve touched remote then through the bridge");
+if (omnivm.calls.length <= beforePromise) throw new Error("Promise.resolve did not inspect then through the proxy contract");
 callablePromise.then(function(value) {
   if (value !== callableThen) throw new Error("callable remote then assimilated the proxy");
 });
