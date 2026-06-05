@@ -9251,10 +9251,17 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
 	}
 	if !contains(code, "OmniVM stream_next returned malformed chunk for handle") ||
-		!contains(code, `malformed.instance_variable_set(:@boundary_path, "stream_next")`) ||
-		!contains(code, `malformed.instance_variable_set(:@details, {"stream" => {"id" => @value["id"], "chunk" => item}})`) ||
+		!contains(code, "def __omnivm_runtime_error(message, boundary_path, details = nil)") ||
+		!contains(code, "return OmniVM::RuntimeError.new(message, runtime: \"ruby\", boundary_path: boundary_path, details: details)") ||
+		!contains(code, "attr_reader :runtime, :origin_runtime, :type, :boundary_path, :original_error_handle, :details_json") ||
+		!contains(code, "def stack_frames") ||
+		!contains(code, "def cause_chain") ||
+		!contains(code, "def details") ||
+		!contains(code, "def to_h") ||
+		!contains(code, "def to_json(*args)") ||
+		!contains(code, `malformed = __omnivm_runtime_error("OmniVM stream_next returned malformed chunk`) ||
 		!contains(code, "OmniVM.__record_cleanup_error(malformed, cleanup_error)") {
-		t.Fatalf("Ruby stream proxy should reject malformed stream_next chunks with explicit cancel cleanup, got %q", code)
+		t.Fatalf("Ruby stream proxy should reject malformed stream_next chunks with structured error details and explicit cancel cleanup, got %q", code)
 	}
 	if contains(code, "value.respond_to?(:close)") || contains(code, "value.respond_to?(:omnivm_close)") {
 		t.Fatalf("Ruby proxy close helpers should not trust respond_to_missing? for lifecycle methods")
@@ -9761,9 +9768,15 @@ begin
   raise "malformed stream chunk was treated as a value or EOF"
 rescue => e
   raise unless e.message.include?("stream_next returned malformed chunk")
-  raise "malformed chunk boundary mismatch: #{e.instance_variable_get(:@boundary_path).inspect}" unless e.instance_variable_get(:@boundary_path) == "stream_next"
-  details = e.instance_variable_get(:@details)
+  raise "malformed chunk runtime mismatch: #{e.runtime.inspect}" unless e.respond_to?(:runtime) && e.runtime == "ruby"
+  raise "malformed chunk boundary mismatch: #{e.boundary_path.inspect}" unless e.respond_to?(:boundary_path) && e.boundary_path == "stream_next"
+  details = e.details
   raise "malformed chunk details mismatch: #{details.inspect}" unless details == {"stream" => {"id" => 90, "chunk" => ""}}
+  details["stream"]["id"] = -1
+  raise "malformed chunk details reader leaked mutable state" unless e.details == {"stream" => {"id" => 90, "chunk" => ""}}
+  envelope = JSON.parse(e.to_json)
+  raise "malformed chunk json boundary mismatch: #{envelope.inspect}" unless envelope["boundary_path"] == "stream_next"
+  raise "malformed chunk json details mismatch: #{envelope.inspect}" unless envelope["details"] == {"stream" => {"id" => 90, "chunk" => ""}}
 end
 raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
 raise "close was not idempotent" unless stream.close == false

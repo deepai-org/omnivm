@@ -2831,6 +2831,85 @@ rescue
   false
 end
 
+def __omnivm_copy_json_value(value)
+  case value
+  when Hash
+    value.each_with_object({}) { |(key, item), out| out[key] = __omnivm_copy_json_value(item) }
+  when Array
+    value.map { |item| __omnivm_copy_json_value(item) }
+  else
+    value
+  end
+end
+
+def __omnivm_runtime_error_details_json(value)
+  return nil if value.nil?
+  JSON.generate(value)
+rescue
+  value.to_s
+end
+
+def __omnivm_runtime_error(message, boundary_path, details = nil)
+  if defined?(OmniVM::RuntimeError)
+    begin
+      return OmniVM::RuntimeError.new(message, runtime: "ruby", boundary_path: boundary_path, details: details)
+    rescue ArgumentError
+    end
+  end
+  err = RuntimeError.new(message)
+  details_copy = __omnivm_copy_json_value(details)
+  details_json = __omnivm_runtime_error_details_json(details_copy)
+  err.instance_variable_set(:@runtime, "ruby")
+  err.instance_variable_set(:@origin_runtime, "ruby")
+  err.instance_variable_set(:@type, "RuntimeError")
+  err.instance_variable_set(:@boundary_path, boundary_path)
+  err.instance_variable_set(:@original_error_handle, nil)
+  err.instance_variable_set(:@details, details_copy)
+  err.instance_variable_set(:@details_json, details_json)
+  class << err
+    attr_reader :runtime, :origin_runtime, :type, :boundary_path, :original_error_handle, :details_json
+    alias originRuntime origin_runtime
+    alias boundaryPath boundary_path
+    alias originalErrorHandle original_error_handle
+    alias detailsJson details_json
+
+    def traceback
+      frames = backtrace
+      frames.is_a?(Array) ? frames.join("\n") : ""
+    end
+
+    def stack_frames
+      frames = backtrace
+      frames.is_a?(Array) ? frames.dup : []
+    end
+
+    alias stackFrames stack_frames
+
+    def cause_chain
+      []
+    end
+
+    alias causeChain cause_chain
+
+    def details
+      __omnivm_copy_json_value(@details)
+    end
+
+    def to_h
+      {runtime: @runtime, origin_runtime: @origin_runtime, type: @type, message: message, traceback: traceback, stack_frames: stack_frames, cause_chain: cause_chain, boundary_path: @boundary_path, original_error_handle: @original_error_handle, details: details, details_json: @details_json}
+    end
+
+    def as_json(*_args)
+      to_h
+    end
+
+    def to_json(*args)
+      JSON.generate(to_h, *args)
+    end
+  end
+  err
+end
+
 def omnivm_close(value)
   return value.public_send(:omnivm_close) if __omnivm_lifecycle_method_without_required_args?(value, :omnivm_close)
   if __omnivm_lifecycle_method_without_required_args?(value, :close)
@@ -3480,9 +3559,7 @@ class OmniVMStreamProxy
         end
         item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
         if env.is_a?(Hash) && env["__omnivm_result__"] == true && (!item.is_a?(Hash) || !item.key?("done"))
-          malformed = RuntimeError.new("OmniVM stream_next returned malformed chunk for handle #{@value['id']}: expected an object with a done flag")
-          malformed.instance_variable_set(:@boundary_path, "stream_next")
-          malformed.instance_variable_set(:@details, {"stream" => {"id" => @value["id"], "chunk" => item}})
+          malformed = __omnivm_runtime_error("OmniVM stream_next returned malformed chunk for handle #{@value['id']}: expected an object with a done flag", "stream_next", {"stream" => {"id" => @value["id"], "chunk" => item}})
           begin
             released = close
             __omnivm_mark_closed if released != true
