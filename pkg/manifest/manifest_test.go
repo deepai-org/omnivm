@@ -41,6 +41,16 @@ func (r *closeTrackingReader) Close() error {
 	return nil
 }
 
+type goProxyTestCloser struct {
+	calls int
+	err   error
+}
+
+func (c *goProxyTestCloser) Close() error {
+	c.calls++
+	return c.err
+}
+
 type closeErrorReader struct {
 	*strings.Reader
 }
@@ -2758,6 +2768,94 @@ func TestGoHandleProxyCloseReleasesProxyRetain(t *testing.T) {
 	afterClosedAccess := e.handleTable.Stats(time.Now())
 	if afterClosedAccess.HandleAccesses != after.HandleAccesses {
 		t.Fatalf("closed Go proxy recorded access: before=%+v after=%+v", after, afterClosedAccess)
+	}
+}
+
+func TestGoProxyCloseHelperClosesHandleStreamsAndCloseables(t *testing.T) {
+	if closed, err := ProxyClose(nil); closed || err != nil {
+		t.Fatalf("ProxyClose(nil) = (%v, %v), want false,nil", closed, err)
+	}
+	var nilHandle *GoHandleProxy
+	if closed, err := ProxyClose(nilHandle); closed || err != nil {
+		t.Fatalf("ProxyClose(typed nil handle) = (%v, %v), want false,nil", closed, err)
+	}
+	if closed, err := ProxyClose(struct{}{}); closed || err != nil {
+		t.Fatalf("ProxyClose(no close) = (%v, %v), want false,nil", closed, err)
+	}
+
+	closeable := &goProxyTestCloser{}
+	if closed, err := ProxyClose(closeable); !closed || err != nil {
+		t.Fatalf("ProxyClose(closeable) = (%v, %v), want true,nil", closed, err)
+	}
+	if closeable.calls != 1 {
+		t.Fatalf("closeable calls = %d, want 1", closeable.calls)
+	}
+	closeErr := errors.New("close failed")
+	failingCloseable := &goProxyTestCloser{err: closeErr}
+	if closed, err := OmnivmClose(failingCloseable); closed || !errors.Is(err, closeErr) {
+		t.Fatalf("OmnivmClose(failing closeable) = (%v, %v), want false,closeErr", closed, err)
+	}
+
+	localStream := newGoLocalStreamProxy([]interface{}{"first"}, nil)
+	if closed, err := ProxyClose(localStream); !closed || err != nil {
+		t.Fatalf("ProxyClose(local stream) = (%v, %v), want true,nil", closed, err)
+	}
+	if closed, err := ProxyClose(localStream); closed || err != nil {
+		t.Fatalf("second ProxyClose(local stream) = (%v, %v), want false,nil", closed, err)
+	}
+
+	e, _ := makeExecutor("python", "go")
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "open",
+		Runtime: "python",
+		Bind:    "req",
+		Kind:    "request",
+		Value:   &ValueExpr{Kind: "literal", Value: map[string]interface{}{"path": "/scoped"}},
+	}); err != nil {
+		t.Fatalf("resource open: %v", err)
+	}
+	val, _ := e.getBinding("req")
+	ref := val.(*ResourceRef)
+	proxy := e.normalizeGoArg(ref).(*GoHandleProxy)
+	if closed, err := ProxyClose(proxy); !closed || err != nil {
+		t.Fatalf("ProxyClose(handle proxy) = (%v, %v), want true,nil", closed, err)
+	}
+	if ref.Closed {
+		t.Fatal("ProxyClose(handle proxy) consumed the scope owner reference")
+	}
+	if closed, err := OmnivmClose(proxy); closed || err != nil {
+		t.Fatalf("OmnivmClose(closed handle proxy) = (%v, %v), want false,nil", closed, err)
+	}
+}
+
+func TestGoProxyCloseHelperPreservesRetryableErrors(t *testing.T) {
+	table := handles.NewTable()
+	releaseErr := errors.New("release boom")
+	id, err := table.Register("value", handles.RegisterOptions{
+		Runtime: "go",
+		Kind:    "resource",
+		Release: func(any) error {
+			return releaseErr
+		},
+	})
+	if err != nil {
+		t.Fatalf("register handle: %v", err)
+	}
+	proxy := newGoHandleProxy(id, table, "resource", map[string]interface{}{
+		"__omnivm_resource__": true,
+		"id":                  uint64(id),
+		"runtime":             "go",
+		"kind":                "resource",
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err := table.Release(id); err != nil {
+		t.Fatalf("release owner ref: %v", err)
+	}
+	if closed, err := ProxyClose(proxy); closed || !errors.Is(err, releaseErr) {
+		t.Fatalf("ProxyClose(failing handle proxy) = (%v, %v), want false,releaseErr", closed, err)
+	}
+	if closed, err := ProxyClose(proxy); closed || !errors.Is(err, releaseErr) {
+		t.Fatalf("second ProxyClose(failing handle proxy) = (%v, %v), want false,releaseErr", closed, err)
 	}
 }
 

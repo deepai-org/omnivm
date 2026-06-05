@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"runtime"
 	"time"
 
@@ -567,6 +568,62 @@ func (p *GoHandleProxy) Close() error {
 	p.closed = true
 	runtime.SetFinalizer(p, nil)
 	return nil
+}
+
+// ProxyClose closes an OmniVM Go proxy or ordinary Go closeable through the
+// same collision-safe lifecycle path exposed by guest runtimes. It returns
+// false,nil when the value is nil, has no close operation, or was already
+// closed; release/cancel failures are returned and remain retryable.
+func ProxyClose(value interface{}) (bool, error) {
+	if goProxyValueIsNil(value) {
+		return false, nil
+	}
+	switch v := value.(type) {
+	case nil:
+		return false, nil
+	case *GoHandleProxy:
+		if v.closed {
+			return false, nil
+		}
+		if err := v.Close(); err != nil {
+			return false, err
+		}
+		return true, nil
+	case *GoStreamProxy:
+		if v.closed {
+			return false, nil
+		}
+		if err := v.Close(); err != nil {
+			return false, err
+		}
+		return true, nil
+	case interface{ Close() error }:
+		if err := v.Close(); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func goProxyValueIsNil(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
+// OmnivmClose is an alias for ProxyClose, matching generated helper names in
+// other OmniVM guest runtimes.
+func OmnivmClose(value interface{}) (bool, error) {
+	return ProxyClose(value)
 }
 
 func (p *GoHandleProxy) record(kind string) (handles.AccessReport, bool) {
