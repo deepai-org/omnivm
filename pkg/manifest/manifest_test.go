@@ -7693,11 +7693,17 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`thread: "ruby_fiber_thread"`,
 		`python_async_stream_pull`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
-		`boundary_path = boundaryPath`,
-		`originRuntime = err.origin_runtime`,
-		`original_error_handle: err.original_error_handle`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
+		`var originRuntime = "javascript"`,
+		`var boundaryValue = boundaryPath`,
+		`var originalErrorHandle = null`,
+		`Object.defineProperty(err, "origin_runtime"`,
+		`Object.defineProperty(err, "originRuntime"`,
+		`Object.defineProperty(err, "boundary_path"`,
+		`Object.defineProperty(err, "boundaryPath"`,
+		`Object.defineProperty(err, "original_error_handle"`,
+		`Object.defineProperty(err, "originalErrorHandle"`,
 		`Object.defineProperty(err, "stack_frames"`,
 		`get: function() { return stackFrames.slice(); }`,
 		`Object.defineProperty(err, "cause_chain"`,
@@ -7707,6 +7713,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`if (typeof value === 'string')`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(JSON.parse(value));`,
 		`err.details_json = value;`,
+		`origin_runtime: originRuntime`,
+		`boundary_path: boundaryValue`,
+		`original_error_handle: originalErrorHandle`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
 	} {
 		if !contains(code, want) {
@@ -7944,6 +7953,16 @@ try {
   err.detailsJson = {owner_dispatch: {mode: "alias-object-set"}};
   if (JSON.parse(err.details_json).owner_dispatch.mode !== "alias-object-set") throw new Error("detailsJson object setter did not update details_json");
   if (err.details.owner_dispatch.mode !== "alias-object-set") throw new Error("detailsJson object setter did not update details");
+  err.originRuntime = "owner-js";
+  err.boundaryPath = "owner_dispatch > normalized";
+  err.originalErrorHandle = "js-owner-1";
+  if (err.origin_runtime !== "owner-js") throw new Error("originRuntime did not update origin_runtime");
+  if (err.boundary_path !== "owner_dispatch > normalized") throw new Error("boundaryPath did not update boundary_path");
+  if (err.original_error_handle !== "js-owner-1") throw new Error("originalErrorHandle did not update original_error_handle");
+  var aliasEnvelope = err.toJSON();
+  if (aliasEnvelope.origin_runtime !== "owner-js") throw new Error("originRuntime setter did not update envelope");
+  if (aliasEnvelope.boundary_path !== "owner_dispatch > normalized") throw new Error("boundaryPath setter did not update envelope");
+  if (aliasEnvelope.original_error_handle !== "js-owner-1") throw new Error("originalErrorHandle setter did not update envelope");
 }
 try {
   omnivm.assertRubyNativeThreadsSupported("puma startup");
@@ -12230,8 +12249,16 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
+		`var originRuntime = "javascript"`,
+		`var boundaryValue = boundaryPath`,
+		`var originalErrorHandle = null`,
 		`err.toJSON = function()`,
-		`err.originRuntime = err.origin_runtime`,
+		`Object.defineProperty(err, "origin_runtime"`,
+		`Object.defineProperty(err, "originRuntime"`,
+		`Object.defineProperty(err, "boundary_path"`,
+		`Object.defineProperty(err, "boundaryPath"`,
+		`Object.defineProperty(err, "original_error_handle"`,
+		`Object.defineProperty(err, "originalErrorHandle"`,
 		`Object.defineProperty(err, "stack_frames"`,
 		`get: function() { return stackFrames.slice(); }`,
 		`Object.defineProperty(err, "cause_chain"`,
@@ -12244,8 +12271,9 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`stack_frames: stackFrames.slice()`,
 		`cause_chain: globalThis.__omnivm_clone_json(causeChain)`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
-		`original_error_handle: err.original_error_handle`,
-		`boundary_path: err.boundary_path`,
+		`origin_runtime: originRuntime`,
+		`boundary_path: boundaryValue`,
+		`original_error_handle: originalErrorHandle`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",
 		"globalThis.__omnivm_lifecycle_method_without_required_args",

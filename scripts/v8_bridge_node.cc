@@ -2004,17 +2004,50 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       var causeChain = [];
       var detailsSnapshot = globalThis.__omnivm_clone_json(details);
       var detailsJson = JSON.stringify(detailsSnapshot);
+      var originRuntime = "javascript";
+      var boundaryValue = boundaryPath;
+      var originalErrorHandle = null;
       err.name = "OmniVMRuntimeError";
       err.runtime = "javascript";
-      err.origin_runtime = "javascript";
-      err.originRuntime = err.origin_runtime;
       err.type = "RuntimeError";
-      err.boundary_path = boundaryPath;
-      err.boundaryPath = boundaryPath;
-      err.original_error_handle = null;
-      err.originalErrorHandle = null;
       err.traceback = err.stack || "";
       stackFrames = String(err.traceback).split("\n").filter(function(frame) { return frame.length > 0; });
+      Object.defineProperty(err, "origin_runtime", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return originRuntime; },
+        set: function(value) { originRuntime = value; }
+      });
+      Object.defineProperty(err, "originRuntime", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return originRuntime; },
+        set: function(value) { originRuntime = value; }
+      });
+      Object.defineProperty(err, "boundary_path", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return boundaryValue; },
+        set: function(value) { boundaryValue = value; }
+      });
+      Object.defineProperty(err, "boundaryPath", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return boundaryValue; },
+        set: function(value) { boundaryValue = value; }
+      });
+      Object.defineProperty(err, "original_error_handle", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return originalErrorHandle; },
+        set: function(value) { originalErrorHandle = value; }
+      });
+      Object.defineProperty(err, "originalErrorHandle", {
+        enumerable: true,
+        configurable: true,
+        get: function() { return originalErrorHandle; },
+        set: function(value) { originalErrorHandle = value; }
+      });
       Object.defineProperty(err, "stack_frames", {
         enumerable: true,
         configurable: true,
@@ -2082,14 +2115,14 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.toJSON = function() {
         return {
           runtime: err.runtime,
-          origin_runtime: err.origin_runtime,
+          origin_runtime: originRuntime,
           type: err.type,
           message: err.message,
           traceback: err.traceback,
           stack_frames: stackFrames.slice(),
           cause_chain: globalThis.__omnivm_clone_json(causeChain),
-          boundary_path: err.boundary_path,
-          original_error_handle: err.original_error_handle,
+          boundary_path: boundaryValue,
+          original_error_handle: originalErrorHandle,
           details: globalThis.__omnivm_clone_json(detailsSnapshot),
           details_json: detailsJson
         };
