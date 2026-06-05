@@ -8729,6 +8729,9 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`out.put("message", String.valueOf(throwable.getMessage()));`,
 		`out.put("stack_frames", frames);`,
 		"if (depth >= 4)",
+		"private static String originalErrorHandleFromMethod(Throwable throwable, String name)",
+		"current.getDeclaredMethod(name)",
+		"method.setAccessible(true)",
 	} {
 		if !contains(runnerCode, want) {
 			t.Fatalf("Java runner throwable details should preserve cause/suppressed cleanup failures, missing %q", want)
@@ -9246,6 +9249,22 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 
 public final class JavaThrowableDetailsCheck {
+    static class BaseHandledException extends RuntimeException {
+        BaseHandledException(String message) {
+            super(message);
+        }
+
+        private String originalErrorHandle() {
+            return "base-handle";
+        }
+    }
+
+    static final class HandledException extends BaseHandledException {
+        HandledException(String message) {
+            super(message);
+        }
+    }
+
     private static void require(boolean ok, String message) {
         if (!ok) {
             throw new AssertionError(message);
@@ -9265,6 +9284,9 @@ public final class JavaThrowableDetailsCheck {
         require(text.contains("\"cause\":{\"type\":\"java.io.IOException\",\"message\":\"disk\""), "cause details missing: " + text);
         require(text.contains("\"suppressed\":[{\"type\":\"java.lang.IllegalStateException\",\"message\":\"closing\""), "suppressed details missing: " + text);
         require(text.contains("\"stack_frames\":["), "stack frames missing: " + text);
+
+        String handled = String.valueOf(format.invoke(null, new HandledException("handled")));
+        require(handled.contains("Original error handle: base-handle"), "private inherited original handle missing: " + handled);
     }
 }
 `

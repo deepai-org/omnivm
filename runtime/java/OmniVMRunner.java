@@ -998,16 +998,23 @@ public class OmniVMRunner {
     }
 
     private static String originalErrorHandleFromMethod(Throwable throwable, String name) {
-        try {
-            Method method = throwable.getClass().getMethod(name);
-            if (method.getParameterCount() != 0) {
-                return "";
+        for (Class<?> current = throwable.getClass(); current != null; current = current.getSuperclass()) {
+            if (current == Throwable.class || current == Object.class) {
+                break;
             }
-            Object value = method.invoke(throwable);
-            return value == null ? "" : String.valueOf(value);
-        } catch (ReflectiveOperationException | SecurityException ignored) {
-            return "";
+            try {
+                Method method = current.getDeclaredMethod(name);
+                if (method.getParameterCount() != 0 || Modifier.isStatic(method.getModifiers())) {
+                    return "";
+                }
+                method.setAccessible(true);
+                Object value = method.invoke(throwable);
+                return value == null ? "" : String.valueOf(value);
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                // Try the next superclass.
+            }
         }
+        return "";
     }
 
     private static String originalErrorHandleFromField(Throwable throwable, String name) {
