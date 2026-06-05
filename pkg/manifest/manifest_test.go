@@ -8610,6 +8610,60 @@ if (stream.cancel() !== false) throw new Error("closed remote stream cancel shou
 	}
 }
 
+func TestJSRemoteStreamRejectsMalformedNextChunk(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: true, value: ""});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 90, runtime: "javascript", kind: "stream"});
+try {
+  stream[Symbol.iterator]().next();
+  throw new Error("malformed stream chunk was treated as a value or EOF");
+} catch (err) {
+  if (!String(err && err.message).includes("stream_next returned malformed chunk")) throw err;
+  if (err.boundary_path !== "stream_next") throw new Error("malformed chunk boundary mismatch: " + err.boundary_path);
+  if (!err.details || !err.details.stream || err.details.stream.id !== 90 || err.details.stream.chunk !== "") {
+    throw new Error("malformed chunk details mismatch: " + JSON.stringify(err.details));
+  }
+}
+if (stream.__omnivm_closed__ !== true) throw new Error("stream was not marked closed after malformed chunk");
+if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+if (unregistered !== 1) throw new Error("stream finalizer was not unregistered after malformed chunk: " + unregistered);
+var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+if (cancels.length !== 1 || cancels[0].id !== 90) throw new Error("malformed chunk cancel mismatch: " + JSON.stringify(cancels));
+if (stream.cancel() !== false) throw new Error("closed remote stream cancel should be idempotent false");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node remote stream malformed-chunk check failed: %v\n%s", err, out)
+	}
+}
+
 func TestJSNodeReadableCloseUsesDescriptorSafeIteratorCleanup(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -9196,6 +9250,12 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "error.instance_variable_set(:@omnivm_cleanup_errors, errors)") {
 		t.Fatalf("Ruby materializer should expose top-level and OmniVM proxy close helpers, got %q", code)
 	}
+	if !contains(code, "OmniVM stream_next returned malformed chunk for handle") ||
+		!contains(code, `malformed.instance_variable_set(:@boundary_path, "stream_next")`) ||
+		!contains(code, `malformed.instance_variable_set(:@details, {"stream" => {"id" => @value["id"], "chunk" => item}})`) ||
+		!contains(code, "OmniVM.__record_cleanup_error(malformed, cleanup_error)") {
+		t.Fatalf("Ruby stream proxy should reject malformed stream_next chunks with explicit cancel cleanup, got %q", code)
+	}
 	if contains(code, "value.respond_to?(:close)") || contains(code, "value.respond_to?(:omnivm_close)") {
 		t.Fatalf("Ruby proxy close helpers should not trust respond_to_missing? for lifecycle methods")
 	}
@@ -9668,6 +9728,52 @@ raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.lengt
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby remote stream materialization-error lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyRemoteStreamRejectsMalformedNextChunk(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => ""}) if req["op"] == "stream_next"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "stream_cancel"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 90, "runtime" => "ruby", "kind" => "stream"})
+begin
+  stream.each { |_item| }
+  raise "malformed stream chunk was treated as a value or EOF"
+rescue => e
+  raise unless e.message.include?("stream_next returned malformed chunk")
+  raise "malformed chunk boundary mismatch: #{e.instance_variable_get(:@boundary_path).inspect}" unless e.instance_variable_get(:@boundary_path) == "stream_next"
+  details = e.instance_variable_get(:@details)
+  raise "malformed chunk details mismatch: #{details.inspect}" unless details == {"stream" => {"id" => 90, "chunk" => ""}}
+end
+raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
+raise "close was not idempotent" unless stream.close == false
+raise "stream handle was not retained" unless OmniVM.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 90 }
+cancels = OmniVM.requests.select { |req| req["op"] == "stream_cancel" }
+raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.length == 1 && cancels[0]["id"] == 90
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby remote stream malformed-chunk check failed: %v\n%s", err, out)
 	}
 }
 

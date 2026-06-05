@@ -1874,6 +1874,7 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     };
     return err;
   };
+  globalThis.__omnivm_runtime_error = globalThis.__omnivm_runtime_error || globalThis.__omnivm_owner_dispatch_error;
   if (typeof omnivm.assertOwnerDispatchSupported !== 'function') {
     Object.defineProperty(omnivm, "assertOwnerDispatchSupported", {
       configurable: true,
@@ -2480,12 +2481,22 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       }
       var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
       var env = JSON.parse(raw);
-      if (env && env.__omnivm_result__ === true && env.value) {
-        if (env.value.done === true) {
+      if (env && env.__omnivm_result__ === true) {
+        var chunk = env.value;
+        if (!chunk || typeof chunk !== 'object' || !Object.prototype.hasOwnProperty.call(chunk, "done")) {
+          var malformed = typeof globalThis.__omnivm_runtime_error === 'function'
+            ? globalThis.__omnivm_runtime_error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag", "stream_next", {stream: {id: value.id, chunk: chunk}})
+            : new Error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag");
+          if (!malformed.boundary_path) malformed.boundary_path = "stream_next";
+          if (!malformed.boundaryPath) malformed.boundaryPath = "stream_next";
+          if (!malformed.details) malformed.details = {stream: {id: value.id, chunk: chunk}};
+          throw malformed;
+        }
+        if (chunk.done === true) {
           closeRemote();
           return {done: true};
         }
-        return {done: false, value: globalThis.__omnivm_stream_chunk_value(env.value.value)};
+        return {done: false, value: globalThis.__omnivm_stream_chunk_value(chunk.value)};
       }
     } catch (_e) {
       cancelRemoteQuiet(_e);
@@ -3468,7 +3479,20 @@ class OmniVMStreamProxy
           raise
         end
         item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
-        if item.nil? || item["done"] == true
+        if env.is_a?(Hash) && env["__omnivm_result__"] == true && (!item.is_a?(Hash) || !item.key?("done"))
+          malformed = RuntimeError.new("OmniVM stream_next returned malformed chunk for handle #{@value['id']}: expected an object with a done flag")
+          malformed.instance_variable_set(:@boundary_path, "stream_next")
+          malformed.instance_variable_set(:@details, {"stream" => {"id" => @value["id"], "chunk" => item}})
+          begin
+            released = close
+            __omnivm_mark_closed if released != true
+          rescue => cleanup_error
+            OmniVM.__record_cleanup_error(malformed, cleanup_error) if defined?(OmniVM) && OmniVM.respond_to?(:__record_cleanup_error)
+            __omnivm_mark_closed
+          end
+          raise malformed
+        end
+        if item["done"] == true
           __omnivm_mark_closed
           break
         end
