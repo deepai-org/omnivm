@@ -164,6 +164,7 @@ COPY scripts/ scripts/
 # 3. Source code (frequently changes — cache-bust point for build)
 COPY pkg/ pkg/
 COPY cmd/ cmd/
+COPY runtime/java/ runtime/java/
 COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
 COPY test/fixtures/prisma/ test/fixtures/prisma/

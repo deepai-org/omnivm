@@ -9974,6 +9974,15 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if contains(code, "class OmniVMHandleProxy\n  include Enumerable") {
 		t.Fatalf("Ruby handle proxy should avoid broad Enumerable methods shadowing remote data keys, got %q", code)
 	}
+	if !contains(code, "OmniVMHandleProxy.__omnivm_missing_bridge_error?(error)") ||
+		!contains(code, "OmniVMHandleProxy.omnivm_adopt(id)") ||
+		!contains(code, "OmniVMHandleProxy.omnivm_retain(id)") ||
+		!contains(code, "OmniVMHandleProxy.omnivm_finalizer(id)") ||
+		contains(code, "self.class.__omnivm_missing_bridge_error?") ||
+		contains(code, "self.class.omnivm_retain") ||
+		contains(code, "self.class.omnivm_finalizer") {
+		t.Fatalf("Ruby handle proxy internals should bypass remote class field collisions, got %q", code)
+	}
 	if !contains(code, `op: "handle_access"`) {
 		t.Fatalf("Ruby materializer should record handle access, got %q", code)
 	}
@@ -10114,6 +10123,7 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "begin\n      if @local_values\n        @local_values.each do |item|") ||
 		!contains(code, "yield __omnivm_materialize_capture(item)") ||
 		!contains(code, "ensure\n      if @__omnivm_closed != true") ||
+		!contains(code, "body_error = $!\n        begin\n          close") ||
 		!contains(code, "begin\n          close\n        rescue => cleanup_error") ||
 		!contains(code, "return __omnivm_mark_closed if @local_values") ||
 		!contains(code, "def __omnivm_mark_closed") ||
@@ -10123,7 +10133,6 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "__omnivm_mark_closed if released") ||
 		!contains(code, "def omnivm_close\n    close\n  end") ||
-		!contains(code, "body_error = $!") ||
 		!contains(code, "OmniVM.__record_cleanup_error(body_error, cleanup_error)") {
 		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and mark pull errors closed, got %q", code)
 	}
@@ -10356,6 +10365,9 @@ class OmniVM
     return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
     return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
     return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.key?(req["value"])}) if req["op"] == "handle_contains"
+    if req["op"] == "handle_index"
+      raise "manifest HandleCall: handle #{req["id"]} has no index #{req["value"]}"
+    end
     if req["op"] == "handle_get" && @@fields.key?(req["key"])
       return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["key"]]})
     end

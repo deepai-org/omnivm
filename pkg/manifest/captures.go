@@ -3521,7 +3521,7 @@ class OmniVMHandleProxy
   end
 
   def __omnivm_missing_bridge_error?(error)
-    self.class.__omnivm_missing_bridge_error?(error)
+    OmniVMHandleProxy.__omnivm_missing_bridge_error?(error)
   end
 
   def initialize(value)
@@ -3529,9 +3529,9 @@ class OmniVMHandleProxy
     @__omnivm_closed = false
     id = @value["id"]
     if !id.nil?
-      @value["transfer"] == true ? self.class.omnivm_adopt(id) : self.class.omnivm_retain(id)
+      @value["transfer"] == true ? OmniVMHandleProxy.omnivm_adopt(id) : OmniVMHandleProxy.omnivm_retain(id)
     end
-    ObjectSpace.define_finalizer(self, self.class.omnivm_finalizer(id)) unless id.nil?
+    ObjectSpace.define_finalizer(self, OmniVMHandleProxy.omnivm_finalizer(id)) unless id.nil?
   end
 
   def self.omnivm_retain(id)
@@ -4170,10 +4170,10 @@ class OmniVMStreamProxy
       end
     ensure
       if @__omnivm_closed != true
+        body_error = $!
         begin
           close
         rescue => cleanup_error
-          body_error = $!
           OmniVM.__record_cleanup_error(body_error, cleanup_error) if body_error && defined?(OmniVM) && OmniVM.respond_to?(:__record_cleanup_error)
           __omnivm_mark_closed
         end

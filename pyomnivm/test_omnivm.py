@@ -2397,6 +2397,56 @@ class TestCallWithMockLib(unittest.TestCase):
             {"op": "stream_cancel", "id": 47},
         ]
 
+    def test_manifest_stream_iterator_finalizer_ignores_replaced_runtime(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        old_requests = []
+        cancel_results = iter([False])
+
+        def old_manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            old_requests.append(request)
+            if request.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 48,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "stream_cancel":
+                return envelope(next(cancel_results), "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = old_manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+        iterator = iter(proxy)
+        assert iterator.close() is False
+        assert object.__getattribute__(iterator, "_finalizer").alive is True
+
+        new_lib = MagicMock()
+        new_requests = []
+
+        def new_manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            new_requests.append(request)
+            return envelope(True, "bool")
+
+        new_lib.OmniManifestCall.side_effect = new_manifest_call
+        omnivm_mod._lib = new_lib
+        del iterator
+        gc.collect()
+
+        assert [request for request in old_requests if request.get("op") == "stream_cancel"] == [
+            {"op": "stream_cancel", "id": 48},
+        ]
+        assert new_requests == []
+        assert proxy.close() is False
+        assert new_requests == []
+
     def test_manifest_stream_iterator_detaches_on_eof(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

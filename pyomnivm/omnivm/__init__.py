@@ -1465,9 +1465,9 @@ def _is_local_stream_descriptor(value):
     ) and isinstance(value.get("values"), list) and value.get("id") is None
 
 
-def _manifest_proxy_release(module_id, handle_id):
+def _manifest_proxy_release(module_id, handle_id, lib_token):
     try:
-        if _lib is None or not hasattr(_lib, "OmniManifestCall"):
+        if _lib is not lib_token or not hasattr(_lib, "OmniManifestCall"):
             return
         _manifest_bridge_call(module_id, {"op": "handle_release_finalizer", "id": handle_id})
     except Exception:
@@ -1483,6 +1483,7 @@ class ManifestProxy:
         object.__setattr__(self, "_handle_id", int(descriptor["id"]))
         object.__setattr__(self, "_arg_finalizers", [])
         object.__setattr__(self, "_closed", False)
+        object.__setattr__(self, "_lib_token", _lib)
         if descriptor.get("transfer") is True:
             _manifest_bridge_call(module_id, {"op": "handle_adopt", "id": self._handle_id})
         else:
@@ -1490,7 +1491,7 @@ class ManifestProxy:
         object.__setattr__(
             self,
             "_finalizer",
-            weakref.finalize(self, _manifest_proxy_release, self._module_id, self._handle_id),
+            weakref.finalize(self, _manifest_proxy_release, self._module_id, self._handle_id, self._lib_token),
         )
 
     def _is_stream_proxy(self):
@@ -1546,6 +1547,8 @@ class ManifestProxy:
     def _remote_lifecycle_named_field(self, key, missing):
         if object.__getattribute__(self, "_closed"):
             return missing
+        if _lib is not object.__getattribute__(self, "_lib_token"):
+            return missing
         handle_id = object.__getattribute__(self, "_handle_id")
         if not bool(self._op({"op": "handle_contains", "id": handle_id, "value": key})):
             return missing
@@ -1556,6 +1559,9 @@ class ManifestProxy:
 
     def close(self):
         if object.__getattribute__(self, "_closed"):
+            return False
+        if _lib is not object.__getattribute__(self, "_lib_token"):
+            self._detach_after_remote_close()
             return False
         op = "stream_cancel" if self._is_stream_proxy() else "handle_release_explicit"
         released = bool(_manifest_bridge_call(
@@ -2049,7 +2055,9 @@ def cleanup_errors(error):
     return list(errors) if isinstance(errors, list) else []
 
 
-def _manifest_stream_iterator_release(proxy):
+def _manifest_stream_iterator_release(proxy, lib_token):
+    if _lib is not lib_token:
+        return
     try:
         proxy._omnivm_close()
     except BaseException:
@@ -2059,7 +2067,12 @@ def _manifest_stream_iterator_release(proxy):
 class _ManifestStreamIterator:
     def __init__(self, proxy):
         self._proxy = proxy
-        self._finalizer = weakref.finalize(self, _manifest_stream_iterator_release, proxy)
+        self._finalizer = weakref.finalize(
+            self,
+            _manifest_stream_iterator_release,
+            proxy,
+            object.__getattribute__(proxy, "_lib_token"),
+        )
 
     def __iter__(self):
         return self
