@@ -3400,7 +3400,7 @@ func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, 
 
 func rubyZeroArgCommandMethod(key string) bool {
 	switch key {
-	case "close", "finish", "flush", "commit!", "rollback!", "cancel", "return", "dispose", "shutdown", "terminate":
+	case "close", "finish", "flush", "commit!", "rollback!", "cancel", "return", "dispose", "shutdown", "terminate", "next":
 		return true
 	default:
 		return false

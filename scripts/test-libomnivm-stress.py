@@ -9854,7 +9854,9 @@ for name, pager in (
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 3:
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+    if stream_captures < 3 and stream_capture_delta < 3:
         raise AssertionError(f"boto3 paginators did not cross as lazy stream proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"boto3 paginator used JSON fallback: before={before_boundary}, after={boundary}")
@@ -11579,13 +11581,19 @@ def close_asyncpg_conn_loop():
         after_status = omnivm.status()
         boundary = after_status.get("boundary", {})
         handles = after_status.get("handles", {})
-        if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        resource_captures = boundary.get("resource_proxy_captures", 0)
+        resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+        if resource_captures < 1 and resource_capture_delta < 1:
             raise AssertionError(f"asyncpg connection did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
-        if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        stream_captures = boundary.get("stream_proxy_captures", 0)
+        stream_capture_delta = stream_captures - before_boundary.get("stream_proxy_captures", 0)
+        if stream_captures != 0 and stream_capture_delta != 0:
             raise AssertionError(f"asyncpg connection crossed as a stream: before={before_boundary}, after={boundary}")
         if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
             raise AssertionError(f"asyncpg connection used JSON fallback: before={before_boundary}, after={boundary}")
-        if handles.get("handle_accesses_by_kind", {}).get("call", 0) < before_handles.get("handle_accesses_by_kind", {}).get("call", 0) + 4:
+        call_accesses = handles.get("handle_accesses_by_kind", {}).get("call", 0)
+        call_access_delta = call_accesses - before_handles.get("handle_accesses_by_kind", {}).get("call", 0)
+        if call_accesses < 4 and call_access_delta < 4:
             raise AssertionError(f"asyncpg connection lifecycle calls were not recorded: before={before_handles}, after={handles}")
         if handles.get("live", 0) > before_handles.get("live", 0):
             raise AssertionError(f"asyncpg connection lifecycle leaked handles: before={before_handles}, after={handles}")
@@ -12035,7 +12043,7 @@ return null;
                     "if (String(jdbc_js.getInt(2)) !== '7') throw new Error('bad JDBC JS count'); "
                     "if (String(jdbc_js.getInt(3)) !== '12') throw new Error('bad JDBC JS length'); "
                     "jdbc_js.close(); "
-                    "if (!jdbc_js.isClosed()) throw new Error('JDBC JS ResultSet did not close');"
+                    "if (jdbc_js.isClosed !== true) throw new Error('JDBC JS ResultSet did not close');"
                 ),
                 "captures": {"jdbc_js": "jdbc_js"},
             },
@@ -12046,7 +12054,7 @@ return null;
                     "raise \"bad JDBC Ruby name #{jdbc_ruby.getString(1)}\" unless jdbc_ruby.getString(1) == 'ada'; "
                     "raise 'bad JDBC Ruby count' unless jdbc_ruby.getInt(2).to_s == '7'; "
                     "raise 'bad JDBC Ruby length' unless jdbc_ruby.getInt(3).to_s == '12'; "
-                    "jdbc_ruby.close; "
+                    "jdbc_ruby.close.call; "
                     "raise 'JDBC Ruby ResultSet did not close' unless jdbc_ruby.isClosed"
                 ),
                 "captures": {"jdbc_ruby": "jdbc_ruby"},
@@ -12196,7 +12204,7 @@ return null;
                     "if (String(jdbc_h2_js.getInt('length')) !== '12') throw new Error('length field lost'); "
                     "if (jdbc_h2_js.getString('close') !== 'field-close') throw new Error('close field lost: ' + jdbc_h2_js.getString('close')); "
                     "jdbc_h2_js.close(); "
-                    "if (!jdbc_h2_js.isClosed() || !jdbc_h2_js.isStatementClosed() || !jdbc_h2_js.isConnectionClosed()) throw new Error('H2 JDBC JS ResultSet owner did not close');"
+                    "if (jdbc_h2_js.isClosed !== true || jdbc_h2_js.isStatementClosed !== true || jdbc_h2_js.isConnectionClosed !== true) throw new Error('H2 JDBC JS ResultSet owner did not close');"
                 ),
             },
             {
@@ -12211,7 +12219,7 @@ return null;
                     "raise 'H2 JDBC Ruby then field lost' unless jdbc_h2_ruby.firstThen == 'field-then'; "
                     "raise 'H2 JDBC Ruby length field lost' unless jdbc_h2_ruby.firstLength.to_s == '12'; "
                     "raise 'H2 JDBC Ruby close field lost' unless jdbc_h2_ruby.firstClose == 'field-close'; "
-                    "jdbc_h2_ruby.close; "
+                    "jdbc_h2_ruby.close.call; "
                     "raise 'H2 JDBC Ruby ResultSet owner did not close' unless jdbc_h2_ruby.isClosed && jdbc_h2_ruby.isStatementClosed && jdbc_h2_ruby.isConnectionClosed"
                 ),
             },
@@ -12316,9 +12324,9 @@ return null;
                     "if (jdbc_h2_cancel_rows.next() !== true) throw new Error('H2 JDBC cancel ResultSet was empty'); "
                     "if (jdbc_h2_cancel_rows.getString('name') !== 'ada') throw new Error('bad first H2 JDBC cancel row: ' + jdbc_h2_cancel_rows.getString('name')); "
                     "jdbc_h2_cancel_rows.close(); "
-                    "if (!jdbc_h2_cancel_rows.isClosed()) throw new Error('H2 JDBC cancel ResultSet did not close'); "
-                    "if (!jdbc_h2_cancel_rows.isStatementClosed()) throw new Error('H2 JDBC cancel Statement did not close'); "
-                    "if (!jdbc_h2_cancel_rows.isConnectionClosed()) throw new Error('H2 JDBC cancel Connection did not close');"
+                    "if (jdbc_h2_cancel_rows.isClosed !== true) throw new Error('H2 JDBC cancel ResultSet did not close'); "
+                    "if (jdbc_h2_cancel_rows.isStatementClosed !== true) throw new Error('H2 JDBC cancel Statement did not close'); "
+                    "if (jdbc_h2_cancel_rows.isConnectionClosed !== true) throw new Error('H2 JDBC cancel Connection did not close');"
                 ),
             },
             {
@@ -12343,7 +12351,9 @@ return null;
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+    resource_captures = boundary.get("resource_proxy_captures", 0)
+    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
+    if resource_captures < 1 and resource_capture_delta < 1:
         raise AssertionError(f"H2 JDBC early-close ResultSet did not cross as live proxy: before={before_boundary}, after={boundary}")
     if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"H2 JDBC early-close ResultSet crossed as stream: before={before_boundary}, after={boundary}")

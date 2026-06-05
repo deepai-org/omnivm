@@ -16688,6 +16688,16 @@ func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 	if env.Kind != "json" || !jsonEqual(env.Value, want) {
 		t.Fatalf("live Java command method descriptor = %#v, want %#v", env, want)
 	}
+
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"next"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get next: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	want = map[string]interface{}{"__omnivm_callable__": true, "key": "next"}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java iterator command descriptor = %#v, want %#v", env, want)
+	}
 }
 
 func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
