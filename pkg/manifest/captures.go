@@ -601,14 +601,14 @@ def _omnivm_encode_arg(value):
 
 def omnivm_close(value):
     close = __omnivm_actual_public_method(value, "_omnivm_close")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         return close()
     close = __omnivm_actual_public_method(value, "close")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         return True if result is None else result
     close = __omnivm_actual_public_method(value, "dispose")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         return True if result is None else result
     return False
@@ -619,23 +619,23 @@ def proxy_close(value):
 async def aproxy_close(value):
     import inspect as __omnivm_inspect
     close = __omnivm_actual_public_method(value, "_omnivm_close")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         return await result if __omnivm_inspect.isawaitable(result) else result
     close = __omnivm_actual_public_method(value, "close")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         if __omnivm_inspect.isawaitable(result):
             result = await result
         return True if result is None else result
     close = __omnivm_actual_public_method(value, "aclose")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         if __omnivm_inspect.isawaitable(result):
             result = await result
         return True if result is None else result
     close = __omnivm_actual_public_method(value, "dispose")
-    if callable(close):
+    if callable(close) and __omnivm_lifecycle_method_accepts_no_args(close):
         result = close()
         if __omnivm_inspect.isawaitable(result):
             result = await result
@@ -699,6 +699,19 @@ def __omnivm_actual_public_method(value, name):
     if not hasattr(raw, "__get__"):
         return raw
     return None
+
+def __omnivm_lifecycle_method_accepts_no_args(method):
+    try:
+        import inspect as __inspect
+        signature = __inspect.signature(method)
+    except Exception:
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if parameter.default is __inspect.Signature.empty:
+            return False
+    return True
 
 class __OmniVMHandleProxy:
     _omnivm_chatty_warned = {}

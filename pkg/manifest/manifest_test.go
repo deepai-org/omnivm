@@ -6270,10 +6270,14 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `instance_dict.get(name) is raw`) ||
 		!contains(code, `__inspect.isfunction(raw)`) ||
 		!contains(code, `__inspect.ismethoddescriptor(raw)`) ||
+		!contains(code, "def __omnivm_lifecycle_method_accepts_no_args(method):") ||
+		!contains(code, "__inspect.signature(method)") ||
+		!contains(code, "parameter.default is __inspect.Signature.empty") ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "dispose")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "aclose")`) ||
+		!contains(code, `callable(close) and __omnivm_lifecycle_method_accepts_no_args(close)`) ||
 		!contains(code, `__omnivm_inspect.isawaitable(result)`) ||
 		!contains(code, "return omnivm_close(value)") ||
 		!contains(code, "return await aproxy_close(value)") ||
@@ -6643,6 +6647,17 @@ class CloseAndDispose:
     def dispose(self):
         raise RuntimeError("dispose should not run when close exists")
 
+class RequiredCloseAndDispose:
+    def close(self, reason):
+        raise RuntimeError("required-arg close should not run")
+
+    def dispose(self):
+        return "disposed-after-required-close"
+
+class RequiredOnlyClose:
+    def close(self, reason):
+        raise RuntimeError("required-arg close should not run")
+
 class BothClosers:
     def _omnivm_close(self):
         return "omnivm-closed"
@@ -6684,6 +6699,10 @@ if omnivm_close(NoneDispose()) is not True:
     raise RuntimeError("None dispose result should normalize to true")
 if omnivm_close(CloseAndDispose()) != "closed":
     raise RuntimeError("close should take priority over dispose")
+if omnivm_close(RequiredCloseAndDispose()) != "disposed-after-required-close":
+    raise RuntimeError("required-arg close should be skipped for dispose")
+if omnivm_close(RequiredOnlyClose()) is not False:
+    raise RuntimeError("required-arg close should not be treated as a lifecycle close")
 if proxy_close(TextCloser()) != "closed":
     raise RuntimeError("proxy_close alias did not preserve close result")
 if omnivm_close(BothClosers()) != "omnivm-closed":
@@ -6753,6 +6772,13 @@ class AcloseAndDispose:
     async def dispose(self):
         raise RuntimeError("dispose should not run when aclose exists")
 
+class RequiredAcloseAndDispose:
+    async def aclose(self, reason):
+        raise RuntimeError("required-arg aclose should not run")
+
+    async def dispose(self):
+        return "dispose-after-required-aclose"
+
 class BothAsyncClosers:
     async def _omnivm_close(self):
         return "omnivm-async-closed"
@@ -6796,6 +6822,8 @@ async def main():
         raise RuntimeError("aclose was not awaited")
     if await aproxy_close(AcloseAndDispose()) != "async-aclose":
         raise RuntimeError("aclose should take priority over dispose")
+    if await aproxy_close(RequiredAcloseAndDispose()) != "dispose-after-required-aclose":
+        raise RuntimeError("required-arg aclose should be skipped for dispose")
     if await omnivm_aclose(BothAsyncClosers()) != "omnivm-async-closed":
         raise RuntimeError("omnivm_aclose alias did not prefer _omnivm_close")
     trap = DynamicAcloseTrap()
@@ -10402,6 +10430,10 @@ func TestEmbeddedPythonRegistersCoreProxyCloseHelper(t *testing.T) {
 		"instance_dict.get(name) is raw",
 		"__omnivm_inspect.isfunction(raw)",
 		"__omnivm_inspect.ismethoddescriptor(raw)",
+		"def __omnivm_lifecycle_method_accepts_no_args(method):",
+		"__omnivm_inspect.signature(method)",
+		"parameter.default is __omnivm_inspect.Signature.empty",
+		"callable(close) and __omnivm_lifecycle_method_accepts_no_args(close)",
 		"def proxy_close(value):",
 		"async def aproxy_close(value):",
 		"def omnivm_close(value):",

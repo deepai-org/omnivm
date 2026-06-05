@@ -1524,6 +1524,17 @@ class TestCallWithMockLib(unittest.TestCase):
             def dispose(self):
                 raise AssertionError("dispose should not run when close exists")
 
+        class RequiredCloseAndDispose:
+            def close(self, reason):
+                raise AssertionError("required-arg close should not run")
+
+            def dispose(self):
+                return "disposed-after-required-close"
+
+        class RequiredOnlyClose:
+            def close(self, reason):
+                raise AssertionError("required-arg close should not run")
+
         class DynamicCloseTrap:
             dynamic_lookup_count = 0
 
@@ -1552,6 +1563,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(FalseDispose()) is False
         assert omnivm_mod.proxy_close(NoneDispose()) is True
         assert omnivm_mod.proxy_close(CloseAndDispose()) == "closed"
+        assert omnivm_mod.proxy_close(RequiredCloseAndDispose()) == "disposed-after-required-close"
+        assert omnivm_mod.proxy_close(RequiredOnlyClose()) is False
         assert omnivm_mod.proxy_close(trap) is False
         assert trap.dynamic_lookup_count == 0
         assert omnivm_mod.proxy_close(dispose_trap) is False
@@ -1620,6 +1633,13 @@ class TestCallWithMockLib(unittest.TestCase):
             async def dispose(self):
                 raise AssertionError("dispose should not run when aclose exists")
 
+        class RequiredAcloseAndDispose:
+            async def aclose(self, reason):
+                raise AssertionError("required-arg aclose should not run")
+
+            async def dispose(self):
+                return "dispose-after-required-aclose"
+
         class BothAsyncClosers:
             async def _omnivm_close(self):
                 return "omnivm-async-closed"
@@ -1656,6 +1676,7 @@ class TestCallWithMockLib(unittest.TestCase):
             assert await omnivm_mod.aproxy_close(aclose) is True
             assert aclose.closed is True
             assert await omnivm_mod.aproxy_close(AcloseAndDispose()) == "async-aclose"
+            assert await omnivm_mod.aproxy_close(RequiredAcloseAndDispose()) == "dispose-after-required-aclose"
             assert await omnivm_mod.omnivm_aclose(BothAsyncClosers()) == "omnivm-async-closed"
             trap = DynamicAcloseTrap()
             assert await omnivm_mod.aproxy_close(trap) is False

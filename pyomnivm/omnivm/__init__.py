@@ -1768,19 +1768,32 @@ def _actual_public_method(value, name):
     return None
 
 
+def _lifecycle_method_accepts_no_args(method):
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if parameter.default is inspect.Signature.empty:
+            return False
+    return True
+
+
 def proxy_close(value):
     """Release a proxy lease without colliding with a data field named close."""
     if isinstance(value, ManifestProxy):
         return value.close()
     close = _actual_public_method(value, "_omnivm_close")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         return close()
     close = _actual_public_method(value, "close")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         return True if result is None else result
     close = _actual_public_method(value, "dispose")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         return True if result is None else result
     return False
@@ -1792,23 +1805,23 @@ async def aproxy_close(value):
         result = value.close()
         return await result if inspect.isawaitable(result) else result
     close = _actual_public_method(value, "_omnivm_close")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         return await result if inspect.isawaitable(result) else result
     close = _actual_public_method(value, "close")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         if inspect.isawaitable(result):
             result = await result
         return True if result is None else result
     close = _actual_public_method(value, "aclose")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         if inspect.isawaitable(result):
             result = await result
         return True if result is None else result
     close = _actual_public_method(value, "dispose")
-    if callable(close):
+    if callable(close) and _lifecycle_method_accepts_no_args(close):
         result = close()
         if inspect.isawaitable(result):
             result = await result
