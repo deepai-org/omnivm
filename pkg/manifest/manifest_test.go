@@ -6672,6 +6672,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`boundary_path = boundaryPath`,
 		`original_error_handle: err.original_error_handle`,
 		`details_json = JSON.stringify(err.details)`,
+		`err.stackFrames = err.stack_frames.slice()`,
+		`err.causeChain = err.cause_chain.slice()`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("JS materializer should expose owner-dispatch diagnostic guards, missing %q", want)
@@ -6829,6 +6831,11 @@ try {
   if (err.message.indexOf("express startup: owner dispatch unsupported") < 0) throw new Error("bad universal message: " + err.message);
   if (err.boundary_path !== "owner_dispatch") throw new Error("bad universal boundary: " + err.boundary_path);
   if (!err.details || err.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing universal details");
+  if (!err.traceback || err.traceback.indexOf("OmniVMRuntimeError") < 0) throw new Error("missing error traceback property");
+  if (!Array.isArray(err.stack_frames) || err.stack_frames.length === 0) throw new Error("missing error stack_frames property");
+  if (!Array.isArray(err.stackFrames) || err.stackFrames.length !== err.stack_frames.length) throw new Error("missing error stackFrames alias");
+  if (!Array.isArray(err.cause_chain) || err.cause_chain.length !== 0) throw new Error("missing error cause_chain property");
+  if (!Array.isArray(err.causeChain) || err.causeChain.length !== 0) throw new Error("missing error causeChain alias");
   if (typeof err.toJSON !== "function") throw new Error("missing owner dispatch error toJSON");
   var envelope = err.toJSON();
   if (envelope.runtime !== "javascript") throw new Error("bad envelope runtime: " + envelope.runtime);
@@ -6841,6 +6848,10 @@ try {
   if (!Array.isArray(envelope.stack_frames) || envelope.stack_frames.length === 0) throw new Error("missing envelope stack frames");
   if (!Array.isArray(envelope.cause_chain) || envelope.cause_chain.length !== 0) throw new Error("bad envelope cause chain");
   if (!envelope.details || envelope.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing envelope details");
+  envelope.stack_frames.length = 0;
+  if (err.stack_frames.length === 0) throw new Error("toJSON leaked mutable stack frames");
+  envelope.cause_chain.push({message: "mutated"});
+  if (err.cause_chain.length !== 0) throw new Error("toJSON leaked mutable cause chain");
   envelope.details.owner_dispatch.mode = "mutated-envelope";
   if (err.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("toJSON leaked mutable details");
   var serialized = JSON.stringify(err);
@@ -9943,8 +9954,10 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`err.details_json = JSON.stringify(err.details)`,
 		`err.toJSON = function()`,
-		`stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; })`,
-		`cause_chain: []`,
+		`err.stackFrames = err.stack_frames.slice()`,
+		`err.causeChain = err.cause_chain.slice()`,
+		`stack_frames: err.stack_frames.slice()`,
+		`cause_chain: err.cause_chain.slice()`,
 		`original_error_handle: err.original_error_handle`,
 		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,

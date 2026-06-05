@@ -1963,19 +1963,23 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.boundaryPath = boundaryPath;
       err.original_error_handle = null;
       err.originalErrorHandle = null;
+      err.traceback = err.stack || "";
+      err.stack_frames = String(err.traceback).split("\n").filter(function(frame) { return frame.length > 0; });
+      err.stackFrames = err.stack_frames.slice();
+      err.cause_chain = [];
+      err.causeChain = err.cause_chain.slice();
       err.details = globalThis.__omnivm_clone_json(details);
       err.details_json = JSON.stringify(err.details);
       err.detailsJson = err.details_json;
       err.toJSON = function() {
-        var traceback = err.stack || "";
         return {
           runtime: err.runtime,
           origin_runtime: err.origin_runtime,
           type: err.type,
           message: err.message,
-          traceback: traceback,
-          stack_frames: String(traceback).split("\n").filter(function(frame) { return frame.length > 0; }),
-          cause_chain: [],
+          traceback: err.traceback,
+          stack_frames: err.stack_frames.slice(),
+          cause_chain: err.cause_chain.slice(),
           boundary_path: err.boundary_path,
           original_error_handle: err.original_error_handle,
           details: globalThis.__omnivm_clone_json(err.details),
