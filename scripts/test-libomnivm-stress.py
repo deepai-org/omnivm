@@ -27954,6 +27954,149 @@ def test_manifest_closed_resource_proxy_reports_owner_lifecycle_error():
     run_manifest_dict(manifest)
 
 
+def test_manifest_closed_table_proxy_reports_owner_lifecycle_error():
+    buffer_name = "closed-table-owner-buffer"
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": f"import omnivm\nomnivm.set_buffer({buffer_name!r}, b'abc', 0)",
+            },
+            {
+                "op": "table",
+                "action": "export",
+                "runtime": "python",
+                "bind": "payload",
+                "format": "arrow_c_data",
+                "ownership": "borrowed",
+                "release": "producer",
+                "metadata": {
+                    "dtype": 0,
+                    "arrow_format": "C",
+                    "buffer": buffer_name,
+                    "shape": [3],
+                    "strides": [1],
+                    "read_only": True,
+                    "memory_space": "host",
+                },
+                "value": {"kind": "literal", "value": buffer_name},
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "captures": {"payload": "payload"},
+                "code": (
+                    "global stale_py_table\n"
+                    "stale_py_table = payload\n"
+                    "assert len(stale_py_table) == 3\n"
+                    "assert stale_py_table[1] == 98\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "captures": {"payload": "payload"},
+                "code": (
+                    "globalThis.staleJSTable = payload; "
+                    "if (globalThis.staleJSTable.length !== 3 || globalThis.staleJSTable[1] !== 98) "
+                    "throw new Error('bad JS table proxy');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "captures": {"payload": "payload"},
+                "code": (
+                    "$stale_ruby_table = payload\n"
+                    "raise 'bad Ruby table length' unless $stale_ruby_table.omnivm_len == 3\n"
+                    "raise 'bad Ruby table index' unless $stale_ruby_table[1] == 98\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "captures": {"payload": "payload"},
+                "code": (
+                    "Object raw = omnivm.OmniVM.getCapture(\"payload\"); "
+                    "omnivm.OmniVM.HandleProxy proxy = (omnivm.OmniVM.HandleProxy) raw; "
+                    "if (proxy.size() != 3 || ((Number) proxy.index(1)).intValue() != 98) throw new RuntimeException(\"bad Java table proxy\"); "
+                    "omnivm.OmniVM.setCaptureObject(\"staleJavaTable\", proxy);"
+                ),
+            },
+            {
+                "op": "table",
+                "action": "release",
+                "target": "payload",
+                "runtime": "python",
+                "code": f"import omnivm\nomnivm.release_buffer({buffer_name!r})",
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "try:\n"
+                    "    len(stale_py_table)\n"
+                    "except Exception as exc:\n"
+                    "    text = str(exc)\n"
+                    "    assert 'closed table handle' in text and 'runtime=python' in text and 'format=arrow_c_data' in text and 'owner-side lifecycle is released' in text, text\n"
+                    "else:\n"
+                    "    raise AssertionError('closed Python table proxy length did not raise')\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "code": (
+                    "try { globalThis.staleJSTable.length; } "
+                    "catch (err) { "
+                    "  let text = String(err && err.message || err); "
+                    "  if (!text.includes('closed table handle') || !text.includes('runtime=python') || !text.includes('format=arrow_c_data') || !text.includes('owner-side lifecycle is released')) throw err; "
+                    "  globalThis.closedTableProxyErrorSeen = true; "
+                    "} "
+                    "if (!globalThis.closedTableProxyErrorSeen) throw new Error('closed JS table proxy length did not raise');"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "ruby",
+                "code": (
+                    "begin\n"
+                    "  $stale_ruby_table.omnivm_len\n"
+                    "rescue => e\n"
+                    "  raise e unless e.message.include?('closed table handle') && e.message.include?('runtime=python') && e.message.include?('format=arrow_c_data') && e.message.include?('owner-side lifecycle is released')\n"
+                    "  $closed_table_proxy_error_seen_ruby = true\n"
+                    "end\n"
+                    "raise 'closed Ruby table proxy length did not raise' unless $closed_table_proxy_error_seen_ruby\n"
+                ),
+            },
+            {
+                "op": "exec",
+                "runtime": "java",
+                "code": (
+                    "omnivm.OmniVM.HandleProxy proxy = (omnivm.OmniVM.HandleProxy) omnivm.OmniVM.getCapture(\"staleJavaTable\"); "
+                    "try { proxy.size(); } "
+                    "catch (RuntimeException err) { "
+                    "  String text = String.valueOf(err.getMessage()); "
+                    "  if (!text.contains(\"closed table handle\") || !text.contains(\"runtime=python\") || !text.contains(\"format=arrow_c_data\") || !text.contains(\"owner-side lifecycle is released\")) throw err; "
+                    "  omnivm.OmniVM.setCaptureObject(\"closedTableProxyErrorSeenJava\", Boolean.TRUE); "
+                    "} "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedTableProxyErrorSeenJava\"))) throw new RuntimeException(\"closed Java table proxy length did not raise\");"
+                ),
+            },
+        ],
+    }
+    try:
+        run_manifest_dict(manifest)
+    finally:
+        try:
+            omnivm.release_buffer(buffer_name)
+        except Exception:
+            pass
+
+
 def test_manifest_returned_proxy_finalizer_releases_transfer():
     before = omnivm.status().get("handles", {})
     manifest = {
@@ -30285,6 +30428,7 @@ def main():
         check("Manifest Java proxy Cleaner finalizer", test_manifest_java_proxy_cleaner_finalizer)
         check("Manifest proxy finalizer preserves scope owner", test_manifest_proxy_finalizer_preserves_scope_owner)
         check("Manifest closed resource proxy reports owner lifecycle error", test_manifest_closed_resource_proxy_reports_owner_lifecycle_error)
+        check("Manifest closed table proxy reports owner lifecycle error", test_manifest_closed_table_proxy_reports_owner_lifecycle_error)
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
         check("Java CompletableFuture callback affinity reports diagnostic", test_java_completable_future_callback_affinity_reports_diagnostic)

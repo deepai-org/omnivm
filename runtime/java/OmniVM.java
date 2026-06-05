@@ -1132,6 +1132,11 @@ public class OmniVM {
     public static void setCaptureObject(String name, Object value) {
         captureJson.remove(name);
         captures.put(name, value);
+        if (value instanceof HandleProxy proxy) {
+            proxy.preserveBridgeAcrossCaptureClears();
+        } else if (value instanceof StreamProxy proxy) {
+            proxy.preserveBridgeAcrossCaptureClears();
+        }
     }
 
     /**
@@ -2118,6 +2123,7 @@ public class OmniVM {
         private static final int chattyProxyWarnedLimit = 4096;
         private final Map<String, Object> value;
         private final long bridgeToken;
+        private final AtomicBoolean bridgePersistent = new AtomicBoolean(false);
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
@@ -2225,7 +2231,11 @@ public class OmniVM {
         }
 
         private boolean isBridgeActive() {
-            return isCaptureBridgeActive(bridgeToken);
+            return bridgePersistent.get() || isCaptureBridgeActive(bridgeToken);
+        }
+
+        private void preserveBridgeAcrossCaptureClears() {
+            bridgePersistent.set(true);
         }
 
         @Override
@@ -2405,7 +2415,9 @@ public class OmniVM {
         private RuntimeError closedOperationError(String op) {
             Object rawID = value.get("id");
             Object rawKind = value.get("kind");
-            String kind = rawKind == null ? "object" : String.valueOf(rawKind);
+            String kind = rawKind == null
+                ? (Boolean.TRUE.equals(value.get("__omnivm_table__")) ? "table" : "object")
+                : String.valueOf(rawKind);
             Object rawRuntime = value.get("runtime");
             String runtime = rawRuntime == null ? "unknown" : String.valueOf(rawRuntime);
             String suffix = rawID == null ? "" : " #" + rawID;
@@ -2806,6 +2818,7 @@ public class OmniVM {
         private final Map<String, Object> value;
         private final List<?> localValues;
         private final long bridgeToken;
+        private final AtomicBoolean bridgePersistent = new AtomicBoolean(false);
         private final AtomicBoolean released = new AtomicBoolean(false);
         private final Cleaner.Cleanable cleanable;
 
@@ -2854,7 +2867,11 @@ public class OmniVM {
         }
 
         private boolean isBridgeActive() {
-            return isCaptureBridgeActive(bridgeToken);
+            return bridgePersistent.get() || isCaptureBridgeActive(bridgeToken);
+        }
+
+        private void preserveBridgeAcrossCaptureClears() {
+            bridgePersistent.set(true);
         }
 
         public boolean cancel() {

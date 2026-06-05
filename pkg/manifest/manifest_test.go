@@ -11214,6 +11214,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "private boolean markReleased()") ||
 		!contains(code, "released.compareAndSet(false, true)") ||
 		!contains(code, "new FinalizerState(value.get(\"id\"), released, bridgeToken)") ||
+		!contains(code, "proxy.preserveBridgeAcrossCaptureClears();") ||
+		!contains(code, "private final AtomicBoolean bridgePersistent = new AtomicBoolean(false);") ||
 		!contains(code, "private static final AtomicLong captureBridgeGeneration = new AtomicLong(1);") ||
 		!contains(code, "private static boolean isCaptureBridgeActive(long token)") ||
 		!contains(code, "private final long bridgeToken;") ||
@@ -11234,6 +11236,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private void ensureOpen(String op)",
 		"if (released.get() || !isBridgeActive()) {\n                throw closedOperationError(op);\n            }",
 		"if (released.get() || !isBridgeActive()) {\n                return null;\n            }",
+		"return bridgePersistent.get() || isCaptureBridgeActive(bridgeToken);",
+		"private void preserveBridgeAcrossCaptureClears()",
 		"private boolean isReleased() {\n            return released.get();\n        }",
 		"cached instanceof HandleProxy handleProxy && handleProxy.isReleased()",
 		"cached instanceof StreamProxy streamProxy && streamProxy.isReleased()",
