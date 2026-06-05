@@ -121,7 +121,11 @@ and JSON-string detail fields such as `details_json`/`detailsJson`, including
 inside cause-chain entries. Parsers also accept JavaScript-style `name`/`stack`
 aliases for the normalized `type`/`traceback` fields. Text fallback parsers treat
 `details_json:`/`detailsJson:` lines as metadata, so those lines do not appear
-as stack frames. Python `omnivm.cleanup_errors(error)`, Ruby
+as stack frames. Python, JavaScript, and Ruby runtime error helpers keep
+`details`, `details_json`, and `detailsJson` synchronized when callers assign a
+new structured detail object or raw JSON detail string; each reader still returns
+a copied value for mutable detail objects. Python `omnivm.cleanup_errors(error)`,
+Ruby
 `OmniVM.cleanup_errors(error)`, and JavaScript `omnivm.cleanupErrors(error)`
 return copies of cleanup failures recorded while preserving the original body
 exception.

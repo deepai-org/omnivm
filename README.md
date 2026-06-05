@@ -291,7 +291,9 @@ metadata. Structured cause entries preserve their own optional `runtime`,
 `origin_runtime`, `boundary_path`, and `original_error_handle` fields when a
 source envelope provides them. Native JavaScript `Error` objects created by OmniVM expose the same
 envelope through `toJSON()`, so `JSON.stringify(error)` emits matching
-snake_case fields.
+snake_case fields. Python, JavaScript, and Ruby runtime error helpers keep
+`details`, `details_json`, and `detailsJson` synchronized when code assigns a
+new structured details object or a raw JSON details string.
 
 ### Two Modes: Interpreter vs Library
 
