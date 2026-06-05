@@ -7940,6 +7940,12 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "closed = true;\n            detachCloseListener();\n            target.push(null);") ||
 		!contains(code, "unregisterCloseListener = addCloseListener(function()") ||
 		!contains(code, "return closeIterator(\"source closed\");") ||
+		!contains(code, "toWebReadable: function(strategy)") ||
+		!contains(code, "var webReadableStreamCtor = function()") ||
+		!contains(code, "var streamWeb = require('node:stream/web');") ||
+		!contains(code, "return closeWebIterator(\"source closed\", true);") ||
+		!contains(code, "controller.enqueue(item ? item.value : undefined);") ||
+		!contains(code, "cancel: function(reason) {\n          return closeWebIterator(reason, false);\n        }") ||
 		!contains(code, "return {done: true, value: owner.cancel(reason)}") ||
 		!contains(code, "return {done: true, value: released};") ||
 		!contains(code, "__omnivm_close: function() {\n      return cancelRemote();\n    }") ||
@@ -9641,6 +9647,175 @@ setImmediate(function() {
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node readable synchronous next error check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSWebReadableCancelReleasesRemoteStream(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_next") return JSON.stringify({__omnivm_result__: true, value: {done: false, value: "late"}});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 97, runtime: "javascript", kind: "stream"});
+var web = stream.toWebReadable();
+var reader = web.getReader();
+reader.cancel("client abort").then(function() {
+  if (stream.__omnivm_closed__ !== true) throw new Error("web readable cancel did not mark stream closed");
+  if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+  if (unregistered !== 1) throw new Error("stream finalizer was not unregistered after web cancel: " + unregistered);
+  var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+  if (cancels.length !== 1 || cancels[0].id !== 97) throw new Error("stream cancel requests mismatch: " + JSON.stringify(cancels));
+  if (requests.some(function(req) { return req.op === "stream_next"; })) {
+    throw new Error("web cancel pulled from remote stream: " + JSON.stringify(requests));
+  }
+  if (stream.cancel() !== false) throw new Error("closed remote stream cancel should be idempotent false");
+}, function(err) {
+  throw err;
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("web readable cancel check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSWebReadablePushesEOFWithoutRemoteCancel(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+var registered = 0;
+var unregistered = 0;
+globalThis.__omnivm_handle_finalizers = {
+  register: function(target, id, token) {
+    registered++;
+  },
+  unregister: function(token) {
+    unregistered++;
+  }
+};
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") throw new Error("local EOF should not cancel remote stream");
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 98, runtime: "javascript", kind: "stream", values: ["a"]});
+var reader = stream.toWebReadable().getReader();
+reader.read().then(function(first) {
+  if (first.done !== false || first.value !== "a") throw new Error("first read mismatch: " + JSON.stringify(first));
+  return reader.read();
+}).then(function(done) {
+  if (done.done !== true) throw new Error("EOF read mismatch: " + JSON.stringify(done));
+  if (stream.__omnivm_closed__ !== true) throw new Error("web readable did not mark stream closed at EOF");
+  if (registered !== 1) throw new Error("stream finalizer was not registered once: " + registered);
+  if (unregistered !== 1) throw new Error("stream finalizer was not unregistered at EOF: " + unregistered);
+  if (requests.some(function(req) { return req.op === "stream_cancel"; })) {
+    throw new Error("local EOF called remote stream_cancel");
+  }
+  if (stream.cancel() !== false) throw new Error("closed local stream cancel should be idempotent false");
+}, function(err) {
+  throw err;
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("web readable EOF check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSWebReadableSourceCancelSettlesPendingRead(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+var requests = [];
+globalThis.omnivm = {
+  call: function(runtime, payloadRaw) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    var payload = JSON.parse(payloadRaw);
+    requests.push(payload);
+    if (payload.op === "handle_retain") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "stream_cancel") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected manifest op " + payload.op);
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 99, runtime: "javascript", kind: "stream"});
+var nextStartedResolve;
+var nextStarted = new Promise(function(resolve) {
+  nextStartedResolve = resolve;
+});
+var resolveNext;
+var returned = 0;
+stream[Symbol.asyncIterator] = function() {
+  return {
+    next: function() {
+      nextStartedResolve();
+      return new Promise(function(resolve) {
+        resolveNext = resolve;
+      });
+    },
+    return: function(_reason) {
+      returned++;
+      return Promise.resolve(true);
+    }
+  };
+};
+var reader = stream.toWebReadable().getReader();
+var pendingRead = reader.read();
+nextStarted.then(function() {
+  if (stream.cancel("client abort") !== true) throw new Error("source cancel did not release remote stream");
+  return pendingRead;
+}).then(function(item) {
+  if (!item || item.done !== true) throw new Error("source cancel did not settle pending read as EOF: " + JSON.stringify(item));
+  resolveNext({done: false, value: "late"});
+  return Promise.resolve();
+}).then(function() {
+  if (returned !== 1) throw new Error("source cancel did not close web iterator exactly once: " + returned);
+  var cancels = requests.filter(function(req) { return req.op === "stream_cancel"; });
+  if (cancels.length !== 1 || cancels[0].id !== 99) throw new Error("stream cancel requests mismatch: " + JSON.stringify(cancels));
+}, function(err) {
+  throw err;
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("web readable source-cancel pending-read check failed: %v\n%s", err, out)
 	}
 }
 

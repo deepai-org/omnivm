@@ -2840,6 +2840,38 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
       error.omnivmCleanupErrors = (error.omnivmCleanupErrors || []).concat([cleanupError]);
     } catch (_cleanupRecordError) {}
   };
+  var actualMethod = function(value, name) {
+    if (value == null) return null;
+    var cursor = Object(value);
+    var depth = 0;
+    while (cursor != null && depth++ < 64) {
+      var descriptor = null;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      } catch (_descriptorErr) {
+        return null;
+      }
+      if (descriptor) {
+        return typeof descriptor.value === 'function' ? descriptor.value.bind(value) : null;
+      }
+      try {
+        cursor = Object.getPrototypeOf(cursor);
+      } catch (_prototypeErr) {
+        return null;
+      }
+    }
+    return null;
+  };
+  var webReadableStreamCtor = function() {
+    if (typeof ReadableStream === 'function') return ReadableStream;
+    if (typeof require === 'function') {
+      try {
+        var streamWeb = require('node:stream/web');
+        if (streamWeb && typeof streamWeb.ReadableStream === 'function') return streamWeb.ReadableStream;
+      } catch (_streamWebErr) {}
+    }
+    return null;
+  };
   var cancelRemoteQuiet = function(error) {
     try {
       if (cancelRemote() !== true) markRemoteClosed(false);
@@ -2925,28 +2957,6 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           unregisterCloseListener = null;
         }
       };
-      var actualMethod = function(value, name) {
-        if (value == null) return null;
-        var cursor = Object(value);
-        var depth = 0;
-        while (cursor != null && depth++ < 64) {
-          var descriptor = null;
-          try {
-            descriptor = Object.getOwnPropertyDescriptor(cursor, name);
-          } catch (_descriptorErr) {
-            return null;
-          }
-          if (descriptor) {
-            return typeof descriptor.value === 'function' ? descriptor.value.bind(value) : null;
-          }
-          try {
-            cursor = Object.getPrototypeOf(cursor);
-          } catch (_prototypeErr) {
-            return null;
-          }
-        }
-        return null;
-      };
       var closeIterator = function(reason) {
         if (closed) return Promise.resolve();
         closed = true;
@@ -2995,6 +3005,80 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
         });
       };
       return new streamModule.Readable(opts);
+    },
+    toWebReadable: function(strategy) {
+      var ReadableStreamCtor = webReadableStreamCtor();
+      if (!ReadableStreamCtor) {
+        throw new Error("Web ReadableStream is unavailable in this JavaScript runtime");
+      }
+      var source = this;
+      var iterator = source[Symbol.asyncIterator]();
+      var closed = false;
+      var pulling = false;
+      var controllerRef = null;
+      var unregisterCloseListener = null;
+      var detachCloseListener = function() {
+        if (unregisterCloseListener) {
+          unregisterCloseListener();
+          unregisterCloseListener = null;
+        }
+      };
+      var closeWebIterator = function(reason, closeController) {
+        if (closed) return Promise.resolve();
+        closed = true;
+        detachCloseListener();
+        if (closeController === true && controllerRef) {
+          try {
+            controllerRef.close();
+          } catch (_controllerCloseErr) {}
+        }
+        var iteratorReturn = actualMethod(iterator, "return");
+        if (iteratorReturn) {
+          return Promise.resolve(iteratorReturn(reason)).then(function() {});
+        }
+        var sourceCancel = actualMethod(source, "cancel");
+        if (sourceCancel) {
+          return Promise.resolve(sourceCancel(reason)).then(function() {});
+        }
+        return Promise.resolve();
+      };
+      unregisterCloseListener = addCloseListener(function() {
+        return closeWebIterator("source closed", true);
+      });
+      return new ReadableStreamCtor({
+        start: function(controller) {
+          controllerRef = controller;
+        },
+        pull: function(controller) {
+          controllerRef = controller;
+          if (closed || pulling) return Promise.resolve();
+          pulling = true;
+          return Promise.resolve().then(function() {
+            return iterator.next();
+          }).then(function(item) {
+            pulling = false;
+            if (closed) return;
+            if (item && item.done) {
+              closed = true;
+              detachCloseListener();
+              controller.close();
+              return;
+            }
+            controller.enqueue(item ? item.value : undefined);
+          }, function(err) {
+            pulling = false;
+            return closeWebIterator(err, false).then(function() {
+              throw err;
+            }, function(closeErr) {
+              recordCleanupError(err, closeErr);
+              throw err;
+            });
+          });
+        },
+        cancel: function(reason) {
+          return closeWebIterator(reason, false);
+        }
+      }, strategy);
     },
     __omnivm_close: function() {
       return cancelRemote();
