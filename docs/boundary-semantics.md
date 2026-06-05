@@ -596,10 +596,12 @@ Embedded Ruby exposes the same in-runtime guard shape as
 `OmniVM.ruby_threading_status` and
 `OmniVM.assert_ruby_native_threads_supported(label)`, so Ruby framework
 bootstraps can fail before invoking unsupported native thread creation.
-Ruby `fork`, `Kernel.fork`, `Process.fork`, and `Process.daemon` are also
-guarded as explicit Ruby `RuntimeError` diagnostics after OmniVM initializes;
-Ruby code that needs preforking or daemonization must do that before loading
-OmniVM or run the forking component out of process.
+Ruby `fork`, `Kernel.fork`, `Process.fork`, `Process.daemon`,
+`Process.spawn`, `Kernel.spawn`, `Kernel.system`, `Kernel.exec`, backticks, and
+`IO.popen` are also guarded as explicit Ruby `RuntimeError` diagnostics after
+OmniVM initializes; Ruby code that needs preforking, daemonization, or
+subprocess launch must do that before loading OmniVM or run the subprocess-owning
+component out of process.
 
 For CPython-hosted app servers, `omnivm.drain_worker_hook(*args, **kwargs)` is
 the lifecycle-hook form of `omnivm.drain_worker()`. It accepts server callback
