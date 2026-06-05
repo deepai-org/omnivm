@@ -6822,14 +6822,16 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, "return symbolDisposeResult === undefined ? true : symbolDisposeResult") ||
 		!contains(code, "return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult") ||
 		!contains(code, `var close = globalThis.__omnivm_actual_public_method(value, "close")`) ||
-		!contains(code, "var result = close.call(value);\n          return result === undefined ? true : result") {
+		!contains(code, "var result = close.call(value);\n          return result === undefined ? true : result") ||
+		!contains(code, `var dispose = globalThis.__omnivm_actual_public_method(value, "dispose")`) ||
+		!contains(code, "var disposeResult = dispose.call(value);\n          return disposeResult === undefined ? true : disposeResult") {
 		t.Fatalf("JS proxyClose should use descriptor-based close lookup for collision cases, got %q", code)
 	}
 	if !contains(code, `Object.defineProperty(omnivm, "omnivmClose"`) ||
 		!contains(code, `value: function(value) { return omnivm.proxyClose(value); }`) {
 		t.Fatalf("JS materializer should expose omnivmClose as an alias for proxyClose, got %q", code)
 	}
-	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value && value.__omnivm_close") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
+	if contains(code, "typeof value.close === 'function'") || contains(code, "value.close();") || contains(code, "typeof value.dispose === 'function'") || contains(code, "value.dispose();") || contains(code, "typeof value.__omnivm_close === 'function'") || contains(code, "value && value.__omnivm_close") || contains(code, "value[Symbol.dispose]") || contains(code, "value[Symbol.asyncDispose]") {
 		t.Fatalf("JS proxyClose should not invoke dynamic close property lookup")
 	}
 	if !contains(code, `prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON"`) {
@@ -7030,14 +7032,28 @@ var receiverResult = omnivm.proxyClose(receiverTarget);
 if (receiverResult !== true || receiverTarget.closed !== true) throw new Error("close receiver was not preserved");
 var undefinedResult = omnivm.proxyClose({close: function() {}});
 if (undefinedResult !== true) throw new Error("undefined close result should normalize to true");
+var disposeResult = omnivm.proxyClose({dispose: function() { return "disposed"; }});
+if (disposeResult !== "disposed") throw new Error("dispose result was not preserved: " + disposeResult);
+var disposeUndefinedResult = omnivm.proxyClose({dispose: function() {}});
+if (disposeUndefinedResult !== true) throw new Error("undefined dispose result should normalize to true");
+var disposeFalseResult = omnivm.proxyClose({dispose: function() { return false; }});
+if (disposeFalseResult !== false) throw new Error("false dispose result was not preserved");
 var getterCount = 0;
 var getterTarget = {close: function() { return "getter-safe"; }};
 Object.defineProperty(getterTarget, "__omnivm_close", {get: function() { getterCount++; throw new Error("getter invoked"); }});
 var getterResult = omnivm.proxyClose(getterTarget);
 if (getterResult !== "getter-safe" || getterCount !== 0) throw new Error("__omnivm_close getter was invoked");
+var disposeGetterCount = 0;
+var disposeGetterTarget = {};
+Object.defineProperty(disposeGetterTarget, "dispose", {get: function() { disposeGetterCount++; throw new Error("dispose getter invoked"); }});
+var disposeGetterResult = omnivm.proxyClose(disposeGetterTarget);
+if (disposeGetterResult !== false || disposeGetterCount !== 0) throw new Error("dispose getter was invoked");
 var promise = Promise.resolve("async-closed");
 var promiseResult = omnivm.proxyClose({close: function() { return promise; }});
 if (promiseResult !== promise) throw new Error("promise close result was not preserved");
+var disposePromise = Promise.resolve("async-disposed");
+var disposePromiseResult = omnivm.proxyClose({dispose: function() { return disposePromise; }});
+if (disposePromiseResult !== disposePromise) throw new Error("promise dispose result was not preserved");
 var symbolDisposeResult = omnivm.proxyClose({[Symbol.dispose]: function() {}});
 if (symbolDisposeResult !== true) throw new Error("undefined Symbol.dispose result should normalize to true");
 var symbolDisposeFalse = omnivm.proxyClose({[Symbol.dispose]: function() { return false; }});
@@ -10194,6 +10210,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"return symbolAsyncDisposeResult === undefined ? true : symbolAsyncDisposeResult",
 		`var close = globalThis.__omnivm_actual_public_method(value, "close")`,
 		"return result === undefined ? true : result",
+		`var dispose = globalThis.__omnivm_actual_public_method(value, "dispose")`,
+		"return disposeResult === undefined ? true : disposeResult",
 		`Object.defineProperty(globalThis.omnivm, "cleanupErrors"`,
 		"return Array.isArray(errors) ? errors.slice() : []",
 		"globalThis.omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
@@ -10209,6 +10227,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 	}
 	if contains(code, "typeof value.close === 'function'") ||
 		contains(code, "value.close();") ||
+		contains(code, "typeof value.dispose === 'function'") ||
+		contains(code, "value.dispose();") ||
 		contains(code, "typeof value.__omnivm_close === 'function'") ||
 		contains(code, "value && value.__omnivm_close") ||
 		contains(code, "value[Symbol.dispose]") ||

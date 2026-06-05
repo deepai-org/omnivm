@@ -1839,6 +1839,11 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
           var result = close.call(value);
           return result === undefined ? true : result;
         }
+        var dispose = globalThis.__omnivm_actual_public_method(value, "dispose");
+        if (dispose) {
+          var disposeResult = dispose.call(value);
+          return disposeResult === undefined ? true : disposeResult;
+        }
         return false;
       }
     });
