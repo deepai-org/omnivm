@@ -1618,6 +1618,11 @@ if (typeof omnivm !== 'undefined' && omnivm) {
           var disposeResult = dispose.call(value);
           return disposeResult === undefined ? true : disposeResult;
         }
+        var destroy = globalThis.__omnivm_actual_public_method(value, "destroy");
+        if (destroy) {
+          var destroyResult = destroy.call(value);
+          return destroyResult === undefined ? true : destroyResult;
+        }
         return false;
       }
     });
