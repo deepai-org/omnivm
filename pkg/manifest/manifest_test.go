@@ -6999,11 +6999,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __len__(self):") || !contains(code, "return len(self._materialize_all())") || !contains(code, "def __getitem__(self, key):") {
 		t.Fatalf("Python stream proxy should auto-materialize for len/index operations, got %q", code)
 	}
-	if !contains(code, "def _mark_closed(self):") ||
+	if !contains(code, "def _mark_closed(self, reason=\"remote\"):") ||
+		!contains(code, "self._closed_reason = reason") ||
 		!contains(code, "def __next__(self):\n        if self._cursor < len(self._cache):") ||
 		!contains(code, "if self._closed or not self._pull_next():\n            raise StopIteration") ||
 		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
+		!contains(code, "self._mark_closed(\"local_eof\")") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](item.get(\"value\"))") ||
 		!contains(code, "self._cache.append(materialized)") ||
@@ -7036,13 +7038,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
-		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
+		!contains(code, "except Exception:\n            self._mark_closed(\"owner_lifecycle\")\n            raise") ||
 		!contains(code, "if self._closed:\n            return False") ||
-		!contains(code, "if self._local_values is not None:\n            self._cache = self._cache[:self._cursor]\n            return self._mark_closed()") ||
+		!contains(code, "if self._local_values is not None:\n            self._cache = self._cache[:self._cursor]\n            return self._mark_closed(\"explicit_release\")") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
-		!contains(code, "if released:\n            self._cache = self._cache[:self._cursor]\n            self._mark_closed()\n        return released") ||
-		!contains(code, "if not self._bridge_active():\n            self._mark_closed()\n            return False") ||
+		!contains(code, "if released:\n            self._cache = self._cache[:self._cursor]\n            self._mark_closed(\"explicit_release\")\n        return released") ||
+		!contains(code, "if not self._bridge_active():\n            self._mark_closed(\"explicit_release\")\n            return False") ||
 		!contains(code, "if not globals()[\"__omnivm_bridge_matches\"](self._bridge_token, caller):\n            return {\"done\": True}") ||
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
@@ -11312,11 +11314,12 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	if !contains(code, "private final List<?> localValues;") ||
 		!contains(code, "this.localValues = values instanceof List<?> ? (List<?>) values : null;") ||
-		!contains(code, "public void releaseFromFinalizer() {\n            if (cleanable != null) {\n                cleanable.clean();\n            } else {\n                markReleased();\n            }\n        }") ||
-		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
+		!contains(code, "public void releaseFromFinalizer() {\n            if (cleanable != null) {\n                cleanable.clean();\n            } else {\n                markReleased(\"finalizer\");\n            }\n        }") ||
+		!contains(code, "if (localValues != null) {\n                return markReleased(\"explicit_release\");\n            }") ||
 		!contains(code, "if (localValues != null) {\n                        if (released.get() || localIndex >= localValues.size())") ||
+		!contains(code, "markReleased(\"local_eof\");") ||
 		!contains(code, "next = materializeCapture(localValues.get(localIndex++));") ||
-		!contains(code, "if (released.get() || !isBridgeActive()) {\n                        done = true;\n                        return;\n                    }") ||
+		!contains(code, "if (released.get() || !isBridgeActive()) {\n                        if (released.get() && !done && \"owner_lifecycle\".equals(releaseReason)) {\n                            throw ownerLifecycleError(\"stream_next\");\n                        }\n                        done = true;\n                        return;\n                    }") ||
 		!contains(code, "if (cleanable != null) {\n                cleanable.clean();\n            }") {
 		t.Fatalf("Java stream proxy should consume embedded local stream values without manifest next/cancel calls")
 	}
@@ -13399,7 +13402,10 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`cause_chain = field.call(\"cause_chain\", \"causeChain\")`,
 		`{\"runtime\" => \"runtime\", \"origin_runtime\" => \"originRuntime\", \"boundary_path\" => \"boundaryPath\", \"original_error_handle\" => \"originalErrorHandle\"}.each`,
 		"item[:runtime] = runtime_name if !item[:runtime] && runtime_name && !runtime_name.to_s.empty?",
-		`boundary_path: text_field.call(field.call(\"boundary_path\", \"boundaryPath\"), boundary_path)`,
+		`parsed_boundary = text_field.call(field.call(\"boundary_path\", \"boundaryPath\"))`,
+		`default_boundary = runtime_name && !runtime_name.to_s.empty? ? \"call[#{runtime_name}]\" : \"\"`,
+		`parsed_boundary = boundary_path if boundary_path && (parsed_boundary.to_s.empty? || parsed_boundary == default_boundary)`,
+		`boundary_path: parsed_boundary`,
 		`item = {type: (read_field.call(cause, \"type\", \"name\", \"error_type\", \"errorType\") || \"\").to_s, message: (read_field.call(cause, \"message\") || \"\").to_s}`,
 		"causes << {type: cause_type, message: cause_message, runtime: source_runtime, origin_runtime: source_runtime}",
 		`details: details_field.call(envelope)`,
