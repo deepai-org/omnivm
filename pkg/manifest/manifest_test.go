@@ -10320,6 +10320,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		!contains(code, "if (localValues != null) {\n                return markReleased();\n            }") ||
 		!contains(code, "if (localValues != null) {\n                        if (released.get() || localIndex >= localValues.size())") ||
 		!contains(code, "next = materializeCapture(localValues.get(localIndex++));") ||
+		!contains(code, "if (released.get()) {\n                        done = true;\n                        return;\n                    }") ||
 		!contains(code, "if (cleanable != null) {\n                cleanable.clean();\n            }") {
 		t.Fatalf("Java stream proxy should consume embedded local stream values without manifest next/cancel calls")
 	}
@@ -11282,6 +11283,95 @@ public final class RemoteStreamOwnerReadFailureCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RemoteStreamOwnerReadFailureCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java remote stream read-failure check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaRemoteStreamCloseStopsFuturePulls(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static int streamCancelCalls = 0;
+    public static int streamNextCalls = 0;
+    public static String nativeCall(String runtime, String code) {
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_retain\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"stream_cancel\"")) {
+            streamCancelCalls++;
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"stream_next\"")) {
+            streamNextCalls++;
+            return "{\"__omnivm_result__\":true,\"value\":{\"done\":false,\"value\":\"late\"}}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/RemoteStreamCloseStopsPullsCheck.java"
+	check := `package omnivm;
+
+public final class RemoteStreamCloseStopsPullsCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Object rows = OmniVM.materializeJsonCapture("{\"__omnivm_stream__\":true,\"id\":89,\"runtime\":\"python\",\"kind\":\"stream\"}");
+        require(rows instanceof OmniVM.StreamProxy, "capture did not materialize a stream proxy");
+        OmniVM.StreamProxy stream = (OmniVM.StreamProxy) rows;
+        require(stream.cancel(), "remote stream cancel failed");
+        require(OmniVM.streamCancelCalls == 1, "remote stream cancel count mismatch: " + OmniVM.streamCancelCalls);
+        require(!stream.iterator().hasNext(), "closed remote stream still had a next item");
+        require(stream.toList().isEmpty(), "closed remote stream toList pulled values");
+        require(OmniVM.streamNextCalls == 0, "closed remote stream reached stream_next: " + OmniVM.streamNextCalls);
+        require(!stream.cancel(), "remote stream cancel should be idempotent after close");
+        require(OmniVM.streamCancelCalls == 1, "idempotent cancel retried remote cancel: " + OmniVM.streamCancelCalls);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java remote stream closed-pull check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java remote stream closed-pull check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RemoteStreamCloseStopsPullsCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java remote stream closed-pull check: %v\n%s", err, out)
 	}
 }
 

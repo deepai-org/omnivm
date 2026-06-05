@@ -2800,6 +2800,10 @@ public class OmniVM {
                         }
                         return;
                     }
+                    if (released.get()) {
+                        done = true;
+                        return;
+                    }
                     Object id = value.get("id");
                     Object result;
                     try {
