@@ -12202,7 +12202,7 @@ return null;
     run_manifest_dict(manifest)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 2:
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
         raise AssertionError(f"JDBC ResultSet did not cross as live proxies: before={before_boundary}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
         raise AssertionError(f"JDBC ResultSet used JSON fallback: before={before_boundary}, after={boundary}")
@@ -12371,7 +12371,7 @@ return null;
     run_manifest_dict(manifest)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 2:
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
         raise AssertionError(f"H2 JDBC ResultSet did not cross as live proxies: before={before_boundary}, after={boundary}")
     if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"H2 JDBC ResultSet crossed as a stream: before={before_boundary}, after={boundary}")
@@ -12473,9 +12473,7 @@ return null;
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    resource_captures = boundary.get("resource_proxy_captures", 0)
-    resource_capture_delta = resource_captures - before_boundary.get("resource_proxy_captures", 0)
-    if resource_captures < 1 and resource_capture_delta < 1:
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
         raise AssertionError(f"H2 JDBC early-close ResultSet did not cross as live proxy: before={before_boundary}, after={boundary}")
     if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
         raise AssertionError(f"H2 JDBC early-close ResultSet crossed as stream: before={before_boundary}, after={boundary}")
