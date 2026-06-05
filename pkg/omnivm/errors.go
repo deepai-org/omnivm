@@ -476,9 +476,6 @@ func detailsEnvelopeValue(envelope map[string]interface{}) interface{} {
 }
 
 func detailsJSONEnvelopeValue(envelope map[string]interface{}) string {
-	if details, ok := envelope["details"]; ok {
-		return runtimeErrorDetailsJSON(details)
-	}
 	for _, key := range []string{"details_json", "detailsJson"} {
 		raw, ok := envelope[key]
 		if !ok {
@@ -488,6 +485,9 @@ func detailsJSONEnvelopeValue(envelope map[string]interface{}) string {
 			return text
 		}
 		return runtimeErrorDetailsJSON(raw)
+	}
+	if details, ok := envelope["details"]; ok {
+		return runtimeErrorDetailsJSON(details)
 	}
 	return ""
 }

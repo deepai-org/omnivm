@@ -557,6 +557,54 @@ func TestParseError_StructuredJSONEnvelopeParsesDetailsJSONFields(t *testing.T) 
 	}
 }
 
+func TestParseError_StructuredEnvelopePrefersExplicitDetailsJSON(t *testing.T) {
+	raw, err := json.Marshal(map[string]interface{}{
+		"runtime":      "javascript",
+		"type":         "AggregateError",
+		"message":      "invalid",
+		"details":      map[string]interface{}{"code": "E_PARSED"},
+		"details_json": "{\"code\":\"E_RAW\",\"canonical\":true}",
+		"cause_chain": []interface{}{map[string]interface{}{
+			"type":        "TypeError",
+			"message":     "inner",
+			"details":     map[string]interface{}{"code": "E_INNER_PARSED"},
+			"detailsJson": "inner raw details",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := ParseError("go", "ERR:"+string(raw))
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	details, ok := re.Details.(map[string]interface{})
+	if !ok || details["code"] != "E_PARSED" {
+		t.Fatalf("Details = %#v, want parsed details object", re.Details)
+	}
+	if re.DetailsJSON != "{\"code\":\"E_RAW\",\"canonical\":true}" {
+		t.Fatalf("DetailsJSON = %q, want explicit raw details_json", re.DetailsJSON)
+	}
+	if len(re.CauseChain) != 1 {
+		t.Fatalf("CauseChain = %#v, want one cause", re.CauseChain)
+	}
+	causeDetails, ok := re.CauseChain[0].Details.(map[string]interface{})
+	if !ok || causeDetails["code"] != "E_INNER_PARSED" {
+		t.Fatalf("cause Details = %#v, want parsed details object", re.CauseChain[0].Details)
+	}
+	if re.CauseChain[0].DetailsJSON != "inner raw details" {
+		t.Fatalf("cause DetailsJSON = %q, want explicit raw detailsJson", re.CauseChain[0].DetailsJSON)
+	}
+	envelope := re.ToMap()
+	if envelope["details_json"] != "{\"code\":\"E_RAW\",\"canonical\":true}" {
+		t.Fatalf("mapped details_json = %#v, want explicit raw value", envelope["details_json"])
+	}
+	causes, ok := envelope["cause_chain"].([]map[string]interface{})
+	if !ok || len(causes) != 1 || causes[0]["details_json"] != "inner raw details" {
+		t.Fatalf("mapped cause details_json = %#v", envelope["cause_chain"])
+	}
+}
+
 func TestParseError_StructuredCausePreservesBoundaryMetadata(t *testing.T) {
 	raw, err := json.Marshal(map[string]interface{}{
 		"runtime":        "javascript",
