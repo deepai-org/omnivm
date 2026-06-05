@@ -15511,6 +15511,45 @@ func TestClosedProxyExplicitReleaseReportsLifecycleDiagnostic(t *testing.T) {
 	}
 }
 
+func TestUnknownProxyCleanupOpsRemainIdempotentButExplicitUseDiagnoses(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	before := e.handleTable.Stats(time.Now())
+
+	result, err := e.HandleCall(`{"op":"handle_release_finalizer","id":404}`)
+	if err != nil {
+		t.Fatalf("unknown handle_release_finalizer should remain idempotent: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != false {
+		t.Fatalf("unknown handle_release_finalizer envelope = %#v, want false", env)
+	}
+
+	result, err = e.HandleCall(`{"op":"handle_drop_reference","from":404,"to":405}`)
+	if err != nil {
+		t.Fatalf("unknown handle_drop_reference should remain idempotent: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "bool" || env.Value != true {
+		t.Fatalf("unknown handle_drop_reference envelope = %#v, want true", env)
+	}
+
+	after := e.handleTable.Stats(time.Now())
+	if after.FinalizerQueued != before.FinalizerQueued || after.FinalizerQueueLen != before.FinalizerQueueLen || after.FinalizerReleases != before.FinalizerReleases || after.ReferenceEdges != before.ReferenceEdges {
+		t.Fatalf("unknown cleanup ops mutated lifecycle stats: before=%+v after=%+v", before, after)
+	}
+
+	for _, call := range []string{
+		`{"op":"handle_release_explicit","id":404}`,
+		`{"op":"handle_retain","id":404}`,
+		`{"op":"handle_get","id":404,"key":"path"}`,
+		`{"op":"handle_reference","from":404,"to":405,"kind":"property"}`,
+	} {
+		if _, err := e.HandleCall(call); err == nil || err.Error() != "manifest HandleCall: unknown handle 404" {
+			t.Fatalf("unknown explicit operation %s diagnostic = %v, want unknown handle 404", call, err)
+		}
+	}
+}
+
 func TestAdapterConformanceCoversRuntimeAndFrameworkShapes(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript", "java", "ruby")
 
