@@ -14,6 +14,7 @@ package python
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdio.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #endif
@@ -718,6 +719,21 @@ typedef struct {
 	int has_buffer;
 	int has_aux_buffer;
 } py_omnivm_exported_buffer_t;
+
+static char g_export_rejection[256] = {0};
+
+static void omnivm_py_clear_export_rejection(void) {
+	g_export_rejection[0] = '\0';
+}
+
+static void omnivm_py_set_export_rejection(const char* reason) {
+	if (!reason || g_export_rejection[0] != '\0') return;
+	snprintf(g_export_rejection, sizeof(g_export_rejection), "%s", reason);
+}
+
+static const char* omnivm_py_last_export_rejection(void) {
+	return g_export_rejection[0] == '\0' ? NULL : g_export_rejection;
+}
 
 static int omnivm_py_arrow_c_format(const char* format, char* out, size_t out_len, Py_ssize_t* itemsize) {
 	if (!format || !out || out_len < 2 || !itemsize) return 0;
@@ -1427,6 +1443,7 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 
 static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 	if (!omnivm_py_dlpack_device_allows_cpu_export(obj)) {
+		omnivm_py_set_export_rejection("__dlpack__ device is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
 		return NULL;
 	}
 	PyObject* method = PyObject_GetAttrString(obj, "__dlpack__");
@@ -1461,8 +1478,13 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 		return NULL;
 	}
 	DLTensor* tensor = &managed->dl_tensor;
-	if (!tensor->data || tensor->device.device_type != kDLCPU || tensor->ndim <= 0 ||
-	    tensor->ndim > 8 || !tensor->shape || tensor->byte_offset > (uint64_t)PY_SSIZE_T_MAX) {
+	if (!tensor->data || tensor->ndim <= 0 || tensor->ndim > 8 ||
+	    !tensor->shape || tensor->byte_offset > (uint64_t)PY_SSIZE_T_MAX) {
+		Py_DECREF(capsule);
+		return NULL;
+	}
+	if (tensor->device.device_type != kDLCPU) {
+		omnivm_py_set_export_rejection("DLPack tensor memory is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
 		Py_DECREF(capsule);
 		return NULL;
 	}
@@ -1769,6 +1791,7 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dataframe_interchange(PyObj
 		return NULL;
 	}
 	if (!omnivm_py_dataframe_buffer_allows_cpu_export(buffer_obj)) {
+		omnivm_py_set_export_rejection("dataframe interchange data buffer is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
 		Py_DECREF(dtype_obj);
 		Py_DECREF(buffer_obj);
 		Py_XDECREF(validity_entry);
@@ -1806,6 +1829,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dataframe_interchange(PyObj
 		}
 		validity_buffer_obj = PySequence_GetItem(validity_entry, 0);
 		if (!validity_buffer_obj || !omnivm_py_dataframe_buffer_allows_cpu_export(validity_buffer_obj)) {
+			if (validity_buffer_obj) {
+				omnivm_py_set_export_rejection("dataframe interchange validity buffer is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
+			}
 			Py_XDECREF(validity_buffer_obj);
 			Py_DECREF(buffer_obj);
 			Py_DECREF(validity_entry);
@@ -2050,6 +2076,7 @@ static Py_ssize_t omnivm_py_exported_buffer_span(py_omnivm_exported_buffer_t* ex
 
 static py_omnivm_exported_buffer_t* omnivm_py_export_buffer(const char* expr) {
 	PyGILState_STATE gstate = PyGILState_Ensure();
+	omnivm_py_clear_export_rejection();
 	PyObject* main_module = PyImport_AddModule("__main__");
 	if (!main_module) {
 		PyGILState_Release(gstate);
@@ -4375,6 +4402,9 @@ func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, err
 
 	exported := C.omnivm_py_export_buffer(cExpr)
 	if exported == nil {
+		if rejection := C.omnivm_py_last_export_rejection(); rejection != nil {
+			return pkg.ExportedBuffer{}, false, fmt.Errorf("python: native_memory unsupported zero-copy buffer export for %q: %s", name, C.GoString(rejection))
+		}
 		return pkg.ExportedBuffer{}, false, nil
 	}
 

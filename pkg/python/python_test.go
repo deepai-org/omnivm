@@ -802,8 +802,10 @@ payload = GPUOnlyDLPack()
 `); result.Err != nil {
 		t.Fatalf("create non-CPU __dlpack__ payload: %v", result.Err)
 	}
-	if exported, ok, err := r.ExportBuffer("python-export-dlpack-gpu", "payload"); err != nil || ok {
-		t.Fatalf("non-CPU __dlpack__ export = (%+v,%v,%v), want no export and no error", exported, ok, err)
+	if exported, ok, err := r.ExportBuffer("python-export-dlpack-gpu", "payload"); err == nil || ok ||
+		!strings.Contains(err.Error(), "__dlpack__ device is not CPU-addressable") ||
+		!strings.Contains(err.Error(), "host memory") {
+		t.Fatalf("non-CPU __dlpack__ export = (%+v,%v,%v), want host-memory diagnostic", exported, ok, err)
 	}
 	if result := r.Eval("payload.called"); result.Err != nil || result.Value != "False" {
 		t.Fatalf("non-CPU __dlpack__ was called: value=%v err=%v", result.Value, result.Err)
@@ -1117,8 +1119,10 @@ payload = GPUDataFrameInterchange()
 `); result.Err != nil {
 		t.Fatalf("create non-CPU dataframe-interchange payload: %v", result.Err)
 	}
-	if exported, ok, err := r.ExportBuffer("python-export-dataframe-gpu", "payload"); err != nil || ok {
-		t.Fatalf("non-CPU dataframe export = (%+v,%v,%v), want no export and no error", exported, ok, err)
+	if exported, ok, err := r.ExportBuffer("python-export-dataframe-gpu", "payload"); err == nil || ok ||
+		!strings.Contains(err.Error(), "dataframe interchange data buffer is not CPU-addressable") ||
+		!strings.Contains(err.Error(), "host memory") {
+		t.Fatalf("non-CPU dataframe export = (%+v,%v,%v), want host-memory diagnostic", exported, ok, err)
 	}
 }
 

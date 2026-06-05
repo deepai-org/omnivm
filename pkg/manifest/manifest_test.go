@@ -10483,6 +10483,16 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/python/python.go"], "g_buf_status(name)") || !contains(files["../../pkg/python/python.go"], `PyErr_Format(PyExc_RuntimeError, "omnivm.release_buffer failed: %s", raw)`) {
 		t.Fatalf("embedded Python explicit release_buffer should include buffer status diagnostics on release failure")
 	}
+	for _, want := range []string{
+		"omnivm_py_last_export_rejection",
+		"__dlpack__ device is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory",
+		"dataframe interchange data buffer is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory",
+		`fmt.Errorf("python: native_memory unsupported zero-copy buffer export for %q: %s", name, C.GoString(rejection))`,
+	} {
+		if !contains(files["../../pkg/python/python.go"], want) {
+			t.Fatalf("embedded Python buffer export should diagnose explicit non-host native-memory protocols, missing %q", want)
+		}
+	}
 	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_free(name)") || !contains(files["../../pkg/ruby/ruby.go"], "g_buf_release(name)") {
 		t.Fatalf("embedded Ruby should use g_buf_free for release_buffer and g_buf_release for borrow cleanup")
 	}

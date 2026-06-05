@@ -899,7 +899,10 @@ public name, and `memory_space` with dtype/format/shape/stride/offset/nullabilit
 and ownership metadata. Current
 zero-copy buffers report `memory_space="host"`; GPU/accelerator memory should
 stay proxied or require an explicit device-aware bridge before it can report a
-different memory space. Released buffer tombstones retain their
+different memory space. Python DLPack and dataframe-interchange producers that
+explicitly report non-CPU buffers fail export with a native-memory diagnostic
+instead of letting OmniVM treat a device pointer as host-addressable memory.
+Released buffer tombstones retain their
 dtype/format/read-only/ownership/memory-space metadata until the bounded
 tombstone entry expires or the name is reused. Python
 `omnivm.release_buffer(name)` failures include the same status fields when the
