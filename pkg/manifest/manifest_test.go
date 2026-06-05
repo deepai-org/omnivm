@@ -7093,6 +7093,57 @@ if len(releases) != 1 or releases[0].get("id") != 91:
 	}
 }
 
+func TestPythonHandleProxyAsyncContextPreservesBodyExceptionWhenCloseFails(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import asyncio
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_release_explicit":
+            raise RuntimeError("release failed")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+proxy = __omnivm_materialize_capture({"__omnivm_resource__": True, "id": 92, "runtime": "python", "kind": "request"})
+async def run():
+    async with proxy:
+        raise ValueError("body failed")
+try:
+    asyncio.run(run())
+except ValueError as exc:
+    if "body failed" not in str(exc):
+        raise
+    notes = getattr(exc, "__notes__", [])
+    if not any("release failed" in note for note in notes):
+        raise RuntimeError("close failure note missing: " + repr(notes))
+    cleanup = cleanup_errors(exc)
+    if len(cleanup) != 1 or str(cleanup[0]) != "release failed":
+        raise RuntimeError("cleanup error missing: " + repr(cleanup))
+else:
+    raise RuntimeError("body exception was not preserved")
+releases = [req for req in Bridge.requests if req.get("op") == "handle_release_explicit"]
+if len(releases) != 1 or releases[0].get("id") != 92:
+    raise RuntimeError("explicit release requests mismatch: " + repr(releases))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python handle async context close-failure check failed: %v\n%s", err, out)
+	}
+}
+
 func TestPythonTableDescriptorFieldsPreferRemoteFields(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -7654,6 +7705,57 @@ if len(cancels) != 1 or cancels[0].get("id") != 90:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream context close-failure check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonRemoteStreamAsyncContextPreservesBodyExceptionWhenCloseFails(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import asyncio
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_cancel":
+            raise RuntimeError("cancel failed")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 93, "runtime": "python", "kind": "stream"})
+async def run():
+    async with stream:
+        raise ValueError("body failed")
+try:
+    asyncio.run(run())
+except ValueError as exc:
+    if "body failed" not in str(exc):
+        raise
+    notes = getattr(exc, "__notes__", [])
+    if not any("cancel failed" in note for note in notes):
+        raise RuntimeError("close failure note missing: " + repr(notes))
+    cleanup = cleanup_errors(exc)
+    if len(cleanup) != 1 or str(cleanup[0]) != "cancel failed":
+        raise RuntimeError("cleanup error missing: " + repr(cleanup))
+else:
+    raise RuntimeError("body exception was not preserved")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 93:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream async context close-failure check failed: %v\n%s", err, out)
 	}
 }
 
