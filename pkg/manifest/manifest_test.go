@@ -8568,11 +8568,15 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def proxy_close(value)") ||
 		!contains(code, "def omnivm_close(value)\n      proxy_close(value)\n    end") ||
 		!contains(code, "def __omnivm_actual_public_method?(value, name)") ||
-		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)") ||
-		!contains(code, "if __omnivm_actual_public_method?(value, :close)") ||
+		!contains(code, "def __omnivm_lifecycle_method_without_required_args?(value, name)") ||
+		!contains(code, "return false unless __omnivm_actual_public_method?(value, name)") ||
+		!contains(code, "arity = value.method(name).arity") ||
+		!contains(code, "arity == 0 || arity == -1") ||
+		!contains(code, "return value.public_send(:omnivm_close) if __omnivm_lifecycle_method_without_required_args?(value, :omnivm_close)") ||
+		!contains(code, "if __omnivm_lifecycle_method_without_required_args?(value, :close)") ||
 		!contains(code, "result = value.public_send(:close)\n    return result.nil? ? true : result") ||
 		!contains(code, "result = value.public_send(:close)\n        return result.nil? ? true : result") ||
-		!contains(code, "if __omnivm_actual_public_method?(value, :dispose)") ||
+		!contains(code, "if __omnivm_lifecycle_method_without_required_args?(value, :dispose)") ||
 		!contains(code, "result = value.public_send(:dispose)\n    return result.nil? ? true : result") ||
 		!contains(code, "result = value.public_send(:dispose)\n        return result.nil? ? true : result") ||
 		!contains(code, "def cleanup_errors(error)") ||
@@ -8722,11 +8726,26 @@ class CloseAndDispose
     raise "dispose should not run when close is available"
   end
 end
+class RequiredCloseAndDispose
+  def close(reason)
+    raise "required-arg close should not run"
+  end
+  def dispose
+    "disposed-after-required-close"
+  end
+end
+class RequiredOnlyClose
+  def close(reason)
+    raise "required-arg close should not run"
+  end
+end
 raise "dispose result was not preserved" unless OmniVM.proxy_close(TextDispose.new) == "disposed"
 raise "module omnivm_close alias did not preserve dispose result" unless OmniVM.omnivm_close(TextDispose.new) == "disposed"
 raise "false dispose result was not preserved" unless OmniVM.proxy_close(FalseDispose.new) == false
 raise "nil dispose result did not normalize true" unless OmniVM.proxy_close(NilDispose.new) == true
 raise "close did not take priority over dispose" unless OmniVM.proxy_close(CloseAndDispose.new) == "closed"
+raise "required-arg close should be skipped for dispose" unless OmniVM.proxy_close(RequiredCloseAndDispose.new) == "disposed-after-required-close"
+raise "required-arg close should not be treated as lifecycle close" unless OmniVM.proxy_close(RequiredOnlyClose.new) == false
 requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
 ["close", "dispose"].each do |key|
   raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
@@ -10352,12 +10371,16 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"def self.__actual_public_method?(value, name)",
+		"def self.__lifecycle_method_without_required_args?(value, name)",
+		"return false unless __actual_public_method?(value, name)",
+		"arity = value.method(name).arity",
+		"arity == 0 || arity == -1",
 		"def self.proxy_close(value)",
 		"def self.omnivm_close(value)",
-		"return value.public_send(:omnivm_close) if __actual_public_method?(value, :omnivm_close)",
-		"if __actual_public_method?(value, :close)",
+		"return value.public_send(:omnivm_close) if __lifecycle_method_without_required_args?(value, :omnivm_close)",
+		"if __lifecycle_method_without_required_args?(value, :close)",
 		"result = value.public_send(:close)",
-		"if __actual_public_method?(value, :dispose)",
+		"if __lifecycle_method_without_required_args?(value, :dispose)",
 		"result = value.public_send(:dispose)",
 		"return result.nil? ? true : result",
 	} {

@@ -2763,13 +2763,21 @@ def __omnivm_actual_public_method?(value, name)
   end
 end
 
+def __omnivm_lifecycle_method_without_required_args?(value, name)
+  return false unless __omnivm_actual_public_method?(value, name)
+  arity = value.method(name).arity
+  arity == 0 || arity == -1
+rescue
+  false
+end
+
 def omnivm_close(value)
-  return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
-  if __omnivm_actual_public_method?(value, :close)
+  return value.public_send(:omnivm_close) if __omnivm_lifecycle_method_without_required_args?(value, :omnivm_close)
+  if __omnivm_lifecycle_method_without_required_args?(value, :close)
     result = value.public_send(:close)
     return result.nil? ? true : result
   end
-  if __omnivm_actual_public_method?(value, :dispose)
+  if __omnivm_lifecycle_method_without_required_args?(value, :dispose)
     result = value.public_send(:dispose)
     return result.nil? ? true : result
   end
@@ -2779,12 +2787,12 @@ end
 if defined?(OmniVM) && OmniVM.respond_to?(:singleton_class)
   class << OmniVM
     def proxy_close(value)
-      return value.public_send(:omnivm_close) if __omnivm_actual_public_method?(value, :omnivm_close)
-      if __omnivm_actual_public_method?(value, :close)
+      return value.public_send(:omnivm_close) if __omnivm_lifecycle_method_without_required_args?(value, :omnivm_close)
+      if __omnivm_lifecycle_method_without_required_args?(value, :close)
         result = value.public_send(:close)
         return result.nil? ? true : result
       end
-      if __omnivm_actual_public_method?(value, :dispose)
+      if __omnivm_lifecycle_method_without_required_args?(value, :dispose)
         result = value.public_send(:dispose)
         return result.nil? ? true : result
       end
