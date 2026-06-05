@@ -3773,11 +3773,11 @@ class NestedArrowCapsuleArray:
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
         raise AssertionError(f"nested Arrow capsule did not remain a resource proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"nested Arrow capsule should not create a table proxy: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"nested Arrow capsule capture used JSON fallback: before={before}, after={after}")
 
 
@@ -3859,13 +3859,13 @@ class StringArrowCapsuleArray:
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
         raise AssertionError(f"string Arrow capsule did not remain a resource proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"string Arrow capsule should not create a table proxy: before={before}, after={after}")
-    if after.get("arrow_transfers", 0) != 0:
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
         raise AssertionError(f"string Arrow capsule should not use Arrow/shared memory: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"string Arrow capsule capture used JSON fallback: before={before}, after={after}")
 
 
@@ -4132,11 +4132,11 @@ class MultiChunkArrowStream:
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
         raise AssertionError(f"multi-chunk Arrow stream did not remain a resource proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"multi-chunk Arrow stream should not create a table proxy: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"multi-chunk Arrow stream capture used JSON fallback: before={before}, after={after}")
 
 
@@ -5626,6 +5626,7 @@ def test_manifest_pandas_dataframe_array_protocol_capture_uses_arrow():
 
 
 def test_manifest_polars_dataframe_capture_uses_arrow():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -5658,14 +5659,14 @@ def test_manifest_polars_dataframe_capture_uses_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Polars DataFrame capture did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Polars DataFrame capture did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Polars DataFrame degraded to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Polars DataFrame capture used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Polars DataFrame capture did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Polars DataFrame capture did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Polars DataFrame degraded to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Polars DataFrame capture used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_heterogeneous_dataframe_capture_uses_proxy_not_json():
@@ -20849,6 +20850,7 @@ def test_manifest_go_cshared_wrapped_error_preserves_cause_chain():
 
 
 def test_manifest_func_return_exports_js_typed_array_as_arrow():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -20883,17 +20885,18 @@ def test_manifest_func_return_exports_js_typed_array_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned JS typed array did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"function-returned JS typed array did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"function-returned JS typed array should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned JS typed array used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned JS typed array did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"function-returned JS typed array did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"function-returned JS typed array should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned JS typed array used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_func_return_exports_java_primitive_array_as_arrow():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -20928,18 +20931,19 @@ def test_manifest_func_return_exports_java_primitive_array_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned Java primitive array did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"function-returned Java primitive array did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"function-returned Java primitive array should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned Java primitive array used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned Java primitive array did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"function-returned Java primitive array did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"function-returned Java primitive array should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned Java primitive array used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_go_cshared_func_return_exports_typed_slice_as_arrow():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -20969,14 +20973,14 @@ def test_manifest_go_cshared_func_return_exports_typed_slice_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared typed slice did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared typed slice did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared typed slice should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared typed slice used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared typed slice did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared typed slice did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared typed slice should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared typed slice used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_imports", 0) <= before_arrow.get("zero_copy_imports", 0):
         raise AssertionError(f"Go c-shared typed slice did not enter Arrow as an owned zero-copy import: before={before_arrow} after={after_arrow}")
@@ -20984,6 +20988,7 @@ def test_manifest_go_cshared_func_return_exports_typed_slice_as_arrow():
 
 def test_manifest_go_cshared_func_return_exports_nested_array_as_shaped_arrow():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -21013,14 +21018,14 @@ def test_manifest_go_cshared_func_return_exports_nested_array_as_shaped_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared nested array did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared nested array did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared nested array should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared nested array used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared nested array did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared nested array did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared nested array should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared nested array used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_imports", 0) <= before_arrow.get("zero_copy_imports", 0):
         raise AssertionError(f"Go c-shared nested array did not enter Arrow as an owned zero-copy import: before={before_arrow} after={after_arrow}")
@@ -21028,6 +21033,7 @@ def test_manifest_go_cshared_func_return_exports_nested_array_as_shaped_arrow():
 
 def test_manifest_go_cshared_func_return_exports_nested_slice_as_shaped_arrow():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -21057,14 +21063,14 @@ def test_manifest_go_cshared_func_return_exports_nested_slice_as_shaped_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared nested slice did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared nested slice did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared nested slice should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared nested slice used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared nested slice did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared nested slice did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared nested slice should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared nested slice used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_imports", 0) <= before_arrow.get("zero_copy_imports", 0):
         raise AssertionError(f"Go c-shared nested slice did not enter Arrow as an owned zero-copy import: before={before_arrow} after={after_arrow}")
@@ -21072,6 +21078,7 @@ def test_manifest_go_cshared_func_return_exports_nested_slice_as_shaped_arrow():
 
 def test_manifest_go_cshared_func_return_exports_byte_slice_as_arrow():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -21101,14 +21108,14 @@ def test_manifest_go_cshared_func_return_exports_byte_slice_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared byte slice did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared byte slice did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared byte slice should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared byte slice used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared byte slice did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared byte slice did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared byte slice should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared byte slice used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_imports", 0) <= before_arrow.get("zero_copy_imports", 0):
         raise AssertionError(f"Go c-shared byte slice did not enter Arrow as an owned zero-copy import: before={before_arrow} after={after_arrow}")
@@ -22191,6 +22198,7 @@ def test_manifest_go_cshared_func_consumes_arrow_table_as_typed_slice():
 
 def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_fixed_array():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -22220,14 +22228,14 @@ def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_fixed_array():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared shaped fixed-array arg did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared shaped fixed-array arg did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared shaped fixed-array arg should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared shaped fixed-array arg used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared shaped fixed-array arg did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared shaped fixed-array arg did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared shaped fixed-array arg should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared shaped fixed-array arg used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_borrows", 0) <= before_arrow.get("zero_copy_borrows", 0):
         raise AssertionError(f"Go c-shared shaped fixed-array arg did not borrow Arrow memory: before={before_arrow} after={after_arrow}")
@@ -22235,6 +22243,7 @@ def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_fixed_array():
 
 def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_nested_slice():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -22264,14 +22273,14 @@ def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_nested_slice():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared shaped nested-slice arg did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared shaped nested-slice arg did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared shaped nested-slice arg should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared shaped nested-slice arg used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared shaped nested-slice arg did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared shaped nested-slice arg did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared shaped nested-slice arg should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared shaped nested-slice arg used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_borrows", 0) <= before_arrow.get("zero_copy_borrows", 0):
         raise AssertionError(f"Go c-shared shaped nested-slice arg did not borrow Arrow memory: before={before_arrow} after={after_arrow}")
@@ -22279,6 +22288,7 @@ def test_manifest_go_cshared_func_consumes_shaped_arrow_table_as_nested_slice():
 
 def test_manifest_go_cshared_func_consumes_strided_arrow_table_as_typed_slice():
     before_arrow = omnivm.status().get("arrow", {})
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -22308,14 +22318,14 @@ def test_manifest_go_cshared_func_consumes_strided_arrow_table_as_typed_slice():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"Go c-shared strided typed-slice arg did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"Go c-shared strided typed-slice arg did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"Go c-shared strided typed-slice arg should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Go c-shared strided typed-slice arg used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"Go c-shared strided typed-slice arg did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"Go c-shared strided typed-slice arg did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"Go c-shared strided typed-slice arg should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Go c-shared strided typed-slice arg used JSON fallback: before={before_boundary}, after={boundary}")
     after_arrow = omnivm.status().get("arrow", {})
     if after_arrow.get("zero_copy_borrows", 0) <= before_arrow.get("zero_copy_borrows", 0):
         raise AssertionError(f"Go c-shared strided typed-slice arg did not borrow Arrow memory: before={before_arrow} after={after_arrow}")
