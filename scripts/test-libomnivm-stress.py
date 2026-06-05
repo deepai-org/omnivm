@@ -5435,11 +5435,11 @@ class GPUDataFrameInterchange:
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
         raise AssertionError(f"non-CPU dataframe did not remain a resource proxy: before={before}, after={after}")
-    if after.get("table_proxy_captures", 0) != 0:
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
         raise AssertionError(f"non-CPU dataframe should not create a table proxy: before={before}, after={after}")
-    if after.get("json_fallbacks", 0) != 0:
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
         raise AssertionError(f"non-CPU dataframe capture used JSON fallback: before={before}, after={after}")
 
 
