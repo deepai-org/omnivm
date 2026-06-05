@@ -178,6 +178,23 @@ var manifestExecutor *manifest.Executor
 var manifestExecutionMu sync.Mutex
 var manifestModules = make(map[string]*manifest.Executor)
 
+type bridgeStructuredError interface {
+	BridgeErrorJSON() ([]byte, error)
+}
+
+func bridgeErrorPayload(err error) string {
+	if err == nil {
+		return ""
+	}
+	if structured, ok := err.(bridgeStructuredError); ok {
+		data, marshalErr := structured.BridgeErrorJSON()
+		if marshalErr == nil && len(data) > 0 {
+			return string(data)
+		}
+	}
+	return err.Error()
+}
+
 func unloadManifestModulesForWorkerDrain() error {
 	manifestExecutionMu.Lock()
 	defer manifestExecutionMu.Unlock()
@@ -328,7 +345,7 @@ func OmniInit(cList *C.char) *C.char {
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 	val, err := callRuntime(C.GoString(cRuntime), C.GoString(cCode))
 	if err != nil {
-		return C.CString("ERR:" + err.Error())
+		return C.CString("ERR:" + bridgeErrorPayload(err))
 	}
 	return C.CString(val)
 }
@@ -337,7 +354,7 @@ func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
 func OmniCallHost(cRuntime *C.char, cCode *C.char) *C.char {
 	val, err := callRuntime(C.GoString(cRuntime), C.GoString(cCode))
 	if err != nil {
-		return C.CString("ERR:" + err.Error())
+		return C.CString("ERR:" + bridgeErrorPayload(err))
 	}
 	return C.CString("OK:" + val)
 }
@@ -881,7 +898,7 @@ func OmniManifestCall(cModuleID *C.char, cRequest *C.char) *C.char {
 
 	result, err := executor.HandleCall(request)
 	if err != nil {
-		return C.CString("ERR:" + err.Error())
+		return C.CString("ERR:" + bridgeErrorPayload(err))
 	}
 	return C.CString("OK:" + result)
 }

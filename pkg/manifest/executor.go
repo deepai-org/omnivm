@@ -2268,7 +2268,7 @@ func (e *Executor) handleEntry(id handles.ID) (handles.Entry, error) {
 		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed resource handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Kind, "resource"))
 	}
 	if ref := e.releasedTables[id]; ref != nil {
-		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed table handle %d (runtime=%s format=%s): owner-side lifecycle is released", id, nonEmpty(ref.Runtime, "unknown"), nonEmpty(ref.Format, "table"))
+		return handles.Entry{}, releasedTableLifecycleError(id, ref)
 	}
 	if ref, ok := e.releasedStreams[id]; ok {
 		return handles.Entry{}, fmt.Errorf("manifest HandleCall: closed stream handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, ref.Runtime, ref.Kind)

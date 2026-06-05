@@ -1623,6 +1623,26 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 				t.Fatalf("released table call %s diagnostic missing %q: %s", call, want, got)
 			}
 		}
+		var lifecycleErr *LifecycleError
+		if !errors.As(err, &lifecycleErr) {
+			t.Fatalf("released table call %s error = %T, want LifecycleError", call, err)
+		}
+		envelope := lifecycleErr.ToMap()
+		if envelope["runtime"] != "python" || envelope["origin_runtime"] != "python" || envelope["type"] != "RuntimeError" || envelope["boundary_path"] != nativeMemoryBoundary {
+			t.Fatalf("released table call %s structured envelope mismatch: %#v", call, envelope)
+		}
+		details, _ := envelope["details"].(map[string]interface{})
+		tableDetails, _ := details["table"].(map[string]interface{})
+		if tableDetails["format"] != "arrow_c_data" || tableDetails["runtime"] != "python" || tableDetails["released"] != true || tableDetails["owner_lifecycle"] != "released" {
+			t.Fatalf("released table call %s structured table details mismatch: %#v", call, tableDetails)
+		}
+		metadata, _ := tableDetails["metadata"].(map[string]interface{})
+		if metadata["buffer"] != name || metadata["memory_space"] != "host" {
+			t.Fatalf("released table call %s structured table metadata mismatch: %#v", call, metadata)
+		}
+		if _, err := lifecycleErr.BridgeErrorJSON(); err != nil {
+			t.Fatalf("released table call %s BridgeErrorJSON: %v", call, err)
+		}
 	}
 	for _, call := range []string{
 		fmt.Sprintf(`{"op":"handle_reference","from":%d,"to":%d,"kind":"property"}`, ref.ID, parentID),
@@ -1640,6 +1660,10 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		}
 		if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
 			t.Fatalf("released table reference call %s used generic handle-table diagnostic: %s", call, got)
+		}
+		var lifecycleErr *LifecycleError
+		if !errors.As(err, &lifecycleErr) || lifecycleErr.ToMap()["boundary_path"] != nativeMemoryBoundary {
+			t.Fatalf("released table reference call %s structured lifecycle error mismatch: %#v", call, err)
 		}
 	}
 	beforeCleanup := e.handleTable.Stats(time.Now())
