@@ -8714,6 +8714,7 @@ class OmniVM
     "class" => "remote-class",
     "object_id" => "remote-object-id",
     "hash" => "remote-hash",
+    "inspect" => "remote-inspect",
     "to_s" => "remote-to-s",
     "to_h" => {"remote" => true},
     "to_json" => "{\"remote\":true}"
@@ -8739,11 +8740,12 @@ proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 81,
 raise "class was not remote-first: #{proxy.class.inspect}" unless proxy.class == "remote-class"
 raise "object_id was not remote-first: #{proxy.object_id.inspect}" unless proxy.object_id == "remote-object-id"
 raise "hash was not remote-first: #{proxy.hash.inspect}" unless proxy.hash == "remote-hash"
+raise "inspect was not remote-first: #{proxy.inspect.inspect}" unless proxy.inspect == "remote-inspect"
 raise "to_s was not remote-first: #{proxy.to_s.inspect}" unless proxy.to_s == "remote-to-s"
 raise "to_h was not remote-first: #{proxy.to_h.inspect}" unless proxy.to_h == {"remote" => true}
 raise "to_json was not remote-first: #{proxy.to_json.inspect}" unless proxy.to_json == "{\"remote\":true}"
 requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
-["class", "object_id", "hash", "to_s", "to_h", "to_json"].each do |key|
+["class", "object_id", "hash", "inspect", "to_s", "to_h", "to_json"].each do |key|
   raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
 end
 `
