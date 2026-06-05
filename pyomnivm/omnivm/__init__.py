@@ -515,10 +515,23 @@ def _is_runtime_error_metadata_line(line):
     return (
         lower.startswith("caused by:")
         or lower.startswith("details:")
+        or lower.startswith("details_json:")
+        or lower.startswith("detailsjson:")
         or lower.startswith("original_error_handle:")
         or lower.startswith("original error handle:")
         or lower.startswith("original-error-handle:")
     )
+
+
+def _split_runtime_error_details_metadata_line(line):
+    stripped = (line or "").strip()
+    if ":" not in stripped:
+        return None, None
+    label, raw = stripped.split(":", 1)
+    label = label.strip().lower()
+    if label not in ("details", "details_json", "detailsjson"):
+        return None, None
+    return label, raw.strip()
 
 
 def _runtime_error_stack_frames(traceback):
@@ -531,24 +544,29 @@ def _runtime_error_stack_frames(traceback):
 
 def _parse_runtime_error_details(text):
     for line in str(text).splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("Details: "):
+        label, raw = _split_runtime_error_details_metadata_line(line)
+        if label is None:
             continue
         try:
-            value = json.loads(stripped[len("Details: ") :])
+            value = json.loads(raw)
         except Exception:
-            return None
+            return raw if label in ("details_json", "detailsjson") else None
         return value
     return None
 
 
 def _parse_runtime_error_details_json(text):
     for line in str(text).splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("Details: "):
+        label, raw = _split_runtime_error_details_metadata_line(line)
+        if label is None:
             continue
-        raw = stripped[len("Details: ") :]
-        return raw or None
+        if label in ("details_json", "detailsjson"):
+            return raw or None
+        try:
+            value = json.loads(raw)
+        except Exception:
+            return None
+        return _runtime_error_details_json(value)
     return None
 
 

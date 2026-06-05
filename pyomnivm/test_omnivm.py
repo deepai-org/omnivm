@@ -166,6 +166,26 @@ class TestRuntimeError(unittest.TestCase):
         assert "[parameters:" in err.traceback
         assert err.details == {"errors": [{"loc": ["age"], "type": "greater_than"}]}
 
+    def test_text_details_json_is_metadata_not_stack_frame(self):
+        err = omnivm_mod.RuntimeError(
+            "ERR:javascript: AggregateError: invalid\n"
+            "    at parse (<anonymous>:1:2)\n"
+            "details_json: [{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]",
+            runtime="javascript",
+        )
+        assert err.details == [{"path": ["user", "age"], "code": "too_small"}]
+        assert err.details_json == "[{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]"
+        assert err.stack_frames == ["at parse (<anonymous>:1:2)"]
+
+        raw_err = omnivm_mod.RuntimeError(
+            "ERR:javascript: AggregateError: invalid\n"
+            "detailsJson: not json",
+            runtime="javascript",
+        )
+        assert raw_err.details == "not json"
+        assert raw_err.details_json == "not json"
+        assert raw_err.stack_frames == []
+
     def test_details_preserves_non_object_json(self):
         array_err = omnivm_mod.RuntimeError(
             "javascript: AggregateError: invalid\n"
