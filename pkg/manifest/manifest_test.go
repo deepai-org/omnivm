@@ -9315,6 +9315,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def stack_frames") ||
 		!contains(code, "def cause_chain") ||
 		!contains(code, "def details") ||
+		!contains(code, "def details=(value)") ||
+		!contains(code, "def details_json=(value)") ||
+		!contains(code, "@details = __omnivm_copy_json_value(JSON.parse(value))") ||
+		!contains(code, "def detailsJson=(value)") ||
 		!contains(code, "def to_h") ||
 		!contains(code, "def to_json(*args)") ||
 		!contains(code, `malformed = __omnivm_runtime_error("OmniVM stream_next returned malformed chunk`) ||
@@ -9832,9 +9836,15 @@ rescue => e
   raise "malformed chunk details mismatch: #{details.inspect}" unless details == {"stream" => {"id" => 90, "chunk" => ""}}
   details["stream"]["id"] = -1
   raise "malformed chunk details reader leaked mutable state" unless e.details == {"stream" => {"id" => 90, "chunk" => ""}}
+  e.details_json = '{"stream":{"id":91,"chunk":"json"}}'
+  raise "details_json setter did not update details: #{e.details.inspect}" unless e.details == {"stream" => {"id" => 91, "chunk" => "json"}}
+  e.detailsJson = {"stream" => {"id" => 92, "chunk" => "alias"}}
+  raise "detailsJson setter did not update details_json: #{e.details_json.inspect}" unless JSON.parse(e.details_json) == {"stream" => {"id" => 92, "chunk" => "alias"}}
+  e.details = {"stream" => {"id" => 93, "chunk" => "details"}}
+  raise "details setter did not update details_json: #{e.details_json.inspect}" unless JSON.parse(e.details_json) == {"stream" => {"id" => 93, "chunk" => "details"}}
   envelope = JSON.parse(e.to_json)
   raise "malformed chunk json boundary mismatch: #{envelope.inspect}" unless envelope["boundary_path"] == "stream_next"
-  raise "malformed chunk json details mismatch: #{envelope.inspect}" unless envelope["details"] == {"stream" => {"id" => 90, "chunk" => ""}}
+  raise "malformed chunk json details mismatch: #{envelope.inspect}" unless envelope["details"] == {"stream" => {"id" => 93, "chunk" => "details"}}
 end
 raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
 raise "close was not idempotent" unless stream.close == false
@@ -11447,10 +11457,16 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		"OmniVM.__copy_json_value(@cause_chain)",
 		"def details",
 		"OmniVM.__copy_json_value(@details)",
+		"def details=(value)",
+		"@details_json = OmniVM.__runtime_error_details_json(@details)",
+		"def details_json=(value)",
+		"@details = OmniVM.__copy_json_value(JSON.parse(value))",
+		"def detailsJson=(value)",
 		"attr_reader :runtime, :origin_runtime, :type, :traceback, :boundary_path, :original_error_handle, :details_json",
 		"def initialize(message, runtime: nil, boundary_path: nil, details: nil)",
 		"@details = details.nil? ? parsed[:details] : OmniVM.__copy_json_value(details)",
 		"@details_json = details.nil? ? parsed[:details_json] : nil",
+		"def self.__runtime_error_details_json(value)",
 		"alias originRuntime origin_runtime",
 		"alias stackFrames stack_frames",
 		"alias causeChain cause_chain",

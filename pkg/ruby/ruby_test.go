@@ -279,6 +279,12 @@ rescue OmniVM::RuntimeError => e
   raise "details #{details.inspect}" unless details["owner_dispatch"]["owner_dispatch_supported"] == false
   details["owner_dispatch"]["mode"] = "mutated"
   raise "details leaked mutation" unless e.details["owner_dispatch"]["mode"] == "diagnostic_only"
+  e.details_json = '{"owner_dispatch":{"owner_dispatch_supported":true,"mode":"json-set"}}'
+  raise "details_json setter details #{e.details.inspect}" unless e.details["owner_dispatch"]["mode"] == "json-set"
+  e.detailsJson = {"owner_dispatch" => {"owner_dispatch_supported" => false, "mode" => "alias-object-set"}}
+  raise "detailsJson setter json #{e.details_json.inspect}" unless JSON.parse(e.details_json)["owner_dispatch"]["mode"] == "alias-object-set"
+  e.details = {"owner_dispatch" => {"owner_dispatch_supported" => false, "mode" => "details-set"}}
+  raise "details setter json #{e.details_json.inspect}" unless JSON.parse(e.details_json)["owner_dispatch"]["mode"] == "details-set"
 end
 
 begin

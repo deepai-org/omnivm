@@ -2952,6 +2952,32 @@ def __omnivm_runtime_error(message, boundary_path, details = nil)
       __omnivm_copy_json_value(@details)
     end
 
+    def details=(value)
+      @details = __omnivm_copy_json_value(value)
+      @details_json = __omnivm_runtime_error_details_json(@details)
+    end
+
+    def details_json=(value)
+      if value.nil?
+        @details = nil
+        @details_json = nil
+      elsif value.is_a?(String)
+        @details_json = value
+        begin
+          @details = __omnivm_copy_json_value(JSON.parse(value))
+        rescue
+          @details = value
+        end
+      else
+        @details = __omnivm_copy_json_value(value)
+        @details_json = __omnivm_runtime_error_details_json(@details)
+      end
+    end
+
+    def detailsJson=(value)
+      self.details_json = value
+    end
+
     def to_h
       {runtime: @runtime, origin_runtime: @origin_runtime, type: @type, message: message, traceback: traceback, stack_frames: stack_frames, cause_chain: cause_chain, boundary_path: @boundary_path, original_error_handle: @original_error_handle, details: details, details_json: @details_json}
     end
