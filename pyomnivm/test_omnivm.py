@@ -2535,6 +2535,19 @@ class TestCallWithMockLib(unittest.TestCase):
             "target": "ruby_fiber_thread",
         }
 
+    def test_owner_dispatch_target_status_requires_target_map(self):
+        self.mock_lib.OmniStatus.return_value = (
+            b'{"thread_affinity":{"mode":"diagnostic_only",'
+            b'"owner_dispatch_supported":false}}'
+        )
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            omnivm_mod.owner_dispatch_target_status("asyncio")
+        assert "owner_dispatch_targets capability" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "owner_dispatch_target"
+        assert ctx.exception.details["target"] == "python_asyncio"
+        assert ctx.exception.details["requested_target"] == "asyncio"
+        assert ctx.exception.details["owner_dispatch"]["owner_dispatch_supported"] is False
+
     def test_owner_dispatch_target_status_requires_known_target(self):
         self.mock_lib.OmniStatus.return_value = (
             b'{"thread_affinity":{"mode":"diagnostic_only",'

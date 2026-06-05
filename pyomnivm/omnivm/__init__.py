@@ -1955,8 +1955,12 @@ def owner_dispatch_target_status(target):
     if not isinstance(targets, dict):
         raise RuntimeError(
             "libomnivm status omitted owner_dispatch_targets capability",
-            boundary_path="thread_affinity",
-            details={"thread_affinity": dispatch_info},
+            boundary_path="owner_dispatch_target",
+            details={
+                "target": target_name,
+                "requested_target": requested_target,
+                "owner_dispatch": dispatch_info,
+            },
         )
     info = targets.get(target_name)
     if not isinstance(info, dict):

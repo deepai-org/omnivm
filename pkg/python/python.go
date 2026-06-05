@@ -424,7 +424,7 @@ static const char* omnivm_py_pymode_status_helpers_code =
 "    dispatch_info = owner_dispatch_status()\n"
 "    targets = dispatch_info.get('owner_dispatch_targets')\n"
 "    if not isinstance(targets, dict):\n"
-"        raise RuntimeError('omnivm.status omitted owner_dispatch_targets capability', boundary_path='thread_affinity', details={'thread_affinity': dispatch_info})\n"
+"        raise RuntimeError('omnivm.status omitted owner_dispatch_targets capability', boundary_path='owner_dispatch_target', details={'target': target_name, 'requested_target': requested_target, 'owner_dispatch': dispatch_info})\n"
 "    info = targets.get(target_name)\n"
 "    if not isinstance(info, dict):\n"
 "        known_targets = sorted(str(name) for name in targets.keys())\n"

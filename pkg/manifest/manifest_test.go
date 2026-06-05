@@ -9588,6 +9588,7 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		"def owner_dispatch_target_status(target):",
 		"requested_target = str(target)",
 		"boundary_path='owner_dispatch_target'",
+		"'owner_dispatch': dispatch_info",
 		"'requested_target': requested_target",
 		"'owner_dispatch_target': {'target': target_name",
 		"info['requested_target'] = requested_target",
