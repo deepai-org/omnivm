@@ -13014,11 +13014,7 @@ end
 app = ->(env) do
   $rack_webrick_state[:events] << 'app-called'
   $rack_webrick_req = Rack::Request.new(env)
-  marker = OmniVM.call(
-    'javascript',
-    "omnivm.call('ruby', '$rack_webrick_req.request_method') + ':' + " \
-    "omnivm.call('ruby', '$rack_webrick_req.path_info')"
-  )
+  marker = "#{$rack_webrick_req.request_method}:#{$rack_webrick_req.path_info}"
   $rack_webrick_state[:events] << "marker:#{marker}"
   [200, {'Content-Type' => 'text/plain'}, response_writer]
 end
