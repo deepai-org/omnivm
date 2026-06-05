@@ -2388,6 +2388,7 @@ func TestGoStreamProxyCloseReportsExternallyClosedOwner(t *testing.T) {
 	if strings.Contains(got, "unknown handle") {
 		t.Fatalf("Go stream proxy stale Close used generic handle-table diagnostic: %s", got)
 	}
+	assertLifecycleErrorForTest(t, err, ownerLifecycleBoundary, "stream", "go", "channel", "closed")
 	if err := stream.Close(); err == nil {
 		t.Fatal("second stale Go stream proxy Close should keep reporting the owner lifecycle error")
 	}
@@ -16657,6 +16658,7 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 				t.Fatalf("closed resource call %s diagnostic missing %q: %s", call, want, got)
 			}
 		}
+		assertLifecycleErrorForTest(t, err, ownerLifecycleBoundary, "resource", "python", "request", "closed")
 	}
 	argCall := fmt.Sprintf(
 		`{"op":"handle_call","id":%d,"key":"accept","args":[{"__omnivm_resource__":true,"id":%d,"runtime":"python","kind":"request"}]}`,
@@ -16675,6 +16677,7 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 		if strings.Contains(got, "unknown source handle") {
 			t.Fatalf("closed resource handle_call with arg used generic handle-table diagnostic: %s", got)
 		}
+		assertLifecycleErrorForTest(t, err, ownerLifecycleBoundary, "resource", "python", "request", "closed")
 	}
 
 	referenceCalls := []string{
@@ -16694,7 +16697,28 @@ func TestClosedResourceHandleOpsReportLifecycleError(t *testing.T) {
 			if strings.Contains(got, "unknown source handle") || strings.Contains(got, "unknown target handle") {
 				t.Fatalf("closed resource reference call %s used generic handle-table diagnostic: %s", call, got)
 			}
+			assertLifecycleErrorForTest(t, err, ownerLifecycleBoundary, "resource", "python", "request", "closed")
 		}
+	}
+}
+
+func assertLifecycleErrorForTest(t *testing.T, err error, boundary, detailKey, runtimeName, kind, state string) {
+	t.Helper()
+	var lifecycleErr *LifecycleError
+	if !errors.As(err, &lifecycleErr) {
+		t.Fatalf("error = %T, want LifecycleError", err)
+	}
+	envelope := lifecycleErr.ToMap()
+	if envelope["runtime"] != runtimeName || envelope["origin_runtime"] != runtimeName || envelope["type"] != "RuntimeError" || envelope["boundary_path"] != boundary {
+		t.Fatalf("lifecycle envelope mismatch: %#v", envelope)
+	}
+	details, _ := envelope["details"].(map[string]interface{})
+	item, _ := details[detailKey].(map[string]interface{})
+	if item["runtime"] != runtimeName || item["kind"] != kind || item["closed"] != true || item["owner_lifecycle"] != state {
+		t.Fatalf("lifecycle details mismatch: %#v", item)
+	}
+	if _, err := lifecycleErr.BridgeErrorJSON(); err != nil {
+		t.Fatalf("BridgeErrorJSON: %v", err)
 	}
 }
 

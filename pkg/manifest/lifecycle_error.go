@@ -7,7 +7,10 @@ import (
 	"github.com/omnivm/omnivm/pkg/handles"
 )
 
-const nativeMemoryBoundary = "native_memory"
+const (
+	nativeMemoryBoundary   = "native_memory"
+	ownerLifecycleBoundary = "owner_lifecycle"
+)
 
 // LifecycleError is a structured owner-side lifecycle diagnostic for stale
 // manifest handles. Error keeps the existing human-readable diagnostic while
@@ -65,6 +68,43 @@ func (e *LifecycleError) BridgeErrorJSON() ([]byte, error) {
 	return e.MarshalJSON()
 }
 
+func releasedResourceLifecycleError(id handles.ID, ref *ResourceRef) *LifecycleError {
+	runtimeName := "unknown"
+	kind := "resource"
+	var details interface{}
+	if ref != nil {
+		runtimeName = nonEmpty(ref.Runtime, "unknown")
+		kind = nonEmpty(ref.Kind, "resource")
+		details = releasedResourceLifecycleDetails(id, ref, runtimeName, kind)
+	}
+	message := fmt.Sprintf("manifest HandleCall: closed resource handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, runtimeName, kind)
+	return &LifecycleError{
+		Runtime:       runtimeName,
+		OriginRuntime: runtimeName,
+		Type:          "RuntimeError",
+		Message:       message,
+		BoundaryPath:  ownerLifecycleBoundary,
+		Details:       details,
+		DetailsJSON:   jsonString(details),
+	}
+}
+
+func releasedStreamLifecycleError(id handles.ID, ref releasedStreamRef) *LifecycleError {
+	runtimeName := nonEmpty(ref.Runtime, "unknown")
+	kind := nonEmpty(ref.Kind, "stream")
+	details := releasedStreamLifecycleDetails(id, runtimeName, kind)
+	message := fmt.Sprintf("manifest HandleCall: closed stream handle %d (runtime=%s kind=%s): owner-side lifecycle is closed", id, runtimeName, kind)
+	return &LifecycleError{
+		Runtime:       runtimeName,
+		OriginRuntime: runtimeName,
+		Type:          "RuntimeError",
+		Message:       message,
+		BoundaryPath:  ownerLifecycleBoundary,
+		Details:       details,
+		DetailsJSON:   jsonString(details),
+	}
+}
+
 func releasedTableLifecycleError(id handles.ID, ref *TableRef) *LifecycleError {
 	runtimeName := "unknown"
 	format := "table"
@@ -117,4 +157,32 @@ func releasedTableLifecycleDetails(id handles.ID, ref *TableRef, runtimeName, fo
 		}
 	}
 	return map[string]interface{}{"table": table}
+}
+
+func releasedResourceLifecycleDetails(id handles.ID, ref *ResourceRef, runtimeName, kind string) map[string]interface{} {
+	resource := map[string]interface{}{
+		"id":              uint64(id),
+		"runtime":         runtimeName,
+		"kind":            kind,
+		"closed":          true,
+		"lifecycle":       "closed",
+		"owner_lifecycle": "closed",
+	}
+	if ref.Disposer != "" {
+		resource["disposer"] = ref.Disposer
+	}
+	return map[string]interface{}{"resource": resource}
+}
+
+func releasedStreamLifecycleDetails(id handles.ID, runtimeName, kind string) map[string]interface{} {
+	return map[string]interface{}{
+		"stream": map[string]interface{}{
+			"id":              uint64(id),
+			"runtime":         runtimeName,
+			"kind":            kind,
+			"closed":          true,
+			"lifecycle":       "closed",
+			"owner_lifecycle": "closed",
+		},
+	}
 }
