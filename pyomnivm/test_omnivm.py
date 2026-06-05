@@ -2447,24 +2447,31 @@ class TestCallWithMockLib(unittest.TestCase):
     def test_buffer_owner_context_reports_release_failure_without_body_error(self):
         self.mock_lib.OmniBufFree.return_value = -1
         self.mock_lib.OmniBufStatus.return_value = (
-            b'{"name":"payload","state":"live","lease_state":"owned","memory_space":"host"}'
+            b'{"name":"payload","state":"released","lease_state":"released",'
+            b'"released":true,"memory_space":"host","release_error":"producer release failed"}'
         )
+        owner = omnivm_mod.buffer_owner("payload")
 
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
-            with omnivm_mod.buffer_owner("payload"):
+            with owner:
                 pass
 
         assert ctx.exception.boundary_path == "native_memory"
-        assert ctx.exception.details["buffer"]["lease_state"] == "owned"
+        assert ctx.exception.details["buffer"]["lease_state"] == "released"
+        assert ctx.exception.details["buffer"]["release_error"] == "producer release failed"
+        assert owner.released is True
+        assert owner.release() is False
 
     def test_buffer_owner_context_preserves_body_exception_when_release_fails(self):
         self.mock_lib.OmniBufFree.return_value = -1
         self.mock_lib.OmniBufStatus.return_value = (
-            b'{"name":"payload","state":"live","lease_state":"owned","memory_space":"host"}'
+            b'{"name":"payload","state":"released_detached","lease_state":"detached",'
+            b'"released":true,"memory_space":"host","active_borrows":1}'
         )
+        owner = omnivm_mod.buffer_owner("payload")
 
         with self.assertRaisesRegex(ValueError, "body failed") as ctx:
-            with omnivm_mod.buffer_owner("payload"):
+            with owner:
                 raise ValueError("body failed")
 
         notes = getattr(ctx.exception, "__notes__", [])
@@ -2472,6 +2479,8 @@ class TestCallWithMockLib(unittest.TestCase):
         cleanup = omnivm_mod.cleanup_errors(ctx.exception)
         assert len(cleanup) == 1
         assert cleanup[0].boundary_path == "native_memory"
+        assert owner.released is True
+        assert owner.release() is False
         cleanup.clear()
         assert omnivm_mod.cleanup_errors(ctx.exception)[0].boundary_path == "native_memory"
 

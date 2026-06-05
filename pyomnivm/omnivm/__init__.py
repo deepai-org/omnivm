@@ -2364,7 +2364,15 @@ class BufferOwner:
     def release(self):
         if self.released:
             return False
-        release_buffer(self.name)
+        try:
+            release_buffer(self.name)
+        except RuntimeError as exc:
+            details = getattr(exc, "details", None)
+            status = details.get("buffer") if isinstance(details, dict) else None
+            if _buffer_status_is_released(status):
+                self.released = True
+                self._entered = False
+            raise
         self.released = True
         self._entered = False
         return True
@@ -2420,6 +2428,15 @@ def _buffer_status_summary(status):
         if key in status:
             fields.append(f"{key}={status[key]!r}")
     return ", ".join(fields)
+
+
+def _buffer_status_is_released(status):
+    if not isinstance(status, dict):
+        return False
+    return bool(status.get("released")) or status.get("state") in {
+        "released",
+        "released_detached",
+    }
 
 
 def buffer_status(name):
