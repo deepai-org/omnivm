@@ -10155,8 +10155,16 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	javaCode := string(javaRuntime)
 	for _, want := range []string{
 		"public static BufferOwner bufferOwner(String name)",
+		"public static <T> T bufferOwner(String name, Function<BufferOwner, T> body)",
 		"public static BufferOwner bufferOwner(String name, byte[] data)",
+		"public static <T> T bufferOwner(String name, byte[] data, Function<BufferOwner, T> body)",
 		"public static BufferOwner bufferOwner(String name, byte[] data, int dtype)",
+		"public static <T> T bufferOwner(String name, byte[] data, int dtype, Function<BufferOwner, T> body)",
+		"import java.util.function.Function;",
+		"private static <T> T withBufferOwner(BufferOwner owner, Function<BufferOwner, T> body)",
+		"T result = body.apply(owner);",
+		"cleanupError",
+		"err.addSuppressed(cleanupError);",
 		"public static final class BufferOwner implements AutoCloseable",
 		"setBuffer(name, data, dtype)",
 		"if (released) {\n                return false;",

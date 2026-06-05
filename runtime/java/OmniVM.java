@@ -23,6 +23,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -135,6 +136,13 @@ public class OmniVM {
     }
 
     /**
+     * Scope a named-buffer owner around a callback and release it afterward.
+     */
+    public static <T> T bufferOwner(String name, Function<BufferOwner, T> body) {
+        return withBufferOwner(new BufferOwner(name, null, 0, false).enter(), body);
+    }
+
+    /**
      * Publish bytes with dtype 0 and return an AutoCloseable named-buffer owner.
      */
     public static BufferOwner bufferOwner(String name, byte[] data) {
@@ -142,10 +150,39 @@ public class OmniVM {
     }
 
     /**
+     * Publish bytes with dtype 0, scope the owner around a callback, and release it afterward.
+     */
+    public static <T> T bufferOwner(String name, byte[] data, Function<BufferOwner, T> body) {
+        return withBufferOwner(new BufferOwner(name, data, 0, true).enter(), body);
+    }
+
+    /**
      * Publish bytes with an explicit dtype and return an AutoCloseable named-buffer owner.
      */
     public static BufferOwner bufferOwner(String name, byte[] data, int dtype) {
         return new BufferOwner(name, data, dtype, true).enter();
+    }
+
+    /**
+     * Publish bytes with an explicit dtype, scope the owner around a callback, and release it afterward.
+     */
+    public static <T> T bufferOwner(String name, byte[] data, int dtype, Function<BufferOwner, T> body) {
+        return withBufferOwner(new BufferOwner(name, data, dtype, true).enter(), body);
+    }
+
+    private static <T> T withBufferOwner(BufferOwner owner, Function<BufferOwner, T> body) {
+        try {
+            T result = body.apply(owner);
+            owner.release();
+            return result;
+        } catch (RuntimeException | Error err) {
+            try {
+                owner.release();
+            } catch (RuntimeException | Error cleanupError) {
+                err.addSuppressed(cleanupError);
+            }
+            throw err;
+        }
     }
 
     /**
