@@ -1116,7 +1116,9 @@ def load_manifest_module(module_id, path):
         str(module_id).encode("utf-8"),
         os.fsencode(path),
     )
-    return _check_result(result)
+    checked = _check_result(result)
+    _clear_manifest_proxy_cache(module_id)
+    return checked
 
 
 def unload_manifest_modules():
@@ -1132,7 +1134,9 @@ def unload_manifest_modules():
     if not hasattr(_lib, "OmniUnloadManifestModules"):
         raise RuntimeError("libomnivm does not expose OmniUnloadManifestModules")
     result = _lib.OmniUnloadManifestModules()
-    return _check_result(result)
+    checked = _check_result(result)
+    _clear_manifest_proxy_cache()
+    return checked
 
 
 def drain_worker():
@@ -1152,7 +1156,9 @@ def drain_worker():
         result = _lib.OmniUnloadManifestModules()
     else:
         raise RuntimeError("libomnivm does not expose OmniDrainWorker")
-    return _check_result(result, boundary_path="drain_worker")
+    checked = _check_result(result, boundary_path="drain_worker")
+    _clear_manifest_proxy_cache()
+    return checked
 
 
 def drain_worker_hook(*_args, **_kwargs):
@@ -1378,6 +1384,16 @@ def _decode_manifest_result_unwrapped(result):
 
 
 _manifest_proxy_cache = weakref.WeakValueDictionary()
+
+
+def _clear_manifest_proxy_cache(module_id=None):
+    if module_id is None:
+        _manifest_proxy_cache.clear()
+        return
+    module_key = str(module_id)
+    for cache_key in list(_manifest_proxy_cache.keys()):
+        if cache_key[0] == module_key:
+            _manifest_proxy_cache.pop(cache_key, None)
 
 
 def _wrap_manifest_value(module_id, value):

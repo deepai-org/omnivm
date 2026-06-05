@@ -1109,6 +1109,32 @@ class TestCallWithMockLib(unittest.TestCase):
         omnivm_mod._worker_drain_hook_installed = False
         omnivm_mod._manifest_proxy_cache.clear()
 
+    def _install_manifest_proxy_responder(self, handle_ids=None):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        handle_ids = handle_ids or {}
+
+        def manifest_call(module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "tool":
+                module_key = module_id.decode("utf-8")
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": handle_ids.get(module_key, 7),
+                    "runtime": "python",
+                    "kind": "object",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        return requests
+
     def test_call_encodes_args(self):
         self.mock_lib.OmniCallHost.return_value = b"OK:result"
         omnivm_mod.call("javascript", "Math.sqrt(4)")
@@ -1169,11 +1195,47 @@ class TestCallWithMockLib(unittest.TestCase):
             b"demo", b"/tmp/app.manifest.json"
         )
 
+    def test_load_manifest_module_clears_cached_proxies_for_module_on_success(self):
+        self._install_manifest_proxy_responder({"demo": 7, "other": 8})
+        demo = omnivm_mod.manifest_call("demo", "tool")
+        other = omnivm_mod.manifest_call("other", "tool")
+        self.mock_lib.OmniLoadManifestModule.return_value = b"OK"
+
+        result = omnivm_mod.load_manifest_module("demo", "/tmp/app.manifest.json")
+
+        assert result == "OK"
+        assert ("demo", 7) not in omnivm_mod._manifest_proxy_cache
+        assert omnivm_mod._manifest_proxy_cache[("other", 8)] is other
+        assert demo.__omnivm_handle_id__ == 7
+
+    def test_load_manifest_module_keeps_cached_proxies_on_failure(self):
+        self._install_manifest_proxy_responder({"demo": 7, "other": 8})
+        demo = omnivm_mod.manifest_call("demo", "tool")
+        other = omnivm_mod.manifest_call("other", "tool")
+        self.mock_lib.OmniLoadManifestModule.return_value = b"ERR:load manifest module: invalid"
+
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.load_manifest_module("demo", "/tmp/app.manifest.json")
+
+        assert omnivm_mod._manifest_proxy_cache[("demo", 7)] is demo
+        assert omnivm_mod._manifest_proxy_cache[("other", 8)] is other
+
     def test_unload_manifest_modules_calls_lib(self):
         self.mock_lib.OmniUnloadManifestModules.return_value = b"OK"
         result = omnivm_mod.unload_manifest_modules()
         assert result == "OK"
         self.mock_lib.OmniUnloadManifestModules.assert_called_once_with()
+
+    def test_unload_manifest_modules_clears_manifest_proxy_cache_on_success(self):
+        self._install_manifest_proxy_responder()
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+        self.mock_lib.OmniUnloadManifestModules.return_value = b"OK"
+
+        result = omnivm_mod.unload_manifest_modules()
+
+        assert result == "OK"
+        assert len(omnivm_mod._manifest_proxy_cache) == 0
+        assert proxy.__omnivm_handle_id__ == 7
 
     def test_unload_manifest_modules_error_propagation(self):
         self.mock_lib.OmniUnloadManifestModules.return_value = b"ERR:unload manifest modules: busy"
@@ -1181,11 +1243,32 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.unload_manifest_modules()
         assert "busy" in str(ctx.exception)
 
+    def test_unload_manifest_modules_keeps_manifest_proxy_cache_on_failure(self):
+        self._install_manifest_proxy_responder()
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+        self.mock_lib.OmniUnloadManifestModules.return_value = b"ERR:unload manifest modules: busy"
+
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.unload_manifest_modules()
+
+        assert omnivm_mod._manifest_proxy_cache[("demo", 7)] is proxy
+
     def test_drain_worker_calls_lib(self):
         self.mock_lib.OmniDrainWorker.return_value = b"OK"
         result = omnivm_mod.drain_worker()
         assert result == "OK"
         self.mock_lib.OmniDrainWorker.assert_called_once_with()
+
+    def test_drain_worker_clears_manifest_proxy_cache_on_success(self):
+        self._install_manifest_proxy_responder()
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+        self.mock_lib.OmniDrainWorker.return_value = b"OK"
+
+        result = omnivm_mod.drain_worker()
+
+        assert result == "OK"
+        assert len(omnivm_mod._manifest_proxy_cache) == 0
+        assert proxy.__omnivm_handle_id__ == 7
 
     def test_drain_worker_error_boundary_path(self):
         self.mock_lib.OmniDrainWorker.return_value = b"ERR:drain worker: busy"
@@ -1193,6 +1276,16 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.drain_worker()
         assert "busy" in str(ctx.exception)
         assert ctx.exception.boundary_path == "drain_worker"
+
+    def test_drain_worker_keeps_manifest_proxy_cache_on_failure(self):
+        self._install_manifest_proxy_responder()
+        proxy = omnivm_mod.manifest_call("demo", "tool")
+        self.mock_lib.OmniDrainWorker.return_value = b"ERR:drain worker: busy"
+
+        with self.assertRaises(omnivm_mod.RuntimeError):
+            omnivm_mod.drain_worker()
+
+        assert omnivm_mod._manifest_proxy_cache[("demo", 7)] is proxy
 
     def test_drain_worker_hook_accepts_app_server_args(self):
         self.mock_lib.OmniDrainWorker.return_value = b"OK"
