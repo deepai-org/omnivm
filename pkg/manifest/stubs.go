@@ -2712,7 +2712,18 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 }
 
 func javaZeroArgCommandMethod(key string) bool {
-	return rubyZeroArgCommandMethod(key)
+	if rubyZeroArgCommandMethod(key) {
+		return true
+	}
+	if strings.HasPrefix(key, "get") && len(key) > 3 && key[3] >= 'A' && key[3] <= 'Z' {
+		return true
+	}
+	switch key {
+	case "array", "asReadOnlyBuffer", "capacity", "clear", "compact", "compareTo", "duplicate", "equals", "flip", "hashCode", "header", "headers", "limit", "mark", "method", "order", "position", "remaining", "reset", "rewind", "slice", "toString", "url":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Executor) runtimeRefTargetCallable(ref RuntimeRef) (bool, error) {

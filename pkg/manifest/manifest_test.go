@@ -16804,6 +16804,47 @@ func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefProxyKeepsJavaLibraryMethodsCallable(t *testing.T) {
+	e, mocks := makeExecutor("java", "javascript")
+	mocks["java"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "proxyCallable") {
+			return pkg.Result{Value: "true"}
+		}
+		if strings.Contains(code, "proxyZeroArgCallable") {
+			t.Fatalf("Java library command methods should not run proxyZeroArgCallable probe, got %q", code)
+		}
+		return pkg.Result{Value: `{"__omnivm_java_object__":true,"class":"JavaLibraryObject"}`}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "java", VarName: "payload", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	for _, key := range []string{"getMethod", "getHeader", "method", "url", "remaining", "capacity", "toString"} {
+		result, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"` + key + `"}`)
+		if err != nil {
+			t.Fatalf("HandleCall handle_get %s: %v", key, err)
+		}
+		env := decodeResultEnvelopeForTest(t, result)
+		want := map[string]interface{}{"__omnivm_callable__": true, "key": key}
+		if env.Kind != "json" || !jsonEqual(env.Value, want) {
+			t.Fatalf("live Java library method %s descriptor = %#v, want %#v", key, env, want)
+		}
+	}
+}
+
 func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	pythonProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
 	if err != nil || !ok {
