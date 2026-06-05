@@ -126,6 +126,7 @@ type Op struct {
 
 	// loop
 	Mode     string     `json:"mode,omitempty"`
+	Await    bool       `json:"await,omitempty"`
 	Test     *CondExpr  `json:"test,omitempty"`
 	Variable string     `json:"variable,omitempty"` // foreach loop variable
 	Iterable *ValueExpr `json:"iterable,omitempty"` // foreach iterable

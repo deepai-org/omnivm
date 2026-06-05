@@ -198,6 +198,27 @@ func TestParseManifest(t *testing.T) {
 	}
 }
 
+func TestParseManifestLoopAwaitMetadata(t *testing.T) {
+	data := `{"version":1,"defaultRuntime":"python","ops":[{"op":"loop","mode":"foreach","await":true,"variable":"row","iterable":{"kind":"ref","name":"rows"},"body":[]}]}`
+	m, err := ParseManifest([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if len(m.Ops) != 1 {
+		t.Fatalf("ops len = %d, want 1", len(m.Ops))
+	}
+	loop := m.Ops[0]
+	if loop.OpType != "loop" || loop.Mode != "foreach" {
+		t.Fatalf("parsed op = %s/%s, want loop/foreach", loop.OpType, loop.Mode)
+	}
+	if !loop.Await {
+		t.Fatal("loop await metadata was not preserved")
+	}
+	if loop.Variable != "row" || loop.Iterable == nil || loop.Iterable.Name != "rows" {
+		t.Fatalf("bad foreach metadata: variable=%q iterable=%#v", loop.Variable, loop.Iterable)
+	}
+}
+
 func TestParseManifestInvalid(t *testing.T) {
 	_, err := ParseManifest([]byte("not json"))
 	if err == nil {
