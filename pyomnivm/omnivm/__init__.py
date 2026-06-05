@@ -2582,7 +2582,8 @@ def _drop_handle_reference(from_id, to_id):
     try:
         if _lib is None or not hasattr(_lib, "OmniHandleDropReference"):
             return False
-        return _lib.OmniHandleDropReference(int(from_id), int(to_id)) == 0
+        _lib.OmniHandleDropReference(int(from_id), int(to_id))
+        return True
     except BaseException:
         return False
 

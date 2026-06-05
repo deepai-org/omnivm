@@ -2664,7 +2664,7 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniHandleRecordReference.assert_called_once_with(123, 456, b"proxy")
 
     def test_drop_handle_reference_calls_lib(self):
-        self.mock_lib.OmniHandleDropReference.return_value = 0
+        self.mock_lib.OmniHandleDropReference.return_value = None
         assert omnivm_mod._drop_handle_reference(123, 456) is True
         self.mock_lib.OmniHandleDropReference.assert_called_once_with(123, 456)
 
