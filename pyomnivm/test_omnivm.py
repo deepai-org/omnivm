@@ -365,6 +365,29 @@ class TestRuntimeError(unittest.TestCase):
         assert err.details_json == '{"field":"age","errors":[{"code":"too_small"}]}'
         assert err.to_dict()["details_json"] == err.details_json
 
+    def test_details_json_assignment_updates_details(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "python",
+                    "type": "ValidationError",
+                    "message": "invalid",
+                    "details": {"field": "old"},
+                }
+            ),
+            runtime="python",
+        )
+
+        err.details_json = '{"field":"age","errors":[{"code":"too_small"}]}'
+
+        assert err.details == {"field": "age", "errors": [{"code": "too_small"}]}
+        assert err.detailsJson == '{"field":"age","errors":[{"code":"too_small"}]}'
+        assert err.to_dict()["details"] == err.details
+
+        err.detailsJson = "not json"
+        assert err.details == "not json"
+        assert err.details_json == "not json"
+
     def test_parses_details_json_structured_error_envelope(self):
         err = omnivm_mod.RuntimeError(
             json.dumps(

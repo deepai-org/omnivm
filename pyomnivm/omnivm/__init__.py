@@ -160,6 +160,26 @@ class RuntimeError(_builtins.RuntimeError):
         self.details_json = _runtime_error_details_json(self._details)
 
     @property
+    def details_json(self):
+        return self._details_json
+
+    @details_json.setter
+    def details_json(self, value):
+        if value is None:
+            self._details_json = None
+            self._details = None
+            return
+        if isinstance(value, str):
+            self._details_json = value
+            try:
+                self._details = _copy_json_value(json.loads(value))
+            except Exception:
+                self._details = value
+            return
+        self._details = _copy_json_value(value)
+        self._details_json = _runtime_error_details_json(self._details)
+
+    @property
     def originRuntime(self):
         return self.origin_runtime
 
