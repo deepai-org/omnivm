@@ -6954,8 +6954,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"omnivm.ownerDispatchTargetStatus",
 		"omnivm.assertOwnerDispatchSupported",
 		"omnivm.assertOwnerDispatchTargetSupported",
+		"omnivm.rubyThreadingStatus",
+		"omnivm.assertRubyNativeThreadsSupported",
 		"globalThis.__omnivm_owner_dispatch_contract",
+		"globalThis.__omnivm_ruby_threading_contract",
 		`owner_dispatch_supported: false`,
+		`native_threads_supported: false`,
 		`javascript_event_loop`,
 		`python_async_stream_pull`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
@@ -7107,6 +7111,13 @@ status.owner_dispatch_targets.javascript_event_loop.supported = true;
 if (omnivm.ownerDispatchStatus().owner_dispatch_targets.javascript_event_loop.supported !== false) {
   throw new Error("ownerDispatchStatus leaked mutable state");
 }
+var rubyStatus = omnivm.rubyThreadingStatus();
+if (rubyStatus.mode !== "single_vm_thread") throw new Error("bad ruby threading mode: " + rubyStatus.mode);
+if (rubyStatus.native_threads_supported !== false) throw new Error("ruby native threads should be unsupported");
+rubyStatus.native_threads_supported = true;
+if (omnivm.rubyThreadingStatus().native_threads_supported !== false) {
+  throw new Error("rubyThreadingStatus leaked mutable state");
+}
 var target = omnivm.ownerDispatchTargetStatus("js");
 if (target.target !== "javascript_event_loop") throw new Error("alias did not normalize: " + target.target);
 if (target.requested_target !== "js") throw new Error("requested target missing");
@@ -7166,6 +7177,16 @@ try {
   if (serialized.indexOf('"boundary_path":"owner_dispatch"') < 0) throw new Error("serialized envelope missing boundary: " + serialized);
   if (serialized.indexOf('"message":"express startup: owner dispatch unsupported') < 0) throw new Error("serialized envelope missing message: " + serialized);
   if (JSON.parse(err.details_json).owner_dispatch.mode !== "diagnostic_only") throw new Error("details_json was not stable");
+}
+try {
+  omnivm.assertRubyNativeThreadsSupported("puma startup");
+  throw new Error("missing ruby threading diagnostic");
+} catch (err) {
+  if (err.message.indexOf("puma startup: native Ruby threads unsupported: mode=single_vm_thread") < 0) throw new Error("bad ruby threading message: " + err.message);
+  if (err.boundary_path !== "ruby_threading") throw new Error("bad ruby threading boundary: " + err.boundary_path);
+  if (!err.details || err.details.ruby_threading.native_threads_supported !== false) throw new Error("missing ruby threading details");
+  if (JSON.stringify(err).indexOf('"boundary_path":"ruby_threading"') < 0) throw new Error("ruby threading envelope missing boundary");
+  if (JSON.parse(err.details_json).ruby_threading.mode !== "single_vm_thread") throw new Error("ruby threading details_json was not stable");
 }
 try {
   omnivm.assertOwnerDispatchTargetSupported("ruby", "async bridge");
@@ -8801,9 +8822,13 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"public static Map<String, Object> ownerDispatchTargetStatus(String target)",
 		"public static boolean assertOwnerDispatchSupported(String label)",
 		"public static boolean assertOwnerDispatchTargetSupported(String target, String label)",
+		"public static Map<String, Object> rubyThreadingStatus()",
+		"public static boolean assertRubyNativeThreadsSupported(String label)",
 		`"owner_dispatch_supported", false`,
+		`"native_threads_supported", false`,
 		`"javascript_event_loop"`,
 		`"python_async_stream_pull"`,
+		`"ruby_threading"`,
 		`"owner_dispatch_target"`,
 		"private static RuntimeError runtimeError(String message, String boundaryPath, Object details)",
 		`parsed.runtime = "java"`,
@@ -9791,6 +9816,12 @@ public final class OwnerDispatchCheck {
         Map<String, Object> targetsAgain = (Map<String, Object>) statusAgain.get("owner_dispatch_targets");
         require(Boolean.FALSE.equals(((Map<String, Object>) targetsAgain.get("java_executor")).get("supported")), "status leaked mutable state");
 
+        Map<String, Object> rubyStatus = OmniVM.rubyThreadingStatus();
+        require("single_vm_thread".equals(rubyStatus.get("mode")), "bad ruby threading mode: " + rubyStatus);
+        require(Boolean.FALSE.equals(rubyStatus.get("native_threads_supported")), "ruby native threads should be unsupported");
+        rubyStatus.put("native_threads_supported", true);
+        require(Boolean.FALSE.equals(OmniVM.rubyThreadingStatus().get("native_threads_supported")), "ruby threading status leaked mutable state");
+
         Map<String, Object> target = OmniVM.ownerDispatchTargetStatus("js");
         require("javascript_event_loop".equals(target.get("target")), "alias did not normalize: " + target);
         require("js".equals(target.get("requested_target")), "requested target missing: " + target);
@@ -9824,6 +9855,21 @@ public final class OwnerDispatchCheck {
             Map<String, Object> detailsAgain = (Map<String, Object>) err.getDetails();
             require("diagnostic_only".equals(((Map<String, Object>) detailsAgain.get("owner_dispatch")).get("mode")), "details leaked mutable state");
             require(err.getDetailsJson().contains("\"owner_dispatch_supported\":false"), "details json missing: " + err.getDetailsJson());
+        }
+
+        try {
+            OmniVM.assertRubyNativeThreadsSupported("puma startup");
+            throw new AssertionError("missing ruby threading diagnostic");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("puma startup: native Ruby threads unsupported: mode=single_vm_thread"), "bad ruby threading message: " + err.getMessage());
+            require("ruby_threading".equals(err.getBoundaryPath()), "bad ruby threading boundary: " + err.getBoundaryPath());
+            Map<String, Object> details = (Map<String, Object>) err.getDetails();
+            Map<String, Object> threading = (Map<String, Object>) details.get("ruby_threading");
+            require(Boolean.FALSE.equals(threading.get("native_threads_supported")), "missing ruby threading details: " + details);
+            threading.put("mode", "mutated");
+            Map<String, Object> detailsAgain = (Map<String, Object>) err.getDetails();
+            require("single_vm_thread".equals(((Map<String, Object>) detailsAgain.get("ruby_threading")).get("mode")), "ruby threading details leaked mutable state");
+            require(err.getDetailsJson().contains("\"native_threads_supported\":false"), "ruby threading details json missing: " + err.getDetailsJson());
         }
 
         try {
@@ -10627,8 +10673,12 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`Object.defineProperty(globalThis.omnivm, "ownerDispatchTargetStatus"`,
 		`Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchSupported"`,
 		`Object.defineProperty(globalThis.omnivm, "assertOwnerDispatchTargetSupported"`,
+		`Object.defineProperty(globalThis.omnivm, "rubyThreadingStatus"`,
+		`Object.defineProperty(globalThis.omnivm, "assertRubyNativeThreadsSupported"`,
 		`globalThis.__omnivm_owner_dispatch_contract`,
+		`globalThis.__omnivm_ruby_threading_contract`,
 		`owner_dispatch_supported: false`,
+		`native_threads_supported: false`,
 		`javascript_event_loop`,
 		`owner_dispatch_target`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,

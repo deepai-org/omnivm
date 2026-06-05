@@ -656,6 +656,9 @@ helpers: `omnivm.ownerDispatchStatus()`,
 `omnivm.assertOwnerDispatchTargetSupported(target, label)`. These helpers do
 not add owner-loop routing; they make unsupported dispatch fail before a
 framework registers callbacks that would need migration to a foreign loop.
+JavaScript also exposes `omnivm.rubyThreadingStatus()` and
+`omnivm.assertRubyNativeThreadsSupported(label)` for startup checks that may
+load native-threaded Ruby app servers from JavaScript-owned integration code.
 JavaScript guard failures expose these fields on the thrown error object and
 through `toJSON()`, so logging or forwarding the error preserves `runtime`,
 `origin_runtime`, `type`, `message`, `traceback`, `stack_frames`,
@@ -665,7 +668,10 @@ Embedded Java exposes the same contract as
 `OmniVM.ownerDispatchStatus()`, `OmniVM.ownerDispatchTargetStatus(target)`,
 `OmniVM.assertOwnerDispatchSupported(label)`, and
 `OmniVM.assertOwnerDispatchTargetSupported(target, label)` for integrations
-that require a captured Java `Executor`.
+that require a captured Java `Executor`. Java also exposes
+`OmniVM.rubyThreadingStatus()` and
+`OmniVM.assertRubyNativeThreadsSupported(label)` for the same Ruby app-server
+startup preflight from Java-owned integration code.
 Embedded Ruby exposes the contract with Ruby-style names:
 `OmniVM.owner_dispatch_status`,
 `OmniVM.owner_dispatch_target_status(target)`,

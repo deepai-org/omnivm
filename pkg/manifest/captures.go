@@ -1721,6 +1721,16 @@ if (typeof omnivm !== 'undefined' && omnivm) {
       }
     });
   };
+  globalThis.__omnivm_ruby_threading_contract = globalThis.__omnivm_ruby_threading_contract || function() {
+    return globalThis.__omnivm_clone_json({
+      mode: "single_vm_thread",
+      native_threads_supported: false,
+      ruby_vm_thread: "single_vm_thread",
+      thread_new_behavior: "unsupported_diagnostic",
+      diagnostic: "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported",
+      app_server_boundary: "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."
+    });
+  };
   globalThis.__omnivm_owner_dispatch_target_name = globalThis.__omnivm_owner_dispatch_target_name || function(target) {
     var raw = String(target == null ? "" : target);
     var normalized = raw.trim().toLowerCase().replace(/[-\s]+/g, "_");
@@ -1746,6 +1756,12 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     Object.defineProperty(omnivm, "ownerDispatchStatus", {
       configurable: true,
       value: function() { return globalThis.__omnivm_owner_dispatch_contract(); }
+    });
+  }
+  if (typeof omnivm.rubyThreadingStatus !== 'function') {
+    Object.defineProperty(omnivm, "rubyThreadingStatus", {
+      configurable: true,
+      value: function() { return globalThis.__omnivm_ruby_threading_contract(); }
     });
   }
   if (typeof omnivm.ownerDispatchTargetStatus !== 'function') {
@@ -1820,6 +1836,17 @@ if (typeof omnivm !== 'undefined' && omnivm) {
         if (info.owner_dispatch_supported === true) return true;
         var prefix = label == null || String(label) === "" ? "" : String(label) + ": ";
         throw globalThis.__omnivm_owner_dispatch_error(prefix + "owner dispatch unsupported: " + info.reason, "owner_dispatch", {owner_dispatch: info});
+      }
+    });
+  }
+  if (typeof omnivm.assertRubyNativeThreadsSupported !== 'function') {
+    Object.defineProperty(omnivm, "assertRubyNativeThreadsSupported", {
+      configurable: true,
+      value: function(label) {
+        var info = omnivm.rubyThreadingStatus();
+        if (info.native_threads_supported === true) return true;
+        var prefix = label == null || String(label) === "" ? "" : String(label) + ": ";
+        throw globalThis.__omnivm_owner_dispatch_error(prefix + "native Ruby threads unsupported: mode=" + info.mode + ": " + info.diagnostic, "ruby_threading", {ruby_threading: info});
       }
     });
   }

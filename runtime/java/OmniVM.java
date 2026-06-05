@@ -194,6 +194,14 @@ public class OmniVM {
     }
 
     /**
+     * Return the embedded Ruby threading capability contract.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> rubyThreadingStatus() {
+        return (Map<String, Object>) RuntimeError.copyJsonValue(rubyThreadingContract());
+    }
+
+    /**
      * Return one normalized owner-dispatch target capability block.
      */
     @SuppressWarnings("unchecked")
@@ -240,6 +248,22 @@ public class OmniVM {
             prefix + "owner dispatch unsupported: " + String.valueOf(info.get("reason")),
             "owner_dispatch",
             ownerDispatchMap("owner_dispatch", info));
+    }
+
+    public static boolean assertRubyNativeThreadsSupported() {
+        return assertRubyNativeThreadsSupported("");
+    }
+
+    public static boolean assertRubyNativeThreadsSupported(String label) {
+        Map<String, Object> info = rubyThreadingStatus();
+        if (Boolean.TRUE.equals(info.get("native_threads_supported"))) {
+            return true;
+        }
+        String prefix = label == null || label.isEmpty() ? "" : label + ": ";
+        throw runtimeError(
+            prefix + "native Ruby threads unsupported: mode=" + String.valueOf(info.get("mode")) + ": " + String.valueOf(info.get("diagnostic")),
+            "ruby_threading",
+            ownerDispatchMap("ruby_threading", info));
     }
 
     public static boolean assertOwnerDispatchTargetSupported(String target) {
@@ -302,6 +326,16 @@ public class OmniVM {
             "foreign_thread_behavior", "reject_runtime_calls",
             "reason", "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",
             "owner_dispatch_targets", targets);
+    }
+
+    private static Map<String, Object> rubyThreadingContract() {
+        return ownerDispatchMap(
+            "mode", "single_vm_thread",
+            "native_threads_supported", false,
+            "ruby_vm_thread", "single_vm_thread",
+            "thread_new_behavior", "unsupported_diagnostic",
+            "diagnostic", "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported",
+            "app_server_boundary", "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.");
     }
 
     private static String ownerDispatchTargetName(String target) {

@@ -540,6 +540,9 @@ diagnostic-only boundary with `omnivm.ownerDispatchStatus()`,
 `omnivm.ownerDispatchTargetStatus(target)`,
 `omnivm.assertOwnerDispatchSupported(label)`, or
 `omnivm.assertOwnerDispatchTargetSupported(target, label)`.
+JavaScript integrations that may load native-threaded Ruby app servers can
+preflight that separate boundary with `omnivm.rubyThreadingStatus()` or
+`omnivm.assertRubyNativeThreadsSupported("puma startup")`.
 Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
 `omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
@@ -587,6 +590,9 @@ diagnostic-only boundary with `OmniVM.ownerDispatchStatus()`,
 `OmniVM.ownerDispatchTargetStatus(target)`,
 `OmniVM.assertOwnerDispatchSupported(label)`, or
 `OmniVM.assertOwnerDispatchTargetSupported(target, label)`.
+Java integrations that may load native-threaded Ruby app servers can preflight
+that separate boundary with `OmniVM.rubyThreadingStatus()` or
+`OmniVM.assertRubyNativeThreadsSupported("puma startup")`.
 Go manifest callers can use `manifest.ProxyClose(value)` or
 `manifest.OmnivmClose(value)` to close handle proxies, stream proxies, or
 ordinary Go `Close() error` values through the same collision-safe lifecycle
