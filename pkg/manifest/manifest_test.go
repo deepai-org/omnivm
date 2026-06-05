@@ -5445,6 +5445,80 @@ func TestHandleCallStreamCancelCloseErrorKeepsLifecycleTombstone(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefStreamEOFClosesOwnerAndTombstones(t *testing.T) {
+	cases := []struct {
+		name        string
+		runtimeName string
+		asyncProbe  bool
+		closeMarker string
+	}{
+		{name: "python sync", runtimeName: "python", closeMarker: "__omnivm_stream_close_task"},
+		{name: "python async", runtimeName: "python", asyncProbe: true, closeMarker: "__omnivm_stream_close_task"},
+		{name: "javascript", runtimeName: "javascript", closeMarker: "return __omnivm_close_step"},
+		{name: "ruby", runtimeName: "ruby", closeMarker: "to_io"},
+		{name: "java", runtimeName: "java", closeMarker: "AutoCloseable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, mocks := makeExecutor(tc.runtimeName)
+			rt := mocks[tc.runtimeName]
+			ready := false
+			rt.pumpFn = func() { ready = true }
+			rt.evalFn = func(code string) pkg.Result {
+				switch {
+				case strings.Contains(code, "__aiter__"):
+					return pkg.Result{Value: tc.asyncProbe}
+				case (strings.Contains(code, "stream_next") || strings.Contains(code, "stream_close")) && strings.Contains(code, "ready"):
+					if tc.runtimeName == "python" {
+						if ready {
+							return pkg.Result{Value: "True"}
+						}
+						return pkg.Result{Value: "False"}
+					}
+					return pkg.Result{Value: ready}
+				case strings.Contains(code, "stream_next") && strings.Contains(code, "done"):
+					return pkg.Result{Value: true}
+				case (strings.Contains(code, "stream_next") || strings.Contains(code, "stream_close")) && strings.Contains(code, "error"):
+					return pkg.Result{Value: nil}
+				default:
+					return pkg.Result{Value: nil}
+				}
+			}
+			id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: tc.runtimeName, VarName: "rows"})
+			if err != nil {
+				t.Fatalf("runtimeRefStreamHandle: %v", err)
+			}
+
+			result, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`)
+			if err != nil {
+				t.Fatalf("runtime ref stream_next EOF: %v", err)
+			}
+			env := decodeResultEnvelopeForTest(t, result)
+			item, ok := env.Value.(map[string]interface{})
+			if !ok || item["done"] != true {
+				t.Fatalf("runtime ref stream_next EOF envelope = %#v, want done", env)
+			}
+			stats := e.handleTable.Stats(time.Now())
+			if stats.Live != 0 || stats.ExplicitReleases != 1 {
+				t.Fatalf("runtime ref stream EOF should release handle once: %+v", stats)
+			}
+			if !containsExecCall(rt.execCalls, tc.closeMarker) {
+				t.Fatalf("runtime ref stream EOF did not run %s close protocol %q; calls=%q", tc.runtimeName, tc.closeMarker, rt.execCalls)
+			}
+			if _, err := e.HandleCall(`{"op":"stream_next","id":` + strconv.FormatUint(uint64(id), 10) + `}`); err == nil {
+				t.Fatal("stale runtime ref stream_next after EOF did not fail")
+			} else {
+				got := err.Error()
+				for _, want := range []string{"closed stream handle", "runtime=" + tc.runtimeName, "kind=stream", "owner-side lifecycle is closed"} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("stale runtime ref stream_next after EOF missing %q: %s", want, got)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRuntimeRefStreamCancelCloseErrorKeepsLifecycleTombstone(t *testing.T) {
 	e, mocks := makeExecutor("javascript")
 	id, err := e.runtimeRefStreamHandle(RuntimeRef{Runtime: "javascript", VarName: "rows"})
