@@ -7397,6 +7397,25 @@ return promiseResult.then(function(value) {
     cleanupErrors.length = 0;
     if (omnivm.cleanupErrors(err)[0].message !== "release failed") throw new Error("cleanupErrors returned internal storage");
   }
+  omnivm.releaseBuffer = function(name) {
+    this.events.push(["release-tombstone", name]);
+    throw globalThis.__omnivm_owner_dispatch_error(
+      "release failed for " + name,
+      "native_memory",
+      {buffer: {name: name, state: "released_detached", released: true, release_error: "producer release failed"}}
+    );
+  };
+  var tombstoned = omnivm.bufferOwner("tombstoned");
+  try {
+    tombstoned.release();
+    throw new Error("tombstone release failure was not raised");
+  } catch (err) {
+    if (err.boundary_path !== "native_memory") throw new Error("tombstone boundary mismatch: " + err.boundary_path);
+    if (!err.details || !err.details.buffer || err.details.buffer.released !== true) throw new Error("tombstone details mismatch: " + JSON.stringify(err.details));
+    if (err.details.buffer.release_error !== "producer release failed") throw new Error("tombstone release_error missing: " + JSON.stringify(err.details));
+  }
+  if (tombstoned.released !== true) throw new Error("tombstoned owner did not mark released");
+  if (tombstoned.release() !== false) throw new Error("tombstoned owner second release was not idempotent");
 });
 }).catch(function(err) {
   console.error(err && err.stack || err);

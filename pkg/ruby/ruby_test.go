@@ -369,8 +369,35 @@ block_result = OmniVM.buffer_owner("block") do |scoped|
 end
 raise "block result mismatch #{block_result.inspect}" unless block_result == :body_result
 raise "block release mismatch #{OmniVM.events.inspect}" unless OmniVM.events == events_before_block + [[:release, "block"]]
+
+module OmniVM
+  class << self
+    def release_buffer(name)
+      @events << [:release_tombstone, name]
+      raise RuntimeError.new(
+        "release failed for #{name}",
+        runtime: "ruby",
+        boundary_path: "native_memory",
+        details: {"buffer" => {"name" => name, "state" => "released_detached", "released" => true, "release_error" => "producer release failed"}}
+      )
+    end
+  end
+end
+tombstoned = OmniVM.buffer_owner("tombstoned")
+begin
+  tombstoned.release
+rescue OmniVM::RuntimeError => err
+  raise "tombstone boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
+  raise "tombstone details mismatch #{err.details.inspect}" unless err.details.dig("buffer", "released") == true
+  raise "tombstone release_error missing #{err.details.inspect}" unless err.details.dig("buffer", "release_error") == "producer release failed"
+else
+  raise "tombstone release failure was not raised"
+end
+raise "tombstoned owner did not mark released" unless tombstoned.released? == true
+raise "tombstoned owner second release was not idempotent" unless tombstoned.release == false
+raise "tombstone release event mismatch #{OmniVM.events.inspect}" unless OmniVM.events.last == [:release_tombstone, "tombstoned"]
 puts "ok"
-`)
+	`)
 	if result.Err != nil {
 		t.Fatalf("Execute failed: %v", result.Err)
 	}

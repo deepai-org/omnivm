@@ -833,7 +833,10 @@ Embedded Ruby mirrors the scoped owner shape with
 it returns an entered single-active-use owner whose `release`/`close` method is
 idempotent. Re-entering the same owner while active, or after release, raises a
 native-memory `OmniVM::RuntimeError` instead of publishing a name that will no
-longer be released.
+longer be released. Structured release failures that report the shared-store
+name is already `released` or `released_detached` also mark the Ruby owner
+locally released, so later `release`/`close` calls are idempotent while the
+native-memory error still propagates.
 `owner.status()` and `OmniVM.buffer_status(name)` expose the same per-name
 lifecycle diagnostics as a Ruby hash.
 When block cleanup fails during a body exception, the body exception is
@@ -844,7 +847,10 @@ Embedded JavaScript provides the same owner shape as
 returns an entered single-active-use owner with idempotent `release()`/`close()`,
 and with a callback it releases after the callback while returning the callback
 result. Re-entering the same owner while active, or after release, throws before
-publishing data again.
+publishing data again. Structured release failures that report the shared-store
+name is already `released` or `released_detached` mark the JavaScript owner
+locally released, so later `release()`/`close()` calls are idempotent while the
+native-memory error still propagates.
 `owner.status()` and `omnivm.bufferStatus(name)` expose the same per-name
 lifecycle diagnostics as a JavaScript object.
 Native `Promise` results release after settlement without probing arbitrary

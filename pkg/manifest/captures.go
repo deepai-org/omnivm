@@ -1867,6 +1867,19 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     });
   }
   globalThis.__omnivm_buffer_owner_unset = globalThis.__omnivm_buffer_owner_unset || {};
+  globalThis.__omnivm_buffer_status_released = globalThis.__omnivm_buffer_status_released || function(status) {
+    return !!(status && typeof status === 'object' && (status.released === true || status.state === "released" || status.state === "released_detached"));
+  };
+  globalThis.__omnivm_release_error_released_buffer = globalThis.__omnivm_release_error_released_buffer || function(error) {
+    var details = error && error.details;
+    if (details == null && error && (typeof error.details_json === 'string' || typeof error.detailsJson === 'string')) {
+      try {
+        details = JSON.parse(error.details_json || error.detailsJson);
+      } catch (_parseError) {}
+    }
+    return globalThis.__omnivm_buffer_status_released(details) ||
+      !!(details && typeof details === 'object' && globalThis.__omnivm_buffer_status_released(details.buffer));
+  };
   if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
     Object.defineProperty(globalThis, "__omnivm_BufferOwner", {
       configurable: true,
@@ -1889,7 +1902,15 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     };
     globalThis.__omnivm_BufferOwner.prototype.release = function() {
       if (this.released === true) return false;
-      omnivm.releaseBuffer(this.name);
+      try {
+        omnivm.releaseBuffer(this.name);
+      } catch (err) {
+        if (globalThis.__omnivm_release_error_released_buffer(err)) {
+          this.released = true;
+          this.__omnivm_entered = false;
+        }
+        throw err;
+      }
       this.released = true;
       this.__omnivm_entered = false;
       return true;
