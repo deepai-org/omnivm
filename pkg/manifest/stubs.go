@@ -2777,7 +2777,7 @@ func (e *Executor) runtimeRefIter(parent handles.ID, ref RuntimeRef, mode string
 		}
 		listVar := e.nextRuntimeRefVar(parent, "iter")
 		if result := rt.Execute(runtimeAssign(ref.Runtime, listVar, expr)); result.Err != nil {
-			return nil, false, fmt.Errorf("runtime ref iter assign [%s]: %w (expr: %s)", ref.Runtime, result.Err, expr)
+			return nil, false, fmt.Errorf("runtime ref iter assign [%s]: %w\n(expr: %s)", ref.Runtime, result.Err, expr)
 		}
 		listRef := RuntimeRef{Runtime: ref.Runtime, VarName: listVar}
 		length, ok, err := e.runtimeRefLen(listRef)
@@ -3228,7 +3228,7 @@ func (e *Executor) runtimeRefEvalExpr(ref RuntimeRef, varName, expr string) (int
 
 	result := rt.Execute(runtimeAssign(ref.Runtime, varName, expr))
 	if result.Err != nil {
-		return nil, false, fmt.Errorf("runtime ref assign [%s]: %w (expr: %s)", ref.Runtime, result.Err, expr)
+		return nil, false, fmt.Errorf("runtime ref assign [%s]: %w\n(expr: %s)", ref.Runtime, result.Err, expr)
 	}
 	snapshotResult := rt.Eval(runtimePrimitiveSnapshotExpr(ref.Runtime, runtimeVarRef(ref.Runtime, varName)))
 	if snapshot, ok, err := decodeRuntimePrimitiveSnapshot(ref.Runtime, snapshotResult); err == nil && ok {

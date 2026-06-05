@@ -2,6 +2,7 @@ package javascript
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,27 @@ func TestJSExecuteError(t *testing.T) {
 	result := r.Execute("throw new Error('test error')")
 	if result.Err == nil {
 		t.Fatal("expected error from throw")
+	}
+}
+
+func TestJSExecuteErrorPreservesNodeCodeDetails(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+const err = new Error('write after end');
+err.code = 'ERR_STREAM_WRITE_AFTER_END';
+throw err;
+`)
+	if result.Err == nil {
+		t.Fatal("expected error from throw")
+	}
+	text := result.Err.Error()
+	if !strings.Contains(text, `Details: {"code":"ERR_STREAM_WRITE_AFTER_END"}`) {
+		t.Fatalf("expected Node error code in structured details, got: %s", text)
 	}
 }
 

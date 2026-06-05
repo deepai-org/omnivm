@@ -320,6 +320,27 @@ func TestParseError_RuntimeRefAssignPreservesOwnerRuntime(t *testing.T) {
 	}
 }
 
+func TestParseError_RuntimeRefAssignPreservesDetailsBeforeExprMetadata(t *testing.T) {
+	raw := "ERR:runtime ref assign [javascript]: Error [ERR_STREAM_WRITE_AFTER_END]: write after end\n" +
+		"    at ServerResponse.write (<anonymous>:1:1)\n" +
+		"Details: {\"code\":\"ERR_STREAM_WRITE_AFTER_END\"}\n" +
+		"(expr: res.write(\"late\"))"
+	re := ParseError("__manifest", raw)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	details, ok := re.Details.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Details = %T, want object", re.Details)
+	}
+	if details["code"] != "ERR_STREAM_WRITE_AFTER_END" {
+		t.Fatalf("Details[code] = %#v, want ERR_STREAM_WRITE_AFTER_END", details["code"])
+	}
+	if !contains(re.Traceback, "(expr: res.write") {
+		t.Fatalf("Traceback should retain expression metadata, got: %q", re.Traceback)
+	}
+}
+
 func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
 	raw := "ERR:execute manifest: exec [java]: java: java.lang.RuntimeException: outer\n" +
 		"\tat OmniVMEval.run(OmniVMEval.java:3)\n" +

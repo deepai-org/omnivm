@@ -287,6 +287,64 @@ static std::string omnivm_v8_json_stringify_prop(v8::Isolate* isolate,
     return omnivm_v8_json_stringify(isolate, context, value);
 }
 
+static bool omnivm_v8_append_json_prop(v8::Isolate* isolate,
+                                       v8::Local<v8::Context> context,
+                                       v8::Local<v8::Object> object,
+                                       const char* key,
+                                       std::string& out,
+                                       bool& first) {
+    v8::Local<v8::Value> value;
+    if (!object->Get(
+            context,
+            v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
+        ).ToLocal(&value) || value.IsEmpty() || value->IsNullOrUndefined() ||
+        value->IsFunction() || value->IsSymbol()) {
+        return false;
+    }
+    std::string json = omnivm_v8_json_stringify(isolate, context, value);
+    if (json.empty()) {
+        return false;
+    }
+    if (!first) {
+        out += ',';
+    }
+    first = false;
+    out += omnivm_v8_json_escape_string(key);
+    out += ':';
+    out += json;
+    return true;
+}
+
+static std::string omnivm_v8_common_error_details_json(v8::Isolate* isolate,
+                                                       v8::Local<v8::Context> context,
+                                                       v8::Local<v8::Object> object) {
+    std::string out = "{";
+    bool first = true;
+    const char* keys[] = {
+        "code",
+        "errno",
+        "syscall",
+        "path",
+        "dest",
+        "address",
+        "port",
+        "status",
+        "statusCode",
+        "status_code",
+        "signal",
+        "exitCode",
+        "exit_code",
+    };
+    for (const char* key : keys) {
+        omnivm_v8_append_json_prop(isolate, context, object, key, out, first);
+    }
+    if (first) {
+        return "";
+    }
+    out += "}";
+    return out;
+}
+
 static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
                                                         v8::Local<v8::Context> context,
                                                         v8::Local<v8::Object> object) {
@@ -318,6 +376,10 @@ static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
     std::string errors = omnivm_v8_json_stringify_prop(isolate, context, object, "errors");
     if (!errors.empty()) {
         return "{\"errors\":" + errors + "}";
+    }
+    std::string common = omnivm_v8_common_error_details_json(isolate, context, object);
+    if (!common.empty()) {
+        return common;
     }
     return "";
 }
