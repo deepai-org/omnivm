@@ -2968,7 +2968,7 @@ public class OmniVM {
                     Object id = value.get("id");
                     Object result;
                     try {
-                        result = bridgeManifestOp("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
+                        result = bridgeManifestOpRaw("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
                     } catch (RuntimeException err) {
                         done = true;
                         cancelAfterLoadFailure(err);
@@ -3183,6 +3183,11 @@ public class OmniVM {
 
     @SuppressWarnings("unchecked")
     private static Object bridgeManifestOp(String payload) {
+        return materializeCapture(bridgeManifestOpRaw(payload));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object bridgeManifestOpRaw(String payload) {
         try {
             String raw = OmniVM.call("__manifest", payload);
             if (raw != null && raw.startsWith("ERR:")) {
@@ -3190,7 +3195,7 @@ public class OmniVM {
             }
             Object parsed = parseJson(raw);
             if (parsed instanceof Map<?, ?> env && Boolean.TRUE.equals(env.get("__omnivm_result__"))) {
-                return materializeCapture(((Map<String, Object>) env).get("value"));
+                return ((Map<String, Object>) env).get("value");
             }
             throw new RuntimeException("manifest bridge returned non-result: " + raw);
         } catch (Throwable ignored) {

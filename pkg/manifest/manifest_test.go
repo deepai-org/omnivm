@@ -11259,7 +11259,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		t.Fatalf("Java HandleProxy.toString should prefer materialized then remote toString fields while avoiding closed-proxy bridge calls")
 	}
 	if !contains(code, `catch (RuntimeException err)`) ||
-		!contains(code, `result = bridgeManifestOp("{\"op\":\"stream_next\"`) ||
+		!contains(code, `result = bridgeManifestOpRaw("{\"op\":\"stream_next\"`) ||
+		!contains(code, "private static Object bridgeManifestOp(String payload) {\n        return materializeCapture(bridgeManifestOpRaw(payload));\n    }") ||
 		!contains(code, "private void cancelAfterLoadFailure(RuntimeException err)") ||
 		!contains(code, "if (!StreamProxy.this.cancel()) {\n                    markReleased();\n                }") ||
 		!contains(code, "OmniVM stream_next returned malformed chunk for handle") ||
@@ -12436,6 +12437,100 @@ public final class LocalStreamProxyCloseCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.LocalStreamProxyCloseCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java local stream close check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaRemoteStreamMaterializesByteTableChunks(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static int streamNextCalls = 0;
+    public static String nativeCall(String runtime, String code) {
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_retain\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"stream_cancel\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"stream_next\"")) {
+            streamNextCalls++;
+            return "{\"__omnivm_result__\":true,\"value\":{\"done\":false,\"value\":{\"__omnivm_table__\":true,\"id\":8,\"runtime\":\"go\",\"format\":\"arrow_c_data\",\"ownership\":\"borrowed\",\"buffer\":\"chunk-buffer\",\"metadata\":{\"dtype\":0,\"arrow_format\":\"C\",\"buffer\":\"chunk-buffer\",\"shape\":[5],\"read_only\":true,\"memory_space\":\"host\"},\"released\":false}}}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimeCode = strings.Replace(runtimeCode,
+		`    public static native byte[] nativeGetBuffer(String name);`,
+		`    public static byte[] nativeGetBuffer(String name) {
+        if ("chunk-buffer".equals(name)) {
+            return new byte[] {'f', 'i', 'r', 's', 't'};
+        }
+        return null;
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/RemoteStreamByteTableChunkCheck.java"
+	check := `package omnivm;
+
+public final class RemoteStreamByteTableChunkCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Object rows = OmniVM.materializeJsonCapture("{\"__omnivm_stream__\":true,\"id\":91,\"runtime\":\"go\",\"kind\":\"stream\"}");
+        require(rows instanceof OmniVM.StreamProxy, "capture did not materialize a stream proxy");
+        OmniVM.StreamProxy stream = (OmniVM.StreamProxy) rows;
+        Object chunk = stream.iterator().next();
+        require(chunk instanceof byte[], "byte-table stream chunk did not materialize as byte[]: " + chunk);
+        String text = new String((byte[]) chunk, java.nio.charset.StandardCharsets.UTF_8);
+        require("first".equals(text), "byte-table stream chunk text mismatch: " + text);
+        require(OmniVM.streamNextCalls == 1, "stream next call count mismatch: " + OmniVM.streamNextCalls);
+        require(stream.cancel(), "stream cancel failed");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java remote stream byte-table check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java remote stream byte-table check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.RemoteStreamByteTableChunkCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java remote stream byte-table check: %v\n%s", err, out)
 	}
 }
 
