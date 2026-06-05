@@ -7443,7 +7443,12 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "if (closed) return;") ||
 		!contains(code, "var unregisterCloseListener = null") ||
 		!contains(code, "var detachCloseListener = function()") ||
-		!contains(code, "detachCloseListener();\n        if (iterator && typeof iterator.return === 'function')") ||
+		!contains(code, "var actualMethod = function(value, name)") ||
+		!contains(code, "Object.getOwnPropertyDescriptor(cursor, name)") ||
+		!contains(code, `var iteratorReturn = actualMethod(iterator, "return")`) ||
+		!contains(code, "return Promise.resolve(iteratorReturn(reason)).then(function() {});") ||
+		!contains(code, `var sourceCancel = actualMethod(source, "cancel")`) ||
+		!contains(code, "return Promise.resolve(sourceCancel(reason)).then(function() {});") ||
 		!contains(code, "closed = true;\n            detachCloseListener();\n            target.push(null);") ||
 		!contains(code, "unregisterCloseListener = addCloseListener(function()") ||
 		!contains(code, "return closeIterator(\"source closed\");") ||
@@ -8554,6 +8559,77 @@ if (stream.cancel() !== false) throw new Error("closed remote stream cancel shou
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node remote stream materialization-error lifecycle check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSNodeReadableCloseUsesDescriptorSafeIteratorCleanup(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  call: function(_runtime, _payloadRaw) {
+    return JSON.stringify({__omnivm_result__: true, value: true});
+  }
+};
+` + code + `
+var stream = globalThis.__omnivm_make_stream_proxy({__omnivm_stream__: true, id: 93, runtime: "javascript", kind: "stream"});
+var nextStartedResolve;
+var nextStarted = new Promise(function(resolve) {
+  nextStartedResolve = resolve;
+});
+var resolveNext;
+var cancelled = [];
+var returnGetterCount = 0;
+var releaseGetterCount = 0;
+var iterator = {
+  next: function() {
+    nextStartedResolve();
+    return new Promise(function(resolve) {
+      resolveNext = resolve;
+    });
+  }
+};
+Object.defineProperty(iterator, "return", {
+  get: function() {
+    returnGetterCount++;
+    throw new Error("return getter should not run");
+  },
+  configurable: true
+});
+Object.defineProperty(iterator, "releaseLock", {
+  get: function() {
+    releaseGetterCount++;
+    throw new Error("releaseLock getter should not run");
+  }
+});
+stream[Symbol.asyncIterator] = function() {
+  return iterator;
+};
+stream.cancel = function(reason) {
+  cancelled.push(reason && reason.message ? reason.message : String(reason));
+  return true;
+};
+var readable = stream.toNodeReadable({objectMode: true});
+readable.on("error", function() {});
+readable.resume();
+nextStarted.then(function() {
+  readable.destroy(new Error("client abort"));
+  resolveNext({done: false, value: "late"});
+  setImmediate(function() {
+    if (returnGetterCount !== 0) throw new Error("return getter was invoked");
+    if (releaseGetterCount !== 0) throw new Error("releaseLock getter was invoked");
+    if (cancelled.length !== 1 || cancelled[0] !== "client abort") {
+      throw new Error("source cancel reason mismatch: " + JSON.stringify(cancelled));
+    }
+  });
+});
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node readable descriptor-safe close check failed: %v\n%s", err, out)
 	}
 }
 

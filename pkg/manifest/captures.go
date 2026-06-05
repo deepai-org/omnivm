@@ -2511,15 +2511,39 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
           unregisterCloseListener = null;
         }
       };
+      var actualMethod = function(value, name) {
+        if (value == null) return null;
+        var cursor = Object(value);
+        var depth = 0;
+        while (cursor != null && depth++ < 64) {
+          var descriptor = null;
+          try {
+            descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+          } catch (_descriptorErr) {
+            return null;
+          }
+          if (descriptor) {
+            return typeof descriptor.value === 'function' ? descriptor.value.bind(value) : null;
+          }
+          try {
+            cursor = Object.getPrototypeOf(cursor);
+          } catch (_prototypeErr) {
+            return null;
+          }
+        }
+        return null;
+      };
       var closeIterator = function(reason) {
         if (closed) return Promise.resolve();
         closed = true;
         detachCloseListener();
-        if (iterator && typeof iterator.return === 'function') {
-          return Promise.resolve(iterator.return(reason)).then(function() {});
+        var iteratorReturn = actualMethod(iterator, "return");
+        if (iteratorReturn) {
+          return Promise.resolve(iteratorReturn(reason)).then(function() {});
         }
-        if (source && typeof source.cancel === 'function') {
-          return Promise.resolve(source.cancel(reason)).then(function() {});
+        var sourceCancel = actualMethod(source, "cancel");
+        if (sourceCancel) {
+          return Promise.resolve(sourceCancel(reason)).then(function() {});
         }
         return Promise.resolve();
       };
