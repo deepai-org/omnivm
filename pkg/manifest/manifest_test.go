@@ -9805,6 +9805,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, `op: "handle_get"`) {
 		t.Fatalf("Ruby materializer should fetch handle properties, got %q", code)
 	}
+	if !contains(code, "def respond_to_missing?(name, include_private = false)") ||
+		!contains(code, "return true if __omnivm_data_key?(key)") {
+		t.Fatalf("Ruby materializer respond_to? should see owner-side data fields, got %q", code)
+	}
 	if !contains(code, "def omnivm_get(key)") || !contains(code, "def omnivm_set(key, value)") || !contains(code, "def omnivm_call(key, *args)") || !contains(code, "def omnivm_len") || !contains(code, "def omnivm_iter(mode = \"values\")") || !contains(code, "def omnivm_keys") || !contains(code, "def omnivm_values") || !contains(code, "def omnivm_items") || !contains(code, "def omnivm_contains(key)") || !contains(code, "def omnivm_close") {
 		t.Fatalf("Ruby materializer should expose explicit proxy get/set/call/len/iter/contains/close helpers for collision cases, got %q", code)
 	}
@@ -9955,7 +9959,8 @@ class OmniVM
   @@requests = []
   @@fields = {
     "close" => "remote-close-field",
-    "dispose" => "remote-dispose-field"
+    "dispose" => "remote-dispose-field",
+    "count" => 7
   }
   def self.requests
     @@requests
@@ -9967,6 +9972,10 @@ class OmniVM
     return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
     return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
     return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_release_explicit"
+    return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.key?(req["value"])}) if req["op"] == "handle_contains"
+    if req["op"] == "handle_index" && @@fields.key?(req["value"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["value"]]})
+    end
     if req["op"] == "handle_get" && @@fields.key?(req["key"])
       return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["key"]]})
     end
@@ -9978,6 +9987,8 @@ class OmniVM
 end
 ` + code + `
 proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 80, "runtime" => "python", "kind" => "object"})
+raise "remote count field should be visible to respond_to?" unless proxy.respond_to?(:count)
+raise "count was not remote-first: #{proxy.count.inspect}" unless proxy.count == 7
 raise "close was not remote-first: #{proxy.close.inspect}" unless proxy.close == "remote-close-field"
 raise "dispose was not remote-first: #{proxy.dispose.inspect}" unless proxy.dispose == "remote-dispose-field"
 raise "omnivm_get did not recover remote close" unless proxy.omnivm_get("close") == "remote-close-field"
@@ -10028,8 +10039,8 @@ raise "nil dispose result did not normalize true" unless OmniVM.proxy_close(NilD
 raise "close did not take priority over dispose" unless OmniVM.proxy_close(CloseAndDispose.new) == "closed"
 raise "required-arg close should be skipped for dispose" unless OmniVM.proxy_close(RequiredCloseAndDispose.new) == "disposed-after-required-close"
 raise "required-arg close should not be treated as lifecycle close" unless OmniVM.proxy_close(RequiredOnlyClose.new) == false
-requested = OmniVM.requests.select { |req| req["op"] == "handle_get" }.map { |req| req["key"] }
-["close", "dispose"].each do |key|
+requested = OmniVM.requests.select { |req| req["op"] == "handle_get" || req["op"] == "handle_index" }.map { |req| req["key"] || req["value"] }
+["count", "close", "dispose"].each do |key|
   raise "missing remote lookup for #{key}: #{requested.inspect}" unless requested.include?(key)
 end
 releases = OmniVM.requests.select { |req| req["op"] == "handle_release_explicit" }

@@ -3965,7 +3965,12 @@ class OmniVMHandleProxy
 
   def respond_to_missing?(name, include_private = false)
     key = name.to_s
-    key.end_with?("=") || __omnivm_local_key?(key) || super
+    return true if key.end_with?("=") || __omnivm_local_key?(key)
+    return true if __omnivm_data_key?(key)
+    super
+  rescue => e
+    raise unless __omnivm_missing_bridge_error?(e)
+    super
   end
 end
 
