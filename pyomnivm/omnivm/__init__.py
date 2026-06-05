@@ -2016,14 +2016,14 @@ def assert_owner_dispatch_target_supported(target, label=""):
     """
     requested_target = str(target)
     target_name = _owner_dispatch_target_name(requested_target)
-    info = owner_dispatch_target_status(target_name)
+    info = owner_dispatch_target_status(requested_target)
     if info.get("supported") is True:
         return True
     prefix = f"{label}: " if label else ""
     diagnostic = info.get("diagnostic") or "owner dispatch is not supported for this target"
     raise RuntimeError(
         f"{prefix}owner dispatch target {target_name} unsupported: {diagnostic}",
-        boundary_path="thread_affinity",
+        boundary_path="owner_dispatch_target",
         details={
             "target": target_name,
             "requested_target": requested_target,

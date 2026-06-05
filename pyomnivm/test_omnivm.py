@@ -2579,8 +2579,10 @@ class TestCallWithMockLib(unittest.TestCase):
             omnivm_mod.assert_owner_dispatch_target_supported("java_executor", "reactor startup")
         assert "reactor startup: owner dispatch target java_executor unsupported" in str(ctx.exception)
         assert "executor caller-managed" in str(ctx.exception)
-        assert ctx.exception.boundary_path == "thread_affinity"
+        assert ctx.exception.boundary_path == "owner_dispatch_target"
         assert ctx.exception.details["target"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["target"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["requested_target"] == "java_executor"
         assert ctx.exception.details["owner_dispatch_target"]["owner_kind"] == "java_executor"
         assert ctx.exception.details["owner_dispatch_target"]["required_capability"] == "resubmit callbacks to executor"
         assert ctx.exception.details["owner_dispatch_target"]["current_behavior"] == "caller-managed"
@@ -2596,8 +2598,11 @@ class TestCallWithMockLib(unittest.TestCase):
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
             omnivm_mod.assert_owner_dispatch_target_supported("java", "reactor startup")
         assert "reactor startup: owner dispatch target java_executor unsupported" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "owner_dispatch_target"
         assert ctx.exception.details["target"] == "java_executor"
         assert ctx.exception.details["requested_target"] == "java"
+        assert ctx.exception.details["owner_dispatch_target"]["target"] == "java_executor"
+        assert ctx.exception.details["owner_dispatch_target"]["requested_target"] == "java"
 
     def test_assert_owner_dispatch_target_supported_accepts_supported_target(self):
         self.mock_lib.OmniStatus.return_value = (
