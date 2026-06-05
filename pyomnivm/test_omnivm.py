@@ -2392,6 +2392,52 @@ class TestCallWithMockLib(unittest.TestCase):
         assert omnivm_mod.proxy_close(owner) is False
         self.mock_lib.OmniBufFree.assert_called_once_with(b"other")
 
+    def test_buffer_owner_rejects_reenter_after_release(self):
+        self.mock_lib.OmniBufSet.return_value = 0
+        self.mock_lib.OmniBufFree.return_value = 0
+        owner = omnivm_mod.buffer_owner("payload", b"abc")
+
+        with owner:
+            pass
+
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            with owner:
+                pass
+
+        assert ctx.exception.boundary_path == "native_memory"
+        assert ctx.exception.details["buffer"] == {"name": "payload", "released": True}
+        self.mock_lib.OmniBufSet.assert_called_once()
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
+    def test_buffer_owner_rejects_nested_active_enter(self):
+        self.mock_lib.OmniBufSet.return_value = 0
+        self.mock_lib.OmniBufFree.return_value = 0
+        owner = omnivm_mod.buffer_owner("payload", b"abc")
+
+        with owner:
+            with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+                with owner:
+                    pass
+
+        assert ctx.exception.boundary_path == "native_memory"
+        assert ctx.exception.details["buffer"] == {"name": "payload", "active_owner": True}
+        self.mock_lib.OmniBufSet.assert_called_once()
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
+    def test_buffer_owner_enter_failure_resets_active_state(self):
+        self.mock_lib.OmniBufSet.side_effect = [RuntimeError("set failed"), 0]
+        self.mock_lib.OmniBufFree.return_value = 0
+        owner = omnivm_mod.buffer_owner("payload", b"abc")
+
+        with self.assertRaisesRegex(RuntimeError, "set failed"):
+            with owner:
+                pass
+        with owner:
+            pass
+
+        assert self.mock_lib.OmniBufSet.call_count == 2
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
     def test_buffer_owner_status_delegates_to_buffer_status(self):
         self.mock_lib.OmniBufStatus.return_value = b'{"name":"payload","lease_state":"owned"}'
         owner = omnivm_mod.buffer_owner("payload")

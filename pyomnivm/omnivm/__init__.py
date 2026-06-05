@@ -2317,24 +2317,45 @@ class BufferOwner:
         self._data = data
         self._dtype = dtype
         self.released = False
+        self._entered = False
 
     def __enter__(self):
+        if self.released:
+            raise RuntimeError(
+                f"omnivm.buffer_owner {self.name!r} cannot be re-entered after release",
+                boundary_path="native_memory",
+                details={"buffer": {"name": self.name, "released": True}},
+            )
+        if self._entered:
+            raise RuntimeError(
+                f"omnivm.buffer_owner {self.name!r} is already active",
+                boundary_path="native_memory",
+                details={"buffer": {"name": self.name, "active_owner": True}},
+            )
+        self._entered = True
         if self._data is not _UNSET:
-            set_buffer(self.name, self._data, self._dtype)
+            try:
+                set_buffer(self.name, self._data, self._dtype)
+            except BaseException:
+                self._entered = False
+                raise
         return self
 
     def __exit__(self, _exc_type, exc, _tb):
-        if _exc_type is None:
-            self.release()
-            return False
         try:
-            self.release()
-        except BaseException as release_exc:
-            _record_cleanup_error(
-                exc,
-                release_exc,
-                f"OmniVM buffer release failed during exception cleanup: {release_exc}",
-            )
+            if _exc_type is None:
+                self.release()
+                return False
+            try:
+                self.release()
+            except BaseException as release_exc:
+                _record_cleanup_error(
+                    exc,
+                    release_exc,
+                    f"OmniVM buffer release failed during exception cleanup: {release_exc}",
+                )
+        finally:
+            self._entered = False
         return False
 
     def release(self):
@@ -2342,6 +2363,7 @@ class BufferOwner:
             return False
         release_buffer(self.name)
         self.released = True
+        self._entered = False
         return True
 
     def close(self):

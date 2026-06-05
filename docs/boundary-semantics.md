@@ -811,7 +811,9 @@ Python borrowed `memoryview` cleanup follows the same finalizer rule:
 object: optional data is published on entry, `owner.status()` delegates to
 `buffer_status(name)`, `release_buffer(name)` runs on exit, and release failures
 keep the native-memory diagnostic while preserving any exception raised by the
-body.
+body. A Python `BufferOwner` is single-active-use: re-entering the same owner
+while active, or after release, raises a native-memory `RuntimeError` instead of
+republishing a name that will no longer be released.
 Embedded Ruby mirrors the scoped owner shape with
 `OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
 it returns an entered owner whose `release`/`close` method is idempotent.
