@@ -964,11 +964,18 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
         }
     }
 
+    std::vector<std::string> rest_lines;
     size_t offset = 0;
     while (offset <= rest.size()) {
         size_t next = rest.find('\n', offset);
-        std::string line = next == std::string::npos ? rest.substr(offset) : rest.substr(offset, next - offset);
-        std::string stripped = omnivm_trim(line);
+        rest_lines.push_back(next == std::string::npos ? rest.substr(offset) : rest.substr(offset, next - offset));
+        if (next == std::string::npos) {
+            break;
+        }
+        offset = next + 1;
+    }
+    for (size_t i = 0; i < rest_lines.size(); ++i) {
+        std::string stripped = omnivm_trim(rest_lines[i]);
         const char* cause_prefix = "Caused by: ";
         if (omnivm_starts_with(stripped, cause_prefix)) {
             std::string cause_text = stripped.substr(strlen(cause_prefix));
@@ -984,12 +991,33 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
                     cause.message = cause_text.substr(cause_sep + 2);
                 }
             }
+            size_t stack_end = i + 1;
+            std::vector<std::string> cause_traceback_lines;
+            while (stack_end < rest_lines.size()) {
+                std::string stack_line = omnivm_trim(rest_lines[stack_end]);
+                if (stack_line.empty()) {
+                    ++stack_end;
+                    continue;
+                }
+                if (omnivm_is_runtime_error_metadata_line(stack_line)) {
+                    break;
+                }
+                cause_traceback_lines.push_back(rest_lines[stack_end]);
+                cause.stack_frames.push_back(stack_line);
+                ++stack_end;
+            }
+            if (!cause.stack_frames.empty()) {
+                cause.traceback = cause_text;
+                for (const auto& frame : cause_traceback_lines) {
+                    cause.traceback += "\n";
+                    cause.traceback += frame;
+                }
+            }
             env.cause_chain.push_back(cause);
+            if (stack_end > i + 1) {
+                i = stack_end - 1;
+            }
         }
-        if (next == std::string::npos) {
-            break;
-        }
-        offset = next + 1;
     }
 
     env.stack_frames = omnivm_runtime_error_stack_frames(env.traceback);

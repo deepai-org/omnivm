@@ -367,26 +367,46 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
 
     cause_chain = []
     if rest:
-        for line in rest.splitlines():
-            stripped = line.strip()
+        rest_lines = rest.splitlines()
+        index = 0
+        while index < len(rest_lines):
+            stripped = rest_lines[index].strip()
             if not stripped.startswith("Caused by: "):
+                index += 1
                 continue
             cause_text = stripped[len("Caused by: ") :]
             cause_type = ""
             cause_message = cause_text
+            cause_traceback_lines = [cause_text]
             if ": " in cause_text:
                 candidate, tail = cause_text.split(": ", 1)
                 if _is_error_type_candidate(candidate):
                     cause_type = candidate
                     cause_message = tail
-            cause_chain.append(
-                {
-                    "type": cause_type,
-                    "message": cause_message,
-                    "runtime": source_runtime,
-                    "origin_runtime": source_runtime,
-                }
-            )
+            stack_frames = []
+            stack_index = index + 1
+            while stack_index < len(rest_lines):
+                stack_line = rest_lines[stack_index].strip()
+                if not stack_line:
+                    stack_index += 1
+                    continue
+                if _is_runtime_error_metadata_line(stack_line):
+                    break
+                cause_traceback_lines.append(rest_lines[stack_index])
+                stack_frames.append(stack_line)
+                stack_index += 1
+            cause_traceback = "\n".join(cause_traceback_lines)
+            cause = {
+                "type": cause_type,
+                "message": cause_message,
+                "runtime": source_runtime,
+                "origin_runtime": source_runtime,
+            }
+            if len(cause_traceback_lines) > 1:
+                cause["traceback"] = cause_traceback
+                cause["stack_frames"] = stack_frames
+            cause_chain.append(cause)
+            index = max(stack_index, index + 1)
 
     return {
         "runtime": source_runtime,

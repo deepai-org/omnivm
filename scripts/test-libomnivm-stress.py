@@ -18741,6 +18741,9 @@ def test_validation_error_fidelity_popular_libraries():
                 raise AssertionError(f"{name} error lost details {missing}: {text}") from exc
             if exc.runtime != structured["runtime"]:
                 raise AssertionError(f"{name} error runtime = {exc.runtime!r}, want {structured['runtime']!r}: {text}") from exc
+            want_origin_runtime = structured.get("origin_runtime", structured["runtime"])
+            if exc.origin_runtime != want_origin_runtime:
+                raise AssertionError(f"{name} error origin runtime = {exc.origin_runtime!r}, want {want_origin_runtime!r}: {text}") from exc
             if exc.type != structured["type"]:
                 raise AssertionError(f"{name} error type = {exc.type!r}, want {structured['type']!r}: {text}") from exc
             want_boundary = f"call[{runtime}]"
@@ -18750,12 +18753,20 @@ def test_validation_error_fidelity_popular_libraries():
                 raise AssertionError(f"{name} error message = {exc.message!r}, want containing {structured['message']!r}: {text}") from exc
             if "traceback" in structured and structured["traceback"] not in exc.traceback:
                 raise AssertionError(f"{name} error traceback = {exc.traceback!r}, want containing {structured['traceback']!r}: {text}") from exc
+            if not isinstance(exc.stack_frames, list) or not exc.stack_frames:
+                raise AssertionError(f"{name} error stack frames lost: {exc.stack_frames!r}: {text}") from exc
             envelope = exc.to_dict()
             json.dumps(envelope)
-            if envelope.get("runtime") != exc.runtime or envelope.get("type") != exc.type:
-                raise AssertionError(f"{name} structured envelope lost runtime/type: {envelope!r}") from exc
+            if (
+                envelope.get("runtime") != exc.runtime
+                or envelope.get("origin_runtime") != exc.origin_runtime
+                or envelope.get("type") != exc.type
+            ):
+                raise AssertionError(f"{name} structured envelope lost runtime/origin/type: {envelope!r}") from exc
             if envelope.get("message") != exc.message or envelope.get("traceback") != exc.traceback:
                 raise AssertionError(f"{name} structured envelope lost message/traceback: {envelope!r}") from exc
+            if envelope.get("stack_frames") != exc.stack_frames:
+                raise AssertionError(f"{name} structured envelope lost stack frames: {envelope!r}") from exc
             if envelope.get("boundary_path") != exc.boundary_path:
                 raise AssertionError(f"{name} structured envelope lost boundary path: {envelope!r}") from exc
             if envelope.get("original_error_handle") is not None:
@@ -18774,8 +18785,14 @@ def test_validation_error_fidelity_popular_libraries():
                 if not exc.cause_chain:
                     raise AssertionError(f"{name} error lost cause chain: {text}") from exc
                 cause = exc.cause_chain[0]
+                want_cause_runtime = structured.get("cause_runtime", structured["runtime"])
+                want_cause_origin_runtime = structured.get("cause_origin_runtime", want_cause_runtime)
+                if cause.get("runtime") != want_cause_runtime or cause.get("origin_runtime") != want_cause_origin_runtime:
+                    raise AssertionError(f"{name} error cause runtime/origin = {cause!r}, want {structured}: {text}") from exc
                 if cause.get("type") != structured["cause_type"] or structured["cause_message"] not in cause.get("message", ""):
                     raise AssertionError(f"{name} error cause = {cause!r}, want {structured}: {text}") from exc
+                if not isinstance(cause.get("stack_frames"), list) or not cause.get("stack_frames"):
+                    raise AssertionError(f"{name} error cause stack frames lost: {cause!r}") from exc
                 if not envelope.get("cause_chain") or envelope["cause_chain"][0] != cause:
                     raise AssertionError(f"{name} structured envelope lost cause chain: {envelope!r}") from exc
         else:

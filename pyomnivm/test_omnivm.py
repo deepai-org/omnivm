@@ -64,6 +64,8 @@ class TestRuntimeError(unittest.TestCase):
                 "message": "inner",
                 "runtime": "java",
                 "origin_runtime": "java",
+                "traceback": "java.lang.IllegalArgumentException: inner\n\t... 6 more",
+                "stack_frames": ["... 6 more"],
             }
         ]
         assert err.stack_frames == [
@@ -88,6 +90,8 @@ class TestRuntimeError(unittest.TestCase):
                 "message": "inner",
                 "runtime": "javascript",
                 "origin_runtime": "javascript",
+                "traceback": "TypeError: inner\n    at <anonymous>:1:42",
+                "stack_frames": ["at <anonymous>:1:42"],
             }
         ]
 
