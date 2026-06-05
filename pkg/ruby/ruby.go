@@ -440,11 +440,13 @@ static void* ruby_init_thread_func(void* arg) {
 
         omnivm_ruby_register_bridge();
 
-        // Install fork guard
+        // Install fork/daemon guard
         int state = 0;
         rb_eval_string_protect(
             "module Process; def self.fork(*args, &block); raise RuntimeError, "
-            "'fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes'; end; end; "
+            "'fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes'; end; "
+            "def self.daemon(*args); raise RuntimeError, "
+            "'daemon() is not safe in OmniVM embedded Ruby; use an out-of-process worker or daemonize before OmniVM initializes'; end; end; "
             "module Kernel; def fork(*args, &block); raise RuntimeError, "
             "'fork() is not safe in OmniVM embedded Ruby; use an out-of-process worker or prefork before OmniVM initializes'; end; module_function :fork; end",
             &state
@@ -1919,6 +1921,14 @@ static int omnivm_ruby_init(void) {
         "    alias fork __omnivm_unsupported_new\n"
         "  end\n"
         "end\n"
+        "if defined?(::Process) && ::Process.respond_to?(:daemon)\n"
+        "  class << ::Process\n"
+        "    alias __omnivm_native_daemon daemon unless method_defined?(:__omnivm_native_daemon)\n"
+        "    def daemon(*args)\n"
+        "      raise RuntimeError, \"daemon() is not safe in OmniVM embedded Ruby; use an out-of-process worker or daemonize before OmniVM initializes\"\n"
+        "    end\n"
+        "  end\n"
+        "end\n"
         "module Kernel\n"
         "  alias __omnivm_native_fork fork unless private_method_defined?(:__omnivm_native_fork) || method_defined?(:__omnivm_native_fork) || !private_method_defined?(:fork)\n"
         "  def fork(*args, &block)\n"
@@ -1997,6 +2007,14 @@ static int omnivm_ruby_init(void) {
         "  missing << 'Process.fork diagnostic'\n"
         "rescue RuntimeError => e\n"
         "  missing << 'Process.fork diagnostic' unless e.message.include?('fork() is not safe in OmniVM embedded Ruby')\n"
+        "end\n"
+        "if Process.respond_to?(:daemon)\n"
+        "  begin\n"
+        "    Process.daemon(false, false)\n"
+        "    missing << 'Process.daemon diagnostic'\n"
+        "  rescue RuntimeError => e\n"
+        "    missing << 'Process.daemon diagnostic' unless e.message.include?('daemon() is not safe in OmniVM embedded Ruby')\n"
+        "  end\n"
         "end\n"
         "missing << 'Kernel.warn' unless Kernel.respond_to?(:warn)\n"
         "missing << 'Kernel.require' unless Kernel.respond_to?(:require)\n"
