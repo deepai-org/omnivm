@@ -2582,6 +2582,9 @@ class BufferOwner:
                 raise
         return self
 
+    async def __aenter__(self):
+        return self.__enter__()
+
     def __exit__(self, _exc_type, exc, _tb):
         try:
             if _exc_type is None:
@@ -2598,6 +2601,9 @@ class BufferOwner:
         finally:
             self._entered = False
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
     def release(self):
         if self.released:

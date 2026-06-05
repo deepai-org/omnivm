@@ -852,7 +852,9 @@ Python borrowed `memoryview` cleanup follows the same finalizer rule:
 object: optional data is published on entry, `owner.status()` delegates to
 `buffer_status(name)`, `release_buffer(name)` runs on exit, and release failures
 keep the native-memory diagnostic while preserving any exception raised by the
-body. If the release failure status says the name is already `released` or
+body. The owner supports both `with` and `async with` for request/job code that
+already runs inside an async lifecycle. If the release failure status says the
+name is already `released` or
 `released_detached`, the owner becomes locally released so later close attempts
 stay idempotent while `buffer_status(name)` retains the `release_error`
 diagnostic. A Python `BufferOwner` is single-active-use: re-entering the same

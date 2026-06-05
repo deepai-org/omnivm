@@ -3187,6 +3187,24 @@ class TestCallWithMockLib(unittest.TestCase):
         assert buf.dtype == 7
         self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
 
+    def test_async_buffer_owner_sets_and_releases_buffer(self):
+        self.mock_lib.OmniBufSet.return_value = 0
+        self.mock_lib.OmniBufFree.return_value = 0
+
+        async def run():
+            async with omnivm_mod.buffer_owner("payload", b"abc", dtype=7) as owner:
+                assert owner.name == "payload"
+                assert owner.released is False
+            return owner
+
+        owner = asyncio.run(run())
+        assert owner.released is True
+        name, buf = self.mock_lib.OmniBufSet.call_args.args
+        assert name == b"payload"
+        assert buf.len == 3
+        assert buf.dtype == 7
+        self.mock_lib.OmniBufFree.assert_called_once_with(b"payload")
+
     def test_buffer_owner_release_is_idempotent(self):
         self.mock_lib.OmniBufFree.return_value = 0
         owner = omnivm_mod.buffer_owner("payload")
@@ -3298,6 +3316,29 @@ class TestCallWithMockLib(unittest.TestCase):
         assert owner.release() is False
         cleanup.clear()
         assert omnivm_mod.cleanup_errors(ctx.exception)[0].boundary_path == "native_memory"
+
+    def test_async_buffer_owner_context_preserves_body_exception_when_release_fails(self):
+        self.mock_lib.OmniBufFree.return_value = -1
+        self.mock_lib.OmniBufStatus.return_value = (
+            b'{"name":"payload","state":"released_detached","lease_state":"detached",'
+            b'"released":true,"memory_space":"host","active_borrows":1}'
+        )
+        owner = omnivm_mod.buffer_owner("payload")
+
+        async def run():
+            async with owner:
+                raise ValueError("body failed")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            asyncio.run(run())
+
+        notes = getattr(ctx.exception, "__notes__", [])
+        assert any("buffer release failed" in note for note in notes)
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert cleanup[0].boundary_path == "native_memory"
+        assert owner.released is True
+        assert owner.release() is False
 
     def test_buffer_status_returns_lifecycle_diagnostics(self):
         self.mock_lib.OmniBufStatus.return_value = (
