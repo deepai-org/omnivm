@@ -4,6 +4,7 @@ import java.lang.ref.Cleaner;
 import java.lang.ref.WeakReference;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -640,6 +641,7 @@ public class OmniVM {
         text = stripBoundaryPrefix(text, "execute manifest", boundaryParts);
         text = stripBoundaryPrefix(text, "load manifest module", boundaryParts);
         text = stripBoundaryPrefix(text, "manifest module call", boundaryParts);
+        text = stripAsyncRuntimeBoundary(text, parsed, boundaryParts);
         text = stripCallBoundary(text, parsed, boundaryParts);
         text = stripRuntimeRefAssignPrefix(text, parsed);
         text = stripRuntimePrefixes(text, parsed);
@@ -782,7 +784,13 @@ public class OmniVM {
         if (parsed.runtime.isEmpty() && parsed.type.isEmpty() && parsed.message.isEmpty() && safeString(parsed.traceback).isEmpty()) {
             return null;
         }
-        parsed.boundaryPath = nonEmptyJsonString(jsonValue(envelope, "boundary_path", "boundaryPath"), safeString(fallbackBoundary));
+        String parsedBoundary = jsonString(jsonValue(envelope, "boundary_path", "boundaryPath"));
+        String defaultBoundary = parsed.runtime.isEmpty() ? "" : "call[" + parsed.runtime + "]";
+        if (!safeString(fallbackBoundary).isEmpty() && (parsedBoundary.isEmpty() || parsedBoundary.equals(defaultBoundary))) {
+            parsed.boundaryPath = safeString(fallbackBoundary);
+        } else {
+            parsed.boundaryPath = nonEmptyJsonString(parsedBoundary, safeString(fallbackBoundary));
+        }
         parsed.originalErrorHandle = emptyToNull(jsonString(jsonValue(envelope, "original_error_handle", "originalErrorHandle")));
         parsed.detailsJson = detailsJsonValue(envelope);
         parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback));
@@ -933,6 +941,27 @@ public class OmniVM {
         parsed.runtime = normalizeRuntime(runtime);
         boundaryParts.add(op + "[" + runtime + "]");
         return text.substring(colon + 2).trim();
+    }
+
+    private static String stripAsyncRuntimeBoundary(String text, ParsedRuntimeError parsed, List<String> boundaryParts) {
+        for (String op : Arrays.asList("async exec", "async eval")) {
+            String prefix = op + " [";
+            if (!text.startsWith(prefix)) {
+                continue;
+            }
+            int close = text.indexOf("]: ", prefix.length());
+            if (close < 0) {
+                return text;
+            }
+            String runtime = text.substring(prefix.length(), close);
+            if (!isRuntimeLike(runtime)) {
+                return text;
+            }
+            parsed.runtime = normalizeRuntime(runtime);
+            boundaryParts.add(op.replace(' ', '_') + "[" + runtime + "]");
+            return text.substring(close + 3).trim();
+        }
+        return text;
     }
 
     private static String stripRuntimePrefixes(String text, ParsedRuntimeError parsed) {

@@ -186,14 +186,15 @@ func (e *Executor) execAsyncJS(op *Op) (interface{}, error) {
 globalThis.__omni_async_done = false;
 globalThis.__omni_async_result = undefined;
 globalThis.__omni_async_error = undefined;
+%s
 (async function() {
   %s
   globalThis.__omni_async_done = true;
 })().catch(function(e) {
-  globalThis.__omni_async_error = e && e.message ? e.message : String(e);
+  globalThis.__omni_async_error = globalThis.__omnivm_async_error_envelope(e);
   globalThis.__omni_async_done = true;
 });
-`, code)
+`, jsAsyncErrorPrelude(), code)
 
 	result := rt.Execute(wrapper)
 	if result.Err != nil {
@@ -207,7 +208,7 @@ globalThis.__omni_async_error = undefined;
 		return nil, err
 	}
 	if err := e.asyncJSError(rt, "globalThis.__omni_async_error"); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("async exec [javascript]: %w", err)
 	}
 
 	output := result.Output
@@ -234,14 +235,15 @@ func (e *Executor) evalAsyncJS(op *Op) (interface{}, error) {
 globalThis.__omni_async_done = false;
 globalThis.__omni_async_result = undefined;
 globalThis.__omni_async_error = undefined;
+%s
 Promise.resolve(%s).then(function(v) {
   globalThis.__omni_async_result = v;
   globalThis.__omni_async_done = true;
 }).catch(function(e) {
-  globalThis.__omni_async_error = e && e.message ? e.message : String(e);
+  globalThis.__omni_async_error = globalThis.__omnivm_async_error_envelope(e);
   globalThis.__omni_async_done = true;
 });
-`, code)
+`, jsAsyncErrorPrelude(), code)
 
 	result := rt.Execute(wrapper)
 	if result.Err != nil {
@@ -255,7 +257,7 @@ Promise.resolve(%s).then(function(v) {
 		return nil, err
 	}
 	if err := e.asyncJSError(rt, "globalThis.__omni_async_error"); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("async eval [javascript]: %w", err)
 	}
 
 	valResult := rt.Eval("globalThis.__omni_async_result")
@@ -504,7 +506,100 @@ func (e *Executor) asyncJSError(rt pkg.Runtime, name string) error {
 	if strings.HasPrefix(msg, "ERR:") {
 		msg = strings.TrimPrefix(msg, "ERR:")
 	}
-	return fmt.Errorf("async javascript error: %s", msg)
+	return fmt.Errorf("javascript: %s", msg)
+}
+
+func jsAsyncErrorPrelude() string {
+	return `
+globalThis.__omnivm_async_error_envelope = function(error) {
+  function cloneJSON(value) {
+    if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_err) {
+      return String(value);
+    }
+  }
+  function commonDetails(value) {
+    if (!value || typeof value !== "object") return undefined;
+    if (value.details !== undefined && value.details !== null) return cloneJSON(value.details);
+    if (value.issues !== undefined && value.issues !== null) return {issues: cloneJSON(value.issues)};
+    if (value.errors !== undefined && value.errors !== null) return {errors: cloneJSON(value.errors)};
+    const details = {};
+    for (const key of ["code", "errno", "syscall", "path", "dest", "address", "port", "status", "statusCode", "status_code", "signal", "exitCode", "exit_code"]) {
+      const raw = value[key];
+      if (raw == null) continue;
+      if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
+        details[key] = raw;
+      }
+    }
+    return Object.keys(details).length ? details : undefined;
+  }
+  function errorType(value) {
+    if (value && typeof value === "object") {
+      if (typeof value.name === "string" && value.name) return value.name;
+      if (value.constructor && typeof value.constructor.name === "string" && value.constructor.name) return value.constructor.name;
+    }
+    return "Error";
+  }
+  function errorMessage(value) {
+    if (value && typeof value === "object" && value.message != null) return String(value.message);
+    return String(value);
+  }
+  function stackFrames(stack) {
+    return String(stack || "").split("\n").slice(1).map(line => line.trim()).filter(Boolean);
+  }
+  function causeItems(value) {
+    const out = [];
+    let cause = value && typeof value === "object" ? value.cause : null;
+    for (let i = 0; cause && typeof cause === "object" && i < 8; i++) {
+      const stack = cause.stack == null ? "" : String(cause.stack);
+      const item = {
+        runtime: "javascript",
+        origin_runtime: "javascript",
+        type: errorType(cause),
+        message: errorMessage(cause),
+        traceback: stack,
+        stack_frames: stackFrames(stack),
+        boundary_path: "call[javascript]"
+      };
+      const details = commonDetails(cause);
+      if (details !== undefined) {
+        item.details = details;
+        try { item.details_json = JSON.stringify(details); } catch (_err) {}
+      }
+      out.push(item);
+      cause = cause.cause;
+    }
+    return out;
+  }
+  const stack = error && error.stack != null ? String(error.stack) : "";
+  const envelope = {
+    runtime: "javascript",
+    origin_runtime: "javascript",
+    type: errorType(error),
+    message: errorMessage(error),
+    traceback: stack,
+    stack_frames: stackFrames(stack),
+    cause_chain: causeItems(error),
+    boundary_path: "call[javascript]"
+  };
+  const details = commonDetails(error);
+  if (details !== undefined) {
+    envelope.details = details;
+    try { envelope.details_json = JSON.stringify(details); } catch (_err) {}
+  }
+  if (error && typeof error === "object") {
+    const handle = error.originalErrorHandle || error.original_error_handle;
+    if (handle != null) envelope.original_error_handle = String(handle);
+  }
+  try {
+    return JSON.stringify(envelope);
+  } catch (_err) {
+    return errorMessage(error);
+  }
+};
+`
 }
 
 // indentCode adds a prefix to each line of code (for embedding in wrappers).

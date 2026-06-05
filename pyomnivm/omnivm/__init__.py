@@ -281,6 +281,14 @@ def _parse_runtime_error_text(text, runtime=None, boundary_path=None):
             body = body[len(marker) :]
             break
 
+    async_op_match = re.match(r"(?P<op>async (?:exec|eval)) \[(?P<runtime>[A-Za-z0-9_-]+)\]: (?P<body>.*)", body, re.S)
+    if async_op_match:
+        op_name = async_op_match.group("op").replace(" ", "_")
+        op_runtime = async_op_match.group("runtime")
+        boundary_parts.append(f"{op_name}[{op_runtime}]")
+        source_runtime = op_runtime
+        body = async_op_match.group("body")
+
     op_match = re.match(r"(?P<op>[A-Za-z_][A-Za-z0-9_]*) \[(?P<runtime>[A-Za-z0-9_-]+)\]: (?P<body>.*)", body, re.S)
     if op_match:
         op_name = op_match.group("op")
@@ -445,6 +453,10 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
     traceback = text_field(field("traceback", "stack"))
     if not any((runtime_name, err_type, message, traceback)):
         return None
+    parsed_boundary = text_field(field("boundary_path", "boundaryPath"))
+    default_boundary = f"call[{runtime_name}]" if runtime_name else ""
+    if boundary_path and (not parsed_boundary or parsed_boundary == default_boundary):
+        parsed_boundary = boundary_path
     stack_frames = field("stack_frames", "stackFrames")
     if not isinstance(stack_frames, list) or not all(isinstance(frame, str) for frame in stack_frames):
         stack_frames = _runtime_error_stack_frames(traceback)
@@ -510,7 +522,7 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         "traceback": traceback,
         "stack_frames": stack_frames,
         "cause_chain": cause_chain,
-        "boundary_path": text_field(field("boundary_path", "boundaryPath"), boundary_path),
+        "boundary_path": parsed_boundary,
         "original_error_handle": text_field(field("original_error_handle", "originalErrorHandle"), None),
         "details": details_field(envelope),
         "details_json": details_json_field(envelope),

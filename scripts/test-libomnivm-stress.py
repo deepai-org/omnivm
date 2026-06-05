@@ -13767,6 +13767,62 @@ def test_manifest_node_http_response_write_after_end_reports_owner_error():
         raise AssertionError(f"Node http response after-end writer status assignment was not recorded: before={before_handles}, after={handles}")
 
 
+def test_manifest_node_http_async_write_after_end_preserves_error_code_details():
+    manifest = {
+        "version": 1,
+        "defaultRuntime": "python",
+        "ops": [
+            {
+                "op": "exec",
+                "runtime": "javascript",
+                "async": True,
+                "code": r'''
+const http = require('http');
+const req = new http.IncomingMessage();
+req.method = 'GET';
+req.url = '/node-http-response/async-after-end';
+req.headers = {'host': 'example.test'};
+const res = new http.ServerResponse(req);
+res.end('done');
+await new Promise((resolve) => setImmediate(resolve));
+await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('missing write-after-end owner error')), 1000);
+  res.once('error', (err) => {
+    clearTimeout(timer);
+    reject(err);
+  });
+  const result = res.write('late');
+  if (result !== false) {
+    clearTimeout(timer);
+    reject(new Error('late write did not return false: ' + result));
+  }
+});
+''',
+            },
+        ],
+    }
+    try:
+        run_manifest_dict(manifest)
+    except omnivm.RuntimeError as exc:
+        envelope = exc.to_dict()
+        if exc.runtime != "javascript" or exc.origin_runtime != "javascript" or exc.type != "Error":
+            raise AssertionError(f"async Node write-after-end runtime/type lost: {envelope}") from exc
+        if "write after end" not in exc.message:
+            raise AssertionError(f"async Node write-after-end message lost: {envelope}") from exc
+        if exc.boundary_path != "execute manifest > async_exec[javascript]":
+            raise AssertionError(f"async Node write-after-end boundary lost: {envelope}") from exc
+        if not isinstance(exc.details, dict) or exc.details.get("code") != "ERR_STREAM_WRITE_AFTER_END":
+            raise AssertionError(f"async Node write-after-end code details lost: {envelope}") from exc
+        if "ERR_STREAM_WRITE_AFTER_END" not in (exc.details_json or ""):
+            raise AssertionError(f"async Node write-after-end details_json lost: {envelope}") from exc
+        if not exc.stack_frames or "ServerResponse" not in exc.traceback:
+            raise AssertionError(f"async Node write-after-end stack lost: {envelope}") from exc
+        if envelope.get("details") != exc.details:
+            raise AssertionError(f"async Node write-after-end to_dict details lost: {envelope}") from exc
+    else:
+        raise AssertionError("async Node write-after-end manifest should fail with owner error")
+
+
 def test_manifest_fastify_request_reply_lifecycle_stays_live():
     before_status = omnivm.status()
     before_boundary = before_status.get("boundary", {})
@@ -30792,6 +30848,7 @@ def main():
         check("Manifest Express response writer lifecycle stays live", test_manifest_express_response_capture_keeps_writer_lifecycle_live)
         check("Manifest Express response write after end reports owner error", test_manifest_express_response_write_after_end_reports_owner_error)
         check("Manifest Node http response write after end reports owner error", test_manifest_node_http_response_write_after_end_reports_owner_error)
+        check("Manifest Node http async write after end preserves error code details", test_manifest_node_http_async_write_after_end_preserves_error_code_details)
         check("Manifest Fastify request reply lifecycle stays live", test_manifest_fastify_request_reply_lifecycle_stays_live)
         check("Manifest Fastify reply write after end is rejected", test_manifest_fastify_reply_write_after_end_is_rejected)
         check("Manifest Koa response write after end is rejected", test_manifest_koa_response_write_after_end_is_rejected)

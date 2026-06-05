@@ -341,6 +341,36 @@ func TestParseError_RuntimeRefAssignPreservesDetailsBeforeExprMetadata(t *testin
 	}
 }
 
+func TestParseError_AsyncJSStructuredEnvelopePreservesDetails(t *testing.T) {
+	raw := `ERR:execute manifest: async exec [javascript]: javascript: {"runtime":"javascript","origin_runtime":"javascript","type":"Error","message":"write after end","traceback":"Error: write after end\n    at ServerResponse.write (<anonymous>:1:1)","stack_frames":["at ServerResponse.write (<anonymous>:1:1)"],"cause_chain":[],"boundary_path":"call[javascript]","details":{"code":"ERR_STREAM_WRITE_AFTER_END"},"details_json":"{\"code\":\"ERR_STREAM_WRITE_AFTER_END\"}"}`
+	re := ParseError("__manifest", raw)
+	if re == nil {
+		t.Fatal("expected non-nil RuntimeError")
+	}
+	if re.Runtime != "javascript" || re.OriginRuntime != "javascript" || re.Type != "Error" {
+		t.Fatalf("runtime/origin/type = %q/%q/%q, want javascript/javascript/Error", re.Runtime, re.OriginRuntime, re.Type)
+	}
+	if re.Message != "write after end" {
+		t.Fatalf("Message = %q, want write after end", re.Message)
+	}
+	if re.BoundaryPath != "execute manifest > async_exec[javascript]" {
+		t.Fatalf("BoundaryPath = %q, want execute manifest > async_exec[javascript]", re.BoundaryPath)
+	}
+	details, ok := re.Details.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Details = %T, want object", re.Details)
+	}
+	if details["code"] != "ERR_STREAM_WRITE_AFTER_END" {
+		t.Fatalf("Details[code] = %#v, want ERR_STREAM_WRITE_AFTER_END", details["code"])
+	}
+	if re.DetailsJSON != `{"code":"ERR_STREAM_WRITE_AFTER_END"}` {
+		t.Fatalf("DetailsJSON = %q, want Node code payload", re.DetailsJSON)
+	}
+	if len(re.StackFrames) == 0 || !contains(re.Traceback, "ServerResponse.write") {
+		t.Fatalf("stack/traceback lost: frames=%#v traceback=%q", re.StackFrames, re.Traceback)
+	}
+}
+
 func TestParseError_ManifestBoundaryCauseAndHandle(t *testing.T) {
 	raw := "ERR:execute manifest: exec [java]: java: java.lang.RuntimeException: outer\n" +
 		"\tat OmniVMEval.run(OmniVMEval.java:3)\n" +

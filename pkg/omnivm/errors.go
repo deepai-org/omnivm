@@ -278,6 +278,8 @@ func ParseError(runtime, s string) *RuntimeError {
 	recognized = recognized || matched
 	body, matched = stripBoundaryPrefix(body, "manifest module call", &boundaryParts)
 	recognized = recognized || matched
+	body, matched = stripAsyncRuntimeBoundaryPrefix(body, &sourceRuntime, &boundaryParts)
+	recognized = recognized || matched
 	body, matched = stripCallBoundary(body, &sourceRuntime, &boundaryParts)
 	recognized = recognized || matched
 	body, matched = stripRuntimeRefAssignPrefix(body, &sourceRuntime)
@@ -604,6 +606,28 @@ func stripCallBoundary(text string, runtime *string, parts *[]string) (string, b
 	*runtime = normalizeRuntime(rt)
 	*parts = append(*parts, op+"["+rt+"]")
 	return strings.TrimSpace(text[colon+2:]), true
+}
+
+func stripAsyncRuntimeBoundaryPrefix(text string, runtime *string, parts *[]string) (string, bool) {
+	for _, op := range []string{"async exec", "async eval"} {
+		prefix := op + " ["
+		if !strings.HasPrefix(text, prefix) {
+			continue
+		}
+		rest := text[len(prefix):]
+		close := strings.Index(rest, "]: ")
+		if close < 0 {
+			return text, false
+		}
+		rt := rest[:close]
+		if !isRuntimeLike(rt) {
+			return text, false
+		}
+		*runtime = normalizeRuntime(rt)
+		*parts = append(*parts, strings.ReplaceAll(op, " ", "_")+"["+rt+"]")
+		return strings.TrimSpace(rest[close+3:]), true
+	}
+	return text, false
 }
 
 func stripRuntimePrefixes(text string, runtime *string) (string, bool) {
