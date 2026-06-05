@@ -202,6 +202,14 @@ raise "direct boundary #{direct.boundary_path.inspect}" unless direct.boundary_p
 override = OmniVM::RuntimeError.new("ERR:plain", runtime: "ruby", boundary_path: "custom", details: {"code" => "E_CUSTOM"})
 raise "override details #{override.details.inspect}" unless override.details == {"code" => "E_CUSTOM"}
 raise "override details_json #{override.details_json.inspect}" unless override.details_json == "{\"code\":\"E_CUSTOM\"}"
+text_details = OmniVM::RuntimeError.new("ERR:javascript: AggregateError: invalid\n    at parse (<anonymous>:1:2)\ndetails_json: [{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]", runtime: "javascript")
+raise "text details #{text_details.details.inspect}" unless text_details.details == [{"path" => ["user", "age"], "code" => "too_small"}]
+raise "text details_json #{text_details.details_json.inspect}" unless text_details.details_json == "[{\"path\":[\"user\",\"age\"],\"code\":\"too_small\"}]"
+raise "text stack #{text_details.stack_frames.inspect}" unless text_details.stack_frames == ["at parse (<anonymous>:1:2)"]
+raw_details = OmniVM::RuntimeError.new("ERR:javascript: AggregateError: invalid\ndetailsJson: not json", runtime: "javascript")
+raise "raw details #{raw_details.details.inspect}" unless raw_details.details == "not json"
+raise "raw details_json #{raw_details.details_json.inspect}" unless raw_details.details_json == "not json"
+raise "raw stack #{raw_details.stack_frames.inspect}" unless raw_details.stack_frames == []
 puts "ok"
 `)
 	if result.Err != nil {
