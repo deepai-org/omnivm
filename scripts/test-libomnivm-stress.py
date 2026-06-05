@@ -6563,6 +6563,9 @@ starlette_loop.close()
 
 
 def test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
+    before_handles = before_status.get("handles", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -6602,17 +6605,18 @@ def test_manifest_aiohttp_web_response_capture_uses_proxy_not_stream():
     }
     run_manifest_dict(manifest)
 
-    boundary = omnivm.status().get("boundary", {})
-    handles = omnivm.status().get("handles", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"aiohttp web response did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"aiohttp web response crossed as a stream: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"aiohttp web response used JSON fallback: {boundary}")
+    after_status = omnivm.status()
+    boundary = after_status.get("boundary", {})
+    handles = after_status.get("handles", {})
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"aiohttp web response did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"aiohttp web response crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"aiohttp web response used JSON fallback: before={before_boundary}, after={boundary}")
     for kind in ("property", "mutation"):
-        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
-            raise AssertionError(f"aiohttp web response proxy did not record {kind} access: {handles}")
+        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) <= before_handles.get("handle_accesses_by_kind", {}).get(kind, 0):
+            raise AssertionError(f"aiohttp web response proxy did not record {kind} access: before={before_handles}, after={handles}")
 
 
 def test_manifest_aiohttp_server_client_abort_cleans_up_streaming_response():
