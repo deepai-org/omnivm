@@ -816,7 +816,10 @@ while active, or after release, raises a native-memory `RuntimeError` instead of
 republishing a name that will no longer be released.
 Embedded Ruby mirrors the scoped owner shape with
 `OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
-it returns an entered owner whose `release`/`close` method is idempotent.
+it returns an entered single-active-use owner whose `release`/`close` method is
+idempotent. Re-entering the same owner while active, or after release, raises a
+native-memory `OmniVM::RuntimeError` instead of publishing a name that will no
+longer be released.
 `owner.status()` and `OmniVM.buffer_status(name)` expose the same per-name
 lifecycle diagnostics as a Ruby hash.
 When block cleanup fails during a body exception, the body exception is
@@ -838,10 +841,12 @@ that cleanup-error list.
 Java mirrors the same owner boundary as an `AutoCloseable`:
 `OmniVM.bufferOwner(name)`, `OmniVM.bufferOwner(name, data)`, and
 `OmniVM.bufferOwner(name, data, dtype)` return an entered owner for
-try-with-resources cleanup. `owner.status()` and `OmniVM.bufferStatus(name)`
-return JSON lifecycle diagnostics from the same shared store. `release()`
-returns `true` only for the first owner release, `close()` delegates to
-`release()`, and release failures propagate through the same user-initiated
+try-with-resources cleanup. Java owners are single-active-use: re-entering the
+same owner while active, or after release, raises a native-memory
+`OmniVM.RuntimeError`. `owner.status()` and `OmniVM.bufferStatus(name)` return
+JSON lifecycle diagnostics from the same shared store. `release()` returns
+`true` only for the first owner release, `close()` delegates to `release()`, and
+release failures propagate through the same user-initiated
 `OmniVM.releaseBuffer(name)` diagnostic path.
 Deferred release diagnostics distinguish ordinary queued finalizer cleanup from
 pressure on that queue: `deferred_release_queue_len` includes both the channel

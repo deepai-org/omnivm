@@ -9227,6 +9227,33 @@ public final class ScopedBufferOwnerCheck {
         require(OmniVM.lastSetDtype == 7, "last set dtype mismatch: " + OmniVM.lastSetDtype);
         require(OmniVM.releaseBufferCalls == 1, "release calls mismatch after success: " + OmniVM.releaseBufferCalls);
 
+        int setBeforeDirect = OmniVM.setBufferCalls;
+        int releaseBeforeDirect = OmniVM.releaseBufferCalls;
+        OmniVM.BufferOwner direct = OmniVM.bufferOwner("direct", new byte[] {4, 5}, 9);
+        require(OmniVM.setBufferCalls == setBeforeDirect + 1, "direct setBuffer mismatch: " + OmniVM.setBufferCalls);
+        try {
+            direct.enter();
+            throw new AssertionError("active owner re-entry did not fail");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("is already active"), "active re-entry message mismatch: " + err.getMessage());
+            require("native_memory".equals(err.getBoundaryPath()), "active re-entry boundary mismatch: " + err.getBoundaryPath());
+            require(String.valueOf(err.getDetails()).contains("active_owner=true"), "active re-entry details mismatch: " + err.getDetails());
+        }
+        require(OmniVM.setBufferCalls == setBeforeDirect + 1, "active re-entry republished buffer: " + OmniVM.setBufferCalls);
+        require(OmniVM.releaseBufferCalls == releaseBeforeDirect, "active re-entry released buffer: " + OmniVM.releaseBufferCalls);
+        require(direct.release(), "direct release did not return true");
+        require(!direct.release(), "direct second release was not idempotent");
+        try {
+            direct.enter();
+            throw new AssertionError("released owner re-entry did not fail");
+        } catch (OmniVM.RuntimeError err) {
+            require(err.getMessage().contains("cannot be re-entered after release"), "released re-entry message mismatch: " + err.getMessage());
+            require("native_memory".equals(err.getBoundaryPath()), "released re-entry boundary mismatch: " + err.getBoundaryPath());
+            require(String.valueOf(err.getDetails()).contains("released=true"), "released re-entry details mismatch: " + err.getDetails());
+        }
+        require(OmniVM.setBufferCalls == setBeforeDirect + 1, "released re-entry republished buffer: " + OmniVM.setBufferCalls);
+        require(OmniVM.releaseBufferCalls == releaseBeforeDirect + 1, "released re-entry release mismatch: " + OmniVM.releaseBufferCalls);
+
         OmniVM.failRelease = true;
         try {
             OmniVM.bufferOwner("failing", owner -> {
@@ -9239,7 +9266,7 @@ public final class ScopedBufferOwnerCheck {
             require(suppressed.length == 1, "cleanup failure was not suppressed: " + suppressed.length);
             require(String.valueOf(suppressed[0].getMessage()).contains("release failed for failing"), "suppressed cleanup mismatch: " + suppressed[0]);
         }
-        require(OmniVM.releaseBufferCalls == 2, "release calls mismatch after failure: " + OmniVM.releaseBufferCalls);
+        require(OmniVM.releaseBufferCalls == 3, "release calls mismatch after failure: " + OmniVM.releaseBufferCalls);
     }
 }
 `
@@ -10325,9 +10352,12 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	for _, want := range []string{
 		"class BufferOwner",
 		"def self.buffer_owner(name, data = BUFFER_OWNER_UNSET, dtype: 0)",
+		"cannot be re-entered after release",
+		"is already active",
 		"OmniVM.set_buffer(@name, @data, @dtype) unless @data.equal?(BUFFER_OWNER_UNSET)",
 		"return false if @released",
 		"OmniVM.release_buffer(@name)",
+		"@entered = false",
 		"alias close release",
 		"def status",
 		"OmniVM.buffer_status(@name)",
@@ -10380,6 +10410,9 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"cleanupError",
 		"err.addSuppressed(cleanupError);",
 		"public static final class BufferOwner implements AutoCloseable",
+		"cannot be re-entered after release",
+		"is already active",
+		"\"native_memory\"",
 		"setBuffer(name, data, dtype)",
 		"if (released) {\n                return false;",
 		"releaseBuffer(name)",
@@ -10388,6 +10421,7 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"return bufferStatus(name)",
 		"public static native String nativeBufferStatus(String name)",
 		"released = true",
+		"entered = false",
 		"public void close() {\n            release();",
 		"if (target instanceof BufferOwner owner) {\n            return owner.release();",
 	} {

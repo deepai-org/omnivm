@@ -334,11 +334,31 @@ end
 
 owner = OmniVM.buffer_owner(:payload, "abc", dtype: 7)
 raise "set event mismatch #{OmniVM.events.inspect}" unless OmniVM.events == [[:set, "payload", "abc", 7]]
+begin
+  owner.enter
+rescue OmniVM::RuntimeError => err
+  raise "active re-entry error mismatch #{err.message.inspect}" unless err.message.include?("is already active")
+  raise "active re-entry boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
+  raise "active re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "active_owner" => true}}
+else
+  raise "active re-entry did not fail"
+end
+raise "active re-entry published events #{OmniVM.events.inspect}" unless OmniVM.events == [[:set, "payload", "abc", 7]]
 owner_status = owner.status
 raise "status mismatch #{owner_status.inspect}" unless owner_status["name"] == "payload" && owner_status["lease_state"] == "owned"
 raise "release did not return true" unless owner.release == true
 raise "second release was not idempotent" unless owner.release == false
 raise "released? mismatch" unless owner.released? == true
+begin
+  owner.enter
+rescue OmniVM::RuntimeError => err
+  raise "released re-entry error mismatch #{err.message.inspect}" unless err.message.include?("cannot be re-entered after release")
+  raise "released re-entry boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
+  raise "released re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "released" => true}}
+else
+  raise "released re-entry did not fail"
+end
+raise "released re-entry changed events #{OmniVM.events.inspect}" unless OmniVM.events == [[:set, "payload", "abc", 7], [:status, "payload"], [:release, "payload"]]
 
 events_before_block = OmniVM.events.dup
 block_result = OmniVM.buffer_owner("block") do |scoped|
