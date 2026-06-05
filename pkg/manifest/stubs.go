@@ -2785,7 +2785,7 @@ func javaZeroArgPropertyMethod(key string) bool {
 		return true
 	}
 	switch key {
-	case "done", "cancelled", "status":
+	case "count", "done", "cancelled", "status":
 		return true
 	default:
 		return false

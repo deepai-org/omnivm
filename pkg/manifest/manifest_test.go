@@ -17120,6 +17120,16 @@ func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 		t.Fatalf("live Java firstX zero-arg descriptor = %#v, want %#v", env, want)
 	}
 
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"count"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get count: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	want = map[string]interface{}{"__omnivm_callable__": true, "key": "count", "zeroArg": true}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java count zero-arg descriptor = %#v, want %#v", env, want)
+	}
+
 	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close"}`)
 	if err != nil {
 		t.Fatalf("HandleCall handle_get close: %v", err)
