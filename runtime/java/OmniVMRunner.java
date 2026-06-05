@@ -647,34 +647,7 @@ public class OmniVMRunner {
 
     private static String formatThrowable(Throwable throwable) {
         if (throwable instanceof OmniVM.RuntimeError e) {
-            StringBuilder out = new StringBuilder();
-            if (e.getRuntime() != null && !e.getRuntime().isEmpty()) {
-                out.append(e.getRuntime()).append(": ");
-            }
-            if (e.getType() != null && !e.getType().isEmpty()) {
-                out.append(e.getType()).append(": ");
-            }
-            out.append(e.getMessage() == null ? "" : e.getMessage());
-            if (e.getTraceback() != null && !e.getTraceback().isEmpty()) {
-                out.append('\n').append(e.getTraceback());
-            }
-            for (Map<String, Object> cause : e.getCauseChain()) {
-                out.append("\nCaused by: ");
-                Object typeValue = cause.get("type");
-                String type = typeValue == null ? "" : String.valueOf(typeValue);
-                if (type != null && !type.isEmpty()) {
-                    out.append(type).append(": ");
-                }
-                Object messageValue = cause.get("message");
-                out.append(messageValue == null ? "" : String.valueOf(messageValue));
-            }
-            if (e.getDetailsJson() != null && !e.getDetailsJson().isEmpty()) {
-                out.append("\nDetails: ").append(e.getDetailsJson());
-            }
-            if (e.getOriginalErrorHandle() != null && !e.getOriginalErrorHandle().isEmpty()) {
-                out.append("\nOriginal error handle: ").append(e.getOriginalErrorHandle());
-            }
-            return out.toString().trim();
+            return e.toJson();
         }
         StringWriter sw = new StringWriter();
         throwable.printStackTrace(new PrintWriter(sw));

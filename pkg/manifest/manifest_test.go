@@ -11922,6 +11922,41 @@ public final class JavaThrowableDetailsCheck {
 
         Method format = OmniVMRunner.class.getDeclaredMethod("formatThrowable", Throwable.class);
         format.setAccessible(true);
+
+        OmniVM.RuntimeError structured = OmniVM.RuntimeError.fromBridge(
+            """
+{
+  "runtime": "java",
+  "origin_runtime": "python",
+  "type": "ValueError",
+  "message": "bad",
+  "boundary_path": "call[java] > callback[python]",
+  "original_error_handle": "py-error-9",
+  "details_json": "{\\\"code\\\":\\\"E_BAD\\\"}",
+  "cause_chain": [{
+    "runtime": "javascript",
+    "origin_runtime": "ruby",
+    "type": "TypeError",
+    "message": "inner",
+    "boundary_path": "callback[js]",
+    "details": {"path": ["user", "age"]}
+  }]
+}
+""",
+            "java",
+            "call[java]",
+            null
+        );
+        String structuredText = String.valueOf(format.invoke(null, structured));
+        require(structuredText.startsWith("{"), "structured RuntimeError should format as JSON envelope: " + structuredText);
+        require(structuredText.contains("\"origin_runtime\":\"python\""), "structured origin runtime lost: " + structuredText);
+        require(structuredText.contains("\"boundary_path\":\"call[java] > callback[python]\""), "structured boundary lost: " + structuredText);
+        require(structuredText.contains("\"original_error_handle\":\"py-error-9\""), "structured original handle lost: " + structuredText);
+        require(structuredText.contains("\"details_json\":\"{\\\"code\\\":\\\"E_BAD\\\"}\""), "structured details_json lost: " + structuredText);
+        require(structuredText.contains("\"cause_chain\":[{\"type\":\"TypeError\""), "structured cause chain lost: " + structuredText);
+        require(structuredText.contains("\"origin_runtime\":\"ruby\""), "structured cause origin lost: " + structuredText);
+        require(structuredText.contains("\"details\":{\"path\":[\"user\",\"age\"]}"), "structured cause details lost: " + structuredText);
+
         String text = String.valueOf(format.invoke(null, root));
 
         require(text.contains("Details: "), "formatted throwable omitted details: " + text);
