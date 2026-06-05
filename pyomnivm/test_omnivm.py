@@ -284,6 +284,68 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_runtime_error_exposes_camel_case_field_aliases(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "javascript",
+                    "origin_runtime": "python",
+                    "type": "AggregateError",
+                    "message": "invalid",
+                    "stack_frames": ["at parse (<anonymous>:1:2)"],
+                    "cause_chain": [
+                        {
+                            "runtime": "java",
+                            "type": "TypeError",
+                            "message": "inner",
+                            "details": {"path": ["payload", "age"]},
+                        }
+                    ],
+                    "boundary_path": "call[javascript] > callback[python]",
+                    "original_error_handle": "js-error-7",
+                    "details_json": "{\"code\":\"E_OUTER\"}",
+                }
+            ),
+            runtime="go",
+        )
+
+        assert err.originRuntime == "python"
+        assert err.stackFrames == ["at parse (<anonymous>:1:2)"]
+        assert err.causeChain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "java",
+                "origin_runtime": "java",
+                "details": {"path": ["payload", "age"]},
+                "details_json": '{"path":["payload","age"]}',
+            }
+        ]
+        assert err.boundaryPath == "call[javascript] > callback[python]"
+        assert err.originalErrorHandle == "js-error-7"
+        assert err.detailsJson == "{\"code\":\"E_OUTER\"}"
+
+        stack_frames = err.stackFrames
+        stack_frames[0] = "changed"
+        cause_chain = err.causeChain
+        cause_chain[0]["details"]["path"][1] = "changed"
+        assert err.stack_frames == ["at parse (<anonymous>:1:2)"]
+        assert err.cause_chain[0]["details"] == {"path": ["payload", "age"]}
+
+        err.originRuntime = "ruby"
+        err.stackFrames = ("at alias (<anonymous>:9:1)",)
+        err.causeChain = [{"runtime": "python", "message": "inner alias"}]
+        err.boundaryPath = "call[javascript] > callback[ruby]"
+        err.originalErrorHandle = "ruby-error-9"
+        err.detailsJson = "{\"code\":\"E_ALIAS\"}"
+
+        assert err.origin_runtime == "ruby"
+        assert err.stack_frames == ["at alias (<anonymous>:9:1)"]
+        assert err.cause_chain == [{"runtime": "python", "message": "inner alias"}]
+        assert err.boundary_path == "call[javascript] > callback[ruby]"
+        assert err.original_error_handle == "ruby-error-9"
+        assert err.details_json == "{\"code\":\"E_ALIAS\"}"
+
     def test_parses_details_json_structured_error_envelope(self):
         err = omnivm_mod.RuntimeError(
             json.dumps(

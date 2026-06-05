@@ -127,6 +127,14 @@ class RuntimeError(_builtins.RuntimeError):
         self._stack_frames = _copy_json_value(value)
 
     @property
+    def stackFrames(self):
+        return self.stack_frames
+
+    @stackFrames.setter
+    def stackFrames(self, value):
+        self.stack_frames = value
+
+    @property
     def cause_chain(self):
         return _copy_json_value(self._cause_chain)
 
@@ -135,12 +143,52 @@ class RuntimeError(_builtins.RuntimeError):
         self._cause_chain = _copy_json_value(value)
 
     @property
+    def causeChain(self):
+        return self.cause_chain
+
+    @causeChain.setter
+    def causeChain(self, value):
+        self.cause_chain = value
+
+    @property
     def details(self):
         return _copy_json_value(self._details)
 
     @details.setter
     def details(self, value):
         self._details = _copy_json_value(value)
+
+    @property
+    def originRuntime(self):
+        return self.origin_runtime
+
+    @originRuntime.setter
+    def originRuntime(self, value):
+        self.origin_runtime = value
+
+    @property
+    def boundaryPath(self):
+        return self.boundary_path
+
+    @boundaryPath.setter
+    def boundaryPath(self, value):
+        self.boundary_path = value
+
+    @property
+    def originalErrorHandle(self):
+        return self.original_error_handle
+
+    @originalErrorHandle.setter
+    def originalErrorHandle(self, value):
+        self.original_error_handle = value
+
+    @property
+    def detailsJson(self):
+        return self.details_json
+
+    @detailsJson.setter
+    def detailsJson(self, value):
+        self.details_json = value
 
     def to_dict(self):
         """Return a structured, JSON-serializable runtime error envelope."""
