@@ -8485,11 +8485,14 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"private final BlockingQueue<Object> queue = new ArrayBlockingQueue<>(2);",
 		"private final AtomicLong requested = new AtomicLong(0);",
 		"private final AtomicBoolean terminalSignalled = new AtomicBoolean(false);",
+		"private final AtomicBoolean closeSignalled = new AtomicBoolean(false);",
 		"if (!claimRequested())",
 		`failProtocol(new IllegalStateException("Flow.Publisher emitted without demand"))`,
 		`failProtocol(new IllegalStateException("Flow.Publisher exceeded OmniVM stream backpressure buffer"))`,
 		"private void signalDone(Throwable failure, boolean discardPending)",
 		"signalDone(failure, true);",
+		"if (!closeSignalled.compareAndSet(false, true))",
+		"item = null;\n            loaded = false;\n            finished = true;",
 		"subscribed.countDown();",
 	} {
 		if !contains(code, want) {
@@ -8836,11 +8839,54 @@ public final class FlowPublisherBackpressureCheck {
         }
     }
 
+    public static final class CancellablePublisher implements Flow.Publisher<Object> {
+        CancellableSubscription subscription;
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super Object> subscriber) {
+            subscription = new CancellableSubscription(subscriber);
+            subscriber.onSubscribe(subscription);
+        }
+    }
+
+    public static final class CancellableSubscription implements Flow.Subscription {
+        private final Flow.Subscriber<? super Object> subscriber;
+        int cancels;
+
+        CancellableSubscription(Flow.Subscriber<? super Object> subscriber) {
+            this.subscriber = subscriber;
+        }
+
+        @Override
+        public void request(long n) {
+            subscriber.onNext("loaded");
+        }
+
+        @Override
+        public void cancel() {
+            cancels++;
+        }
+    }
+
     public static void main(String[] args) {
         OmniVM.FlowPublisherIterator compliant = new OmniVM.FlowPublisherIterator(new OneAndDonePublisher());
         require(compliant.hasNext(), "compliant publisher first item missing");
         require("ok".equals(compliant.next()), "compliant publisher item mismatch");
         require(!compliant.hasNext(), "compliant publisher terminal signal was lost");
+
+        CancellablePublisher cancellable = new CancellablePublisher();
+        OmniVM.FlowPublisherIterator closing = new OmniVM.FlowPublisherIterator(cancellable);
+        require(closing.hasNext(), "cancellable publisher first item missing");
+        closing.close();
+        require(cancellable.subscription.cancels == 1, "close did not cancel exactly once: " + cancellable.subscription.cancels);
+        closing.close();
+        require(cancellable.subscription.cancels == 1, "second close cancelled again: " + cancellable.subscription.cancels);
+        require(!closing.hasNext(), "closed iterator still reported a loaded item");
+        try {
+            closing.next();
+            throw new AssertionError("closed iterator returned an item after close");
+        } catch (java.util.NoSuchElementException expected) {
+        }
 
         BurstPublisher burst = new BurstPublisher();
         OmniVM.FlowPublisherIterator iterator = new OmniVM.FlowPublisherIterator(burst);

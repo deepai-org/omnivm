@@ -2296,6 +2296,7 @@ public class OmniVM {
         private final AtomicReference<Throwable> error = new AtomicReference<>();
         private final AtomicLong requested = new AtomicLong(0);
         private final AtomicBoolean terminalSignalled = new AtomicBoolean(false);
+        private final AtomicBoolean closeSignalled = new AtomicBoolean(false);
         private volatile Flow.Subscription subscription;
         private volatile boolean closed;
         private boolean loaded;
@@ -2437,7 +2438,13 @@ public class OmniVM {
 
         @Override
         public void close() {
+            if (!closeSignalled.compareAndSet(false, true)) {
+                return;
+            }
             closed = true;
+            item = null;
+            loaded = false;
+            finished = true;
             Flow.Subscription current = subscription;
             if (current != null) {
                 current.cancel();
