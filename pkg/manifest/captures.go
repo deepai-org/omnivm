@@ -1774,6 +1774,10 @@ if (typeof omnivm !== 'undefined' && omnivm) {
   }
   globalThis.__omnivm_owner_dispatch_error = globalThis.__omnivm_owner_dispatch_error || function(message, boundaryPath, details) {
     var err = new Error(message);
+    var stackFrames;
+    var causeChain = [];
+    var detailsSnapshot = globalThis.__omnivm_clone_json(details);
+    var detailsJson = JSON.stringify(detailsSnapshot);
     err.name = "OmniVMRuntimeError";
     err.runtime = "javascript";
     err.origin_runtime = "javascript";
@@ -1783,13 +1787,14 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     err.original_error_handle = null;
     err.originalErrorHandle = null;
     err.traceback = err.stack || "";
-    err.stack_frames = String(err.traceback).split("\n").filter(function(frame) { return frame.length > 0; });
-    err.stackFrames = err.stack_frames.slice();
-    err.cause_chain = [];
-    err.causeChain = err.cause_chain.slice();
-    err.details = globalThis.__omnivm_clone_json(details);
-    err.details_json = JSON.stringify(err.details);
-    err.detailsJson = err.details_json;
+    stackFrames = String(err.traceback).split("\n").filter(function(frame) { return frame.length > 0; });
+    err.stack_frames = stackFrames.slice();
+    err.stackFrames = stackFrames.slice();
+    err.cause_chain = causeChain.slice();
+    err.causeChain = causeChain.slice();
+    err.details = globalThis.__omnivm_clone_json(detailsSnapshot);
+    err.details_json = detailsJson;
+    err.detailsJson = detailsJson;
     err.toJSON = function() {
       return {
         runtime: err.runtime,
@@ -1797,12 +1802,12 @@ if (typeof omnivm !== 'undefined' && omnivm) {
         type: err.type,
         message: err.message,
         traceback: err.traceback,
-        stack_frames: err.stack_frames.slice(),
-        cause_chain: err.cause_chain.slice(),
+        stack_frames: stackFrames.slice(),
+        cause_chain: globalThis.__omnivm_clone_json(causeChain),
         boundary_path: err.boundary_path,
         original_error_handle: err.original_error_handle,
-        details: globalThis.__omnivm_clone_json(err.details),
-        details_json: err.details_json
+        details: globalThis.__omnivm_clone_json(detailsSnapshot),
+        details_json: detailsJson
       };
     };
     return err;

@@ -6961,9 +6961,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`boundary_path = boundaryPath`,
 		`original_error_handle: err.original_error_handle`,
-		`details_json = JSON.stringify(err.details)`,
-		`err.stackFrames = err.stack_frames.slice()`,
-		`err.causeChain = err.cause_chain.slice()`,
+		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
+		`detailsJson = JSON.stringify(detailsSnapshot)`,
+		`err.stack_frames = stackFrames.slice()`,
+		`err.cause_chain = causeChain.slice()`,
+		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("JS materializer should expose owner-dispatch diagnostic guards, missing %q", want)
@@ -7151,10 +7153,18 @@ try {
   if (err.cause_chain.length !== 0) throw new Error("toJSON leaked mutable cause chain");
   envelope.details.owner_dispatch.mode = "mutated-envelope";
   if (err.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("toJSON leaked mutable details");
+  err.stack_frames.length = 0;
+  err.stackFrames.length = 0;
+  err.cause_chain.push({message: "mutated-error"});
+  err.causeChain.push({message: "mutated-error"});
+  err.details.owner_dispatch.mode = "mutated-error";
+  var stableEnvelope = err.toJSON();
+  if (!Array.isArray(stableEnvelope.stack_frames) || stableEnvelope.stack_frames.length === 0) throw new Error("error stack mutation changed snapshot");
+  if (!Array.isArray(stableEnvelope.cause_chain) || stableEnvelope.cause_chain.length !== 0) throw new Error("error cause mutation changed snapshot");
+  if (stableEnvelope.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("error details mutation changed snapshot");
   var serialized = JSON.stringify(err);
   if (serialized.indexOf('"boundary_path":"owner_dispatch"') < 0) throw new Error("serialized envelope missing boundary: " + serialized);
   if (serialized.indexOf('"message":"express startup: owner dispatch unsupported') < 0) throw new Error("serialized envelope missing message: " + serialized);
-  err.details.owner_dispatch.mode = "mutated";
   if (JSON.parse(err.details_json).owner_dispatch.mode !== "diagnostic_only") throw new Error("details_json was not stable");
 }
 try {
@@ -10619,12 +10629,14 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`javascript_event_loop`,
 		`owner_dispatch_target`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
-		`err.details_json = JSON.stringify(err.details)`,
+		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
+		`detailsJson = JSON.stringify(detailsSnapshot)`,
 		`err.toJSON = function()`,
-		`err.stackFrames = err.stack_frames.slice()`,
-		`err.causeChain = err.cause_chain.slice()`,
-		`stack_frames: err.stack_frames.slice()`,
-		`cause_chain: err.cause_chain.slice()`,
+		`err.stack_frames = stackFrames.slice()`,
+		`err.cause_chain = causeChain.slice()`,
+		`stack_frames: stackFrames.slice()`,
+		`cause_chain: globalThis.__omnivm_clone_json(causeChain)`,
+		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
 		`original_error_handle: err.original_error_handle`,
 		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
