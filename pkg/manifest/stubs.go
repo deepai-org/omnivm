@@ -3341,7 +3341,17 @@ func pythonRuntimeRefLookupExpr(base, keyLit string, preferHTTPAttribute bool) s
 }
 
 func pythonRuntimeRefKeyAddressableContainsExpr(obj, key, itemMethod string) string {
-	return fmt.Sprintf("(not (%s) and not isinstance(%s, (str, bytes, bytearray)) and hasattr(%s, '%s') and hasattr(getattr(%s, 'keys', None), '__call__') and %s in %s.keys())", pythonHTTPMessageProbeExpr(obj), obj, obj, itemMethod, obj, key, obj)
+	itemMethodLit := strconv.Quote(itemMethod)
+	return fmt.Sprintf("(not (%s) and not isinstance(%s, (str, bytes, bytearray)) and any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and any('keys' in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and %s in %s.keys())", pythonRuntimeRefStaticHTTPMessageProbeExpr(obj), obj, itemMethodLit, obj, obj, key, obj)
+}
+
+func pythonRuntimeRefStaticAttributeContainsExpr(obj, key string) string {
+	return fmt.Sprintf("(isinstance(%s, str) and ((%s in getattr(type(%s), 'model_fields', {})) or (%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__)))", key, key, obj, key, obj, key, obj)
+}
+
+func pythonRuntimeRefStaticNamedAttributeContainsExpr(obj, name string) string {
+	nameLit := strconv.Quote(name)
+	return fmt.Sprintf("((%s in getattr(type(%s), 'model_fields', {})) or (%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__))", nameLit, obj, nameLit, obj, nameLit, obj)
 }
 
 func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, error) {
@@ -3407,6 +3417,23 @@ func javaFlowPublisherProbeExpr(base string) string {
 
 func pythonHTTPMessageProbeExpr(base string) string {
 	return fmt.Sprintf("((hasattr(%s, 'method') and (hasattr(%s, 'path') or hasattr(%s, 'url') or hasattr(%s, 'headers') or hasattr(%s, 'META'))) or (hasattr(%s, 'status_code') and (hasattr(%s, 'headers') or hasattr(%s, 'content') or hasattr(%s, 'streaming_content'))))", base, base, base, base, base, base, base, base, base)
+}
+
+func pythonRuntimeRefStaticHTTPMessageProbeExpr(base string) string {
+	methodLike := pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "method")
+	requestTarget := strings.Join([]string{
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "path"),
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "url"),
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "headers"),
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "META"),
+	}, " or ")
+	statusLike := pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "status_code")
+	responseTarget := strings.Join([]string{
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "headers"),
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "content"),
+		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "streaming_content"),
+	}, " or ")
+	return fmt.Sprintf("((%s and (%s)) or (%s and (%s)))", methodLike, requestTarget, statusLike, responseTarget)
 }
 
 func rubyHTTPMessageProbeExpr(base string) string {
@@ -4022,7 +4049,7 @@ func runtimeRefContainsExpr(ref RuntimeRef, key interface{}) (string, bool, erro
 	case "javascript":
 		return fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {})) or (isinstance(__k, str) and hasattr(__o, __k)) or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit), true, nil
 	case "java":
@@ -4048,7 +4075,7 @@ func runtimeRefContainsExprWithBuilder(ref RuntimeRef, key interface{}, builder 
 	case "javascript":
 		expr = fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__k, str) and __k in getattr(type(__o), 'model_fields', {})) or (isinstance(__k, str) and hasattr(__o, __k)) or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit)
+		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit)
 	case "ruby":
 		expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit)
 	case "java":

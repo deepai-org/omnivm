@@ -13955,7 +13955,7 @@ func TestRuntimeRefProxyLifecycleNamedPythonMethodIsContainedAndCallable(t *test
 	mocks["python"].evalFn = func(code string) pkg.Result {
 		evalCodes = append(evalCodes, code)
 		switch {
-		case strings.Contains(code, "hasattr(__o, __k)") && strings.Contains(code, "close"):
+		case strings.Contains(code, "__k in getattr(__o, '__dict__'") && strings.Contains(code, "close"):
 			return pkg.Result{Value: "true"}
 		case strings.Contains(code, "callable(") && strings.Contains(code, "close"):
 			return pkg.Result{Value: "true"}
@@ -14006,7 +14006,7 @@ func TestRuntimeRefProxyLifecycleNamedPythonMethodIsContainedAndCallable(t *test
 		t.Fatalf("handle_call close envelope = %#v, want remote close result", callEnv)
 	}
 	joinedEval := strings.Join(evalCodes, "\n")
-	if !strings.Contains(joinedEval, "hasattr(__o, __k)") || !strings.Contains(joinedEval, "callable(") {
+	if !strings.Contains(joinedEval, "__k in getattr(__o, '__dict__'") || !strings.Contains(joinedEval, "callable(") {
 		t.Fatalf("close collision path did not exercise contains and callable probes, evals=%q", joinedEval)
 	}
 }
@@ -15076,7 +15076,7 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonProp, "collections.abc") || !strings.Contains(pythonProp, "Mapping) and __k in __o") || strings.Index(pythonProp, "__o[__k]") > strings.Index(pythonProp, "getattr") {
 		t.Fatalf("python property lookup should prefer mapping keys before attributes, got %q", pythonProp)
 	}
-	if !strings.Contains(pythonProp, "hasattr(getattr(__o, 'keys', None), '__call__')") || !strings.Contains(pythonProp, "hasattr(__o, '__getitem__')") {
+	if !strings.Contains(pythonProp, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonProp, "any('keys' in __omnivm_cls.__dict__") {
 		t.Fatalf("python property lookup should treat key-addressable session-like objects as data before attributes without broad membership probes, got %q", pythonProp)
 	}
 	if strings.Contains(pythonProp, "hasattr(__o, '__contains__')") {
@@ -15123,7 +15123,7 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonCallable, "callable(__o[__k]) if ((isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
 		t.Fatalf("python callable lookup should inspect mapping keys before attributes, got %q", pythonCallable)
 	}
-	if !strings.Contains(pythonCallable, "hasattr(getattr(__o, 'keys', None), '__call__')") || !strings.Contains(pythonCallable, "hasattr(__o, '__getitem__')") {
+	if !strings.Contains(pythonCallable, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonCallable, "any('keys' in __omnivm_cls.__dict__") {
 		t.Fatalf("python callable lookup should inspect key-addressable session-like objects before attributes without broad membership probes, got %q", pythonCallable)
 	}
 	if strings.Contains(pythonCallable, "hasattr(__o, '__contains__')") {
@@ -15166,6 +15166,57 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonContainsAvoidsDynamicAttributeProbes(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	containsExpr, ok, err := runtimeRefContainsExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefContainsExpr python: ok=%v err=%v", ok, err)
+	}
+	propertyExpr, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefPropertyExpr python: ok=%v err=%v", ok, err)
+	}
+	script := `
+class DynamicTrap:
+    def __init__(self):
+        self.lookups = []
+    def __getattr__(self, name):
+        self.lookups.append(name)
+        if name in ("items", "keys", "method", "path", "url", "headers", "META", "status_code", "content", "streaming_content"):
+            raise RuntimeError(f"dynamic predicate lookup should not run: {name}")
+        raise AttributeError(name)
+
+payload = DynamicTrap()
+contains_result = ` + containsExpr + `
+if contains_result is not False:
+    raise RuntimeError(f"dynamic trap contains result = {contains_result!r}, want False")
+if payload.lookups:
+    raise RuntimeError(f"dynamic predicate lookup was invoked: {payload.lookups!r}")
+
+class SessionLike:
+    def __init__(self):
+        self.data = {"items": "session-items"}
+    def keys(self):
+        return self.data.keys()
+    def __getitem__(self, key):
+        return self.data[key]
+
+payload = SessionLike()
+contains_result = ` + containsExpr + `
+if contains_result is not True:
+    raise RuntimeError(f"session-like contains result = {contains_result!r}, want True")
+property_result = ` + propertyExpr + `
+if property_result != "session-items":
+    raise RuntimeError(f"session-like property result = {property_result!r}")
+`
+	if out, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("python RuntimeRef contains dynamic probe guard failed: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	pythonCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "python", VarName: "items"}, "0", "updated")
 	if err != nil || !ok {
@@ -15177,7 +15228,7 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(pythonCode, "MutableMapping") || strings.Index(pythonCode, "__o[__k] = __v") > strings.Index(pythonCode, "hasattr(__o, __k)") {
 		t.Fatalf("python RuntimeRef set should prefer mutable mapping keys before attributes, got %q", pythonCode)
 	}
-	if !strings.Contains(pythonCode, "hasattr(getattr(__o, 'keys', None), '__call__')") || !strings.Contains(pythonCode, "hasattr(__o, '__setitem__')") {
+	if !strings.Contains(pythonCode, `any("__setitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonCode, "any('keys' in __omnivm_cls.__dict__") {
 		t.Fatalf("python RuntimeRef set should update existing key-addressable session-like keys before attributes without broad membership probes, got %q", pythonCode)
 	}
 	if strings.Contains(pythonCode, "hasattr(__o, '__contains__')") {
@@ -15219,7 +15270,7 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(pythonContains, "not isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonContains, "Mapping)") || !strings.Contains(pythonContains, "int(__k)") {
 		t.Fatalf("python RuntimeRef contains should recognize sequence indexes generically, got %q", pythonContains)
 	}
-	if !strings.Contains(pythonContains, "fromlist=['Set']).Set") || !strings.Contains(pythonContains, "hasattr(getattr(__o, 'keys', None), '__call__')") {
+	if !strings.Contains(pythonContains, "fromlist=['Set']).Set") || !strings.Contains(pythonContains, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonContains, "any('keys' in __omnivm_cls.__dict__") {
 		t.Fatalf("python RuntimeRef contains should keep explicit Set/session-like membership without broad __contains__ probes, got %q", pythonContains)
 	}
 	if strings.Contains(pythonContains, "hasattr(__o, '__contains__')") {
