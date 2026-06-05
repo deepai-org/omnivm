@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$ROOT/../garbage"}}"
+POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$ROOT/../polyscript-compiler"}}"
 PASSENGER_FIXTURE="$ROOT/test/fixtures/passenger-django-polyscript"
 IMAGE="${OMNIVM_IMAGE:-omnivm:latest}"
 PYTHON_BIN="${PYTHON_BIN:-python3.14}"

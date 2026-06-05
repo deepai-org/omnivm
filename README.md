@@ -976,7 +976,7 @@ make test-poly-libomnivm-smoke # Compile selected PolyScript examples, then run 
 make test-stress          # Run 71 stress tests
 ```
 
-The cross-repo `.poly` smoke expects a sibling PolyScript compiler checkout at `../garbage` by default. Prefer `POLYSCRIPT_DIR` for explicit paths; the older `GARBAGE_DIR` variable remains accepted for existing scripts:
+The cross-repo `.poly` smoke expects a sibling PolyScript compiler checkout at `../polyscript-compiler` by default. Prefer `POLYSCRIPT_DIR` for explicit paths; the older `GARBAGE_DIR` variable remains accepted for existing scripts:
 
 ```bash
 POLYSCRIPT_DIR=/path/to/polyscript-compiler make test-poly-libomnivm-smoke

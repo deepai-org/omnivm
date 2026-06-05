@@ -55,7 +55,7 @@ The public vertical example can also be run manually through the Docker-backed
 manifest runner after compiling it from the sibling PolyScript compiler checkout:
 
 ```bash
-cd "${POLYSCRIPT_DIR:-../garbage}"
+cd "${POLYSCRIPT_DIR:-../polyscript-compiler}"
 npm run polyc -- examples/vertical-order-review-app.poly -o /tmp/vertical-order-review-app.json
 docker run --rm \
   -v /tmp/vertical-order-review-app.json:/tmp/vertical-order-review-app.json:ro \
