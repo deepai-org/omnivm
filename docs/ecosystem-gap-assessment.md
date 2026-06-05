@@ -462,9 +462,11 @@ and no-required-arg `to_h`/`to_hash` methods before the error crosses into
 Python/JavaScript/Java.
 Native Java throwables also get source-side structured detail extraction for
 public no-argument `getDetails()`/`details()`, `getErrors()`/`errors()`,
-path/location/original-message accessors or fields, and `toMap()` methods. Extracted
-maps, lists, arrays, primitives, and strings are normalized to JSON-safe
-`Details:` payloads before the error crosses into Python/JavaScript/Ruby.
+path/location/original-message accessors or fields, `toMap()` methods, and
+Bean Validation-style `getConstraintViolations()`/`constraintViolations`
+payloads. Constraint violations are normalized with property path, message,
+message template, invalid value, and root bean class fields before the error
+crosses into Python/JavaScript/Ruby.
 Native Java callers can catch
 `OmniVM.RuntimeError` as a normal `RuntimeException` and read equivalent
 `getRuntime()`, `getOriginRuntime()`, `getType()`, `getTraceback()`, `getStackFrames()`, `getCauseChain()`,
@@ -499,9 +501,9 @@ The target error envelope should preserve:
 - whether an original runtime error handle is still available.
 
 The remaining production gap is broadening library-specific payload extraction
-past the validation, issue-list, and DBAPI shapes covered here, especially
-libraries that store structured diagnostics behind custom properties or
-non-JSON-native objects.
+past the validation, issue-list, constraint-violation, and DBAPI shapes covered
+here, especially libraries that store structured diagnostics behind custom
+properties or non-JSON-native objects.
 Python, JavaScript, Ruby, and Java now parse and propagate an optional
 original-error-handle marker when a runtime reports one;
 plain JavaScript `Error` objects can expose `originalErrorHandle`, ordinary

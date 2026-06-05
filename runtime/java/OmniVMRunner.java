@@ -676,6 +676,7 @@ public class OmniVMRunner {
         addThrowableDetail(details, "original_message", throwable, "getOriginalMessage");
         addThrowableDetail(details, "original_message", throwable, "originalMessage");
         addThrowableDetail(details, "to_map", throwable, "toMap");
+        addConstraintViolationDetails(details, throwable);
         Throwable cause = throwable.getCause();
         if (cause != null) {
             details.put("cause", throwableSummary(cause, 0));
@@ -800,6 +801,99 @@ public class OmniVMRunner {
             case "toMap" -> "";
             default -> accessorName;
         };
+    }
+
+    private static void addConstraintViolationDetails(Map<String, Object> details, Throwable throwable) {
+        if (details.containsKey("constraint_violations")) {
+            return;
+        }
+        Object raw = callThrowableDetailMethod(throwable, "getConstraintViolations");
+        if (raw == null) {
+            raw = throwableDetailField(throwable, "constraintViolations");
+        }
+        Object normalized = normalizeConstraintViolations(raw);
+        if (!isEmptyDetail(normalized)) {
+            details.put("constraint_violations", normalized);
+        }
+    }
+
+    private static Object normalizeConstraintViolations(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        Iterable<?> iterable = null;
+        if (raw instanceof Iterable<?> items) {
+            iterable = items;
+        } else if (raw.getClass().isArray()) {
+            List<Object> items = new ArrayList<>();
+            int length = Math.min(Array.getLength(raw), 64);
+            for (int i = 0; i < length; i++) {
+                items.add(Array.get(raw, i));
+            }
+            if (Array.getLength(raw) > length) {
+                items.add("...");
+            }
+            iterable = items;
+        }
+        if (iterable == null) {
+            return normalizeDetailValue(raw, 0);
+        }
+
+        List<Object> out = new ArrayList<>();
+        int count = 0;
+        for (Object item : iterable) {
+            if (count >= 64) {
+                out.add("...");
+                break;
+            }
+            out.add(normalizeConstraintViolation(item));
+            count++;
+        }
+        return out;
+    }
+
+    private static Object normalizeConstraintViolation(Object violation) {
+        if (violation == null || violation instanceof CharSequence ||
+            violation instanceof Number || violation instanceof Boolean) {
+            return normalizeDetailValue(violation, 0);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        putViolationValue(out, "property_path", violation, "getPropertyPath");
+        putViolationValue(out, "message", violation, "getMessage");
+        putViolationValue(out, "message_template", violation, "getMessageTemplate");
+        putViolationValue(out, "invalid_value", violation, "getInvalidValue");
+        putViolationValue(out, "root_bean_class", violation, "getRootBeanClass");
+        return out.isEmpty() ? String.valueOf(violation) : out;
+    }
+
+    private static void putViolationValue(Map<String, Object> out, String key, Object source, String methodName) {
+        Object raw = callNoArgDetailMethod(source, methodName);
+        Object normalized = normalizeDetailValue(raw, 0);
+        if (!isEmptyDetail(normalized)) {
+            out.put(key, normalized);
+        }
+    }
+
+    private static Object callNoArgDetailMethod(Object source, String methodName) {
+        if (source == null) {
+            return null;
+        }
+        for (Class<?> current = source.getClass(); current != null; current = current.getSuperclass()) {
+            if (current == Object.class) {
+                break;
+            }
+            try {
+                Method method = current.getDeclaredMethod(methodName);
+                if (method.getParameterCount() != 0 || Modifier.isStatic(method.getModifiers())) {
+                    return null;
+                }
+                method.setAccessible(true);
+                return method.invoke(source);
+            } catch (ReflectiveOperationException | RuntimeException ignored) {
+                // Try the next superclass.
+            }
+        }
+        return null;
     }
 
     private static Object normalizeDetailValue(Object value, int depth) {

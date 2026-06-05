@@ -18746,6 +18746,46 @@ def test_validation_error_fidelity_popular_libraries():
             {"runtime": "java", "type": "java.lang.RuntimeException", "message": "outer", "cause_type": "java.lang.IllegalArgumentException", "cause_message": "inner"},
         ),
         (
+            "java constraint violations",
+            "java",
+            (
+                '((java.util.concurrent.Callable<String>)(() -> { '
+                'class Violation { '
+                '  public String getPropertyPath() { return "user.age"; } '
+                '  public String getMessage() { return "must be greater than or equal to 1"; } '
+                '  public String getMessageTemplate() { return "{jakarta.validation.constraints.Min.message}"; } '
+                '  public Object getInvalidValue() { return 0; } '
+                '  public Class<?> getRootBeanClass() { return getClass(); } '
+                '} '
+                'class ConstraintViolationException extends RuntimeException { '
+                '  ConstraintViolationException(String message) { super(message); } '
+                '  public java.util.List<Violation> getConstraintViolations() { return java.util.List.of(new Violation()); } '
+                '} '
+                'throw new ConstraintViolationException("invalid bean"); '
+                '})).call()'
+            ),
+            [
+                "ConstraintViolationException",
+                "invalid bean",
+                "constraint_violations",
+                "user.age",
+                "must be greater than or equal to 1",
+            ],
+            {
+                "runtime": "java",
+                "type_suffix": "ConstraintViolationException",
+                "message": "invalid bean",
+                "details_key": "constraint_violations",
+                "details_terms": [
+                    "user.age",
+                    "must be greater than or equal to 1",
+                    "{jakarta.validation.constraints.Min.message}",
+                    "invalid_value",
+                    "root_bean_class",
+                ],
+            },
+        ),
+        (
             "ruby activerecord",
             "ruby",
             "require 'active_record'; raise ActiveRecord::RecordInvalid.new(nil)",
@@ -18766,7 +18806,10 @@ def test_validation_error_fidelity_popular_libraries():
             want_origin_runtime = structured.get("origin_runtime", structured["runtime"])
             if exc.origin_runtime != want_origin_runtime:
                 raise AssertionError(f"{name} error origin runtime = {exc.origin_runtime!r}, want {want_origin_runtime!r}: {text}") from exc
-            if exc.type != structured["type"]:
+            if "type_suffix" in structured:
+                if not exc.type.endswith(structured["type_suffix"]):
+                    raise AssertionError(f"{name} error type = {exc.type!r}, want suffix {structured['type_suffix']!r}: {text}") from exc
+            elif exc.type != structured["type"]:
                 raise AssertionError(f"{name} error type = {exc.type!r}, want {structured['type']!r}: {text}") from exc
             want_boundary = f"call[{runtime}]"
             if exc.boundary_path != want_boundary:

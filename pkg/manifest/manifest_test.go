@@ -13198,6 +13198,24 @@ public final class JavaThrowableDetailsCheck {
         }
     }
 
+    static final class Violation {
+        public String getPropertyPath() { return "user.age"; }
+        public String getMessage() { return "must be greater than or equal to 1"; }
+        public String getMessageTemplate() { return "{jakarta.validation.constraints.Min.message}"; }
+        public Object getInvalidValue() { return 0; }
+        public Class<?> getRootBeanClass() { return JavaThrowableDetailsCheck.class; }
+    }
+
+    static final class ConstraintViolationException extends RuntimeException {
+        ConstraintViolationException(String message) {
+            super(message);
+        }
+
+        private java.util.List<Violation> getConstraintViolations() {
+            return java.util.List.of(new Violation());
+        }
+    }
+
     private static void require(boolean ok, String message) {
         if (!ok) {
             throw new AssertionError(message);
@@ -13255,6 +13273,14 @@ public final class JavaThrowableDetailsCheck {
 
         String handled = String.valueOf(format.invoke(null, new HandledException("handled")));
         require(handled.contains("Original error handle: base-handle"), "private inherited original handle missing: " + handled);
+
+        String constraint = String.valueOf(format.invoke(null, new ConstraintViolationException("invalid bean")));
+        require(constraint.contains("\"constraint_violations\":[{"), "constraint violations missing: " + constraint);
+        require(constraint.contains("\"property_path\":\"user.age\""), "constraint property path missing: " + constraint);
+        require(constraint.contains("\"message\":\"must be greater than or equal to 1\""), "constraint message missing: " + constraint);
+        require(constraint.contains("\"message_template\":\"{jakarta.validation.constraints.Min.message}\""), "constraint message template missing: " + constraint);
+        require(constraint.contains("\"invalid_value\":0"), "constraint invalid value missing: " + constraint);
+        require(constraint.contains("\"root_bean_class\":\"class omnivm.JavaThrowableDetailsCheck\""), "constraint root bean class missing: " + constraint);
     }
 }
 `
