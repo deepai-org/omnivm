@@ -335,6 +335,38 @@ func validateBufferMetadata(name string, meta BufferMetadata) error {
 	if meta.MemorySpace != "" && meta.MemorySpace != "host" {
 		return fmt.Errorf("arrow: buffer %q memory_space %q is not host-accessible", name, meta.MemorySpace)
 	}
+	if meta.Offset < 0 {
+		return fmt.Errorf("arrow: buffer %q offset %d is negative", name, meta.Offset)
+	}
+	if meta.NullCount < -1 {
+		return fmt.Errorf("arrow: buffer %q null_count %d is invalid", name, meta.NullCount)
+	}
+	if meta.ValidityBytes < 0 {
+		return fmt.Errorf("arrow: buffer %q validity_bytes %d is negative", name, meta.ValidityBytes)
+	}
+	if meta.ValidityBitOffset < 0 {
+		return fmt.Errorf("arrow: buffer %q validity_bit_offset %d is negative", name, meta.ValidityBitOffset)
+	}
+	if len(meta.Strides) > 0 && len(meta.Shape) == 0 {
+		return fmt.Errorf("arrow: buffer %q has strides without shape", name)
+	}
+	if len(meta.Strides) > 0 && len(meta.Strides) != len(meta.Shape) {
+		return fmt.Errorf("arrow: buffer %q shape %v has mismatched strides %v", name, meta.Shape, meta.Strides)
+	}
+	product := int64(1)
+	for _, dim := range meta.Shape {
+		if dim < 0 {
+			return fmt.Errorf("arrow: buffer %q has negative shape dimension in %v", name, meta.Shape)
+		}
+		if dim == 0 {
+			product = 0
+			continue
+		}
+		if product != 0 && dim > (1<<63-1)/product {
+			return fmt.Errorf("arrow: buffer %q shape %v overflows logical element count", name, meta.Shape)
+		}
+		product *= dim
+	}
 	return nil
 }
 

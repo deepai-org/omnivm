@@ -487,6 +487,94 @@ func TestSetWithMetadataRejectsNonHostMemorySpace(t *testing.T) {
 	}
 }
 
+func TestSetWithMetadataRejectsInvalidLayoutMetadata(t *testing.T) {
+	s := NewSharedStore()
+	cases := []struct {
+		name string
+		meta BufferMetadata
+		want string
+	}{
+		{
+			name: "negative-offset",
+			meta: BufferMetadata{Dtype: DtypeBytes, Offset: -1},
+			want: `offset -1 is negative`,
+		},
+		{
+			name: "invalid-null-count",
+			meta: BufferMetadata{Dtype: DtypeBytes, NullCount: -2},
+			want: `null_count -2 is invalid`,
+		},
+		{
+			name: "negative-validity-bytes",
+			meta: BufferMetadata{Dtype: DtypeBytes, ValidityBytes: -1},
+			want: `validity_bytes -1 is negative`,
+		},
+		{
+			name: "negative-validity-offset",
+			meta: BufferMetadata{Dtype: DtypeBytes, ValidityBitOffset: -1},
+			want: `validity_bit_offset -1 is negative`,
+		},
+		{
+			name: "negative-shape",
+			meta: BufferMetadata{Dtype: DtypeBytes, Shape: []int64{2, -1}},
+			want: `negative shape dimension`,
+		},
+		{
+			name: "strides-without-shape",
+			meta: BufferMetadata{Dtype: DtypeBytes, Strides: []int64{1}},
+			want: `has strides without shape`,
+		},
+		{
+			name: "mismatched-strides",
+			meta: BufferMetadata{Dtype: DtypeBytes, Shape: []int64{2, 2}, Strides: []int64{2}},
+			want: `has mismatched strides`,
+		},
+		{
+			name: "shape-overflow",
+			meta: BufferMetadata{Dtype: DtypeBytes, Shape: []int64{1<<62 + 1, 2}},
+			want: `overflows logical element count`,
+		},
+	}
+	for _, tc := range cases {
+		if _, err := s.SetWithMetadata(tc.name, []byte{1}, tc.meta); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("SetWithMetadata(%s) error = %v, want %q", tc.name, err, tc.want)
+		}
+		if status := s.Status(tc.name); status.State != "missing" || status.Live {
+			t.Fatalf("rejected invalid metadata %s registered buffer: %+v", tc.name, status)
+		}
+	}
+
+	if _, err := s.SetWithDtype("payload", []byte{1, 2, 3}, DtypeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetWithMetadata("payload", []byte{9}, BufferMetadata{
+		Dtype:   DtypeBytes,
+		Shape:   []int64{3},
+		Strides: []int64{1, 1},
+	}); err == nil || !strings.Contains(err.Error(), "has mismatched strides") {
+		t.Fatalf("invalid replacement error = %v, want mismatched strides", err)
+	}
+	status := s.Status("payload")
+	if !status.Live || status.Len != 3 || status.Dtype != DtypeBytes {
+		t.Fatalf("invalid replacement changed existing buffer status: %+v", status)
+	}
+
+	data := []byte{1}
+	released := 0
+	if _, err := s.SetExternalWithMetadata("external-invalid", unsafe.Pointer(&data[0]), int64(len(data)), BufferMetadata{
+		Dtype: DtypeBytes,
+		Shape: []int64{-1},
+	}, func() error {
+		released++
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "negative shape dimension") {
+		t.Fatalf("invalid external metadata error = %v, want negative shape diagnostic", err)
+	}
+	if released != 1 {
+		t.Fatalf("invalid external metadata release callback called %d times, want 1", released)
+	}
+}
+
 func TestSetWithMetadataReportsReplacementReleaseFailure(t *testing.T) {
 	s := NewSharedStore()
 	oldData := []byte{1, 2, 3}
