@@ -1512,6 +1512,9 @@ public class OmniVM {
         if (target == null) {
             return false;
         }
+        if (target instanceof HandleProxy proxy) {
+            return proxy.containsKey(key);
+        }
         if (target instanceof Map<?, ?> map) {
             return map.containsKey(key);
         }
@@ -1531,7 +1534,8 @@ public class OmniVM {
         if (target instanceof CharSequence chars && key != null) {
             return chars.toString().contains(String.valueOf(key));
         }
-        return proxyGet(target, String.valueOf(key)) != null;
+        String textKey = String.valueOf(key);
+        return proxyField(target.getClass(), textKey) != null || proxyGetter(target.getClass(), textKey) != null;
     }
 
     public static boolean proxyClose(Object target) {
@@ -1799,6 +1803,19 @@ public class OmniVM {
     private static java.lang.reflect.Method zeroArgMethod(Class<?> type, String name) {
         for (java.lang.reflect.Method method : proxyMethods(type)) {
             if (method.getParameterCount() == 0 && method.getName().equals(name)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    private static java.lang.reflect.Method proxyGetter(Class<?> type, String key) {
+        if (key == null || key.isEmpty()) {
+            return null;
+        }
+        String getter = "get" + Character.toUpperCase(key.charAt(0)) + key.substring(1);
+        for (java.lang.reflect.Method method : proxyMethods(type)) {
+            if (method.getParameterCount() == 0 && method.getName().equals(getter)) {
                 return method;
             }
         }

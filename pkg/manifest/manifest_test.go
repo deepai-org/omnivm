@@ -10934,6 +10934,95 @@ public final class ProxyCloseCheck {
 	}
 }
 
+func TestJavaProxyContainsPreservesNullValuedFields(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/ProxyContainsNullCheck.java"
+	check := `package omnivm;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public final class ProxyContainsNullCheck {
+    public static final class NullFields {
+        public Object count = null;
+        private Object then = null;
+    }
+
+    public static final class NullGetters {
+        public Object getClose() {
+            return null;
+        }
+
+        public Object getLength() {
+            return null;
+        }
+    }
+
+    public static final class Missing {
+    }
+
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("count", null);
+        require(OmniVM.proxyContains(row, "count"), "null map count key should be present");
+        require(OmniVM.proxyGet(row, "count") == null, "null map count value mismatch");
+
+        NullFields fields = new NullFields();
+        require(OmniVM.proxyContains(fields, "count"), "null public count field should be present");
+        require(OmniVM.proxyGet(fields, "count") == null, "null public count field value mismatch");
+        require(OmniVM.proxyContains(fields, "then"), "null private then field should be present");
+        require(OmniVM.proxyGet(fields, "then") == null, "null private then field value mismatch");
+
+        NullGetters getters = new NullGetters();
+        require(OmniVM.proxyContains(getters, "close"), "null close getter should be present");
+        require(OmniVM.proxyGet(getters, "close") == null, "null close getter value mismatch");
+        require(OmniVM.proxyContains(getters, "length"), "null length getter should be present");
+        require(OmniVM.proxyGet(getters, "length") == null, "null length getter value mismatch");
+
+        require(!OmniVM.proxyContains(new Missing(), "count"), "missing count should not be present");
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java proxy contains check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java proxy contains check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyContainsNullCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java proxy contains check: %v\n%s", err, out)
+	}
+}
+
 func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) {
 	javac, err := exec.LookPath("javac")
 	if err != nil {
