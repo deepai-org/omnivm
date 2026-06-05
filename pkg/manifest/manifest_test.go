@@ -11150,6 +11150,93 @@ public final class ProxyCloseCheck {
 	}
 }
 
+func TestJavaFutureProxyStatusAndCancel(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	checkPath := tmp + "/FutureProxyCheck.java"
+	check := `package omnivm;
+
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.FutureTask;
+
+public final class FutureProxyCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void main(String[] args) {
+        CompletableFuture<String> pending = new CompletableFuture<>();
+        require(OmniVM.proxyContains(pending, "done"), "future should expose done status");
+        require(OmniVM.proxyContains(pending, "cancelled"), "future should expose cancelled status");
+        require(OmniVM.proxyContains(pending, "status"), "future should expose status map");
+        require(OmniVM.proxyContains(pending, "result"), "future should expose result slot");
+        require(Boolean.FALSE.equals(OmniVM.proxyGet(pending, "done")), "pending future done mismatch");
+        require(Boolean.FALSE.equals(OmniVM.proxyGet(pending, "cancelled")), "pending future cancelled mismatch");
+        require(OmniVM.proxyGet(pending, "result") == null, "pending future result should not block");
+
+        Map<String, Object> pendingStatus = (Map<String, Object>) OmniVM.proxyGet(pending, "status");
+        require(Boolean.FALSE.equals(pendingStatus.get("done")), "pending status done mismatch");
+        require(Boolean.FALSE.equals(pendingStatus.get("cancelled")), "pending status cancelled mismatch");
+
+        pending.complete("ok");
+        require(Boolean.TRUE.equals(OmniVM.proxyGet(pending, "done")), "completed future done mismatch");
+        require("ok".equals(OmniVM.proxyGet(pending, "result")), "completed future result mismatch");
+        require(!OmniVM.proxyClose(pending), "completed future cancel should report false");
+
+        FutureTask<String> cancellable = new FutureTask<>(() -> "late");
+        require(OmniVM.proxyClose(cancellable), "pending FutureTask did not cancel");
+        require(Boolean.TRUE.equals(OmniVM.proxyGet(cancellable, "cancelled")), "cancelled FutureTask status mismatch");
+        require(Boolean.TRUE.equals(OmniVM.proxyGet(cancellable, "done")), "cancelled FutureTask done mismatch");
+        require(OmniVM.proxyGet(cancellable, "result") == null, "cancelled FutureTask result should be null");
+
+        CompletableFuture<String> failed = new CompletableFuture<>();
+        failed.completeExceptionally(new IllegalStateException("future boom"));
+        try {
+            OmniVM.proxyGet(failed, "result");
+            throw new AssertionError("failed future result unexpectedly succeeded");
+        } catch (IllegalStateException err) {
+            require("future boom".equals(err.getMessage()), "failed future cause mismatch: " + err.getMessage());
+        }
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java future proxy check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, javaRuntimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java future proxy check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.FutureProxyCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java future proxy check: %v\n%s", err, out)
+	}
+}
+
 func TestJavaProxyContainsPreservesNullValuedFields(t *testing.T) {
 	javac, err := exec.LookPath("javac")
 	if err != nil {

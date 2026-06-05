@@ -17,9 +17,12 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1313,6 +1316,9 @@ public class OmniVM {
         if (target instanceof HandleProxy proxy) {
             return proxy.get(key);
         }
+        if (target instanceof Future<?> future) {
+            return futureProxyGet(future, key);
+        }
         if (target instanceof Map<?, ?> map) {
             return map.get(key);
         }
@@ -1515,6 +1521,9 @@ public class OmniVM {
         if (target instanceof HandleProxy proxy) {
             return proxy.containsKey(key);
         }
+        if (target instanceof Future<?> future) {
+            return futureProxyContains(future, key);
+        }
         if (target instanceof Map<?, ?> map) {
             return map.containsKey(key);
         }
@@ -1551,6 +1560,9 @@ public class OmniVM {
         if (target instanceof BufferOwner owner) {
             return owner.release();
         }
+        if (target instanceof Future<?> future) {
+            return future.cancel(true);
+        }
         if (target instanceof AutoCloseable closeable) {
             try {
                 closeable.close();
@@ -1572,6 +1584,61 @@ public class OmniVM {
 
     public static boolean omnivmClose(Object target) {
         return proxyClose(target);
+    }
+
+    private static Object futureProxyGet(Future<?> future, String key) {
+        if ("done".equals(key) || "isDone".equals(key) || "complete".equals(key) || "completed".equals(key)) {
+            return future.isDone();
+        }
+        if ("cancelled".equals(key) || "canceled".equals(key) || "isCancelled".equals(key)) {
+            return future.isCancelled();
+        }
+        if ("status".equals(key)) {
+            Map<String, Object> status = new LinkedHashMap<>();
+            status.put("done", future.isDone());
+            status.put("cancelled", future.isCancelled());
+            return Collections.unmodifiableMap(status);
+        }
+        if ("result".equals(key) || "value".equals(key)) {
+            if (!future.isDone() || future.isCancelled()) {
+                return null;
+            }
+            try {
+                return future.get();
+            } catch (CancellationException err) {
+                return null;
+            } catch (InterruptedException err) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("future result interrupted", err);
+            } catch (ExecutionException err) {
+                Throwable cause = err.getCause() == null ? err : err.getCause();
+                if (cause instanceof RuntimeException runtimeErr) {
+                    throw runtimeErr;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw new RuntimeException("future result failed", cause);
+            }
+        }
+        return null;
+    }
+
+    private static boolean futureProxyContains(Future<?> future, Object key) {
+        if (key == null) {
+            return false;
+        }
+        String text = String.valueOf(key);
+        return "done".equals(text)
+            || "isDone".equals(text)
+            || "complete".equals(text)
+            || "completed".equals(text)
+            || "cancelled".equals(text)
+            || "canceled".equals(text)
+            || "isCancelled".equals(text)
+            || "status".equals(text)
+            || "result".equals(text)
+            || "value".equals(text);
     }
 
     private static Object invokePublicProxyLifecycleMethod(Object target, String name) {
