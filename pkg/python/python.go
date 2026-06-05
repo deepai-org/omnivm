@@ -3477,11 +3477,22 @@ static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     details = omnivm_py_details_from_exception_group(value);
     if (details) return details;
 
-    static const char* attrs[] = {"messages", "message_dict", "error_dict", NULL};
+    static const char* attrs[] = {"issues", "messages", "message_dict", "error_dict", NULL};
     for (int i = 0; attrs[i]; ++i) {
         if (!PyObject_HasAttrString(value, attrs[i])) continue;
         details = PyObject_GetAttrString(value, attrs[i]);
-        if (details && details != Py_None) return details;
+        if (details && details != Py_None) {
+            if (strcmp(attrs[i], "issues") == 0) {
+                PyObject* wrapped = PyDict_New();
+                if (wrapped && PyDict_SetItemString(wrapped, "issues", details) == 0) {
+                    Py_DECREF(details);
+                    return wrapped;
+                }
+                Py_XDECREF(wrapped);
+                PyErr_Clear();
+            }
+            return details;
+        }
         Py_XDECREF(details);
         PyErr_Clear();
     }

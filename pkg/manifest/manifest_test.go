@@ -13433,6 +13433,8 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 		`omnivm_py_append_text(out, len, "\nCaused by: ExceptionGroup: additional grouped exceptions truncated")`,
 		"omnivm_py_append_exception_group_causes(value, &result, &len, 0)",
 		"omnivm_py_append_exception_link_causes(value, &result, &len, 0)",
+		`static const char* attrs[] = {"issues", "messages", "message_dict", "error_dict", NULL}`,
+		`PyDict_SetItemString(wrapped, "issues", details)`,
 	} {
 		if !contains(files["../../pkg/python/python.go"], want) {
 			t.Fatalf("embedded Python errors should expose ExceptionGroup details, missing %q", want)

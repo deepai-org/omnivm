@@ -433,7 +433,8 @@ JavaScript callers can also catch the normal `Error` thrown by
 string; this now includes SQLAlchemy `IntegrityError` structured
 `details.statement`/`details.params` payloads from Python database calls,
 Pydantic structured `details.errors` payloads from Python validation failures,
-generic Python exception `details`/`to_dict()`/`as_dict()`/JSON envelope
+Python validation-wrapper `details.issues` payloads, generic Python exception
+`details`/`to_dict()`/`as_dict()`/JSON envelope
 methods, Django form JSON error fields under `details.fields`, and ActiveRecord
 exception fields plus ActiveRecord validation `record.errors` details from Ruby
 calls. The same JS `Error` exposes `toJSON()`, so `JSON.stringify(error)`
@@ -498,9 +499,9 @@ The target error envelope should preserve:
 - whether an original runtime error handle is still available.
 
 The remaining production gap is broadening library-specific payload extraction
-past the validation and DBAPI shapes covered here, especially libraries that
-store structured diagnostics behind custom properties or non-JSON-native
-objects.
+past the validation, issue-list, and DBAPI shapes covered here, especially
+libraries that store structured diagnostics behind custom properties or
+non-JSON-native objects.
 Python, JavaScript, Ruby, and Java now parse and propagate an optional
 original-error-handle marker when a runtime reports one;
 plain JavaScript `Error` objects can expose `originalErrorHandle`, ordinary

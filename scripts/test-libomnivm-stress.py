@@ -18631,6 +18631,28 @@ def test_validation_error_fidelity_popular_libraries():
             },
         ),
         (
+            "python issues validation wrapper",
+            "python",
+            (
+                "class IssueValidationError(Exception):\n"
+                "    def __init__(self):\n"
+                "        super().__init__('invalid payload')\n"
+                "        self.issues = [\n"
+                "            {'code': 'too_small', 'path': ['age'], 'minimum': 1},\n"
+                "            {'code': 'missing', 'path': ['name']},\n"
+                "        ]\n"
+                "raise IssueValidationError()"
+            ),
+            ["IssueValidationError", "invalid payload"],
+            {
+                "runtime": "python",
+                "type": "IssueValidationError",
+                "message": "invalid payload",
+                "details_key": "issues",
+                "details_terms": ["too_small", "age", "missing", "name"],
+            },
+        ),
+        (
             "marshmallow",
             "python",
             (
