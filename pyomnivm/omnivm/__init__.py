@@ -2065,7 +2065,21 @@ class _ManifestStreamIterator:
         return self
 
     def __aiter__(self):
-        return self
+        async def _omnivm_async_iter():
+            try:
+                while True:
+                    try:
+                        yield self.__next__()
+                    except StopIteration:
+                        return
+            finally:
+                if not object.__getattribute__(self._proxy, "_closed"):
+                    try:
+                        self.close()
+                    except BaseException:
+                        pass
+
+        return _omnivm_async_iter()
 
     async def __anext__(self):
         try:
