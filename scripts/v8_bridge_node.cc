@@ -1957,6 +1957,18 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
       err.details = globalThis.__omnivm_clone_json(details);
       err.details_json = JSON.stringify(err.details);
       err.detailsJson = err.details_json;
+      err.toJSON = function() {
+        return {
+          runtime: err.runtime,
+          origin_runtime: err.origin_runtime,
+          type: err.type,
+          message: err.message,
+          traceback: err.stack || "",
+          boundary_path: err.boundary_path,
+          details: globalThis.__omnivm_clone_json(err.details),
+          details_json: err.details_json
+        };
+      };
       return err;
     };
     if (typeof globalThis.omnivm.assertOwnerDispatchSupported !== 'function') {

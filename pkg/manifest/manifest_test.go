@@ -6816,6 +6816,20 @@ try {
   if (err.message.indexOf("express startup: owner dispatch unsupported") < 0) throw new Error("bad universal message: " + err.message);
   if (err.boundary_path !== "owner_dispatch") throw new Error("bad universal boundary: " + err.boundary_path);
   if (!err.details || err.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing universal details");
+  if (typeof err.toJSON !== "function") throw new Error("missing owner dispatch error toJSON");
+  var envelope = err.toJSON();
+  if (envelope.runtime !== "javascript") throw new Error("bad envelope runtime: " + envelope.runtime);
+  if (envelope.origin_runtime !== "javascript") throw new Error("bad envelope origin runtime: " + envelope.origin_runtime);
+  if (envelope.type !== "RuntimeError") throw new Error("bad envelope type: " + envelope.type);
+  if (envelope.message !== err.message) throw new Error("bad envelope message: " + envelope.message);
+  if (envelope.boundary_path !== "owner_dispatch") throw new Error("bad envelope boundary: " + envelope.boundary_path);
+  if (!envelope.traceback || envelope.traceback.indexOf("OmniVMRuntimeError") < 0) throw new Error("missing envelope traceback");
+  if (!envelope.details || envelope.details.owner_dispatch.owner_dispatch_supported !== false) throw new Error("missing envelope details");
+  envelope.details.owner_dispatch.mode = "mutated-envelope";
+  if (err.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("toJSON leaked mutable details");
+  var serialized = JSON.stringify(err);
+  if (serialized.indexOf('"boundary_path":"owner_dispatch"') < 0) throw new Error("serialized envelope missing boundary: " + serialized);
+  if (serialized.indexOf('"message":"express startup: owner dispatch unsupported') < 0) throw new Error("serialized envelope missing message: " + serialized);
   err.details.owner_dispatch.mode = "mutated";
   if (JSON.parse(err.details_json).owner_dispatch.mode !== "diagnostic_only") throw new Error("details_json was not stable");
 }
@@ -9886,6 +9900,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`javascript_event_loop`,
 		`owner_dispatch_target`,
 		`err.details_json = JSON.stringify(err.details)`,
+		`err.toJSON = function()`,
+		`boundary_path: err.boundary_path`,
 		`Object.defineProperty(globalThis.omnivm, "bufferOwner"`,
 		"globalThis.__omnivm_BufferOwner",
 		`omnivmClose = globalThis.__omnivm_actual_public_method(value, "__omnivm_close")`,

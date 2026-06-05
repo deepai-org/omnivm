@@ -653,6 +653,10 @@ helpers: `omnivm.ownerDispatchStatus()`,
 `omnivm.assertOwnerDispatchTargetSupported(target, label)`. These helpers do
 not add owner-loop routing; they make unsupported dispatch fail before a
 framework registers callbacks that would need migration to a foreign loop.
+JavaScript guard failures also expose `toJSON()` so logging or forwarding the
+error preserves `runtime`, `origin_runtime`, `type`, `message`, `traceback`,
+`boundary_path`, `details`, and `details_json` instead of relying on the default
+`Error` JSON shape.
 Embedded Java exposes the same contract as
 `OmniVM.ownerDispatchStatus()`, `OmniVM.ownerDispatchTargetStatus(target)`,
 `OmniVM.assertOwnerDispatchSupported(label)`, and
