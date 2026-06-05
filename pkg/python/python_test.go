@@ -823,6 +823,54 @@ payload = GPUOnlyDLPack()
 	}
 }
 
+func TestPythonExportBufferRejectsCUDAArrayInterfaceWithoutFallback(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	if result := r.Execute(`
+import ctypes
+
+class CUDAArrayInterfaceOnly:
+    def __init__(self):
+        self.cuda_interface_called = False
+        self.array_interface_called = False
+        self.array_method_called = False
+        self.backing = (ctypes.c_uint8 * 2)(1, 2)
+    @property
+    def __cuda_array_interface__(self):
+        self.cuda_interface_called = True
+        return {"data": (ctypes.addressof(self.backing), False), "shape": (2,), "typestr": "|u1", "version": 3}
+    @property
+    def __array_interface__(self):
+        self.array_interface_called = True
+        return {"data": (ctypes.addressof(self.backing), False), "shape": (2,), "typestr": "|u1"}
+    def __array__(self):
+        self.array_method_called = True
+        return self
+
+payload = CUDAArrayInterfaceOnly()
+`); result.Err != nil {
+		t.Fatalf("create __cuda_array_interface__ payload: %v", result.Err)
+	}
+	if exported, ok, err := r.ExportBuffer("python-export-cuda-array-interface", "payload"); err == nil || ok ||
+		!strings.Contains(err.Error(), "__cuda_array_interface__ exposes device memory") ||
+		!strings.Contains(err.Error(), "host memory") {
+		t.Fatalf("__cuda_array_interface__ export = (%+v,%v,%v), want host-memory diagnostic", exported, ok, err)
+	}
+	if result := r.Eval("payload.cuda_interface_called"); result.Err != nil || result.Value != "True" {
+		t.Fatalf("__cuda_array_interface__ was not inspected: value=%v err=%v", result.Value, result.Err)
+	}
+	if result := r.Eval("payload.array_interface_called"); result.Err != nil || result.Value != "False" {
+		t.Fatalf("__cuda_array_interface__ fell through to __array_interface__: value=%v err=%v", result.Value, result.Err)
+	}
+	if result := r.Eval("payload.array_method_called"); result.Err != nil || result.Value != "False" {
+		t.Fatalf("__cuda_array_interface__ fell through to __array__: value=%v err=%v", result.Value, result.Err)
+	}
+}
+
 func TestPythonExportBufferUsesSingleColumnDataFrameInterchange(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

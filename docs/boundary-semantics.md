@@ -460,6 +460,9 @@ Implementation requirements:
   fallback rather than pretending to be one-buffer Arrow data.
 - Dataframe interchange buffers must prove CPU-addressable memory through the
   protocol device hook before OmniVM treats their `ptr` value as host memory.
+- Python `__cuda_array_interface__` objects are diagnosed as device memory before
+  any `__array_interface__` or `__array__` fallback, so CUDA pointers do not
+  accidentally cross as host-addressable zero-copy memory.
 - Dataframe interchange dtype endianness must match the host byte order or be
   endian-irrelevant; byte-swapping is a diagnosed copy/fallback operation, not a
   zero-copy import.
@@ -901,9 +904,10 @@ public name, and `memory_space` with dtype/format/shape/stride/offset/nullabilit
 and ownership metadata. Current
 zero-copy buffers report `memory_space="host"`; GPU/accelerator memory should
 stay proxied or require an explicit device-aware bridge before it can report a
-different memory space. Python DLPack and dataframe-interchange producers that
-explicitly report non-CPU buffers fail export with a native-memory diagnostic
-instead of letting OmniVM treat a device pointer as host-addressable memory.
+different memory space. Python DLPack, dataframe-interchange, and
+`__cuda_array_interface__` producers that explicitly report non-CPU buffers fail
+export with a native-memory diagnostic instead of letting OmniVM treat a device
+pointer as host-addressable memory.
 Released buffer tombstones retain their
 dtype/format/read-only/ownership/memory-space metadata until the bounded
 tombstone entry expires or the name is reused. Python

@@ -1128,6 +1128,17 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_array_interface(PyObject* o
 	return exported;
 }
 
+static int omnivm_py_reject_cuda_array_interface(PyObject* obj) {
+	PyObject* iface = PyObject_GetAttrString(obj, "__cuda_array_interface__");
+	if (!iface) {
+		PyErr_Clear();
+		return 0;
+	}
+	Py_DECREF(iface);
+	omnivm_py_set_export_rejection("__cuda_array_interface__ exposes device memory; OmniVM zero-copy native memory currently requires host memory");
+	return 1;
+}
+
 static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_array(PyObject* obj) {
 	PyObject* method = PyObject_GetAttrString(obj, "__arrow_c_array__");
 	if (!method) {
@@ -2032,6 +2043,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_array_method(PyObject* obj)
 		exported = omnivm_py_export_dataframe_interchange(array_obj);
 	}
 	if (!exported && !omnivm_py_has_export_rejection()) {
+		omnivm_py_reject_cuda_array_interface(array_obj);
+	}
+	if (!exported && !omnivm_py_has_export_rejection()) {
 		exported = omnivm_py_export_array_interface(array_obj);
 	}
 	Py_DECREF(array_obj);
@@ -2113,6 +2127,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_buffer(const char* expr) {
 		}
 		if (!exported && !omnivm_py_has_export_rejection()) {
 			exported = omnivm_py_export_dataframe_interchange(obj);
+		}
+		if (!exported && !omnivm_py_has_export_rejection()) {
+			omnivm_py_reject_cuda_array_interface(obj);
 		}
 		if (!exported && !omnivm_py_has_export_rejection()) {
 			exported = omnivm_py_export_array_interface(obj);
@@ -4396,7 +4413,9 @@ func (r *Runtime) Eval(code string) pkg.Result {
 // plane without copying. It is intentionally generic: any contiguous or
 // strided object accepted by PyObject_GetBuffer, or any strided
 // __arrow_c_array__, one-chunk __arrow_c_stream__, __dlpack__,
-// __array_interface__, or __array__ producer, can participate.
+// __array_interface__, or __array__ producer, can participate. Device-only
+// protocols such as __cuda_array_interface__ are rejected with a native_memory
+// diagnostic rather than treated as host-addressable pointers.
 func (r *Runtime) ExportBuffer(name, expr string) (pkg.ExportedBuffer, bool, error) {
 	if !r.initialized {
 		return pkg.ExportedBuffer{}, false, fmt.Errorf("python: not initialized")
