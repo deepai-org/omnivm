@@ -1102,6 +1102,15 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("foreach: undefined binding %q", op.Iterable.Name)
 		}
 		if ref, ok := val.(RuntimeRef); ok {
+			if op.Await {
+				handled, err := e.opLoopForeachRuntimeRefStream(op, ref)
+				if err != nil {
+					return nil, err
+				}
+				if handled {
+					return nil, nil
+				}
+			}
 			items, iterOK, err := e.runtimeRefIter(0, ref, "values")
 			if err != nil {
 				return nil, fmt.Errorf("foreach: runtime ref iterable %q: %w", op.Iterable.Name, err)
@@ -1135,6 +1144,36 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 		}
 	}
 	return nil, nil
+}
+
+func (e *Executor) opLoopForeachRuntimeRefStream(op *Op, ref RuntimeRef) (bool, error) {
+	stream, err := e.runtimeRefIsStream(ref)
+	if err != nil {
+		return true, fmt.Errorf("foreach: runtime ref stream probe %q: %w", op.Iterable.Name, err)
+	}
+	if !stream {
+		return false, nil
+	}
+	id, err := e.runtimeRefStreamHandle(ref)
+	if err != nil {
+		return true, fmt.Errorf("foreach: runtime ref stream %q: %w", op.Iterable.Name, err)
+	}
+	for {
+		elem, done, err := e.runtimeRefStreamNext(id, ref)
+		if err != nil {
+			return true, fmt.Errorf("foreach: runtime ref stream %q: %w", op.Iterable.Name, err)
+		}
+		if done {
+			return true, nil
+		}
+		e.setBinding(op.Variable, elem)
+		if _, err := e.executeOps(op.Body); err != nil {
+			if releaseErr := e.ensureHandleTable().ReleaseAllRefs(id); releaseErr != nil {
+				return true, fmt.Errorf("%w; additionally failed to close foreach stream after body error: %w", err, releaseErr)
+			}
+			return true, err
+		}
+	}
 }
 
 // opThrow resolves the value and returns an ErrThrow sentinel.

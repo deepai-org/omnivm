@@ -655,6 +655,71 @@ func TestOpForeach(t *testing.T) {
 	}
 }
 
+func TestOpAwaitForeachRuntimeRefStreamPullsOneAtATimeAndClosesOnBodyError(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	rt := mocks["python"]
+	e.defaultRuntime = "python"
+	e.setBinding("rows", RuntimeRef{Runtime: "python", VarName: "rows"})
+
+	streamNexts := 0
+	streamCloses := 0
+	rt.execFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "stream_next_task"):
+			streamNexts++
+		case strings.Contains(code, "stream_close"):
+			streamCloses++
+		}
+		return pkg.Result{}
+	}
+	rt.evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__aiter__"):
+			return pkg.Result{Value: "true"}
+		case strings.Contains(code, "stream_next") && strings.Contains(code, "ready"):
+			return pkg.Result{Value: "True"}
+		case strings.Contains(code, "stream_next") && strings.Contains(code, "error"):
+			return pkg.Result{Value: nil}
+		case strings.Contains(code, "stream_next") && strings.Contains(code, "done"):
+			return pkg.Result{Value: "false"}
+		case strings.Contains(code, "stream_close") && strings.Contains(code, "ready"):
+			return pkg.Result{Value: "True"}
+		case strings.Contains(code, "stream_close") && strings.Contains(code, "error"):
+			return pkg.Result{Value: nil}
+		case strings.Contains(code, "primitive"):
+			return pkg.Result{Value: `{"primitive":true,"value":"row-1"}`}
+		default:
+			return pkg.Result{Value: "true"}
+		}
+	}
+
+	op := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Await:    true,
+		Variable: "row",
+		Iterable: &ValueExpr{Kind: "ref", Name: "rows"},
+		Body: []*Op{
+			{OpType: "throw", Value: &ValueExpr{Kind: "literal", Value: "stop"}},
+		},
+	}
+
+	_, err := e.executeOp(op)
+	if err == nil {
+		t.Fatal("await foreach body error did not propagate")
+	}
+	if streamNexts != 1 {
+		t.Fatalf("await foreach should pull exactly one row before body error, got %d pulls", streamNexts)
+	}
+	if streamCloses != 1 {
+		t.Fatalf("await foreach body error should close owner stream once, got %d closes", streamCloses)
+	}
+	val, _ := e.getBinding("row")
+	if val != "row-1" {
+		t.Fatalf("loop variable = %#v, want row-1", val)
+	}
+}
+
 func TestOpUnknownType(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"
