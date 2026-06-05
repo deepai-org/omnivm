@@ -7998,7 +7998,9 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "return {done: false, value: globalThis.__omnivm_materialize_capture(localValues[localIndex++])};") ||
 		!contains(code, "catch (_localMaterializeErr) {\n        markRemoteClosed(true);\n        throw _localMaterializeErr;\n      }") ||
 		!contains(code, "}\n    if (remoteClosed) return {done: true};\n    try {") ||
-		!contains(code, "if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {\n        closeRemote();\n        return {done: true};\n      }") ||
+		!contains(code, "var bridgeToken = globalThis.__omnivm_bridge_module();") ||
+		!contains(code, "if (bridgeToken != null && caller !== bridgeToken) {\n        closeRemote();\n        return {done: true};\n      }") ||
+		!contains(code, "if (!caller) {\n        closeRemote();\n        return {done: true};\n      }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
 		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
 		!contains(code, "var recordCleanupError = function(error, cleanupError)") ||
@@ -8256,12 +8258,30 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "__omnivm_release_handle_explicit") ||
 		!contains(code, `op: "handle_release_explicit"`) ||
-		!contains(code, "globalThis.__omnivm_release_handle_explicit(handleId)") ||
+		!contains(code, "globalThis.__omnivm_release_handle_explicit(handleId, bridgeToken)") ||
+		!contains(code, "if (!globalThis.__omnivm_bridge_active(bridgeToken)) {\n      target.__omnivm_closed__ = true;\n      return false;\n    }") ||
 		!contains(code, "if (released === true)") ||
 		!contains(code, "globalThis.__omnivm_handle_finalizers.unregister(target)") ||
-		!contains(code, "globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target)") ||
-		!contains(code, "globalThis.__omnivm_handle_finalizers.register(stream, value.id, stream)") {
+		!contains(code, "globalThis.__omnivm_handle_finalizers.register(proxy, {id: finalizerHandleId, bridgeToken: bridgeToken}, target)") ||
+		!contains(code, "globalThis.__omnivm_handle_finalizers.register(stream, {id: value.id, bridgeToken: bridgeToken}, stream)") {
 		t.Fatalf("JS explicit proxy close should use a non-quiet release path and unregister finalizers, got %q", code)
+	}
+	for _, want := range []string{
+		"globalThis.__omnivm_bridge_module",
+		"globalThis.__omnivm_bridge_active",
+		"globalThis.__omnivm_bridge_cache_id",
+		`var key = kind + ":" + globalThis.__omnivm_bridge_cache_id(bridgeToken) + ":" + id;`,
+		`Object.defineProperty(target, "__omnivm_bridge_token__"`,
+		`if (bridgeToken != null && caller !== bridgeToken) return null;`,
+		`globalThis.__omnivm_record_handle_release_finalizer(id, bridgeToken);`,
+		`globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property", bridgeToken)`,
+		`globalThis.__omnivm_materialize_chatty_proxy(obj, bridgeToken)`,
+		`__omnivm_cached_proxy("resource", value.id, function()`,
+		`}, value, bridgeToken);`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("JS materializer should bind proxies and cache entries to bridge identity, missing %q", want)
+		}
 	}
 	if !contains(code, `op: "handle_retain"`) || !contains(code, "__omnivm_retain_handle") {
 		t.Fatalf("JS materializer should retain handles for guest proxy lifetime, got %q", code)
@@ -8280,6 +8300,85 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
+	}
+}
+
+func TestJSProxyFinalizersIgnoreReplacedBridge(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+const OldBridge = {
+  requests: [],
+  call(runtime, payload) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    const req = JSON.parse(payload);
+    this.requests.push(req);
+    if (["handle_retain", "handle_adopt", "handle_release_explicit", "handle_release_finalizer", "stream_cancel"].includes(req.op)) {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (req.op === "stream_next") {
+      return JSON.stringify({__omnivm_result__: true, value: {done: false, value: "old-row"}});
+    }
+    throw new Error("unexpected old manifest op " + req.op);
+  }
+};
+const NewBridge = {
+  requests: [],
+  call(runtime, payload) {
+    if (runtime !== "__manifest") throw new Error("unexpected runtime " + runtime);
+    const req = JSON.parse(payload);
+    this.requests.push(req);
+    if (["handle_retain", "handle_adopt", "handle_release_explicit", "handle_release_finalizer", "stream_cancel", "handle_contains", "handle_get"].includes(req.op)) {
+      return JSON.stringify({__omnivm_result__: true, value: true});
+    }
+    if (req.op === "stream_next") {
+      return JSON.stringify({__omnivm_result__: true, value: {done: true}});
+    }
+    throw new Error("unexpected new manifest op " + req.op);
+  }
+};
+globalThis.omnivm = OldBridge;
+` + code + `
+let proxy = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 601, runtime: "javascript", kind: "request"});
+let stream = globalThis.__omnivm_materialize_capture({__omnivm_stream__: true, id: 602, runtime: "javascript", kind: "queryset"});
+if (!OldBridge.requests.some((req) => req.op === "handle_retain" && req.id === 601)) {
+  throw new Error("handle proxy was not retained: " + JSON.stringify(OldBridge.requests));
+}
+if (!OldBridge.requests.some((req) => req.op === "handle_retain" && req.id === 602)) {
+  throw new Error("stream proxy was not retained: " + JSON.stringify(OldBridge.requests));
+}
+
+globalThis.omnivm = NewBridge;
+const replacement = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 601, runtime: "javascript", kind: "request"});
+if (replacement === proxy) throw new Error("bridge replacement reused stale cached proxy");
+if (!NewBridge.requests.some((req) => req.op === "handle_retain" && req.id === 601)) {
+  throw new Error("replacement bridge proxy was not retained: " + JSON.stringify(NewBridge.requests));
+}
+NewBridge.requests.length = 0;
+
+if (proxy.__omnivm_close() !== false) throw new Error("stale handle close should be a quiet no-op");
+if (stream.__omnivm_close() !== false) throw new Error("stale stream close should be a quiet no-op");
+globalThis.__omnivm_record_handle_release_finalizer(601, OldBridge);
+globalThis.__omnivm_record_handle_release_finalizer(602, OldBridge);
+if (NewBridge.requests.length !== 0) {
+  throw new Error("stale proxy cleanup called replacement bridge: " + JSON.stringify(NewBridge.requests));
+}
+const oldCleanup = OldBridge.requests.filter((req) => ["handle_release_explicit", "handle_release_finalizer", "stream_cancel"].includes(req.op));
+if (oldCleanup.length !== 0) {
+  throw new Error("stale proxy cleanup called old bridge after replacement: " + JSON.stringify(oldCleanup));
+}
+
+if (replacement.__omnivm_close() !== true) throw new Error("active replacement proxy close should release through replacement bridge");
+if (!NewBridge.requests.some((req) => req.op === "handle_release_explicit" && req.id === 601)) {
+  throw new Error("replacement proxy did not release through replacement bridge: " + JSON.stringify(NewBridge.requests));
+}
+`
+	out, err := exec.Command(node, "--expose-gc", "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node stale bridge finalizer check failed: %v\n%s", err, out)
 	}
 }
 

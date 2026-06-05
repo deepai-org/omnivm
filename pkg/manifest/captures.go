@@ -1690,10 +1690,29 @@ globalThis.__omnivm_warn_chatty_proxy = globalThis.__omnivm_warn_chatty_proxy ||
     }
   } catch (_e) {}
 };
-globalThis.__omnivm_record_handle_access = globalThis.__omnivm_record_handle_access || function(id, kind) {
+globalThis.__omnivm_bridge_module = globalThis.__omnivm_bridge_module || function() {
+  return (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') ? omnivm : null;
+};
+globalThis.__omnivm_bridge_active = globalThis.__omnivm_bridge_active || function(bridgeToken) {
+  return bridgeToken == null || globalThis.__omnivm_bridge_module() === bridgeToken;
+};
+globalThis.__omnivm_bridge_cache_ids = globalThis.__omnivm_bridge_cache_ids || (typeof WeakMap !== 'undefined' ? new WeakMap() : null);
+globalThis.__omnivm_bridge_cache_id_counter = globalThis.__omnivm_bridge_cache_id_counter || 0;
+globalThis.__omnivm_bridge_cache_id = globalThis.__omnivm_bridge_cache_id || function(bridgeToken) {
+  if (bridgeToken == null || (typeof bridgeToken !== 'object' && typeof bridgeToken !== 'function')) return "none";
+  if (!globalThis.__omnivm_bridge_cache_ids) return "active";
+  var existing = globalThis.__omnivm_bridge_cache_ids.get(bridgeToken);
+  if (existing) return existing;
+  var next = "bridge:" + (++globalThis.__omnivm_bridge_cache_id_counter);
+  globalThis.__omnivm_bridge_cache_ids.set(bridgeToken, next);
+  return next;
+};
+globalThis.__omnivm_record_handle_access = globalThis.__omnivm_record_handle_access || function(id, kind, bridgeToken) {
   try {
-    if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-      var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_access", id: id, kind: kind || "property"}));
+    var caller = globalThis.__omnivm_bridge_module();
+    if (bridgeToken != null && caller !== bridgeToken) return null;
+    if (caller) {
+      var raw = caller.call("__manifest", JSON.stringify({op: "handle_access", id: id, kind: kind || "property"}));
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true && env.value && env.value.chatty === true) {
         globalThis.__omnivm_warn_chatty_proxy(env.value);
@@ -1703,12 +1722,15 @@ globalThis.__omnivm_record_handle_access = globalThis.__omnivm_record_handle_acc
   } catch (_e) {}
   return null;
 };
-globalThis.__omnivm_materialize_chatty_proxy = globalThis.__omnivm_materialize_chatty_proxy || function(obj) {
+globalThis.__omnivm_materialize_chatty_proxy = globalThis.__omnivm_materialize_chatty_proxy || function(obj, bridgeToken) {
   try {
     var handleId = globalThis.__omnivm_proxy_handle_id(obj);
     if (!obj || obj.__omnivm_materialized__ === true || handleId == null) return;
-    if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return;
-    var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_iter", id: handleId, mode: "items", materialize: true}));
+    var caller = globalThis.__omnivm_bridge_module();
+    var token = bridgeToken == null ? obj.__omnivm_bridge_token__ : bridgeToken;
+    if (token != null && caller !== token) return;
+    if (!caller) return;
+    var raw = caller.call("__manifest", JSON.stringify({op: "handle_iter", id: handleId, mode: "items", materialize: true}));
     var env = JSON.parse(raw);
     if (!env || env.__omnivm_result__ !== true || !Array.isArray(env.value)) return;
     for (var i = 0; i < env.value.length; i++) {
@@ -1720,16 +1742,20 @@ globalThis.__omnivm_materialize_chatty_proxy = globalThis.__omnivm_materialize_c
     obj.__omnivm_materialized__ = true;
   } catch (_e) {}
 };
-globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record_handle_release_finalizer || function(id) {
+globalThis.__omnivm_record_handle_release_finalizer = globalThis.__omnivm_record_handle_release_finalizer || function(id, bridgeToken) {
   try {
-    if (typeof omnivm !== 'undefined' && omnivm && typeof omnivm.call === 'function') {
-      omnivm.call("__manifest", JSON.stringify({op: "handle_release_finalizer", id: id}));
+    var caller = globalThis.__omnivm_bridge_module();
+    if (bridgeToken != null && caller !== bridgeToken) return;
+    if (caller) {
+      caller.call("__manifest", JSON.stringify({op: "handle_release_finalizer", id: id}));
     }
   } catch (_e) {}
 };
-globalThis.__omnivm_release_handle_explicit = globalThis.__omnivm_release_handle_explicit || function(id) {
-  if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
-  var raw = omnivm.call("__manifest", JSON.stringify({op: "handle_release_explicit", id: id}));
+globalThis.__omnivm_release_handle_explicit = globalThis.__omnivm_release_handle_explicit || function(id, bridgeToken) {
+  var caller = globalThis.__omnivm_bridge_module();
+  if (bridgeToken != null && caller !== bridgeToken) return false;
+  if (!caller) return false;
+  var raw = caller.call("__manifest", JSON.stringify({op: "handle_release_explicit", id: id}));
   var env = JSON.parse(raw);
   return !!(env && env.__omnivm_result__ === true && env.value === true);
 };
@@ -1753,8 +1779,10 @@ globalThis.__omnivm_adopt_handle = globalThis.__omnivm_adopt_handle || function(
   } catch (_e) {}
   return false;
 };
-globalThis.__omnivm_handle_finalizers = globalThis.__omnivm_handle_finalizers || (typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry(function(id) {
-  globalThis.__omnivm_record_handle_release_finalizer(id);
+globalThis.__omnivm_handle_finalizers = globalThis.__omnivm_handle_finalizers || (typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry(function(held) {
+  var id = held && typeof held === 'object' ? held.id : held;
+  var bridgeToken = held && typeof held === 'object' ? held.bridgeToken : null;
+  globalThis.__omnivm_record_handle_release_finalizer(id, bridgeToken);
 }) : null);
 globalThis.__omnivm_proxy_cache = globalThis.__omnivm_proxy_cache || (typeof WeakRef !== 'undefined' ? new Map() : null);
 globalThis.__omnivm_prune_proxy_cache = globalThis.__omnivm_prune_proxy_cache || function(force) {
@@ -1765,9 +1793,9 @@ globalThis.__omnivm_prune_proxy_cache = globalThis.__omnivm_prune_proxy_cache ||
     if (!ref || typeof ref.deref !== 'function' || !ref.deref()) cache.delete(key);
   });
 };
-globalThis.__omnivm_cached_proxy = globalThis.__omnivm_cached_proxy || function(kind, id, makeProxy, descriptor) {
+globalThis.__omnivm_cached_proxy = globalThis.__omnivm_cached_proxy || function(kind, id, makeProxy, descriptor, bridgeToken) {
   if (id == null || !globalThis.__omnivm_proxy_cache || typeof WeakRef === 'undefined') return makeProxy();
-  var key = kind + ":" + id;
+  var key = kind + ":" + globalThis.__omnivm_bridge_cache_id(bridgeToken) + ":" + id;
   var existing = globalThis.__omnivm_proxy_cache.get(key);
   if (existing && typeof existing.deref === 'function') {
     var cached = existing.deref();
@@ -2416,6 +2444,17 @@ globalThis.__omnivm_encode_arg = globalThis.__omnivm_encode_arg || function(valu
 };
 globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy || function(target, jsonShape) {
   if (typeof Proxy === 'undefined') return target;
+  var bridgeToken = globalThis.__omnivm_bridge_module();
+  try {
+    Object.defineProperty(target, "__omnivm_bridge_token__", {
+      value: bridgeToken,
+      configurable: true,
+      writable: true,
+      enumerable: false
+    });
+  } catch (_bridgeTokenDefineError) {
+    try { target.__omnivm_bridge_token__ = bridgeToken; } catch (_bridgeTokenAssignError) {}
+  }
   var decode = function(raw, options) {
     try {
       var env = JSON.parse(raw);
@@ -2438,8 +2477,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   };
   var bridge = function(payload, options) {
     ensureOpen(payload.op || "operation");
+    var caller = globalThis.__omnivm_bridge_module();
+    if (bridgeToken != null && caller !== bridgeToken) throw closedOperationError(payload.op || "operation");
+    if (!caller) throw closedOperationError(payload.op || "operation");
     payload.id = globalThis.__omnivm_proxy_handle_id(target);
-    return decode(omnivm.call("__manifest", JSON.stringify(payload)), options);
+    return decode(caller.call("__manifest", JSON.stringify(payload)), options);
   };
   var descriptor = target && (target.__omnivm_descriptor__ || target);
   var isRuntimeRefFunctionTarget = function() {
@@ -2456,7 +2498,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return Object.prototype.hasOwnProperty.call(obj, prop) && !isInternalDescriptorProp(prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
-    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_closed__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
+    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_closed__" || prop === "__omnivm_bridge_token__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
   };
   var mergeRequiredOwnKeys = function(obj, keys) {
     var out = Array.isArray(keys) ? keys.slice() : [];
@@ -2503,6 +2545,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   };
   var ensureOpen = function(op) {
     if (target.__omnivm_closed__ === true) throw closedOperationError(op);
+    if (!globalThis.__omnivm_bridge_active(bridgeToken)) throw closedOperationError(op);
   };
   var lengthSetDiagnostic = function(reason, cause) {
     var message = "OmniVM cannot resize remote indexed proxy" + remoteDescription() + ": " + reason;
@@ -2611,6 +2654,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   };
   var bridgeThenForNaturalAccess = function() {
     if (target.__omnivm_closed__ === true) return undefined;
+    if (!globalThis.__omnivm_bridge_active(bridgeToken)) return undefined;
     var missing = {};
     try {
       var value = bridgeGet("then", missing, true);
@@ -2638,7 +2682,11 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
   var releaseProxyLease = function() {
     var handleId = globalThis.__omnivm_proxy_handle_id(target);
     if (handleId == null || target.__omnivm_closed__ === true) return false;
-    var released = globalThis.__omnivm_release_handle_explicit(handleId);
+    if (!globalThis.__omnivm_bridge_active(bridgeToken)) {
+      target.__omnivm_closed__ = true;
+      return false;
+    }
+    var released = globalThis.__omnivm_release_handle_explicit(handleId, bridgeToken);
     if (released === true) {
       target.__omnivm_closed__ = true;
       if (globalThis.__omnivm_handle_finalizers && typeof globalThis.__omnivm_handle_finalizers.unregister === 'function') {
@@ -2684,9 +2732,9 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
       }
       if (hasLocalProp(obj, prop)) return Reflect.get(obj, prop, receiver);
       if (prop !== 'toJSON' && prop !== Symbol.toStringTag && prop !== Symbol.iterator) {
-        var report = globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property");
+        var report = globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property", bridgeToken);
         if (report && report.chatty === true) {
-          globalThis.__omnivm_materialize_chatty_proxy(obj);
+          globalThis.__omnivm_materialize_chatty_proxy(obj, bridgeToken);
           if (hasLocalProp(obj, prop)) return Reflect.get(obj, prop, receiver);
         }
       }
@@ -2757,7 +2805,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
         }
       }
-      globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property");
+      globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "property", bridgeToken);
       return Reflect.has(obj, prop);
     },
     getOwnPropertyDescriptor: function(obj, prop) {
@@ -2798,7 +2846,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
           if (!globalThis.__omnivm_is_missing_bridge_error(_e)) throw _e;
         }
       }
-      globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "iterate");
+      globalThis.__omnivm_record_handle_access(globalThis.__omnivm_proxy_handle_id(obj), "iterate", bridgeToken);
       return Reflect.ownKeys(obj);
     }
   });
@@ -2810,11 +2858,12 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     } else {
       globalThis.__omnivm_retain_handle(finalizerHandleId);
     }
-    globalThis.__omnivm_handle_finalizers.register(proxy, finalizerHandleId, target);
+    globalThis.__omnivm_handle_finalizers.register(proxy, {id: finalizerHandleId, bridgeToken: bridgeToken}, target);
   }
   return proxy;
 };
 globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy || function(value) {
+  var bridgeToken = globalThis.__omnivm_bridge_module();
   var localValues = Array.isArray(value && value.values) ? value.values.slice() : null;
   var localIndex = 0;
   var remoteClosed = false;
@@ -2848,8 +2897,13 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var cancelRemote = function() {
     if (remoteClosed) return false;
     if (localValues) return markRemoteClosed(true);
-    if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') return false;
-    var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
+    var caller = globalThis.__omnivm_bridge_module();
+    if (bridgeToken != null && caller !== bridgeToken) {
+      markRemoteClosed(false);
+      return false;
+    }
+    if (!caller) return false;
+    var raw = caller.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
     var env = JSON.parse(raw);
     var released = !!(env && env.__omnivm_result__ === true && env.value === true);
     if (released === true) markRemoteClosed(true);
@@ -2920,11 +2974,16 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     }
     if (remoteClosed) return {done: true};
     try {
-      if (typeof omnivm === 'undefined' || !omnivm || typeof omnivm.call !== 'function') {
+      var caller = globalThis.__omnivm_bridge_module();
+      if (bridgeToken != null && caller !== bridgeToken) {
         closeRemote();
         return {done: true};
       }
-      var raw = omnivm.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
+      if (!caller) {
+        closeRemote();
+        return {done: true};
+      }
+      var raw = caller.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
       var env = JSON.parse(raw);
       if (env && env.__omnivm_result__ === true) {
         var chunk = env.value;
@@ -2951,6 +3010,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     return {done: true};
   };
   var stream = {
+    __omnivm_bridge_token__: bridgeToken,
     runtime: value.runtime,
     kind: value.kind,
     cancel: function(reason) {
@@ -3148,7 +3208,7 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     } else {
       globalThis.__omnivm_retain_handle(value.id);
     }
-    globalThis.__omnivm_handle_finalizers.register(stream, value.id, stream);
+    globalThis.__omnivm_handle_finalizers.register(stream, {id: value.id, bridgeToken: bridgeToken}, stream);
   }
   return stream;
 };
@@ -3186,10 +3246,11 @@ globalThis.__omnivm_stream_chunk_value = globalThis.__omnivm_stream_chunk_value 
   return globalThis.__omnivm_materialize_capture(value);
 };
 globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_capture || function(value) {
+  var bridgeToken = globalThis.__omnivm_bridge_module ? globalThis.__omnivm_bridge_module() : null;
   if (value && (value.__omnivm_stream__ === true || value.__omnivm_channel__ === true)) {
     return globalThis.__omnivm_cached_proxy("stream", value.id, function() {
       return globalThis.__omnivm_make_stream_proxy(value);
-    }, value);
+    }, value, bridgeToken);
   }
   if (value && value.__omnivm_resource__ === true) {
     return globalThis.__omnivm_cached_proxy("resource", value.id, function() {
@@ -3198,7 +3259,7 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
       target.__omnivm_descriptor__ = value;
       target.toJSON = function() { var descriptor = target.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, closed: descriptor.closed === true}; };
       return globalThis.__omnivm_make_handle_proxy(target);
-    }, value);
+    }, value, bridgeToken);
   }
   if (value && value.__omnivm_table__ === true) {
     return globalThis.__omnivm_cached_proxy("table", value.id, function() {
@@ -3214,7 +3275,7 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
         released: value.released === true,
         toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, format: descriptor.format, ownership: descriptor.ownership, buffer: descriptor.buffer || (descriptor.metadata && descriptor.metadata.buffer) || null, metadata: descriptor.metadata || null, released: descriptor.released === true}; }
       });
-    }, value);
+    }, value, bridgeToken);
   }
   if (value && value.__omnivm_job__ === true) {
     return globalThis.__omnivm_cached_proxy("job", value.id, function() {
@@ -3231,7 +3292,7 @@ globalThis.__omnivm_materialize_capture = globalThis.__omnivm_materialize_captur
         result: value.result,
         toJSON: function() { var descriptor = this.__omnivm_descriptor__ || value; return {id: descriptor.id, runtime: descriptor.runtime, kind: descriptor.kind, done: descriptor.done === true, cancelled: descriptor.cancelled === true, cancelReason: descriptor.cancelReason, payload: descriptor.payload, result: descriptor.result}; }
       });
-    }, value);
+    }, value, bridgeToken);
   }
   if (value && (value.__omnivm_proxy__ === true || value.__omnivm_disposable__ === true)) {
     return value;
