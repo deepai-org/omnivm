@@ -2560,6 +2560,47 @@ class TestCallWithMockLib(unittest.TestCase):
             {"op": "handle_release_explicit", "id": 8},
         ]
 
+    def test_manifest_call_skips_closed_cached_return_proxy_descriptors(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def descriptor():
+            return {
+                "__omnivm_resource__": True,
+                "id": 7,
+                "runtime": "python",
+                "kind": "object",
+                "transfer": True,
+            }
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "lookup":
+                return envelope(descriptor())
+            if request.get("op") in {"handle_adopt", "handle_release_explicit"}:
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        first = omnivm_mod.manifest_call("demo", "lookup")
+        assert first._omnivm_close() is True
+        second = omnivm_mod.manifest_call("demo", "lookup")
+
+        assert second is not first
+        assert second._omnivm_close() is True
+        assert [request for request in requests if request.get("op") == "handle_adopt"] == [
+            {"op": "handle_adopt", "id": 7},
+            {"op": "handle_adopt", "id": 7},
+        ]
+        assert [request for request in requests if request.get("op") == "handle_release_explicit"] == [
+            {"op": "handle_release_explicit", "id": 7},
+            {"op": "handle_release_explicit", "id": 7},
+        ]
+
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0
         omnivm_mod.set_buffer("payload", b"abc", 7)

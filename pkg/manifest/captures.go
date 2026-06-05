@@ -1286,7 +1286,7 @@ def __omnivm_materialize_capture(value):
         cache_key = ("stream", handle_id)
         if handle_id is not None:
             cached = __omnivm_proxy_cache.get(cache_key)
-            if cached is not None:
+            if cached is not None and not getattr(cached, "_closed", False):
                 return cached
         proxy = __OmniVMStreamProxy(value)
         if handle_id is not None:
@@ -1301,7 +1301,7 @@ def __omnivm_materialize_capture(value):
         cache_key = ("handle", handle_id)
         if handle_id is not None:
             cached = __omnivm_proxy_cache.get(cache_key)
-            if cached is not None:
+            if cached is not None and not getattr(cached, "_closed", False):
                 return cached
         proxy_cls = __OmniVMCallableHandleProxy if value.get("kind") == "callable" else (__OmniVMMappingHandleProxy if value.get("kind") == "mapping" else __OmniVMHandleProxy)
         proxy = proxy_cls(value)
@@ -1487,8 +1487,12 @@ globalThis.__omnivm_cached_proxy = globalThis.__omnivm_cached_proxy || function(
   if (existing && typeof existing.deref === 'function') {
     var cached = existing.deref();
     if (cached) {
-      if (descriptor) cached.__omnivm_descriptor__ = descriptor;
-      return cached;
+      if (cached.__omnivm_closed__ === true) {
+        globalThis.__omnivm_proxy_cache.delete(key);
+      } else {
+        if (descriptor) cached.__omnivm_descriptor__ = descriptor;
+        return cached;
+      }
     }
     globalThis.__omnivm_proxy_cache.delete(key);
   }
@@ -2064,7 +2068,7 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     return Object.prototype.hasOwnProperty.call(obj, prop) && !isInternalDescriptorProp(prop) && !(isRuntimeRefFunctionTarget() && isFunctionIntrinsic(prop));
   };
   var isProxyBookkeepingProp = function(prop) {
-    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
+    return prop === "__omnivm_proxy__" || prop === "__omnivm_descriptor__" || prop === "__omnivm_materialized__" || prop === "__omnivm_closed__" || prop === "__omnivm_get" || prop === "__omnivm_set" || prop === "__omnivm_call" || prop === "__omnivm_len" || prop === "__omnivm_iter" || prop === "__omnivm_contains" || prop === "__omnivm_close" || prop === "toJSON";
   };
   var mergeRequiredOwnKeys = function(obj, keys) {
     var out = Array.isArray(keys) ? keys.slice() : [];
@@ -2737,7 +2741,10 @@ def __omnivm_cached_proxy(kind, value)
     ref = $__omnivm_proxy_cache[key]
     if ref
       cached = ref.__getobj__
-      return cached unless cached.nil?
+      if !cached.nil? && cached.instance_variable_get(:@__omnivm_closed) != true
+        return cached
+      end
+      $__omnivm_proxy_cache.delete(key)
     end
   rescue WeakRef::RefError
     $__omnivm_proxy_cache.delete(key)

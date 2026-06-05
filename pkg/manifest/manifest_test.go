@@ -6312,6 +6312,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "WeakValueDictionary") || !contains(code, "__omnivm_proxy_cache") || !contains(code, `cache_key = ("handle", handle_id)`) {
 		t.Fatalf("Python materializer should weakly cache handle proxies by identity, got %q", code)
 	}
+	if !contains(code, `if cached is not None and not getattr(cached, "_closed", False):`) {
+		t.Fatalf("Python materializer should not reuse closed cached proxies, got %q", code)
+	}
 	if !contains(code, "req = __omnivm_materialize_capture(") {
 		t.Fatalf("Python capture should be materialized during injection, got %q", code)
 	}
@@ -6422,6 +6425,49 @@ if any(req["op"] == "handle_call" and req.get("key") in ("close", "dispose") for
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonCaptureProxyCacheSkipsClosedProxy(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] in {"handle_adopt", "handle_release_explicit"}:
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+descriptor = {"__omnivm_resource__": True, "id": 91, "runtime": "python", "kind": "object", "transfer": True}
+first = __omnivm_materialize_capture(descriptor)
+if first._omnivm_close() is not True:
+    raise RuntimeError("first close failed")
+second = __omnivm_materialize_capture(descriptor)
+if second is first:
+    raise RuntimeError("closed proxy was reused")
+if second._omnivm_close() is not True:
+    raise RuntimeError("second close failed")
+adopts = [req for req in Bridge.requests if req["op"] == "handle_adopt"]
+releases = [req for req in Bridge.requests if req["op"] == "handle_release_explicit"]
+if adopts != [{"op": "handle_adopt", "id": 91}, {"op": "handle_adopt", "id": 91}]:
+    raise RuntimeError("adopt requests mismatch: " + repr(adopts))
+if releases != [{"op": "handle_release_explicit", "id": 91}, {"op": "handle_release_explicit", "id": 91}]:
+    raise RuntimeError("release requests mismatch: " + repr(releases))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python closed proxy cache check failed: %v\n%s", err, out)
 	}
 }
 
@@ -7242,6 +7288,9 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		!contains(code, `__omnivm_cached_proxy("job", value.id`) {
 		t.Fatalf("JS materializer should weakly cache descriptor proxies by namespaced identity, got %q", code)
 	}
+	if !contains(code, "cached.__omnivm_closed__ === true") {
+		t.Fatalf("JS materializer should not reuse closed cached proxies, got %q", code)
+	}
 	if !contains(code, "__omnivm_prune_proxy_cache") || !contains(code, "cache.size <= 4096") {
 		t.Fatalf("JS materializer should bound stale weak proxy cache entries, got %q", code)
 	}
@@ -7710,6 +7759,46 @@ if (omnivm.calls.some(function(call) { return call.op === "handle_call" && (call
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestJSCaptureProxyCacheSkipsClosedProxy(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  calls: [],
+  call: function(name, raw) {
+    if (name !== "__manifest") throw new Error("unexpected bridge name " + name);
+    var payload = JSON.parse(raw);
+    this.calls.push(payload);
+    if (payload.op === "handle_adopt") return JSON.stringify({__omnivm_result__: true, value: true});
+    if (payload.op === "handle_release_explicit") return JSON.stringify({__omnivm_result__: true, value: true});
+    throw new Error("unexpected op " + payload.op);
+  }
+};
+` + code + `
+var descriptor = {__omnivm_resource__: true, id: 91, runtime: "javascript", kind: "object", transfer: true};
+var first = globalThis.__omnivm_materialize_capture(descriptor);
+if (omnivm.proxyClose(first) !== true) throw new Error("first close failed");
+var second = globalThis.__omnivm_materialize_capture(descriptor);
+if (second === first) throw new Error("closed proxy was reused");
+if (omnivm.proxyClose(second) !== true) throw new Error("second close failed");
+var adopts = omnivm.calls.filter(function(call) { return call.op === "handle_adopt"; });
+var releases = omnivm.calls.filter(function(call) { return call.op === "handle_release_explicit"; });
+if (JSON.stringify(adopts) !== JSON.stringify([{op: "handle_adopt", id: 91}, {op: "handle_adopt", id: 91}])) {
+  throw new Error("adopt requests mismatch: " + JSON.stringify(adopts));
+}
+if (JSON.stringify(releases) !== JSON.stringify([{op: "handle_release_explicit", id: 91}, {op: "handle_release_explicit", id: 91}])) {
+  throw new Error("release requests mismatch: " + JSON.stringify(releases));
+}
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node closed proxy cache check failed: %v\n%s", err, out)
 	}
 }
 
@@ -8640,6 +8729,9 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "WeakRef.new") || !contains(code, "$__omnivm_proxy_cache") || !contains(code, `__omnivm_cached_proxy("handle", value)`) {
 		t.Fatalf("Ruby materializer should weakly cache handle proxies by identity, got %q", code)
 	}
+	if !contains(code, "cached.instance_variable_get(:@__omnivm_closed) != true") {
+		t.Fatalf("Ruby materializer should not reuse closed cached proxies, got %q", code)
+	}
 	if !contains(code, "def __omnivm_prune_proxy_cache") || !contains(code, "$__omnivm_proxy_cache_limit") || !contains(code, "WeakRef::RefError") {
 		t.Fatalf("Ruby materializer should bound stale weak proxy cache entries, got %q", code)
 	}
@@ -8759,6 +8851,48 @@ end
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby lifecycle-name collision check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyHandleProxyCacheSkipsClosedProxy(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_adopt"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_release_explicit"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+descriptor = {"__omnivm_resource__" => true, "id" => 91, "runtime" => "ruby", "kind" => "object", "transfer" => true}
+first = __omnivm_materialize_capture(descriptor)
+raise "first close failed" unless OmniVM.proxy_close(first) == true
+second = __omnivm_materialize_capture(descriptor)
+raise "closed proxy was reused" if second.equal?(first)
+raise "second close failed" unless OmniVM.proxy_close(second) == true
+adopts = OmniVM.requests.select { |req| req["op"] == "handle_adopt" }
+releases = OmniVM.requests.select { |req| req["op"] == "handle_release_explicit" }
+expected = [{"op" => "handle_adopt", "id" => 91}, {"op" => "handle_adopt", "id" => 91}]
+raise "adopt requests mismatch: #{adopts.inspect}" unless adopts == expected
+expected_releases = [{"op" => "handle_release_explicit", "id" => 91}, {"op" => "handle_release_explicit", "id" => 91}]
+raise "release requests mismatch: #{releases.inspect}" unless releases == expected_releases
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby closed proxy cache check failed: %v\n%s", err, out)
 	}
 }
 

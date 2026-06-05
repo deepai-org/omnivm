@@ -1387,7 +1387,7 @@ def _wrap_manifest_value(module_id, value):
         if _is_manifest_proxy_descriptor(value) and module_id is not None:
             cache_key = (str(module_id), int(value["id"]))
             cached = _manifest_proxy_cache.get(cache_key)
-            if cached is not None:
+            if cached is not None and not object.__getattribute__(cached, "_closed"):
                 return cached
             proxy = ManifestProxy(module_id, value)
             _manifest_proxy_cache[cache_key] = proxy
