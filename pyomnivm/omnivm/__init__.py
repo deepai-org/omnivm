@@ -1440,6 +1440,17 @@ class ManifestProxy:
     def __omnivm_handle_id__(self):
         return self._handle_id
 
+    def _remote_lifecycle_named_field(self, key, missing):
+        if object.__getattribute__(self, "_closed"):
+            return missing
+        handle_id = object.__getattribute__(self, "_handle_id")
+        if not bool(self._op({"op": "handle_contains", "id": handle_id, "value": key})):
+            return missing
+        result = self._op({"op": "handle_get", "id": handle_id, "key": key})
+        if isinstance(result, dict) and result.get("__omnivm_callable__") is True:
+            return _ManifestProxyMethod(self, key)
+        return result
+
     def close(self):
         if object.__getattribute__(self, "_closed"):
             return False
@@ -1456,7 +1467,7 @@ class ManifestProxy:
         return released
 
     def _omnivm_close(self):
-        return self.close()
+        return object.__getattribute__(self, "close")()
 
     def _retain_arg_lease(self, lease):
         lease.retain()
@@ -1469,10 +1480,10 @@ class ManifestProxy:
 
     def __exit__(self, _exc_type, exc, _tb):
         if _exc_type is None:
-            self.close()
+            self._omnivm_close()
             return False
         try:
-            self.close()
+            self._omnivm_close()
         except BaseException as close_exc:
             _record_cleanup_error(
                 exc,
@@ -1486,6 +1497,14 @@ class ManifestProxy:
         runtime = descriptor.get("runtime", "unknown")
         kind = descriptor.get("kind", "object")
         return f"<omnivm.ManifestProxy {runtime}:{kind}#{self._handle_id}>"
+
+    def __getattribute__(self, key):
+        if key in ("close", "dispose"):
+            missing = object()
+            value = object.__getattribute__(self, "_remote_lifecycle_named_field")(key, missing)
+            if value is not missing:
+                return value
+        return object.__getattribute__(self, key)
 
     def __getattr__(self, key):
         result = self._op({"op": "handle_get", "id": self._handle_id, "key": key})
@@ -1791,7 +1810,7 @@ def _lifecycle_method_accepts_no_args(method):
 def proxy_close(value):
     """Release a proxy lease without colliding with a data field named close."""
     if isinstance(value, ManifestProxy):
-        return value.close()
+        return value._omnivm_close()
     close = _actual_public_method(value, "_omnivm_close")
     if callable(close) and _lifecycle_method_accepts_no_args(close):
         return close()
@@ -1809,7 +1828,7 @@ def proxy_close(value):
 async def aproxy_close(value):
     """Async close helper for proxy leases and Python objects exposing close/aclose."""
     if isinstance(value, ManifestProxy):
-        result = value.close()
+        result = value._omnivm_close()
         return await result if inspect.isawaitable(result) else result
     close = _actual_public_method(value, "_omnivm_close")
     if callable(close) and _lifecycle_method_accepts_no_args(close):
@@ -1873,7 +1892,7 @@ def cleanup_errors(error):
 
 def _manifest_stream_iterator_release(proxy):
     try:
-        proxy.close()
+        proxy._omnivm_close()
     except BaseException:
         pass
 
@@ -1924,7 +1943,7 @@ class _ManifestStreamIterator:
             raise
 
     def close(self):
-        result = self._proxy.close()
+        result = self._proxy._omnivm_close()
         self._detach_finalizer()
         return result
 

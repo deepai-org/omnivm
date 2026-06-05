@@ -1250,7 +1250,7 @@ class TestCallWithMockLib(unittest.TestCase):
 
         refs = getattr(builtins, "__omnivm_arg_refs", {})
         assert request in refs.values()
-        proxy.close()
+        proxy._omnivm_close()
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert requests[0]["args"][0]["var"].startswith("__omnivm_arg_refs['py_")
         assert {"op": "handle_adopt", "id": 7} in requests
@@ -1295,13 +1295,13 @@ class TestCallWithMockLib(unittest.TestCase):
 
         refs = getattr(builtins, "__omnivm_arg_refs", {})
         assert request in refs.values()
-        child.close()
+        child._omnivm_close()
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         method_call = next(req for req in requests if req.get("op") == "handle_call")
         assert method_call["args"][0]["var"].startswith("__omnivm_arg_refs['py_")
         assert {"op": "handle_adopt", "id": 8} in requests
         assert {"op": "handle_release_explicit", "id": 8} in requests
-        root.close()
+        root._omnivm_close()
 
     def test_manifest_call_wraps_complex_return_proxy(self):
         def envelope(value, kind="json"):
@@ -1339,7 +1339,7 @@ class TestCallWithMockLib(unittest.TestCase):
         assert isinstance(proxy, omnivm_mod.ManifestProxy)
         assert proxy.path == "/orders"
         assert proxy.items("open", limit=2) == ["a", "b"]
-        proxy.close()
+        proxy._omnivm_close()
         assert requests[0] == {"func": "request", "args": []}
         assert requests[1] == {"op": "handle_adopt", "id": 42}
         assert requests[4] == {
@@ -1358,6 +1358,7 @@ class TestCallWithMockLib(unittest.TestCase):
         requests = []
         fields = {
             "close": "field-close",
+            "dispose": "field-dispose",
             "length": 3,
             "__class__": "remote-class",
             "__repr__": "remote-repr",
@@ -1386,16 +1387,17 @@ class TestCallWithMockLib(unittest.TestCase):
             if request.get("op") == "handle_len":
                 return envelope(7, "number")
             if request.get("op") == "handle_iter" and request.get("mode") == "keys":
-                return envelope(["close", "length", "__class__", "__repr__"])
+                return envelope(["close", "dispose", "length", "__class__", "__repr__"])
             if request.get("op") == "handle_iter" and request.get("mode") == "items":
                 return envelope([
                     ["close", fields["close"]],
+                    ["dispose", fields["dispose"]],
                     ["length", fields["length"]],
                     ["__class__", fields["__class__"]],
                     ["__repr__", fields["__repr__"]],
                 ])
             if request.get("op") == "handle_iter" and request.get("mode") == "values":
-                return envelope([fields["close"], fields["length"], fields["__class__"], fields["__repr__"]])
+                return envelope([fields["close"], fields["dispose"], fields["length"], fields["__class__"], fields["__repr__"]])
             if request.get("op") == "handle_contains":
                 return envelope(request["value"] in fields, "bool")
             if request.get("op") == "handle_release_explicit":
@@ -1406,24 +1408,27 @@ class TestCallWithMockLib(unittest.TestCase):
 
         proxy = omnivm_mod.manifest_call("demo", "tool")
 
-        assert callable(proxy.close)
+        assert proxy.close == "field-close"
+        assert proxy.dispose == "field-dispose"
         assert proxy.__class__ is omnivm_mod.ManifestProxy
         assert repr(proxy).startswith("<omnivm.ManifestProxy ")
         assert omnivm_mod.proxy_get(proxy, "close") == "field-close"
+        assert omnivm_mod.proxy_get(proxy, "dispose") == "field-dispose"
         assert omnivm_mod.proxy_get(proxy, "__class__") == "remote-class"
         assert omnivm_mod.proxy_get(proxy, "__repr__") == "remote-repr"
         assert omnivm_mod.proxy_set(proxy, "close", "field-updated") is True
         assert omnivm_mod.proxy_get(proxy, "close") == "field-updated"
         assert omnivm_mod.proxy_call(proxy, "accept", args=("js",)) == "accepted-js"
         assert omnivm_mod.proxy_len(proxy) == 7
-        assert omnivm_mod.proxy_keys(proxy) == ["close", "length", "__class__", "__repr__"]
+        assert omnivm_mod.proxy_keys(proxy) == ["close", "dispose", "length", "__class__", "__repr__"]
         assert omnivm_mod.proxy_items(proxy) == [
             ["close", "field-updated"],
+            ["dispose", "field-dispose"],
             ["length", 3],
             ["__class__", "remote-class"],
             ["__repr__", "remote-repr"],
         ]
-        assert omnivm_mod.proxy_values(proxy) == ["field-updated", 3, "remote-class", "remote-repr"]
+        assert omnivm_mod.proxy_values(proxy) == ["field-updated", "field-dispose", 3, "remote-class", "remote-repr"]
         assert omnivm_mod.proxy_contains(proxy, "close") is True
         assert omnivm_mod.proxy_contains(proxy, "missing") is False
         assert proxy._omnivm_close() is True
@@ -1456,9 +1461,9 @@ class TestCallWithMockLib(unittest.TestCase):
         proxy = omnivm_mod.manifest_call("demo", "tool")
 
         with self.assertRaisesRegex(RuntimeError, "release failed"):
-            proxy.close()
+            proxy._omnivm_close()
         with self.assertRaisesRegex(RuntimeError, "release failed"):
-            proxy.close()
+            proxy._omnivm_close()
 
     def test_manifest_proxy_close_false_result_remains_retryable(self):
         def envelope(value, kind="json"):
@@ -1487,9 +1492,9 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniManifestCall.side_effect = manifest_call
         proxy = omnivm_mod.manifest_call("demo", "tool")
 
-        assert proxy.close() is False
-        assert proxy.close() is True
-        assert proxy.close() is False
+        assert proxy._omnivm_close() is False
+        assert proxy._omnivm_close() is True
+        assert proxy._omnivm_close() is False
         assert releases == 2
 
     def test_proxy_close_preserves_public_close_result_without_dynamic_lookup(self):
@@ -1977,7 +1982,7 @@ class TestCallWithMockLib(unittest.TestCase):
         proxy = omnivm_mod.manifest_call("demo", "rows")
         iterator = iter(proxy)
 
-        assert proxy.close() is True
+        assert proxy._omnivm_close() is True
         with self.assertRaises(StopIteration):
             next(iterator)
         assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
@@ -2374,8 +2379,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert isinstance(primary, omnivm_mod.ManifestProxy)
         assert child.__omnivm_handle_id__ == 7
         assert primary.__omnivm_handle_id__ == 8
-        child.close()
-        primary.close()
+        child._omnivm_close()
+        primary._omnivm_close()
         assert {"op": "handle_adopt", "id": 7} in requests
         assert {"op": "handle_retain", "id": 8} in requests
         assert {"op": "handle_release_explicit", "id": 7} in requests

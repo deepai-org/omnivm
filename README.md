@@ -558,7 +558,9 @@ Python retained manifest proxies expose the same escape hatches as
 `omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
 `omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
 `omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
-`omnivm.omnivm_close(proxy)`. For ordinary local objects, the same helpers
+`omnivm.omnivm_close(proxy)`. Owner fields named `close` or `dispose` remain
+ordinary fields on retained Python proxies; use `proxy_close()` or
+`omnivm_close()` for lifecycle release. For ordinary local objects, the same helpers
 honor descriptor-defined `close()` and `dispose()` without triggering dynamic
 attribute lookup; `omnivm.aproxy_close(value)` also awaits async close,
 `aclose()`, and dispose results. Generated Python manifest snippets expose the
