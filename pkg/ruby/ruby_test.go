@@ -285,6 +285,19 @@ rescue OmniVM::RuntimeError => e
   raise "detailsJson setter json #{e.details_json.inspect}" unless JSON.parse(e.details_json)["owner_dispatch"]["mode"] == "alias-object-set"
   e.details = {"owner_dispatch" => {"owner_dispatch_supported" => false, "mode" => "details-set"}}
   raise "details setter json #{e.details_json.inspect}" unless JSON.parse(e.details_json)["owner_dispatch"]["mode"] == "details-set"
+  e.originRuntime = "owner-ruby"
+  e.boundaryPath = "owner_dispatch > normalized"
+  e.originalErrorHandle = "rb-owner-1"
+  e.stackFrames = ["normalized stack"]
+  e.causeChain = [{"runtime" => "ruby", "message" => "inner"}]
+  e.traceback = "normalized traceback"
+  envelope = e.to_h
+  raise "originRuntime setter #{envelope.inspect}" unless envelope[:origin_runtime] == "owner-ruby"
+  raise "boundaryPath setter #{envelope.inspect}" unless envelope[:boundary_path] == "owner_dispatch > normalized"
+  raise "originalErrorHandle setter #{envelope.inspect}" unless envelope[:original_error_handle] == "rb-owner-1"
+  raise "stackFrames setter #{envelope.inspect}" unless envelope[:stack_frames] == ["normalized stack"]
+  raise "causeChain setter #{envelope.inspect}" unless envelope[:cause_chain] == [{"runtime" => "ruby", "message" => "inner"}]
+  raise "traceback setter #{envelope.inspect}" unless envelope[:traceback] == "normalized traceback"
 end
 
 begin

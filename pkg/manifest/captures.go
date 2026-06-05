@@ -3102,6 +3102,9 @@ def __omnivm_runtime_error(message, boundary_path, details = nil)
   err.instance_variable_set(:@runtime, "ruby")
   err.instance_variable_set(:@origin_runtime, "ruby")
   err.instance_variable_set(:@type, "RuntimeError")
+  err.instance_variable_set(:@traceback, nil)
+  err.instance_variable_set(:@stack_frames, nil)
+  err.instance_variable_set(:@cause_chain, [])
   err.instance_variable_set(:@boundary_path, boundary_path)
   err.instance_variable_set(:@original_error_handle, nil)
   err.instance_variable_set(:@details, details_copy)
@@ -3113,23 +3116,69 @@ def __omnivm_runtime_error(message, boundary_path, details = nil)
     alias originalErrorHandle original_error_handle
     alias detailsJson details_json
 
+    def origin_runtime=(value)
+      @origin_runtime = value
+    end
+
+    def originRuntime=(value)
+      self.origin_runtime = value
+    end
+
+    def boundary_path=(value)
+      @boundary_path = value
+    end
+
+    def boundaryPath=(value)
+      self.boundary_path = value
+    end
+
+    def original_error_handle=(value)
+      @original_error_handle = value
+    end
+
+    def originalErrorHandle=(value)
+      self.original_error_handle = value
+    end
+
     def traceback
+      return @traceback.to_s if @traceback && !@traceback.to_s.empty?
       frames = backtrace
       frames.is_a?(Array) ? frames.join("\n") : ""
     end
 
+    def traceback=(value)
+      @traceback = value
+    end
+
     def stack_frames
+      return __omnivm_copy_json_value(@stack_frames) if @stack_frames.is_a?(Array)
       frames = backtrace
       frames.is_a?(Array) ? frames.dup : []
     end
 
+    def stack_frames=(value)
+      @stack_frames = value.is_a?(Array) ? __omnivm_copy_json_value(value) : []
+    end
+
     alias stackFrames stack_frames
 
+    def stackFrames=(value)
+      self.stack_frames = value
+    end
+
     def cause_chain
-      []
+      @cause_chain.is_a?(Array) ? __omnivm_copy_json_value(@cause_chain) : []
+    end
+
+    def cause_chain=(value)
+      @cause_chain = value.is_a?(Array) ? __omnivm_copy_json_value(value) : []
     end
 
     alias causeChain cause_chain
+
+    def causeChain=(value)
+      self.cause_chain = value
+    end
 
     def details
       __omnivm_copy_json_value(@details)

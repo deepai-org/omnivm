@@ -9375,7 +9375,15 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "return OmniVM::RuntimeError.new(message, runtime: \"ruby\", boundary_path: boundary_path, details: details)") ||
 		!contains(code, "attr_reader :runtime, :origin_runtime, :type, :boundary_path, :original_error_handle, :details_json") ||
 		!contains(code, "def stack_frames") ||
+		!contains(code, "def stack_frames=(value)") ||
+		!contains(code, "def stackFrames=(value)") ||
 		!contains(code, "def cause_chain") ||
+		!contains(code, "def cause_chain=(value)") ||
+		!contains(code, "def causeChain=(value)") ||
+		!contains(code, "def traceback=(value)") ||
+		!contains(code, "def originRuntime=(value)") ||
+		!contains(code, "def boundaryPath=(value)") ||
+		!contains(code, "def originalErrorHandle=(value)") ||
 		!contains(code, "def details") ||
 		!contains(code, "def details=(value)") ||
 		!contains(code, "def details_json=(value)") ||
@@ -9894,6 +9902,12 @@ rescue => e
   raise unless e.message.include?("stream_next returned malformed chunk")
   raise "malformed chunk runtime mismatch: #{e.runtime.inspect}" unless e.respond_to?(:runtime) && e.runtime == "ruby"
   raise "malformed chunk boundary mismatch: #{e.boundary_path.inspect}" unless e.respond_to?(:boundary_path) && e.boundary_path == "stream_next"
+  e.originRuntime = "owner-ruby"
+  e.boundaryPath = "stream_next > normalized"
+  e.originalErrorHandle = "rb-stream-90"
+  e.stackFrames = ["normalized stack"]
+  e.causeChain = [{"runtime" => "ruby", "message" => "inner"}]
+  e.traceback = "normalized traceback"
   details = e.details
   raise "malformed chunk details mismatch: #{details.inspect}" unless details == {"stream" => {"id" => 90, "chunk" => ""}}
   details["stream"]["id"] = -1
@@ -9905,7 +9919,12 @@ rescue => e
   e.details = {"stream" => {"id" => 93, "chunk" => "details"}}
   raise "details setter did not update details_json: #{e.details_json.inspect}" unless JSON.parse(e.details_json) == {"stream" => {"id" => 93, "chunk" => "details"}}
   envelope = JSON.parse(e.to_json)
-  raise "malformed chunk json boundary mismatch: #{envelope.inspect}" unless envelope["boundary_path"] == "stream_next"
+  raise "malformed chunk json origin mismatch: #{envelope.inspect}" unless envelope["origin_runtime"] == "owner-ruby"
+  raise "malformed chunk json boundary mismatch: #{envelope.inspect}" unless envelope["boundary_path"] == "stream_next > normalized"
+  raise "malformed chunk json handle mismatch: #{envelope.inspect}" unless envelope["original_error_handle"] == "rb-stream-90"
+  raise "malformed chunk json traceback mismatch: #{envelope.inspect}" unless envelope["traceback"] == "normalized traceback"
+  raise "malformed chunk json stack mismatch: #{envelope.inspect}" unless envelope["stack_frames"] == ["normalized stack"]
+  raise "malformed chunk json cause mismatch: #{envelope.inspect}" unless envelope["cause_chain"] == [{"runtime" => "ruby", "message" => "inner"}]
   raise "malformed chunk json details mismatch: #{envelope.inspect}" unless envelope["details"] == {"stream" => {"id" => 93, "chunk" => "details"}}
 end
 raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
@@ -11515,8 +11534,16 @@ func TestPythonRubyRuntimeErrorsParseWrappedStructuredEnvelopes(t *testing.T) {
 	for _, want := range []string{
 		"def stack_frames",
 		"OmniVM.__copy_json_value(@stack_frames)",
+		"def stack_frames=(value)",
+		"def stackFrames=(value)",
 		"def cause_chain",
 		"OmniVM.__copy_json_value(@cause_chain)",
+		"def cause_chain=(value)",
+		"def causeChain=(value)",
+		"def traceback=(value)",
+		"def originRuntime=(value)",
+		"def boundaryPath=(value)",
+		"def originalErrorHandle=(value)",
 		"def details",
 		"OmniVM.__copy_json_value(@details)",
 		"def details=(value)",
