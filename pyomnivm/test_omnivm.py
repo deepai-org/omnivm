@@ -2839,6 +2839,27 @@ class TestCallWithMockLib(unittest.TestCase):
         assert result.readonly is False
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"empty")
 
+    def test_get_buffer_empty_borrow_release_stays_quiet_on_failure(self):
+        def fill_buffer(_name, out):
+            buf = ctypes.cast(
+                out,
+                ctypes.POINTER(omnivm_mod._OmniBuffer),
+            ).contents
+            buf.data = None
+            buf.len = 0
+            buf.dtype = 0
+            buf.read_only = 0
+            return 0
+
+        self.mock_lib.OmniBufGet.side_effect = fill_buffer
+        self.mock_lib.OmniBufRelease.side_effect = RuntimeError("release failed")
+
+        result = omnivm_mod.get_buffer("empty")
+
+        assert isinstance(result, memoryview)
+        assert len(result) == 0
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"empty")
+
     def test_get_buffer_preserves_readonly_for_empty_buffer(self):
         def fill_buffer(_name, out):
             buf = ctypes.cast(
@@ -2857,6 +2878,24 @@ class TestCallWithMockLib(unittest.TestCase):
         assert len(result) == 0
         assert result.readonly is True
         self.mock_lib.OmniBufRelease.assert_called_once_with(b"empty")
+
+    def test_get_buffer_invalid_borrow_release_stays_quiet_on_failure(self):
+        def fill_buffer(_name, out):
+            buf = ctypes.cast(
+                out,
+                ctypes.POINTER(omnivm_mod._OmniBuffer),
+            ).contents
+            buf.data = None
+            buf.len = 3
+            buf.dtype = 0
+            buf.read_only = 0
+            return 0
+
+        self.mock_lib.OmniBufGet.side_effect = fill_buffer
+        self.mock_lib.OmniBufRelease.side_effect = RuntimeError("release failed")
+
+        assert omnivm_mod.get_buffer("payload") is None
+        self.mock_lib.OmniBufRelease.assert_called_once_with(b"payload")
 
     def test_release_buffer_prefers_explicit_free(self):
         self.mock_lib.OmniBufFree.return_value = 0

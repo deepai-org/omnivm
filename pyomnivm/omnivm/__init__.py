@@ -2412,11 +2412,11 @@ def get_buffer(name):
     if rc != 0:
         return None
     if out.len == 0:
-        _lib.OmniBufRelease(encoded_name)
+        _release_buffer_borrow(encoded_name)
         empty = memoryview(b"" if out.read_only else bytearray())
         return empty.toreadonly() if out.read_only else empty
     if not out.data or out.len < 0:
-        _lib.OmniBufRelease(encoded_name)
+        _release_buffer_borrow(encoded_name)
         return None
     view_owner = (ctypes.c_char * int(out.len)).from_address(int(out.data))
     weakref.finalize(view_owner, _release_buffer_borrow, encoded_name)
