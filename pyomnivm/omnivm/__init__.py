@@ -1491,6 +1491,10 @@ def _manifest_proxy_release(module_id, handle_id, lib_token):
         pass
 
 
+def _is_unloaded_manifest_module_error(error):
+    return "manifest module not loaded" in str(error)
+
+
 class ManifestProxy:
     """Python wrapper for a live object returned by a retained manifest."""
 
@@ -1599,9 +1603,15 @@ class ManifestProxy:
         if _lib is not object.__getattribute__(self, "_lib_token"):
             return missing
         handle_id = object.__getattribute__(self, "_handle_id")
-        if not bool(self._op({"op": "handle_contains", "id": handle_id, "value": key})):
-            return missing
-        result = self._op({"op": "handle_get", "id": handle_id, "key": key})
+        try:
+            if not bool(self._op({"op": "handle_contains", "id": handle_id, "value": key})):
+                return missing
+            result = self._op({"op": "handle_get", "id": handle_id, "key": key})
+        except RuntimeError as exc:
+            if _is_unloaded_manifest_module_error(exc):
+                self._detach_after_remote_close("worker_drain")
+                return missing
+            raise
         if isinstance(result, dict) and result.get("__omnivm_callable__") is True:
             return _ManifestProxyMethod(self, key)
         return result
@@ -1613,13 +1623,19 @@ class ManifestProxy:
             self._detach_after_remote_close()
             return False
         op = "stream_cancel" if self._is_stream_proxy() else "handle_release_explicit"
-        released = bool(_manifest_bridge_call(
-            object.__getattribute__(self, "_module_id"),
-            {
-                "op": op,
-                "id": object.__getattribute__(self, "_handle_id"),
-            },
-        ))
+        try:
+            released = bool(_manifest_bridge_call(
+                object.__getattribute__(self, "_module_id"),
+                {
+                    "op": op,
+                    "id": object.__getattribute__(self, "_handle_id"),
+                },
+            ))
+        except RuntimeError as exc:
+            if _is_unloaded_manifest_module_error(exc):
+                self._detach_after_remote_close("worker_drain")
+                return False
+            raise
         if released:
             self._detach_after_remote_close("explicit_release")
         return released

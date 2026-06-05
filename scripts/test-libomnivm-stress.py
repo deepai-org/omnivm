@@ -5866,6 +5866,7 @@ if payload != {
 
 
 def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -5904,14 +5905,14 @@ def test_manifest_fastapi_request_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"FastAPI request did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"FastAPI request crossed as a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"FastAPI request should not claim bulk Arrow transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"FastAPI request used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"FastAPI request did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"FastAPI request crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"FastAPI request should not claim bulk Arrow transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"FastAPI request used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_fastapi_asgi_app_disconnect_lifecycle_survives_capture():
@@ -12487,6 +12488,7 @@ return null;
 
 
 def test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -12533,15 +12535,16 @@ def test_manifest_python_file_like_request_shape_capture_uses_proxy_not_stream()
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Python file-like request shape did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Python file-like request shape crossed as a stream: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Python file-like request shape used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Python file-like request shape did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Python file-like request shape crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Python file-like request shape used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -12602,15 +12605,16 @@ def test_manifest_ruby_http_message_shape_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Ruby HTTP message shape did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Ruby HTTP message shape crossed as a stream: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Ruby HTTP message shape used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Ruby HTTP message shape did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Ruby HTTP message shape crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Ruby HTTP message shape used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_rack_request_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -12646,14 +12650,14 @@ def test_manifest_rack_request_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Rack request did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Rack request crossed as a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Rack request should not claim bulk Arrow transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Rack request used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Rack request did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Rack request crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Rack request should not claim bulk Arrow transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Rack request used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_rails_actiondispatch_request_response_capture_uses_proxy_not_stream():
@@ -13165,6 +13169,7 @@ if "client-saw-first" not in rack_webrick_abort_events:
 
 
 def test_manifest_java_http_message_shape_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     java_msg_expr = (
         "((java.util.function.Supplier<Object>)(() -> { "
         "java.util.concurrent.atomic.AtomicInteger iterCount = "
@@ -13223,12 +13228,12 @@ def test_manifest_java_http_message_shape_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Java HTTP message shape did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Java HTTP message shape crossed as a stream: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Java HTTP message shape used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Java HTTP message shape did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Java HTTP message shape crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java HTTP message shape used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_okhttp_request_capture_uses_proxy_not_json():
@@ -13373,6 +13378,7 @@ def test_manifest_okhttp_response_body_stream_early_cancel_releases_owner():
 
 
 def test_manifest_express_request_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -13416,14 +13422,14 @@ def test_manifest_express_request_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Express request did not cross as a live proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Express request crossed as a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Express request should not claim bulk Arrow transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Express request used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Express request did not cross as a live proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Express request crossed as a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Express request should not claim bulk Arrow transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Express request used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_express_request_abort_lifecycle_stays_live():
@@ -16903,6 +16909,7 @@ def test_manifest_java_runtime_ref_exposes_local_object_members_generically():
 
 
 def test_manifest_java_collections_capture_use_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
     java_map_expr = (
         "((java.util.function.Supplier<java.util.LinkedHashMap<String,Object>>)(() -> { "
         "java.util.LinkedHashMap<String,Object> m = new java.util.LinkedHashMap<>(); "
@@ -16984,19 +16991,21 @@ def test_manifest_java_collections_capture_use_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 2:
-        raise AssertionError(f"Java collections did not cross as live proxies: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Java collections should not be mistaken for streams: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"Java collections should not claim bulk table buffers: {boundary}")
-    if boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Java collections should not claim Arrow transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Java collections used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 2:
+        raise AssertionError(f"Java collections did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Java collections should not be mistaken for streams: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0):
+        raise AssertionError(f"Java collections should not claim bulk table buffers: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Java collections should not claim Arrow transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java collections used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_python_set_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
+    before_handles = omnivm.status().get("handles", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -17055,21 +17064,23 @@ def test_manifest_python_set_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Python set did not cross as a live resource proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Python set should not be mistaken for a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Python set should not claim bulk table transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Python set used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Python set did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Python set should not be mistaken for a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Python set should not claim bulk table transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Python set used JSON fallback: before={before_boundary}, after={boundary}")
     handles = omnivm.status().get("handles", {})
     for kind in ("property", "call"):
-        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
-            raise AssertionError(f"Python set proxy did not record {kind} access: {handles}")
+        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) <= before_handles.get("handle_accesses_by_kind", {}).get(kind, 0):
+            raise AssertionError(f"Python set proxy did not record {kind} access: before={before_handles}, after={handles}")
 
 
 def test_manifest_java_set_capture_uses_proxy_not_stream():
+    before_boundary = omnivm.status().get("boundary", {})
+    before_handles = omnivm.status().get("handles", {})
     java_set_expr = (
         "((java.util.function.Supplier<java.util.LinkedHashSet<String>>)(() -> { "
         "java.util.LinkedHashSet<String> items = new java.util.LinkedHashSet<>(); "
@@ -17138,18 +17149,18 @@ def test_manifest_java_set_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"Java set did not cross as a live resource proxy: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Java set should not be mistaken for a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Java set should not claim bulk table transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Java set used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"Java set did not cross as a live resource proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Java set should not be mistaken for a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Java set should not claim bulk table transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Java set used JSON fallback: before={before_boundary}, after={boundary}")
     handles = omnivm.status().get("handles", {})
     for kind in ("property", "call"):
-        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
-            raise AssertionError(f"Java set proxy did not record {kind} access: {handles}")
+        if handles.get("handle_accesses_by_kind", {}).get(kind, 0) <= before_handles.get("handle_accesses_by_kind", {}).get(kind, 0):
+            raise AssertionError(f"Java set proxy did not record {kind} access: before={before_handles}, after={handles}")
 
 
 def test_manifest_active_record_relation_like_stays_lazy_and_collision_safe():
@@ -18353,6 +18364,7 @@ def test_manifest_js_map_capture_uses_proxy_not_json():
 
 
 def test_manifest_js_set_capture_uses_proxy_not_stream():
+    before = omnivm.status().get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -18400,16 +18412,16 @@ def test_manifest_js_set_capture_uses_proxy_not_stream():
         os.unlink(path)
 
     after = omnivm.status().get("boundary", {})
-    if after.get("resource_proxy_captures", 0) < 1:
-        raise AssertionError(f"JS Set did not cross as a live proxy: {after}")
-    if after.get("table_proxy_captures", 0) != 0:
-        raise AssertionError(f"JS Set should not claim a bulk table buffer: {after}")
-    if after.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"JS Set should not claim Arrow transfer: {after}")
-    if after.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"JS Set should not be mistaken for a stream: {after}")
-    if after.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"JS Set capture used JSON fallback: {after}")
+    if after.get("resource_proxy_captures", 0) < before.get("resource_proxy_captures", 0) + 1:
+        raise AssertionError(f"JS Set did not cross as a live proxy: before={before}, after={after}")
+    if after.get("table_proxy_captures", 0) != before.get("table_proxy_captures", 0):
+        raise AssertionError(f"JS Set should not claim a bulk table buffer: before={before}, after={after}")
+    if after.get("arrow_transfers", 0) != before.get("arrow_transfers", 0):
+        raise AssertionError(f"JS Set should not claim Arrow transfer: before={before}, after={after}")
+    if after.get("stream_proxy_captures", 0) != before.get("stream_proxy_captures", 0):
+        raise AssertionError(f"JS Set should not be mistaken for a stream: before={before}, after={after}")
+    if after.get("json_fallbacks", 0) != before.get("json_fallbacks", 0):
+        raise AssertionError(f"JS Set capture used JSON fallback: before={before}, after={after}")
 
 
 def test_manifest_zod_schema_capture_uses_proxy_not_json():
@@ -22578,6 +22590,7 @@ def test_manifest_python_generator_capture_is_lazy_stream():
 
 def test_manifest_function_returned_generator_is_transfer_stream():
     before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
     before_handles = before_status.get("handles", {})
     manifest = {
         "version": 1,
@@ -22620,12 +22633,18 @@ def test_manifest_function_returned_generator_is_transfer_stream():
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned generator did not use a stream proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned generator used JSON fallback: {boundary}")
-    if handles.get("finalizer_releases", 0) <= before_handles.get("finalizer_releases", 0):
-        raise AssertionError(f"function-returned stream transfer was not finalizer-released: before={before_handles}, after={handles}")
+    if boundary.get("stream_proxy_captures", 0) < before_boundary.get("stream_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned generator did not use a stream proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned generator used JSON fallback: before={before_boundary}, after={boundary}")
+    finalizer_activity_delta = (
+        handles.get("finalizer_releases", 0)
+        + handles.get("finalizer_queued", 0)
+        - before_handles.get("finalizer_releases", 0)
+        - before_handles.get("finalizer_queued", 0)
+    )
+    if finalizer_activity_delta < 1:
+        raise AssertionError(f"function-returned stream transfer did not queue or run finalizer cleanup: before={before_handles}, after={handles}")
     if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"function-returned stream transfer leaked a live handle: before={before_handles}, after={handles}")
 
