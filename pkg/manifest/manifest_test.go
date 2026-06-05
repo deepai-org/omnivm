@@ -9138,6 +9138,7 @@ public final class OwnerDispatchCheck {
             require("unknown_loop".equals(dispatch.get("target")), "missing unknown target: " + details);
             require("unknown-loop".equals(dispatch.get("requested_target")), "missing requested unknown target: " + details);
             require(((java.util.List<?>) dispatch.get("known_targets")).contains("java_executor"), "missing known targets: " + details);
+            require(dispatch.get("known_targets").equals(java.util.Arrays.asList("java_executor", "javascript_event_loop", "python_asyncio", "ruby_fiber_thread")), "known targets were not sorted: " + details);
         }
 
         try {

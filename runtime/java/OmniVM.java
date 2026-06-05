@@ -166,7 +166,13 @@ public class OmniVM {
         Object targets = status.get("owner_dispatch_targets");
         Map<?, ?> targetMap = targets instanceof Map<?, ?> map ? map : null;
         if (targetMap == null || !targetMap.containsKey(name)) {
-            List<Object> knownTargets = targetMap == null ? ownerDispatchList() : ownerDispatchList(targetMap.keySet().toArray());
+            List<Object> knownTargets = ownerDispatchList();
+            if (targetMap != null) {
+                for (Object key : targetMap.keySet()) {
+                    knownTargets.add(String.valueOf(key));
+                }
+                knownTargets.sort((left, right) -> String.valueOf(left).compareTo(String.valueOf(right)));
+            }
             throw runtimeError(
                 "unknown owner dispatch target: " + requested,
                 "owner_dispatch_target",
