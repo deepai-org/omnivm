@@ -28282,6 +28282,46 @@ def test_manifest_closed_stream_proxy_reports_owner_lifecycle_error():
                 ),
             },
             {
+                "op": "eval",
+                "runtime": "python",
+                "bind": "rows_for_python",
+                "code": "make_stream('python')",
+            },
+            {
+                "op": "func_def",
+                "name": "current_python_rows",
+                "params": [],
+                "body": [
+                    {"op": "return", "value": {"kind": "ref", "name": "rows_for_python"}},
+                ],
+            },
+            {
+                "op": "exec",
+                "runtime": "python",
+                "code": (
+                    "stale_py_stream = current_python_rows()\n"
+                    "stale_py_iter = iter(stale_py_stream)\n"
+                    "first = next(stale_py_iter)\n"
+                    "assert first.name == 'python-first', first\n"
+                    "drainer = current_python_rows()\n"
+                    "list(drainer)\n"
+                    "try:\n"
+                    "    next(stale_py_iter)\n"
+                    "except Exception as exc:\n"
+                    "    text = str(exc)\n"
+                    "    assert 'closed stream handle' in text and 'runtime=python' in text and 'kind=stream' in text, text\n"
+                    "    assert getattr(exc, 'runtime', None) == 'python', exc\n"
+                    "    assert getattr(exc, 'origin_runtime', None) == 'python', exc\n"
+                    "    assert getattr(exc, 'type', None) == 'RuntimeError', exc\n"
+                    "    assert getattr(exc, 'boundary_path', None) == 'owner_lifecycle', exc\n"
+                    "    stream = getattr(exc, 'details', {}).get('stream')\n"
+                    "    assert stream and stream.get('runtime') == 'python' and stream.get('kind') == 'stream', stream\n"
+                    "    assert stream.get('closed') is True and stream.get('owner_lifecycle') == 'closed', stream\n"
+                    "else:\n"
+                    "    raise AssertionError('closed Python stream proxy pull did not raise')\n"
+                ),
+            },
+            {
                 "op": "exec",
                 "runtime": "javascript",
                 "captures": {"rows_for_js": "rows_for_js"},
@@ -28357,6 +28397,7 @@ def test_manifest_closed_stream_proxy_reports_owner_lifecycle_error():
                     "if (!it.hasNext()) throw new RuntimeException(\"Java stream was empty\"); "
                     "java.util.Map<?, ?> row = (java.util.Map<?, ?>) it.next(); "
                     "if (!\"java-first\".equals(String.valueOf(row.get(\"name\")))) throw new RuntimeException(\"bad Java first stream row: \" + row); "
+                    "omnivm.OmniVM.setCaptureObject(\"staleJavaStream\", raw); "
                     "omnivm.OmniVM.setCaptureObject(\"staleJavaStreamIterator\", it);"
                 ),
             },
@@ -28370,8 +28411,8 @@ def test_manifest_closed_stream_proxy_reports_owner_lifecycle_error():
                 "op": "exec",
                 "runtime": "java",
                 "code": (
-                    "java.util.Iterator<?> it = (java.util.Iterator<?>) omnivm.OmniVM.getCapture(\"staleJavaStreamIterator\"); "
-                    "try { it.hasNext(); } "
+                    "java.util.Iterator<?> drained = (java.util.Iterator<?>) omnivm.OmniVM.getCapture(\"staleJavaStreamIterator\"); "
+                    "try { drained.hasNext(); } "
                     "catch (omnivm.OmniVM.RuntimeError err) { "
                     "  String text = String.valueOf(err.getMessage()); "
                     "  if (!text.contains(\"closed stream handle\") || !text.contains(\"runtime=python\") || !text.contains(\"kind=stream\")) throw err; "
@@ -28381,11 +28422,28 @@ def test_manifest_closed_stream_proxy_reports_owner_lifecycle_error():
                     "  java.util.Map<?, ?> details = (java.util.Map<?, ?>) detailsObj; "
                     "  Object streamObj = details.get(\"stream\"); "
                     "  if (!(streamObj instanceof java.util.Map)) throw err; "
-                    "  java.util.Map<?, ?> stream = (java.util.Map<?, ?>) streamObj; "
-                    "  if (!\"python\".equals(stream.get(\"runtime\")) || !\"stream\".equals(stream.get(\"kind\")) || !Boolean.TRUE.equals(stream.get(\"closed\")) || !\"closed\".equals(stream.get(\"owner_lifecycle\"))) throw err; "
+                    "  java.util.Map<?, ?> streamDetails = (java.util.Map<?, ?>) streamObj; "
+                    "  if (!\"python\".equals(streamDetails.get(\"runtime\")) || !\"stream\".equals(streamDetails.get(\"kind\")) || !Boolean.TRUE.equals(streamDetails.get(\"closed\")) || !\"closed\".equals(streamDetails.get(\"owner_lifecycle\"))) throw err; "
                     "  omnivm.OmniVM.setCaptureObject(\"closedStreamProxyErrorSeenJava\", Boolean.TRUE); "
                     "} "
-                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedStreamProxyErrorSeenJava\"))) throw new RuntimeException(\"closed Java stream proxy pull did not raise\");"
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedStreamProxyErrorSeenJava\"))) throw new RuntimeException(\"closed Java stream proxy pull did not raise\"); "
+                    "omnivm.OmniVM.StreamProxy closedStream = (omnivm.OmniVM.StreamProxy) omnivm.OmniVM.getCapture(\"staleJavaStream\"); "
+                    "java.util.Iterator<?> fresh = closedStream.iterator(); "
+                    "try { fresh.hasNext(); } "
+                    "catch (omnivm.OmniVM.RuntimeError err) { "
+                    "  String text = String.valueOf(err.getMessage()); "
+                    "  if (!text.contains(\"closed stream handle\") || !text.contains(\"runtime=python\") || !text.contains(\"kind=stream\")) throw err; "
+                    "  if (!\"python\".equals(err.getRuntime()) || !\"python\".equals(err.getOriginRuntime()) || !\"RuntimeError\".equals(err.getType()) || !\"owner_lifecycle\".equals(err.getBoundaryPath())) throw err; "
+                    "  Object detailsObj = err.getDetails(); "
+                    "  if (!(detailsObj instanceof java.util.Map)) throw err; "
+                    "  java.util.Map<?, ?> details = (java.util.Map<?, ?>) detailsObj; "
+                    "  Object streamObj = details.get(\"stream\"); "
+                    "  if (!(streamObj instanceof java.util.Map)) throw err; "
+                    "  java.util.Map<?, ?> streamDetails = (java.util.Map<?, ?>) streamObj; "
+                    "  if (!\"python\".equals(streamDetails.get(\"runtime\")) || !\"stream\".equals(streamDetails.get(\"kind\")) || !Boolean.TRUE.equals(streamDetails.get(\"closed\")) || !\"closed\".equals(streamDetails.get(\"owner_lifecycle\"))) throw err; "
+                    "  omnivm.OmniVM.setCaptureObject(\"closedStreamProxyFreshErrorSeenJava\", Boolean.TRUE); "
+                    "} "
+                    "if (!Boolean.TRUE.equals(omnivm.OmniVM.getCapture(\"closedStreamProxyFreshErrorSeenJava\"))) throw new RuntimeException(\"fresh closed Java stream proxy pull did not raise\");"
                 ),
             },
         ],

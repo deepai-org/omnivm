@@ -1485,6 +1485,7 @@ class ManifestProxy:
         object.__setattr__(self, "_handle_id", int(descriptor["id"]))
         object.__setattr__(self, "_arg_finalizers", [])
         object.__setattr__(self, "_closed", False)
+        object.__setattr__(self, "_closed_reason", None)
         object.__setattr__(self, "_lib_token", _lib)
         if descriptor.get("transfer") is True:
             _manifest_bridge_call(module_id, {"op": "handle_adopt", "id": self._handle_id})
@@ -1508,8 +1509,9 @@ class ManifestProxy:
             if arg_finalizer.alive:
                 arg_finalizer()
 
-    def _detach_after_remote_close(self):
+    def _detach_after_remote_close(self, reason="remote"):
         object.__setattr__(self, "_closed", True)
+        object.__setattr__(self, "_closed_reason", reason)
         finalizer = object.__getattribute__(self, "_finalizer")
         if finalizer.alive:
             finalizer.detach()
@@ -1533,6 +1535,36 @@ class ManifestProxy:
                 }
             },
         )
+
+    def _owner_lifecycle_error(self, op):
+        descriptor = object.__getattribute__(self, "_descriptor")
+        runtime = str(descriptor.get("runtime") or "unknown")
+        kind = str(descriptor.get("kind") or ("stream" if self._is_stream_proxy() else "object"))
+        handle_id = object.__getattribute__(self, "_handle_id")
+        detail_key = "stream" if self._is_stream_proxy() else "resource"
+        err = RuntimeError(
+            f"manifest HandleCall: closed {kind} handle {handle_id} (runtime={runtime} kind={kind}): owner-side lifecycle is closed",
+            runtime=runtime,
+            boundary_path="owner_lifecycle",
+            details={
+                detail_key: {
+                    "id": handle_id,
+                    "runtime": runtime,
+                    "kind": kind,
+                    "closed": True,
+                    "lifecycle": "closed",
+                    "owner_lifecycle": "closed",
+                    "operation": op,
+                }
+            },
+        )
+        try:
+            err.runtime = runtime
+            err.origin_runtime = runtime
+            err.type = "RuntimeError"
+        except Exception:
+            pass
+        return err
 
     def _ensure_open(self, op):
         if object.__getattribute__(self, "_closed"):
@@ -1574,7 +1606,7 @@ class ManifestProxy:
             },
         ))
         if released:
-            self._detach_after_remote_close()
+            self._detach_after_remote_close("explicit_release")
         return released
 
     def _omnivm_close(self):
@@ -2069,6 +2101,7 @@ def _manifest_stream_iterator_release(proxy, lib_token):
 class _ManifestStreamIterator:
     def __init__(self, proxy):
         self._proxy = proxy
+        self._done = False
         self._finalizer = weakref.finalize(
             self,
             _manifest_stream_iterator_release,
@@ -2110,6 +2143,10 @@ class _ManifestStreamIterator:
     def __next__(self):
         if object.__getattribute__(self._proxy, "_closed"):
             self._detach_finalizer()
+            if not object.__getattribute__(self, "_done"):
+                reason = object.__getattribute__(self._proxy, "_closed_reason")
+                if reason == "owner_lifecycle":
+                    raise self._proxy._owner_lifecycle_error("stream_next")
             raise StopIteration
         try:
             item = _manifest_bridge_call_unwrapped(
@@ -2118,7 +2155,7 @@ class _ManifestStreamIterator:
             )
         except BaseException:
             self._detach_finalizer()
-            self._proxy._detach_after_remote_close()
+            self._proxy._detach_after_remote_close("owner_lifecycle")
             raise
         if not isinstance(item, dict) or "done" not in item:
             err = RuntimeError(
@@ -2135,11 +2172,12 @@ class _ManifestStreamIterator:
                     f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
                 )
                 self._detach_finalizer()
-                self._proxy._detach_after_remote_close()
+                self._proxy._detach_after_remote_close("owner_lifecycle")
             raise err
         if item.get("done") is True:
+            object.__setattr__(self, "_done", True)
             self._detach_finalizer()
-            self._proxy._detach_after_remote_close()
+            self._proxy._detach_after_remote_close("owner_lifecycle")
             raise StopIteration
         try:
             return _wrap_manifest_value(self._proxy._module_id, item.get("value"))
@@ -2153,7 +2191,7 @@ class _ManifestStreamIterator:
                     f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
                 )
                 self._detach_finalizer()
-                self._proxy._detach_after_remote_close()
+                self._proxy._detach_after_remote_close("owner_lifecycle")
             raise
 
     def close(self):

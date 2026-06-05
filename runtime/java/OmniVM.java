@@ -2898,6 +2898,7 @@ public class OmniVM {
         private final long bridgeToken;
         private final AtomicBoolean bridgePersistent = new AtomicBoolean(false);
         private final AtomicBoolean released = new AtomicBoolean(false);
+        private volatile String releaseReason = "";
         private final Cleaner.Cleanable cleanable;
 
         private StreamProxy(Map<String, Object> value, long bridgeToken) {
@@ -2922,7 +2923,7 @@ public class OmniVM {
             if (cleanable != null) {
                 cleanable.clean();
             } else {
-                markReleased();
+                markReleased("finalizer");
             }
         }
 
@@ -2931,9 +2932,14 @@ public class OmniVM {
         }
 
         private boolean markReleased() {
+            return markReleased("released");
+        }
+
+        private boolean markReleased(String reason) {
             if (!released.compareAndSet(false, true)) {
                 return false;
             }
+            releaseReason = reason == null ? "" : reason;
             if (cleanable != null) {
                 cleanable.clean();
             }
@@ -2954,12 +2960,13 @@ public class OmniVM {
 
         public boolean cancel() {
             if (localValues != null) {
-                return markReleased();
+                return markReleased("explicit_release");
             }
             Object id = value.get("id");
             if (id == null || !released.compareAndSet(false, true)) {
                 return false;
             }
+            releaseReason = "explicit_release";
             if (!isBridgeActive()) {
                 if (cleanable != null) {
                     cleanable.clean();
@@ -2987,9 +2994,36 @@ public class OmniVM {
                     markReleased();
                 }
             } catch (RuntimeException closeErr) {
-                markReleased();
+                markReleased("owner_lifecycle");
                 err.addSuppressed(closeErr);
             }
+        }
+
+        private boolean isOwnerLifecycleError(RuntimeException err) {
+            return err instanceof RuntimeError runtimeErr
+                && "owner_lifecycle".equals(runtimeErr.getBoundaryPath());
+        }
+
+        private RuntimeError ownerLifecycleError(String op) {
+            Object id = value.get("id");
+            String runtime = String.valueOf(value.getOrDefault("runtime", "unknown"));
+            String kind = String.valueOf(value.getOrDefault("kind", "stream"));
+            ParsedRuntimeError parsed = new ParsedRuntimeError();
+            parsed.runtime = runtime;
+            parsed.originRuntime = runtime;
+            parsed.type = "RuntimeError";
+            parsed.message = "manifest HandleCall: closed stream handle " + String.valueOf(id) + " (runtime=" + runtime + " kind=" + kind + "): owner-side lifecycle is closed";
+            parsed.boundaryPath = "owner_lifecycle";
+            parsed.detailsJson = jsonValue(ownerDispatchMap(
+                "stream", ownerDispatchMap(
+                    "id", id,
+                    "runtime", runtime,
+                    "kind", kind,
+                    "closed", true,
+                    "lifecycle", "closed",
+                    "owner_lifecycle", "closed",
+                    "operation", op)));
+            return new RuntimeError(parsed, null);
         }
 
         @Override
@@ -3044,7 +3078,7 @@ public class OmniVM {
                     if (localValues != null) {
                         if (released.get() || localIndex >= localValues.size()) {
                             done = true;
-                            markReleased();
+                            markReleased("local_eof");
                             return;
                         }
                         try {
@@ -3057,6 +3091,9 @@ public class OmniVM {
                         return;
                     }
                     if (released.get() || !isBridgeActive()) {
+                        if (released.get() && !done && "owner_lifecycle".equals(releaseReason)) {
+                            throw ownerLifecycleError("stream_next");
+                        }
                         done = true;
                         return;
                     }
@@ -3066,6 +3103,10 @@ public class OmniVM {
                         result = bridgeManifestOpRaw("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
                     } catch (RuntimeException err) {
                         done = true;
+                        if (isOwnerLifecycleError(err)) {
+                            markReleased("owner_lifecycle");
+                            throw err;
+                        }
                         cancelAfterLoadFailure(err);
                         throw err;
                     }
@@ -3080,7 +3121,7 @@ public class OmniVM {
                     }
                     if (Boolean.TRUE.equals(item.get("done"))) {
                         done = true;
-                        markReleased();
+                        markReleased("owner_lifecycle");
                         return;
                     }
                     try {

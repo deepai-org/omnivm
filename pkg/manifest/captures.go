@@ -1377,6 +1377,8 @@ class __OmniVMStreamProxy:
         self._cursor = 0
         self._exhausted = False
         self._closed = False
+        self._closed_reason = None
+        self._materialized_eof_start_cursor = None
         self._bridge_token = globals()["__omnivm_bridge_token"]()
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
@@ -1390,15 +1392,43 @@ class __OmniVMStreamProxy:
     def _bridge_active(self):
         return globals()["__omnivm_bridge_matches"](self._bridge_token)
 
-    def _mark_closed(self):
+    def _mark_closed(self, reason="remote"):
         if self._closed:
             return False
         self._closed = True
+        self._closed_reason = reason
         self._exhausted = True
         finalizer = getattr(self, "_finalizer", None)
         if finalizer is not None and finalizer.alive:
             finalizer.detach()
         return True
+
+    def _owner_lifecycle_error(self, op):
+        runtime = str(self._value.get("runtime") or "unknown") if isinstance(self._value, dict) else "unknown"
+        kind = str(self._value.get("kind") or "stream") if isinstance(self._value, dict) else "stream"
+        handle_id = self._value.get("id") if isinstance(self._value, dict) else None
+        err = _omnivm_runtime_error(
+            f"manifest HandleCall: closed stream handle {handle_id} (runtime={runtime} kind={kind}): owner-side lifecycle is closed",
+            "owner_lifecycle",
+            {
+                "stream": {
+                    "id": handle_id,
+                    "runtime": runtime,
+                    "kind": kind,
+                    "closed": True,
+                    "lifecycle": "closed",
+                    "owner_lifecycle": "closed",
+                    "operation": op,
+                }
+            },
+        )
+        try:
+            err.runtime = runtime
+            err.origin_runtime = runtime
+            err.type = "RuntimeError"
+        except Exception:
+            pass
+        return err
 
     def _next_envelope(self):
         caller = globals()["__omnivm_bridge_module"]()
@@ -1418,7 +1448,7 @@ class __OmniVMStreamProxy:
             return False
         if self._local_values is not None:
             if len(self._cache) >= len(self._local_values):
-                self._mark_closed()
+                self._mark_closed("local_eof")
                 return False
             try:
                 materialized = globals()["__omnivm_materialize_capture"](self._local_values[len(self._cache)])
@@ -1431,14 +1461,14 @@ class __OmniVMStreamProxy:
                         close_exc,
                         f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
                     )
-                    self._mark_closed()
+                    self._mark_closed("owner_lifecycle")
                 raise
             self._cache.append(materialized)
             return True
         try:
             item = self._next_envelope()
         except Exception:
-            self._mark_closed()
+            self._mark_closed("owner_lifecycle")
             raise
         if not isinstance(item, dict) or "done" not in item:
             err = _omnivm_runtime_error(
@@ -1454,10 +1484,10 @@ class __OmniVMStreamProxy:
                     close_exc,
                     f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
                 )
-                self._mark_closed()
+                self._mark_closed("owner_lifecycle")
             raise err
         if item.get("done") is True:
-            self._mark_closed()
+            self._mark_closed("owner_lifecycle")
             return False
         try:
             materialized = globals()["__omnivm_materialize_capture"](item.get("value"))
@@ -1470,23 +1500,37 @@ class __OmniVMStreamProxy:
                     close_exc,
                     f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
                 )
-                self._mark_closed()
+                self._mark_closed("owner_lifecycle")
             raise
         self._cache.append(materialized)
         return True
 
     def _materialize_all(self):
+        start_cursor = self._cursor
         while self._pull_next():
             pass
+        if self._closed_reason == "owner_lifecycle":
+            self._materialized_eof_start_cursor = start_cursor
         return self._cache
 
     def __iter__(self):
         def __omnivm_iter():
+            completed = False
+            start_cursor = self._cursor
             try:
                 while True:
+                    if self._closed and self._cursor >= len(self._cache):
+                        if (
+                            not completed
+                            and self._closed_reason == "owner_lifecycle"
+                            and self._materialized_eof_start_cursor != start_cursor
+                        ):
+                            raise self._owner_lifecycle_error("stream_next")
+                        return
                     try:
                         yield self.__next__()
                     except StopIteration:
+                        completed = True
                         return
             finally:
                 if not self._closed:
@@ -1498,11 +1542,22 @@ class __OmniVMStreamProxy:
 
     def __aiter__(self):
         async def __omnivm_aiter():
+            completed = False
+            start_cursor = self._cursor
             try:
                 while True:
+                    if self._closed and self._cursor >= len(self._cache):
+                        if (
+                            not completed
+                            and self._closed_reason == "owner_lifecycle"
+                            and self._materialized_eof_start_cursor != start_cursor
+                        ):
+                            raise self._owner_lifecycle_error("stream_next")
+                        return
                     try:
                         yield self.__next__()
                     except StopIteration:
+                        completed = True
                         return
             finally:
                 if not self._closed:
@@ -1537,9 +1592,9 @@ class __OmniVMStreamProxy:
             return False
         if self._local_values is not None:
             self._cache = self._cache[:self._cursor]
-            return self._mark_closed()
+            return self._mark_closed("explicit_release")
         if not self._bridge_active():
-            self._mark_closed()
+            self._mark_closed("explicit_release")
             return False
         caller = globals()["__omnivm_bridge_module"]()
         if caller is None or not hasattr(caller, "call"):
@@ -1550,7 +1605,7 @@ class __OmniVMStreamProxy:
         released = isinstance(env, dict) and env.get("__omnivm_result__") is True and env.get("value") is True
         if released:
             self._cache = self._cache[:self._cursor]
-            self._mark_closed()
+            self._mark_closed("explicit_release")
         return released
 
     def _omnivm_close(self):
