@@ -14476,6 +14476,48 @@ func TestResolveRuntimeRefCapturePreservesRubyTextPrimitive(t *testing.T) {
 	}
 }
 
+func TestBridgeRuntimeRefResultPreservesRubyASCII8BITText(t *testing.T) {
+	e, mocks := makeExecutor("ruby", "javascript")
+	mocks["ruby"].evalFn = func(code string) pkg.Result {
+		if !strings.Contains(code, "force_encoding(Encoding::UTF_8)") || !strings.Contains(code, "$chunk") {
+			t.Fatalf("Ruby stream text probe did not coerce ASCII-8BIT text: %q", code)
+		}
+		return pkg.Result{Value: `{"primitive":true,"value":"ruby-body"}`}
+	}
+	mocks["ruby"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
+		t.Fatalf("Ruby stream text should not use ExportBuffer, got name=%q expr=%q", name, expr)
+		return pkg.ExportedBuffer{}, false, nil
+	}
+
+	value, err := e.bridgeStreamItemValue(0, RuntimeRef{
+		Runtime: "ruby",
+		VarName: "$chunk",
+	})
+	if err != nil {
+		t.Fatalf("bridgeStreamItemValue: %v", err)
+	}
+	if value != "ruby-body" {
+		t.Fatalf("Ruby stream item = %#v, want text", value)
+	}
+	if len(mocks["ruby"].exports) != 0 {
+		t.Fatalf("Ruby stream item used ExportBuffer: %v", mocks["ruby"].exports)
+	}
+
+	value, err = e.bridgeResultRuntimeRef(0, RuntimeRef{
+		Runtime: "ruby",
+		VarName: "$chunk",
+	})
+	if err != nil {
+		t.Fatalf("bridgeResultRuntimeRef: %v", err)
+	}
+	if value != "ruby-body" {
+		t.Fatalf("Ruby proxy result = %#v, want text", value)
+	}
+	if len(mocks["ruby"].exports) != 0 {
+		t.Fatalf("Ruby proxy result used ExportBuffer: %v", mocks["ruby"].exports)
+	}
+}
+
 func TestResolveRuntimeRefCaptureProxiesUnsupportedNativeMemory(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	mocks["python"].evalFn = func(code string) pkg.Result {
@@ -16887,6 +16929,16 @@ func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 	want := map[string]interface{}{"__omnivm_callable__": true, "key": "isClosed", "zeroArg": true}
 	if env.Kind != "json" || !jsonEqual(env.Value, want) {
 		t.Fatalf("live Java zero-arg method descriptor = %#v, want %#v", env, want)
+	}
+
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"firstName"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get firstName: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	want = map[string]interface{}{"__omnivm_callable__": true, "key": "firstName", "zeroArg": true}
+	if env.Kind != "json" || !jsonEqual(env.Value, want) {
+		t.Fatalf("live Java firstX zero-arg descriptor = %#v, want %#v", env, want)
 	}
 
 	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"close"}`)

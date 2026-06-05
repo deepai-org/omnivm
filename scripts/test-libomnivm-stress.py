@@ -16465,6 +16465,8 @@ def test_manifest_func_return_preserves_complex_argument_identity():
 
 
 def test_manifest_func_return_exports_runtime_buffer_as_arrow():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -16499,14 +16501,14 @@ def test_manifest_func_return_exports_runtime_buffer_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned buffer did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"function-returned buffer did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"function-returned buffer should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned buffer used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned buffer did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"function-returned buffer did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"function-returned buffer should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned buffer used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_runtime_ref_property_exports_python_buffer_as_arrow():
@@ -17554,6 +17556,8 @@ def test_manifest_python_dict_list_capture_uses_proxy_not_json():
 
 
 def test_manifest_ruby_hash_capture_uses_proxy_not_json():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -17623,14 +17627,14 @@ def test_manifest_ruby_hash_capture_uses_proxy_not_json():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("resource_proxy_captures", 0) < 3:
-        raise AssertionError(f"Ruby hash values did not cross as live proxies: {boundary}")
-    if boundary.get("stream_proxy_captures", 0) != 0:
-        raise AssertionError(f"Ruby hash should not be mistaken for a stream: {boundary}")
-    if boundary.get("table_proxy_captures", 0) != 0 or boundary.get("arrow_transfers", 0) != 0:
-        raise AssertionError(f"Ruby hash should not claim bulk table transfer: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"Ruby hash used JSON fallback: {boundary}")
+    if boundary.get("resource_proxy_captures", 0) < before_boundary.get("resource_proxy_captures", 0) + 3:
+        raise AssertionError(f"Ruby hash values did not cross as live proxies: before={before_boundary}, after={boundary}")
+    if boundary.get("stream_proxy_captures", 0) != before_boundary.get("stream_proxy_captures", 0):
+        raise AssertionError(f"Ruby hash should not be mistaken for a stream: before={before_boundary}, after={boundary}")
+    if boundary.get("table_proxy_captures", 0) != before_boundary.get("table_proxy_captures", 0) or boundary.get("arrow_transfers", 0) != before_boundary.get("arrow_transfers", 0):
+        raise AssertionError(f"Ruby hash should not claim bulk table transfer: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"Ruby hash used JSON fallback: before={before_boundary}, after={boundary}")
     handles = omnivm.status().get("handles", {})
     for kind in ("property", "index", "mutation"):
         if handles.get("handle_accesses_by_kind", {}).get(kind, 0) < 1:
@@ -22052,6 +22056,8 @@ def test_manifest_go_cshared_func_consumes_byte_buffer_as_byte_slice():
 
 
 def test_manifest_func_return_exports_ruby_string_as_arrow():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -22086,17 +22092,19 @@ def test_manifest_func_return_exports_ruby_string_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned Ruby string did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"function-returned Ruby string did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"function-returned Ruby string should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned Ruby string used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned Ruby string did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"function-returned Ruby string did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"function-returned Ruby string should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned Ruby string used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_func_return_exports_ruby_to_str_as_arrow():
+    before_status = omnivm.status()
+    before_boundary = before_status.get("boundary", {})
     manifest = {
         "version": 1,
         "defaultRuntime": "python",
@@ -22131,14 +22139,14 @@ def test_manifest_func_return_exports_ruby_to_str_as_arrow():
         os.unlink(path)
 
     boundary = omnivm.status().get("boundary", {})
-    if boundary.get("table_proxy_captures", 0) < 1:
-        raise AssertionError(f"function-returned Ruby to_str object did not create a table proxy: {boundary}")
-    if boundary.get("arrow_transfers", 0) < 1:
-        raise AssertionError(f"function-returned Ruby to_str object did not use Arrow/shared memory: {boundary}")
-    if boundary.get("resource_proxy_captures", 0) != 0:
-        raise AssertionError(f"function-returned Ruby to_str object should not degrade to object proxy: {boundary}")
-    if boundary.get("json_fallbacks", 0) != 0:
-        raise AssertionError(f"function-returned Ruby to_str object used JSON fallback: {boundary}")
+    if boundary.get("table_proxy_captures", 0) < before_boundary.get("table_proxy_captures", 0) + 1:
+        raise AssertionError(f"function-returned Ruby to_str object did not create a table proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("arrow_transfers", 0) < before_boundary.get("arrow_transfers", 0) + 1:
+        raise AssertionError(f"function-returned Ruby to_str object did not use Arrow/shared memory: before={before_boundary}, after={boundary}")
+    if boundary.get("resource_proxy_captures", 0) != before_boundary.get("resource_proxy_captures", 0):
+        raise AssertionError(f"function-returned Ruby to_str object should not degrade to object proxy: before={before_boundary}, after={boundary}")
+    if boundary.get("json_fallbacks", 0) != before_boundary.get("json_fallbacks", 0):
+        raise AssertionError(f"function-returned Ruby to_str object used JSON fallback: before={before_boundary}, after={boundary}")
 
 
 def test_manifest_stream_items_preserve_complex_runtime_refs():

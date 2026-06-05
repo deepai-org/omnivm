@@ -1079,7 +1079,7 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if done {
 			return marshalResult(map[string]interface{}{"done": true})
 		}
-		wrapped, err := e.bridgeResultValue(id, value)
+		wrapped, err := e.bridgeStreamItemValue(id, value)
 		if err != nil {
 			return "", err
 		}
@@ -1403,9 +1403,69 @@ func (e *Executor) bridgeResultValue(parent handles.ID, value interface{}) (inte
 	return resourceProxyValue(ref), nil
 }
 
+func (e *Executor) bridgeStreamItemValue(parent handles.ID, value interface{}) (interface{}, error) {
+	switch v := value.(type) {
+	case RuntimeRef:
+		if text, ok, err := e.runtimeRefRubyTextValue(v); ok || err != nil {
+			return text, err
+		}
+	case *RuntimeRef:
+		if v == nil {
+			return nil, nil
+		}
+		if text, ok, err := e.runtimeRefRubyTextValue(*v); ok || err != nil {
+			return text, err
+		}
+	}
+	return e.bridgeResultValue(parent, value)
+}
+
+func (e *Executor) runtimeRefRubyTextValue(ref RuntimeRef) (interface{}, bool, error) {
+	if ref.Runtime != "ruby" || ref.VarName == "" {
+		return nil, false, nil
+	}
+	rt, ok := e.runtimes[ref.Runtime]
+	if !ok {
+		return nil, false, nil
+	}
+	expr := fmt.Sprintf(`begin
+  require 'json'
+  __v = %s
+  if __v.is_a?(String)
+    __s = __v.dup
+    if __s.encoding == Encoding::ASCII_8BIT
+      __s.force_encoding(Encoding::UTF_8)
+    elsif __s.encoding != Encoding::UTF_8
+      begin
+        __s = __s.encode(Encoding::UTF_8)
+      rescue
+      end
+    end
+    if __s.valid_encoding?
+      JSON.generate({primitive: true, value: __s})
+    else
+      JSON.generate({primitive: false})
+    end
+  else
+    JSON.generate({primitive: false})
+  end
+end`, runtimeVarRef(ref.Runtime, ref.VarName))
+	snapshot, ok, err := decodeRuntimePrimitiveSnapshot(ref.Runtime, rt.Eval(expr))
+	if err != nil || !ok || !snapshot.Primitive {
+		return nil, false, nil
+	}
+	if text, ok := snapshot.Value.(string); ok {
+		return text, true, nil
+	}
+	return nil, false, nil
+}
+
 func (e *Executor) bridgeResultRuntimeRef(parent handles.ID, ref RuntimeRef) (interface{}, error) {
 	if ref.SnapshotKnown && !ref.Opaque && isBridgePrimitive(ref.Value) {
 		return ref.Value, nil
+	}
+	if text, ok, err := e.runtimeRefRubyTextValue(ref); ok || err != nil {
+		return text, err
 	}
 	if jsonVal, ok, err := e.runtimeRefBulkTableCaptureJSON("", "", ref); ok || err != nil {
 		if err != nil {
@@ -2716,6 +2776,12 @@ func (e *Executor) runtimeRefJavaZeroArgMethod(ref RuntimeRef, key string) (bool
 
 func javaZeroArgPropertyMethod(key string) bool {
 	if strings.HasPrefix(key, "is") && len(key) > 2 && key[2] >= 'A' && key[2] <= 'Z' {
+		return true
+	}
+	if strings.HasPrefix(key, "first") && len(key) > 5 && key[5] >= 'A' && key[5] <= 'Z' {
+		return true
+	}
+	if strings.HasPrefix(key, "last") && len(key) > 4 && key[4] >= 'A' && key[4] <= 'Z' {
 		return true
 	}
 	switch key {

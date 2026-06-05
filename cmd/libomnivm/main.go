@@ -228,6 +228,9 @@ var workerTainted atomic.Bool
 var lastTimeoutRuntime atomic.Value
 var workerTaintReason atomic.Value
 var lastBoundaryStats atomic.Value
+var boundaryStatsMu sync.Mutex
+var cumulativeBoundaryStats manifest.BoundaryStats
+var executorBoundaryStats = make(map[*manifest.Executor]manifest.BoundaryStats)
 
 //export OmniInit
 func OmniInit(cList *C.char) *C.char {
@@ -317,6 +320,7 @@ func OmniInit(cList *C.char) *C.char {
 	lastTimeoutRuntime.Store("")
 	workerTaintReason.Store("")
 	lastBoundaryStats.Store(manifest.BoundaryStats{})
+	resetCumulativeBoundaryStats()
 	return C.CString("OK")
 }
 
@@ -724,7 +728,7 @@ func OmniStatus() *C.char {
 		status["go_plugins"] = plugins
 	}
 	if manifestExecutor != nil {
-		status["boundary"] = manifestExecutor.BoundaryStats()
+		status["boundary"] = boundaryStatsWithActive(manifestExecutor)
 	}
 	data, err := json.Marshal(status)
 	if err != nil {
@@ -763,7 +767,8 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 	prevGoSourceFallback := manifest.UseGoSourceFallback
 	manifest.UseGoSourceFallback = true
 	defer func() {
-		lastBoundaryStats.Store(executor.BoundaryStats())
+		recordExecutorBoundaryStats(executor)
+		lastBoundaryStats.Store(loadBoundaryStats())
 		manifestExecutor = prevExecutor
 		manifest.UseGoSourceFallback = prevGoSourceFallback
 		drainFinalizerReleasesOnHostBoundary(threadID)
@@ -814,7 +819,8 @@ func OmniLoadManifestModule(cModuleID *C.char, cPath *C.char) *C.char {
 	prevGoSourceFallback := manifest.UseGoSourceFallback
 	manifest.UseGoSourceFallback = true
 	defer func() {
-		lastBoundaryStats.Store(executor.BoundaryStats())
+		recordExecutorBoundaryStats(executor)
+		lastBoundaryStats.Store(loadBoundaryStats())
 		manifestExecutor = prevExecutor
 		manifest.UseGoSourceFallback = prevGoSourceFallback
 		drainFinalizerReleasesOnHostBoundary(threadID)
@@ -866,7 +872,8 @@ func OmniManifestCall(cModuleID *C.char, cRequest *C.char) *C.char {
 	prevExecutor := manifestExecutor
 	manifestExecutor = executor
 	defer func() {
-		lastBoundaryStats.Store(executor.BoundaryStats())
+		recordExecutorBoundaryStats(executor)
+		lastBoundaryStats.Store(loadBoundaryStats())
 		manifestExecutor = prevExecutor
 		drainFinalizerReleasesOnHostBoundary(threadID)
 		manifestExecutionMu.Unlock()
@@ -1206,12 +1213,85 @@ func loadAtomicString(value *atomic.Value) string {
 }
 
 func loadBoundaryStats() manifest.BoundaryStats {
-	raw := lastBoundaryStats.Load()
-	if raw == nil {
-		return manifest.BoundaryStats{}
+	boundaryStatsMu.Lock()
+	defer boundaryStatsMu.Unlock()
+	return cumulativeBoundaryStats
+}
+
+func resetCumulativeBoundaryStats() {
+	boundaryStatsMu.Lock()
+	defer boundaryStatsMu.Unlock()
+	cumulativeBoundaryStats = manifest.BoundaryStats{}
+	executorBoundaryStats = make(map[*manifest.Executor]manifest.BoundaryStats)
+}
+
+func recordExecutorBoundaryStats(executor *manifest.Executor) {
+	if executor == nil {
+		return
 	}
-	stats, _ := raw.(manifest.BoundaryStats)
-	return stats
+	next := executor.BoundaryStats()
+	boundaryStatsMu.Lock()
+	defer boundaryStatsMu.Unlock()
+	prev := executorBoundaryStats[executor]
+	cumulativeBoundaryStats = addBoundaryStats(cumulativeBoundaryStats, boundaryStatsDelta(prev, next))
+	executorBoundaryStats[executor] = next
+}
+
+func boundaryStatsWithActive(executor *manifest.Executor) manifest.BoundaryStats {
+	boundaryStatsMu.Lock()
+	defer boundaryStatsMu.Unlock()
+	if executor == nil {
+		return cumulativeBoundaryStats
+	}
+	prev := executorBoundaryStats[executor]
+	active := executor.BoundaryStats()
+	return addBoundaryStats(cumulativeBoundaryStats, boundaryStatsDelta(prev, active))
+}
+
+func addBoundaryStats(total, next manifest.BoundaryStats) manifest.BoundaryStats {
+	total.CaptureInjections += next.CaptureInjections
+	total.RuntimeSerializations += next.RuntimeSerializations
+	total.JSONFallbacks += next.JSONFallbacks
+	if next.LastJSONFallbackReason != "" {
+		total.LastJSONFallbackReason = next.LastJSONFallbackReason
+	}
+	total.ArrowTransfers += next.ArrowTransfers
+	total.BridgeTransforms += next.BridgeTransforms
+	total.BoundaryWarnings += next.BoundaryWarnings
+	total.ProxyCaptures += next.ProxyCaptures
+	total.ProxyMaterializations += next.ProxyMaterializations
+	total.ChannelMaterializations += next.ChannelMaterializations
+	total.StreamProxyCaptures += next.StreamProxyCaptures
+	total.ResourceProxyCaptures += next.ResourceProxyCaptures
+	total.TableProxyCaptures += next.TableProxyCaptures
+	total.JobProxyCaptures += next.JobProxyCaptures
+	return total
+}
+
+func boundaryStatsDelta(prev, next manifest.BoundaryStats) manifest.BoundaryStats {
+	return manifest.BoundaryStats{
+		CaptureInjections:       nonnegativeDelta(prev.CaptureInjections, next.CaptureInjections),
+		RuntimeSerializations:   nonnegativeDelta(prev.RuntimeSerializations, next.RuntimeSerializations),
+		JSONFallbacks:           nonnegativeDelta(prev.JSONFallbacks, next.JSONFallbacks),
+		LastJSONFallbackReason:  next.LastJSONFallbackReason,
+		ArrowTransfers:          nonnegativeDelta(prev.ArrowTransfers, next.ArrowTransfers),
+		BridgeTransforms:        nonnegativeDelta(prev.BridgeTransforms, next.BridgeTransforms),
+		BoundaryWarnings:        nonnegativeDelta(prev.BoundaryWarnings, next.BoundaryWarnings),
+		ProxyCaptures:           nonnegativeDelta(prev.ProxyCaptures, next.ProxyCaptures),
+		ProxyMaterializations:   nonnegativeDelta(prev.ProxyMaterializations, next.ProxyMaterializations),
+		ChannelMaterializations: nonnegativeDelta(prev.ChannelMaterializations, next.ChannelMaterializations),
+		StreamProxyCaptures:     nonnegativeDelta(prev.StreamProxyCaptures, next.StreamProxyCaptures),
+		ResourceProxyCaptures:   nonnegativeDelta(prev.ResourceProxyCaptures, next.ResourceProxyCaptures),
+		TableProxyCaptures:      nonnegativeDelta(prev.TableProxyCaptures, next.TableProxyCaptures),
+		JobProxyCaptures:        nonnegativeDelta(prev.JobProxyCaptures, next.JobProxyCaptures),
+	}
+}
+
+func nonnegativeDelta(prev, next int64) int64 {
+	if next < prev {
+		return 0
+	}
+	return next - prev
 }
 
 func runtimeNameForWatchdog(runtimeID int) string {
