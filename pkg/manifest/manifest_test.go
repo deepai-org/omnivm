@@ -2792,8 +2792,8 @@ func TestGoProxyCloseHelperClosesHandleStreamsAndCloseables(t *testing.T) {
 	}
 	closeErr := errors.New("close failed")
 	failingCloseable := &goProxyTestCloser{err: closeErr}
-	if closed, err := OmnivmClose(failingCloseable); closed || !errors.Is(err, closeErr) {
-		t.Fatalf("OmnivmClose(failing closeable) = (%v, %v), want false,closeErr", closed, err)
+	if closed, err := OmniVMClose(failingCloseable); closed || !errors.Is(err, closeErr) {
+		t.Fatalf("OmniVMClose(failing closeable) = (%v, %v), want false,closeErr", closed, err)
 	}
 
 	localStream := newGoLocalStreamProxy([]interface{}{"first"}, nil)
@@ -2824,8 +2824,11 @@ func TestGoProxyCloseHelperClosesHandleStreamsAndCloseables(t *testing.T) {
 	if ref.Closed {
 		t.Fatal("ProxyClose(handle proxy) consumed the scope owner reference")
 	}
+	if closed, err := OmniVMClose(proxy); closed || err != nil {
+		t.Fatalf("OmniVMClose(closed handle proxy) = (%v, %v), want false,nil", closed, err)
+	}
 	if closed, err := OmnivmClose(proxy); closed || err != nil {
-		t.Fatalf("OmnivmClose(closed handle proxy) = (%v, %v), want false,nil", closed, err)
+		t.Fatalf("OmnivmClose compatibility alias = (%v, %v), want false,nil", closed, err)
 	}
 }
 

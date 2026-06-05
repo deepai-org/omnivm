@@ -621,8 +621,13 @@ func goProxyValueIsNil(value interface{}) bool {
 	}
 }
 
-// OmnivmClose is an alias for ProxyClose, matching generated helper names in
-// other OmniVM guest runtimes.
+// OmniVMClose is an idiomatic Go alias for ProxyClose.
+func OmniVMClose(value interface{}) (bool, error) {
+	return ProxyClose(value)
+}
+
+// OmnivmClose is a compatibility alias for ProxyClose, matching generated
+// helper names in other OmniVM guest runtimes.
 func OmnivmClose(value interface{}) (bool, error) {
 	return ProxyClose(value)
 }
