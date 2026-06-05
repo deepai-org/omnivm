@@ -2483,6 +2483,46 @@ class TestCallWithMockLib(unittest.TestCase):
         cancels = [request for request in requests if request.get("op") == "stream_cancel"]
         assert cancels == [{"op": "stream_cancel", "id": 52}]
 
+    def test_manifest_stream_iterator_rejects_malformed_next_chunk(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 53,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                return envelope("")
+            if request_payload.get("op") == "stream_cancel":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "handle_release_finalizer":
+                raise AssertionError("malformed stream chunk should cancel explicitly")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        iterator = iter(proxy)
+        with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
+            next(iterator)
+        assert "stream_next returned malformed chunk" in str(ctx.exception)
+        assert ctx.exception.boundary_path == "stream_next"
+        assert ctx.exception.details == {"stream": {"id": 53, "chunk": ""}}
+        assert proxy.close() is False
+        cancels = [request for request in requests if request.get("op") == "stream_cancel"]
+        assert cancels == [{"op": "stream_cancel", "id": 53}]
+
     def test_manifest_stream_iterator_detaches_on_next_error(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

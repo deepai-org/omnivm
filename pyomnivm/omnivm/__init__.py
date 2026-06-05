@@ -1969,7 +1969,24 @@ class _ManifestStreamIterator:
             self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise
-        if not isinstance(item, dict) or item.get("done") is True:
+        if not isinstance(item, dict) or "done" not in item:
+            err = RuntimeError(
+                f"OmniVM stream_next returned malformed chunk for handle {self._proxy.__omnivm_handle_id__}: expected an object with a done flag",
+                boundary_path="stream_next",
+                details={"stream": {"id": self._proxy.__omnivm_handle_id__, "chunk": item}},
+            )
+            try:
+                self.close()
+            except BaseException as close_exc:
+                _record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
+                )
+                self._detach_finalizer()
+                self._proxy._detach_after_remote_close()
+            raise err
+        if item.get("done") is True:
             self._detach_finalizer()
             self._proxy._detach_after_remote_close()
             raise StopIteration

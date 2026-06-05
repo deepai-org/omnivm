@@ -7038,6 +7038,54 @@ if len(loaded_cancels) != 1:
 	}
 }
 
+func TestPythonRemoteStreamRejectsMalformedNextChunk(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            return json.dumps({"__omnivm_result__": True, "value": ""})
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "handle_release_finalizer":
+            raise RuntimeError("malformed stream chunk should cancel explicitly")
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 90, "runtime": "python", "kind": "stream"})
+try:
+    next(stream)
+    raise RuntimeError("malformed stream chunk was treated as a value or EOF")
+except RuntimeError as exc:
+    if "stream_next returned malformed chunk" not in str(exc):
+        raise
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed after malformed chunk")
+if stream.close() is not False:
+    raise RuntimeError("close after malformed chunk should be idempotent false")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 90:
+    raise RuntimeError("malformed chunk cancel mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream malformed-chunk check failed: %v\n%s", err, out)
+	}
+}
+
 func TestPythonCaptureOmnivmClosePreservesLocalCloseResult(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

@@ -1153,7 +1153,7 @@ class __OmniVMStreamProxy:
         raw = caller.call("__manifest", __j.dumps({"op": "stream_next", "id": self._value.get("id")}))
         env = __j.loads(raw)
         if isinstance(env, dict) and env.get("__omnivm_result__") is True:
-            return env.get("value") or {"done": True}
+            return env["value"] if "value" in env else {"done": True}
         return {"done": True}
 
     def _pull_next(self):
@@ -1183,6 +1183,20 @@ class __OmniVMStreamProxy:
         except Exception:
             self._mark_closed()
             raise
+        if not isinstance(item, dict) or "done" not in item:
+            err = RuntimeError(
+                f"OmniVM stream_next returned malformed chunk for handle {self._value.get('id')}: expected an object with a done flag"
+            )
+            try:
+                self.close()
+            except Exception as close_exc:
+                _omnivm_record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
+                )
+                self._mark_closed()
+            raise err
         if item.get("done") is True:
             self._mark_closed()
             return False
