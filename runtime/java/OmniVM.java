@@ -330,6 +330,7 @@ public class OmniVM {
                 "diagnostic", "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"));
         return ownerDispatchMap(
             "mode", "diagnostic_only",
+            "host_thread_required", true,
             "owner_dispatch_supported", false,
             "foreign_thread_behavior", "reject_runtime_calls",
             "reason", "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",

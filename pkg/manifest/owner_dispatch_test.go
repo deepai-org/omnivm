@@ -12,6 +12,9 @@ func TestGoOwnerDispatchStatusReportsDiagnosticOnly(t *testing.T) {
 	if status["mode"] != "diagnostic_only" || status["owner_dispatch_supported"] != false {
 		t.Fatalf("OwnerDispatchStatus = %#v, want diagnostic-only unsupported", status)
 	}
+	if status["host_thread_required"] != true {
+		t.Fatalf("OwnerDispatchStatus host_thread_required = %#v, want true", status["host_thread_required"])
+	}
 	targets, ok := status["owner_dispatch_targets"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("owner_dispatch_targets = %T, want map", status["owner_dispatch_targets"])

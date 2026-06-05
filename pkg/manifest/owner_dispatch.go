@@ -219,6 +219,7 @@ func ownerDispatchTargetName(target string) string {
 func ownerDispatchContract() map[string]interface{} {
 	return map[string]interface{}{
 		"mode":                     "diagnostic_only",
+		"host_thread_required":     true,
 		"owner_dispatch_supported": false,
 		"foreign_thread_behavior":  "reject_runtime_calls",
 		"reason":                   "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",

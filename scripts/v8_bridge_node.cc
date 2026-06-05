@@ -1931,6 +1931,7 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
     globalThis.__omnivm_owner_dispatch_contract = globalThis.__omnivm_owner_dispatch_contract || function() {
       return globalThis.__omnivm_clone_json({
         mode: "diagnostic_only",
+        host_thread_required: true,
         owner_dispatch_supported: false,
         foreign_thread_behavior: "reject_runtime_calls",
         reason: "owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops",

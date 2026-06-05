@@ -1580,6 +1580,7 @@ static int omnivm_ruby_init(void) {
         "  def self.owner_dispatch_status\n"
         "    {\n"
         "      \"mode\" => \"diagnostic_only\",\n"
+        "      \"host_thread_required\" => true,\n"
         "      \"owner_dispatch_supported\" => false,\n"
         "      \"foreign_thread_behavior\" => \"reject_runtime_calls\",\n"
         "      \"reason\" => \"owner dispatch is unsupported in this mode, so OmniVM will not route calls onto foreign owner loops\",\n"
