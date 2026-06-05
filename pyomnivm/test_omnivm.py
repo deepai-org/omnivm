@@ -1102,10 +1102,12 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib = MagicMock()
         omnivm_mod._lib = self.mock_lib
         omnivm_mod._worker_drain_hook_installed = False
+        omnivm_mod._manifest_proxy_cache.clear()
 
     def tearDown(self):
         omnivm_mod._lib = None
         omnivm_mod._worker_drain_hook_installed = False
+        omnivm_mod._manifest_proxy_cache.clear()
 
     def test_call_encodes_args(self):
         self.mock_lib.OmniCallHost.return_value = b"OK:result"
@@ -2504,6 +2506,59 @@ class TestCallWithMockLib(unittest.TestCase):
         assert {"op": "handle_retain", "id": 8} in requests
         assert {"op": "handle_release_explicit", "id": 7} in requests
         assert {"op": "handle_release_explicit", "id": 8} in requests
+
+    def test_manifest_call_reuses_duplicate_return_proxy_descriptors(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def descriptor(handle_id, transfer=True):
+            return {
+                "__omnivm_resource__": True,
+                "id": handle_id,
+                "runtime": "python",
+                "kind": "object",
+                "transfer": transfer,
+            }
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "duplicates":
+                return envelope({
+                    "items": [descriptor(7), descriptor(7)],
+                    "meta": {
+                        "primary": descriptor(8, transfer=False),
+                        "alias": descriptor(8, transfer=False),
+                    },
+                })
+            if request.get("op") in {"handle_adopt", "handle_retain", "handle_release_explicit"}:
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        result = omnivm_mod.manifest_call("demo", "duplicates")
+
+        adopted = result["items"][0]
+        retained = result["meta"]["primary"]
+        assert adopted is result["items"][1]
+        assert retained is result["meta"]["alias"]
+        assert [request for request in requests if request.get("op") == "handle_adopt"] == [
+            {"op": "handle_adopt", "id": 7}
+        ]
+        assert [request for request in requests if request.get("op") == "handle_retain"] == [
+            {"op": "handle_retain", "id": 8}
+        ]
+        assert adopted._omnivm_close() is True
+        assert adopted._omnivm_close() is False
+        assert retained._omnivm_close() is True
+        assert retained._omnivm_close() is False
+        assert [request for request in requests if request.get("op") == "handle_release_explicit"] == [
+            {"op": "handle_release_explicit", "id": 7},
+            {"op": "handle_release_explicit", "id": 8},
+        ]
 
     def test_set_buffer_calls_lib(self):
         self.mock_lib.OmniBufSet.return_value = 0

@@ -1377,12 +1377,21 @@ def _decode_manifest_result_unwrapped(result):
     return envelope.get("value")
 
 
+_manifest_proxy_cache = weakref.WeakValueDictionary()
+
+
 def _wrap_manifest_value(module_id, value):
     if isinstance(value, dict):
         if _is_local_stream_descriptor(value):
             return _LocalManifestStreamProxy(module_id, value)
         if _is_manifest_proxy_descriptor(value) and module_id is not None:
-            return ManifestProxy(module_id, value)
+            cache_key = (str(module_id), int(value["id"]))
+            cached = _manifest_proxy_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            proxy = ManifestProxy(module_id, value)
+            _manifest_proxy_cache[cache_key] = proxy
+            return proxy
         return {key: _wrap_manifest_value(module_id, item) for key, item in value.items()}
     if isinstance(value, list):
         return [_wrap_manifest_value(module_id, item) for item in value]
