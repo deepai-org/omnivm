@@ -6780,6 +6780,12 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "class __OmniVMHandleProxy") {
 		t.Fatalf("Python materializer should define handle proxy, got %q", code)
 	}
+	if !contains(code, "def __omnivm_bridge_token(caller=None):") ||
+		!contains(code, `return getattr(caller, "__omnivm_bridge_id", caller)`) ||
+		!contains(code, "def __omnivm_bridge_matches(bridge_token, caller=None):") ||
+		!contains(code, "return current is bridge_token or current == bridge_token") {
+		t.Fatalf("Python materializer should compare stable bridge tokens instead of bridge object identity, got %q", code)
+	}
 	if !contains(code, `"op": "handle_access"`) {
 		t.Fatalf("Python materializer should record handle access, got %q", code)
 	}
@@ -6835,11 +6841,11 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python materializer should iterate sequence proxies by value and mapping proxies by key, got %q", code)
 	}
 	if !contains(code, `def __omnivm_release_handle_id(handle_id, bridge_token=None):`) ||
-		!contains(code, `if bridge_token is not None and caller is not bridge_token:`) ||
+		!contains(code, `if not __omnivm_bridge_matches(bridge_token, caller):`) ||
 		!contains(code, `"op": "handle_release_finalizer"`) ||
 		!contains(code, "weakref") ||
 		!contains(code, "__omnivm_release_handle_id") ||
-		!contains(code, `object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_module"]())`) ||
+		!contains(code, `object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_token"]())`) ||
 		!contains(code, `object.__getattribute__(self, "_bridge_token")`) {
 		t.Fatalf("Python materializer should queue weakref finalizer releases, got %q", code)
 	}
@@ -6919,7 +6925,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		t.Fatalf("Python stream proxy should auto-materialize for len/index operations, got %q", code)
 	}
 	if !contains(code, "def _mark_closed(self):") ||
-		!contains(code, "def __next__(self):\n        if self._closed:\n            raise StopIteration") ||
+		!contains(code, "def __next__(self):\n        if self._cursor < len(self._cache):") ||
+		!contains(code, "if self._closed or not self._pull_next():\n            raise StopIteration") ||
 		!contains(code, `self._local_values = values if isinstance(values, list) else None`) ||
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
@@ -6956,12 +6963,12 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "finalizer.detach()") ||
 		!contains(code, "except Exception:\n            self._mark_closed()\n            raise") ||
 		!contains(code, "if self._closed:\n            return False") ||
-		!contains(code, "if self._local_values is not None:\n            return self._mark_closed()") ||
+		!contains(code, "if self._local_values is not None:\n            self._cache = self._cache[:self._cursor]\n            return self._mark_closed()") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
-		!contains(code, "if released:\n            self._mark_closed()\n        return released") ||
+		!contains(code, "if released:\n            self._cache = self._cache[:self._cursor]\n            self._mark_closed()\n        return released") ||
 		!contains(code, "if not self._bridge_active():\n            self._mark_closed()\n            return False") ||
-		!contains(code, "if self._bridge_token is not None and caller is not self._bridge_token:\n            return {\"done\": True}") ||
+		!contains(code, "if not globals()[\"__omnivm_bridge_matches\"](self._bridge_token, caller):\n            return {\"done\": True}") ||
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
 		!contains(code, "def __enter__(self):\n        return self") ||
 		strings.Count(code, "async def __aenter__(self):\n        return self") < 2 ||
@@ -7339,6 +7346,54 @@ if len(loaded_cancels) != 1:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream early-break cancellation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonRemoteStreamListKeepsLengthHintCache(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    values = iter(["row-1", "row-2"])
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            try:
+                return json.dumps({"__omnivm_result__": True, "value": {"done": False, "value": next(Bridge.values)}})
+            except StopIteration:
+                return json.dumps({"__omnivm_result__": True, "value": {"done": True}})
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 95, "runtime": "python", "kind": "stream"})
+seen = list(stream)
+if seen != ["row-1", "row-2"]:
+    raise RuntimeError("list(stream) lost cached chunks after length hint: " + repr(seen))
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed after EOF")
+nexts = [req for req in Bridge.requests if req.get("op") == "stream_next"]
+if len(nexts) != 3:
+    raise RuntimeError("stream next requests mismatch: " + repr(nexts))
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if cancels:
+    raise RuntimeError("EOF stream should not cancel: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream list length-hint cache check failed: %v\n%s", err, out)
 	}
 }
 

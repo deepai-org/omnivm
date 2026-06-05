@@ -732,10 +732,23 @@ def __omnivm_bridge_module():
         pass
     return None
 
+def __omnivm_bridge_token(caller=None):
+    if caller is None:
+        caller = __omnivm_bridge_module()
+    if caller is None:
+        return None
+    return getattr(caller, "__omnivm_bridge_id", caller)
+
+def __omnivm_bridge_matches(bridge_token, caller=None):
+    if bridge_token is None:
+        return True
+    current = __omnivm_bridge_token(caller)
+    return current is bridge_token or current == bridge_token
+
 def __omnivm_release_handle_id(handle_id, bridge_token=None):
     try:
         caller = __omnivm_bridge_module()
-        if bridge_token is not None and caller is not bridge_token:
+        if not __omnivm_bridge_matches(bridge_token, caller):
             return
         if caller is not None and hasattr(caller, "call"):
             import json as __j
@@ -906,7 +919,7 @@ class __OmniVMHandleProxy:
     def __init__(self, value):
         object.__setattr__(self, "_value", value)
         object.__setattr__(self, "_closed", False)
-        object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_module"]())
+        object.__setattr__(self, "_bridge_token", globals()["__omnivm_bridge_token"]())
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -920,7 +933,7 @@ class __OmniVMHandleProxy:
 
     def _bridge_active(self):
         bridge_token = object.__getattribute__(self, "_bridge_token")
-        return bridge_token is None or globals()["__omnivm_bridge_module"]() is bridge_token
+        return globals()["__omnivm_bridge_matches"](bridge_token)
 
     def _sync_mapping_cache(self):
         try:
@@ -1018,7 +1031,7 @@ class __OmniVMHandleProxy:
         self._ensure_open(payload.get("op") or "operation")
         caller = globals()["__omnivm_bridge_module"]()
         bridge_token = object.__getattribute__(self, "_bridge_token")
-        if bridge_token is not None and caller is not bridge_token:
+        if not globals()["__omnivm_bridge_matches"](bridge_token, caller):
             raise AttributeError(payload.get("key"))
         if caller is None or not hasattr(caller, "call"):
             raise AttributeError(payload.get("key"))
@@ -1364,7 +1377,7 @@ class __OmniVMStreamProxy:
         self._cursor = 0
         self._exhausted = False
         self._closed = False
-        self._bridge_token = globals()["__omnivm_bridge_module"]()
+        self._bridge_token = globals()["__omnivm_bridge_token"]()
         handle_id = value.get("id") if isinstance(value, dict) else None
         if handle_id is not None:
             if value.get("transfer") is True:
@@ -1375,7 +1388,7 @@ class __OmniVMStreamProxy:
             self._finalizer = __w.finalize(self, globals()["__omnivm_release_handle_id"], handle_id, self._bridge_token)
 
     def _bridge_active(self):
-        return self._bridge_token is None or globals()["__omnivm_bridge_module"]() is self._bridge_token
+        return globals()["__omnivm_bridge_matches"](self._bridge_token)
 
     def _mark_closed(self):
         if self._closed:
@@ -1389,7 +1402,7 @@ class __OmniVMStreamProxy:
 
     def _next_envelope(self):
         caller = globals()["__omnivm_bridge_module"]()
-        if self._bridge_token is not None and caller is not self._bridge_token:
+        if not globals()["__omnivm_bridge_matches"](self._bridge_token, caller):
             return {"done": True}
         if caller is None or not hasattr(caller, "call"):
             return {"done": True}
@@ -1500,9 +1513,11 @@ class __OmniVMStreamProxy:
         return __omnivm_aiter()
 
     def __next__(self):
-        if self._closed:
-            raise StopIteration
-        if self._cursor >= len(self._cache) and not self._pull_next():
+        if self._cursor < len(self._cache):
+            value = self._cache[self._cursor]
+            self._cursor += 1
+            return value
+        if self._closed or not self._pull_next():
             raise StopIteration
         value = self._cache[self._cursor]
         self._cursor += 1
@@ -1521,6 +1536,7 @@ class __OmniVMStreamProxy:
         if self._closed:
             return False
         if self._local_values is not None:
+            self._cache = self._cache[:self._cursor]
             return self._mark_closed()
         if not self._bridge_active():
             self._mark_closed()
@@ -1533,6 +1549,7 @@ class __OmniVMStreamProxy:
         env = __j.loads(raw)
         released = isinstance(env, dict) and env.get("__omnivm_result__") is True and env.get("value") is True
         if released:
+            self._cache = self._cache[:self._cursor]
             self._mark_closed()
         return released
 

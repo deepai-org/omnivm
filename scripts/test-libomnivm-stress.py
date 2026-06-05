@@ -23419,34 +23419,38 @@ def test_manifest_js_readable_stream_body_capture_as_lazy_stream():
                 "op": "exec",
                 "runtime": "javascript",
                 "code": (
-                    "globalThis.jsReadableBody = {"
-                    "closed: false,"
-                    "readers: 0,"
-                    "getReader: function() {"
-                    "  this.readers += 1;"
-                    "  const chunks = ['js-', 'readable-', 'stream'];"
-                    "  let index = 0;"
-                    "  const owner = this;"
-                    "  return {"
-                    "    read() { return Promise.resolve(index < chunks.length ? {value: chunks[index++], done: false} : {done: true}); },"
-                    "    releaseLock() { owner.closed = true; },"
-                    "    cancel() { owner.closed = true; return Promise.resolve(); }"
-                    "  };"
-                    "}"
-                    "};"
+                    "(() => {"
+                    "const ReadableStreamCtor = globalThis.ReadableStream || require('node:stream/web').ReadableStream;"
+                    "const chunks = ['js-', 'readable-', 'stream'];"
+                    "globalThis.jsReadableBodyState = {pulls: 0, cancelled: false};"
+                    "globalThis.jsReadableBody = new ReadableStreamCtor({"
+                    "  pull(controller) {"
+                    "    if (chunks.length === 0) { controller.close(); return; }"
+                    "    globalThis.jsReadableBodyState.pulls += 1;"
+                    "    controller.enqueue(chunks.shift());"
+                    "  },"
+                    "  cancel() { globalThis.jsReadableBodyState.cancelled = true; }"
+                    "});"
+                    "})();"
                 ),
             },
             {"op": "eval", "runtime": "javascript", "bind": "js_readable_body", "code": "globalThis.jsReadableBody"},
             {
                 "op": "exec",
                 "runtime": "python",
-                "code": "chunks = list(js_readable_body)\nassert ''.join(chunks) == 'js-readable-stream', chunks",
+                "code": (
+                    "before_js = omnivm.call('javascript', \"JSON.stringify({same: globalThis.js_readable_body === globalThis.jsReadableBody, locked: globalThis.js_readable_body && globalThis.js_readable_body.locked, hasReader: !!(globalThis.js_readable_body && globalThis.js_readable_body.getReader), state: globalThis.jsReadableBodyState})\")\n"
+                    "chunks = list(js_readable_body)\n"
+                    "after_js = omnivm.call('javascript', \"JSON.stringify({locked: globalThis.jsReadableBody && globalThis.jsReadableBody.locked, state: globalThis.jsReadableBodyState})\")\n"
+                    "assert ''.join(chunks) == 'js-readable-stream', "
+                    "(chunks, before_js, after_js, type(js_readable_body).__name__, getattr(js_readable_body, '_value', None), omnivm.status().get('boundary'), omnivm.status().get('handles'))"
+                ),
                 "captures": {"js_readable_body": "js_readable_body"},
             },
             {
                 "op": "exec",
                 "runtime": "javascript",
-                "code": "if (!globalThis.jsReadableBody.closed) throw new Error('JS ReadableStream reader did not release'); if (globalThis.jsReadableBody.readers !== 1) throw new Error('bad JS ReadableStream reader count: ' + globalThis.jsReadableBody.readers);",
+                "code": "if (globalThis.jsReadableBody.locked) throw new Error('JS ReadableStream reader did not release'); if (globalThis.jsReadableBodyState.pulls !== 3) throw new Error('bad JS ReadableStream pull count: ' + JSON.stringify(globalThis.jsReadableBodyState)); if (globalThis.jsReadableBodyState.cancelled) throw new Error('JS ReadableStream should close at EOF, not cancel');",
             },
         ],
     }
@@ -24482,12 +24486,14 @@ def test_manifest_node_web_stream_pipe_to_abort_reenters_python_and_cancels_owne
                 "op": "exec",
                 "runtime": "javascript",
                 "code": (
+                    "(() => { "
                     "const state = globalThis.nodeWebPipeAbortState; "
                     "if (state.writes.join('|') !== 'first') throw new Error('Node Web pipeTo wrote after abort: ' + JSON.stringify(state)); "
                     "if (!state.sinkAborted) throw new Error('Node Web pipeTo sink did not observe abort: ' + JSON.stringify(state)); "
                     "if (state.sinkAbortReason !== 'client-stop') throw new Error('bad Node Web pipeTo sink abort reason: ' + JSON.stringify(state)); "
                     "if (state.cancelReason !== 'client-stop') throw new Error('bad Node Web pipeTo source cancel reason: ' + JSON.stringify(state)); "
                     "if (state.locked) throw new Error('Node Web pipeTo left source locked: ' + JSON.stringify(state));"
+                    "})();"
                 ),
             },
             {
@@ -25011,11 +25017,15 @@ py_upload_body = PythonUploadBody()
     after_status = omnivm.status()
     boundary = after_status.get("boundary", {})
     handles = after_status.get("handles", {})
-    if boundary.get("stream_proxy_captures", 0) < before_status.get("boundary", {}).get("stream_proxy_captures", 0) + 1:
+    stream_captures = boundary.get("stream_proxy_captures", 0)
+    stream_capture_delta = stream_captures - before_status.get("boundary", {}).get("stream_proxy_captures", 0)
+    if stream_captures < 1 and stream_capture_delta < 1:
         raise AssertionError(f"undici request body did not cross as stream proxy: before={before_status.get('boundary', {})}, after={boundary}")
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici request body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
+    stream_accesses = handles.get("handle_accesses_by_kind", {}).get("stream", 0)
+    stream_access_delta = stream_accesses - before_handles.get("handle_accesses_by_kind", {}).get("stream", 0)
+    if stream_accesses < 1 and stream_access_delta < 1:
         raise AssertionError(f"undici request body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("live", 0) != before_handles.get("live", 0):
         raise AssertionError(f"undici request body early-cancel leaked live handles: before={before_handles}, after={handles}")

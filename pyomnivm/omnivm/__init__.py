@@ -35,6 +35,8 @@ import threading
 import uuid
 import weakref
 
+__omnivm_bridge_id = "pyomnivm-bridge"
+
 __all__ = [
     "init_runtimes",
     "call",
