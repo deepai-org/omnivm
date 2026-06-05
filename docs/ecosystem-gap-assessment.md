@@ -385,8 +385,10 @@ Python retained manifest proxies expose the same explicit operations as
 `omnivm.proxy_len`, `omnivm.proxy_keys`, `omnivm.proxy_values`,
 `omnivm.proxy_items`, `omnivm.proxy_contains`, and `omnivm.proxy_close`.
 Generated Python manifest snippets also receive `omnivm_close(value)` for
-collision-safe explicit handle release or stream cancellation. Ruby proxies expose
-`omnivm_get`, `omnivm_set`, `omnivm_call`, `omnivm_len`, `omnivm_keys`,
+collision-safe explicit handle release or stream cancellation. Python close
+helpers also honor local descriptor-defined `dispose()` without dynamic
+attribute lookup. Ruby proxies expose `omnivm_get`, `omnivm_set`,
+`omnivm_call`, `omnivm_len`, `omnivm_keys`,
 `omnivm_values`, `omnivm_items`, `omnivm_contains`, and `omnivm_close`, while
 generated Ruby snippets also provide `OmniVM.proxy_close(proxy)` and
 `omnivm_close(proxy)`.

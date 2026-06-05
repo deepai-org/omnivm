@@ -1443,6 +1443,25 @@ class TestCallWithMockLib(unittest.TestCase):
             def close(self):
                 return None
 
+        class TextDispose:
+            def dispose(self):
+                return "disposed"
+
+        class FalseDispose:
+            def dispose(self):
+                return False
+
+        class NoneDispose:
+            def dispose(self):
+                return None
+
+        class CloseAndDispose:
+            def close(self):
+                return "closed"
+
+            def dispose(self):
+                raise AssertionError("dispose should not run when close exists")
+
         class DynamicCloseTrap:
             dynamic_lookup_count = 0
 
@@ -1452,13 +1471,29 @@ class TestCallWithMockLib(unittest.TestCase):
                     return lambda: "dynamic-close"
                 raise AttributeError(name)
 
+        class DynamicDisposeTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "dispose":
+                    self.dynamic_lookup_count += 1
+                    return lambda: "dynamic-dispose"
+                raise AttributeError(name)
+
         trap = DynamicCloseTrap()
+        dispose_trap = DynamicDisposeTrap()
 
         assert omnivm_mod.proxy_close(FalseCloser()) is False
         assert omnivm_mod.proxy_close(TextCloser()) == "closed"
         assert omnivm_mod.proxy_close(NoneCloser()) is True
+        assert omnivm_mod.proxy_close(TextDispose()) == "disposed"
+        assert omnivm_mod.proxy_close(FalseDispose()) is False
+        assert omnivm_mod.proxy_close(NoneDispose()) is True
+        assert omnivm_mod.proxy_close(CloseAndDispose()) == "closed"
         assert omnivm_mod.proxy_close(trap) is False
         assert trap.dynamic_lookup_count == 0
+        assert omnivm_mod.proxy_close(dispose_trap) is False
+        assert dispose_trap.dynamic_lookup_count == 0
 
     def test_proxy_close_prefers_collision_safe_omnivm_close(self):
         class BothClosers:
@@ -1490,6 +1525,25 @@ class TestCallWithMockLib(unittest.TestCase):
             async def close(self):
                 return None
 
+        class AsyncDispose:
+            async def dispose(self):
+                return "async-dispose"
+
+        class SyncDispose:
+            def dispose(self):
+                return "sync-dispose"
+
+        class AsyncNoneDispose:
+            async def dispose(self):
+                return None
+
+        class CloseAndAsyncDispose:
+            async def close(self):
+                return "async-close"
+
+            async def dispose(self):
+                raise AssertionError("dispose should not run when close exists")
+
         class AsyncAclose:
             def __init__(self):
                 self.closed = False
@@ -1513,9 +1567,22 @@ class TestCallWithMockLib(unittest.TestCase):
                     return lambda: "dynamic-aclose"
                 raise AttributeError(name)
 
+        class DynamicDisposeTrap:
+            dynamic_lookup_count = 0
+
+            def __getattr__(self, name):
+                if name == "dispose":
+                    self.dynamic_lookup_count += 1
+                    return lambda: "dynamic-dispose"
+                raise AttributeError(name)
+
         async def run():
             assert await omnivm_mod.aproxy_close(AsyncClose()) == "async-close"
             assert await omnivm_mod.aproxy_close(AsyncNoneClose()) is True
+            assert await omnivm_mod.aproxy_close(AsyncDispose()) == "async-dispose"
+            assert await omnivm_mod.aproxy_close(SyncDispose()) == "sync-dispose"
+            assert await omnivm_mod.aproxy_close(AsyncNoneDispose()) is True
+            assert await omnivm_mod.aproxy_close(CloseAndAsyncDispose()) == "async-close"
             aclose = AsyncAclose()
             assert await omnivm_mod.aproxy_close(aclose) is True
             assert aclose.closed is True
@@ -1523,6 +1590,9 @@ class TestCallWithMockLib(unittest.TestCase):
             trap = DynamicAcloseTrap()
             assert await omnivm_mod.aproxy_close(trap) is False
             assert trap.dynamic_lookup_count == 0
+            dispose_trap = DynamicDisposeTrap()
+            assert await omnivm_mod.aproxy_close(dispose_trap) is False
+            assert dispose_trap.dynamic_lookup_count == 0
 
         assert "aproxy_close" in omnivm_mod.__all__
         assert "omnivm_aclose" in omnivm_mod.__all__

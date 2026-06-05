@@ -6176,6 +6176,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, `__inspect.ismethoddescriptor(raw)`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "_omnivm_close")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "close")`) ||
+		!contains(code, `close = __omnivm_actual_public_method(value, "dispose")`) ||
 		!contains(code, `close = __omnivm_actual_public_method(value, "aclose")`) ||
 		!contains(code, `__omnivm_inspect.isawaitable(result)`) ||
 		!contains(code, "return await aproxy_close(value)") ||
@@ -6520,6 +6521,25 @@ class NoneCloser:
     def close(self):
         return None
 
+class TextDispose:
+    def dispose(self):
+        return "disposed"
+
+class FalseDispose:
+    def dispose(self):
+        return False
+
+class NoneDispose:
+    def dispose(self):
+        return None
+
+class CloseAndDispose:
+    def close(self):
+        return "closed"
+
+    def dispose(self):
+        raise RuntimeError("dispose should not run when close exists")
+
 class BothClosers:
     def _omnivm_close(self):
         return "omnivm-closed"
@@ -6536,19 +6556,41 @@ class DynamicCloseTrap:
             return lambda: "dynamic-close"
         raise AttributeError(name)
 
+class DynamicDisposeTrap:
+    dynamic_lookup_count = 0
+
+    def __getattr__(self, name):
+        if name == "dispose":
+            self.dynamic_lookup_count += 1
+            return lambda: "dynamic-dispose"
+        raise AttributeError(name)
+
 trap = DynamicCloseTrap()
+dispose_trap = DynamicDisposeTrap()
 if omnivm_close(FalseCloser()) is not False:
     raise RuntimeError("false close result was not preserved")
 if omnivm_close(TextCloser()) != "closed":
     raise RuntimeError("string close result was not preserved")
 if omnivm_close(NoneCloser()) is not True:
     raise RuntimeError("None close result should normalize to true")
+if omnivm_close(TextDispose()) != "disposed":
+    raise RuntimeError("string dispose result was not preserved")
+if omnivm_close(FalseDispose()) is not False:
+    raise RuntimeError("false dispose result was not preserved")
+if omnivm_close(NoneDispose()) is not True:
+    raise RuntimeError("None dispose result should normalize to true")
+if omnivm_close(CloseAndDispose()) != "closed":
+    raise RuntimeError("close should take priority over dispose")
 if omnivm_close(BothClosers()) != "omnivm-closed":
     raise RuntimeError("collision-safe _omnivm_close was not preferred")
 if omnivm_close(trap) is not False:
     raise RuntimeError("dynamic close lookup should not be used")
 if trap.dynamic_lookup_count != 0:
     raise RuntimeError("dynamic close lookup was invoked")
+if omnivm_close(dispose_trap) is not False:
+    raise RuntimeError("dynamic dispose lookup should not be used")
+if dispose_trap.dynamic_lookup_count != 0:
+    raise RuntimeError("dynamic dispose lookup was invoked")
 `
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
@@ -6573,6 +6615,25 @@ class AsyncNoneClose:
     async def close(self):
         return None
 
+class AsyncDispose:
+    async def dispose(self):
+        return "async-dispose"
+
+class SyncDispose:
+    def dispose(self):
+        return "sync-dispose"
+
+class AsyncNoneDispose:
+    async def dispose(self):
+        return None
+
+class CloseAndAsyncDispose:
+    async def close(self):
+        return "async-close"
+
+    async def dispose(self):
+        raise RuntimeError("dispose should not run when close exists")
+
 class AsyncAclose:
     def __init__(self):
         self.closed = False
@@ -6596,11 +6657,28 @@ class DynamicAcloseTrap:
             return lambda: "dynamic-aclose"
         raise AttributeError(name)
 
+class DynamicDisposeTrap:
+    dynamic_lookup_count = 0
+
+    def __getattr__(self, name):
+        if name == "dispose":
+            self.dynamic_lookup_count += 1
+            return lambda: "dynamic-dispose"
+        raise AttributeError(name)
+
 async def main():
     if await aproxy_close(AsyncClose()) != "async-close":
         raise RuntimeError("async close result was not preserved")
     if await aproxy_close(AsyncNoneClose()) is not True:
         raise RuntimeError("None async close result should normalize to true")
+    if await aproxy_close(AsyncDispose()) != "async-dispose":
+        raise RuntimeError("async dispose result was not preserved")
+    if await aproxy_close(SyncDispose()) != "sync-dispose":
+        raise RuntimeError("sync dispose result was not preserved")
+    if await aproxy_close(AsyncNoneDispose()) is not True:
+        raise RuntimeError("None async dispose result should normalize to true")
+    if await aproxy_close(CloseAndAsyncDispose()) != "async-close":
+        raise RuntimeError("close should take priority over async dispose")
     closer = AsyncAclose()
     if await aproxy_close(closer) is not True or closer.closed is not True:
         raise RuntimeError("aclose was not awaited")
@@ -6611,6 +6689,11 @@ async def main():
         raise RuntimeError("dynamic aclose lookup should not be used")
     if trap.dynamic_lookup_count != 0:
         raise RuntimeError("dynamic aclose lookup was invoked")
+    dispose_trap = DynamicDisposeTrap()
+    if await aproxy_close(dispose_trap) is not False:
+        raise RuntimeError("dynamic dispose lookup should not be used")
+    if dispose_trap.dynamic_lookup_count != 0:
+        raise RuntimeError("dynamic dispose lookup was invoked")
 
 asyncio.run(main())
 `
@@ -9950,6 +10033,7 @@ func TestEmbeddedPythonRegistersCoreProxyCloseHelper(t *testing.T) {
 		"('proxy_close', 'aproxy_close', 'omnivm_close', 'omnivm_aclose', 'cleanup_errors')",
 		"close = __omnivm_actual_public_method(value, '_omnivm_close')",
 		"close = __omnivm_actual_public_method(value, 'close')",
+		"close = __omnivm_actual_public_method(value, 'dispose')",
 		"close = __omnivm_actual_public_method(value, 'aclose')",
 		"__omnivm_inspect.isawaitable(result)",
 		"return True if result is None else result",
