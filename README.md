@@ -690,13 +690,13 @@ The `spawn-channel-contract.json` example is the small regression manifest for t
 
 ## Stress Tests
 
-82 tests verify correctness under pressure:
+The stress suite verifies correctness under pressure:
 
 ```bash
 docker run --rm --entrypoint stresstest omnivm
 ```
 
-Tests cover cross-runtime stack mixing, generators across C boundaries, asyncio pumping with bridge callbacks, re-entrant calls (Python → JS → Python), signal handling (JVM SIGSEGV + Ruby + Python interrupts), GC interaction, 1MB string round-trips, Ruby Fiber cooperative bridging, 4-runtime mutual recursion (18 levels deep), Golden Thread verification, `pthread_atfork` fork guard, watchdog-driven preemption of infinite loops across all runtimes, foreign thread bridge calls (JVM threads → Python/JS/Ruby), concurrent multi-thread bridge contention, and nested foreign-thread cross-runtime chains.
+Tests cover cross-runtime stack mixing, generators across C boundaries, asyncio pumping with bridge callbacks, re-entrant calls (Python → JS → Python), signal handling (JVM SIGSEGV + Ruby + Python interrupts), GC interaction, 1MB string round-trips, Ruby Fiber cooperative bridging, 4-runtime mutual recursion (18 levels deep), Golden Thread verification, `pthread_atfork` fork guard, watchdog-driven preemption of infinite loops across all runtimes, binary-mode foreign-thread bridge calls (JVM threads → Python/JS/Ruby), c-shared host-thread affinity diagnostics, concurrent multi-thread bridge contention, and nested foreign-thread cross-runtime chains.
 
 ## Library API
 
