@@ -444,7 +444,7 @@ static const char* omnivm_py_pymode_status_helpers_code =
 "    if not isinstance(info, dict):\n"
 "        raise RuntimeError('omnivm.status omitted thread_affinity capability', boundary_path='thread_affinity', details={'status': status_info})\n"
 "    return _copy_json_value(info)\n"
-"_OWNER_DISPATCH_TARGET_ALIASES = {'asyncio': 'python_asyncio', 'python': 'python_asyncio', 'python_async_loop': 'python_asyncio', 'javascript': 'javascript_event_loop', 'js': 'javascript_event_loop', 'node': 'javascript_event_loop', 'nodejs': 'javascript_event_loop', 'event_loop': 'javascript_event_loop', 'java': 'java_executor', 'jvm': 'java_executor', 'executor': 'java_executor', 'ruby': 'ruby_fiber_thread', 'fiber': 'ruby_fiber_thread', 'thread': 'ruby_fiber_thread', 'ruby_fiber': 'ruby_fiber_thread', 'ruby_thread': 'ruby_fiber_thread'}\n"
+"_OWNER_DISPATCH_TARGET_ALIASES = {'asyncio': 'python_asyncio', 'python': 'python_asyncio', 'python_loop': 'python_asyncio', 'python_async_loop': 'python_asyncio', 'py': 'python_asyncio', 'javascript': 'javascript_event_loop', 'js': 'javascript_event_loop', 'javascript_loop': 'javascript_event_loop', 'node': 'javascript_event_loop', 'nodejs': 'javascript_event_loop', 'event_loop': 'javascript_event_loop', 'java': 'java_executor', 'jvm': 'java_executor', 'executor': 'java_executor', 'ruby': 'ruby_fiber_thread', 'fiber': 'ruby_fiber_thread', 'thread': 'ruby_fiber_thread', 'ruby_fiber': 'ruby_fiber_thread', 'ruby_thread': 'ruby_fiber_thread'}\n"
 "def _owner_dispatch_target_name(target):\n"
 "    target_name = str(target)\n"
 "    normalized = target_name.strip().lower().replace('-', '_').replace(' ', '_')\n"

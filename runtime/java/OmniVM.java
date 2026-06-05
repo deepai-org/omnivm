@@ -349,10 +349,10 @@ public class OmniVM {
     private static String ownerDispatchTargetName(String target) {
         String normalized = String.valueOf(target).trim().toLowerCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
         return switch (normalized) {
-            case "asyncio", "python", "python_loop", "py" -> "python_asyncio";
-            case "js", "javascript", "javascript_loop", "node" -> "javascript_event_loop";
+            case "asyncio", "python", "python_loop", "python_async_loop", "py" -> "python_asyncio";
+            case "js", "javascript", "javascript_loop", "node", "nodejs", "event_loop" -> "javascript_event_loop";
             case "java", "jvm", "executor" -> "java_executor";
-            case "ruby", "ruby_fiber", "ruby_thread" -> "ruby_fiber_thread";
+            case "ruby", "fiber", "thread", "ruby_fiber", "ruby_thread" -> "ruby_fiber_thread";
             default -> normalized;
         };
     }

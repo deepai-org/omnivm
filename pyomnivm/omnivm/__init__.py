@@ -1962,9 +1962,12 @@ def owner_dispatch_status():
 _OWNER_DISPATCH_TARGET_ALIASES = {
     "asyncio": "python_asyncio",
     "python": "python_asyncio",
+    "python_loop": "python_asyncio",
     "python_async_loop": "python_asyncio",
+    "py": "python_asyncio",
     "javascript": "javascript_event_loop",
     "js": "javascript_event_loop",
+    "javascript_loop": "javascript_event_loop",
     "node": "javascript_event_loop",
     "nodejs": "javascript_event_loop",
     "event_loop": "javascript_event_loop",

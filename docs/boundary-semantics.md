@@ -647,8 +647,10 @@ make general Python asyncio callbacks owner-dispatched.
 `omnivm.owner_dispatch_target_status(target)` returns one target block, and
 `omnivm.assert_owner_dispatch_target_supported(target, label)` is the
 target-specific fail-fast guard. Both accept the canonical target names and
-normalize common spellings such as `asyncio`, `JavaScript`, `java-executor`,
-and `ruby fiber` to their canonical names before reporting diagnostics.
+normalize common spellings such as `asyncio`, `python loop`,
+`python_async_loop`, `JavaScript`, `nodejs`, `event loop`, `java-executor`,
+`ruby fiber`, `fiber`, and `thread` to their canonical names before reporting
+diagnostics.
 `omnivm.assert_owner_dispatch_supported(label)` remains the fail-fast form for
 integrations that require universal dispatch.
 These guard failures attach the relevant status block to

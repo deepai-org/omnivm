@@ -29,10 +29,16 @@ func TestGoOwnerDispatchStatusReportsDiagnosticOnly(t *testing.T) {
 
 func TestGoOwnerDispatchTargetStatusAliasesAndUnknowns(t *testing.T) {
 	for alias, want := range map[string]string{
-		"asyncio":       "python_asyncio",
-		"JavaScript":    "javascript_event_loop",
-		"java-executor": "java_executor",
-		"ruby fiber":    "ruby_fiber_thread",
+		"asyncio":           "python_asyncio",
+		"python_loop":       "python_asyncio",
+		"python async loop": "python_asyncio",
+		"JavaScript":        "javascript_event_loop",
+		"nodejs":            "javascript_event_loop",
+		"event loop":        "javascript_event_loop",
+		"java-executor":     "java_executor",
+		"fiber":             "ruby_fiber_thread",
+		"thread":            "ruby_fiber_thread",
+		"ruby fiber":        "ruby_fiber_thread",
 	} {
 		info, err := OwnerDispatchTargetStatus(alias)
 		if err != nil {

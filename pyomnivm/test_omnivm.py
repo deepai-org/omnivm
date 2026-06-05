@@ -2727,15 +2727,30 @@ class TestCallWithMockLib(unittest.TestCase):
             "requested_target": "asyncio",
             "target": "python_asyncio",
         }
+        assert omnivm_mod.owner_dispatch_target_status("python loop") == {
+            "supported": False,
+            "requested_target": "python loop",
+            "target": "python_asyncio",
+        }
         assert omnivm_mod.owner_dispatch_target_status("JavaScript") == {
             "supported": False,
             "requested_target": "JavaScript",
+            "target": "javascript_event_loop",
+        }
+        assert omnivm_mod.owner_dispatch_target_status("nodejs") == {
+            "supported": False,
+            "requested_target": "nodejs",
             "target": "javascript_event_loop",
         }
         assert omnivm_mod.owner_dispatch_target_status("java-executor") == {
             "supported": False,
             "requested_target": "java-executor",
             "target": "java_executor",
+        }
+        assert omnivm_mod.owner_dispatch_target_status("thread") == {
+            "supported": False,
+            "requested_target": "thread",
+            "target": "ruby_fiber_thread",
         }
         assert omnivm_mod.owner_dispatch_target_status("ruby fiber") == {
             "supported": False,

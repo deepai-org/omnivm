@@ -203,13 +203,13 @@ func ownerDispatchTargetName(target string) string {
 		normalized = strings.ReplaceAll(normalized, "__", "_")
 	}
 	switch normalized {
-	case "asyncio", "python", "python_loop", "py":
+	case "asyncio", "python", "python_loop", "python_async_loop", "py":
 		return "python_asyncio"
-	case "js", "javascript", "javascript_loop", "node":
+	case "js", "javascript", "javascript_loop", "node", "nodejs", "event_loop":
 		return "javascript_event_loop"
 	case "java", "jvm", "executor":
 		return "java_executor"
-	case "ruby", "ruby_fiber", "ruby_thread":
+	case "ruby", "fiber", "thread", "ruby_fiber", "ruby_thread":
 		return "ruby_fiber_thread"
 	default:
 		return normalized

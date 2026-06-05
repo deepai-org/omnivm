@@ -6982,6 +6982,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`owner_dispatch_supported: false`,
 		`native_threads_supported: false`,
 		`javascript_event_loop`,
+		`python_async_loop: "python_asyncio"`,
+		`nodejs: "javascript_event_loop"`,
+		`event_loop: "javascript_event_loop"`,
+		`fiber: "ruby_fiber_thread"`,
+		`thread: "ruby_fiber_thread"`,
 		`python_async_stream_pull`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`boundary_path = boundaryPath`,
@@ -7142,6 +7147,9 @@ if (omnivm.rubyThreadingStatus().native_threads_supported !== false) {
 var target = omnivm.ownerDispatchTargetStatus("js");
 if (target.target !== "javascript_event_loop") throw new Error("alias did not normalize: " + target.target);
 if (target.requested_target !== "js") throw new Error("requested target missing");
+if (omnivm.ownerDispatchTargetStatus("python async loop").target !== "python_asyncio") throw new Error("python alias did not normalize");
+if (omnivm.ownerDispatchTargetStatus("nodejs").target !== "javascript_event_loop") throw new Error("nodejs alias did not normalize");
+if (omnivm.ownerDispatchTargetStatus("thread").target !== "ruby_fiber_thread") throw new Error("thread alias did not normalize");
 target.supported = true;
 if (omnivm.ownerDispatchTargetStatus("js").supported !== false) throw new Error("target status leaked mutable state");
 try {
@@ -8871,6 +8879,11 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`"owner_dispatch_supported", false`,
 		`"native_threads_supported", false`,
 		`"javascript_event_loop"`,
+		`"python_async_loop"`,
+		`"nodejs"`,
+		`"event_loop"`,
+		`"fiber"`,
+		`"thread"`,
 		`"python_async_stream_pull"`,
 		`"ruby_threading"`,
 		`"owner_dispatch_target"`,
@@ -9896,6 +9909,9 @@ public final class OwnerDispatchCheck {
         Map<String, Object> target = OmniVM.ownerDispatchTargetStatus("js");
         require("javascript_event_loop".equals(target.get("target")), "alias did not normalize: " + target);
         require("js".equals(target.get("requested_target")), "requested target missing: " + target);
+        require("python_asyncio".equals(OmniVM.ownerDispatchTargetStatus("python async loop").get("target")), "python alias did not normalize");
+        require("javascript_event_loop".equals(OmniVM.ownerDispatchTargetStatus("nodejs").get("target")), "nodejs alias did not normalize");
+        require("ruby_fiber_thread".equals(OmniVM.ownerDispatchTargetStatus("thread").get("target")), "thread alias did not normalize");
         target.put("supported", true);
         require(Boolean.FALSE.equals(OmniVM.ownerDispatchTargetStatus("js").get("supported")), "target leaked mutable state");
 
@@ -10288,6 +10304,11 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		`\"owner_dispatch_supported\" => false`,
 		`\"javascript_event_loop\" => {`,
 		`\"python_async_stream_pull\"`,
+		`\"python_async_loop\" => \"python_asyncio\"`,
+		`\"nodejs\" => \"javascript_event_loop\"`,
+		`\"event_loop\" => \"javascript_event_loop\"`,
+		`\"fiber\" => \"ruby_fiber_thread\"`,
+		`\"thread\" => \"ruby_fiber_thread\"`,
 		"def self.owner_dispatch_target_status(target)",
 		"def self.assert_owner_dispatch_supported(label = nil)",
 		"def self.assert_owner_dispatch_target_supported(target, label = nil)",
@@ -10411,6 +10432,13 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		"def owner_dispatch_status():",
 		"return _copy_json_value(info)",
 		"_OWNER_DISPATCH_TARGET_ALIASES = {'asyncio': 'python_asyncio'",
+		"'python_loop': 'python_asyncio'",
+		"'py': 'python_asyncio'",
+		"'javascript_loop': 'javascript_event_loop'",
+		"'nodejs': 'javascript_event_loop'",
+		"'event_loop': 'javascript_event_loop'",
+		"'fiber': 'ruby_fiber_thread'",
+		"'thread': 'ruby_fiber_thread'",
 		"def _owner_dispatch_target_name(target):",
 		"normalized = target_name.strip().lower().replace('-', '_').replace(' ', '_')",
 		"def owner_dispatch_target_status(target):",
@@ -10798,6 +10826,11 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`owner_dispatch_supported: false`,
 		`native_threads_supported: false`,
 		`javascript_event_loop`,
+		`python_async_loop: "python_asyncio"`,
+		`nodejs: "javascript_event_loop"`,
+		`event_loop: "javascript_event_loop"`,
+		`fiber: "ruby_fiber_thread"`,
+		`thread: "ruby_fiber_thread"`,
 		`owner_dispatch_target`,
 		`known_targets: Object.keys(status.owner_dispatch_targets || {}).sort()`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
