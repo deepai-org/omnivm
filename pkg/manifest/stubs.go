@@ -2340,6 +2340,22 @@ func runtimeRefPythonStreamCloseStepCode(ref RuntimeRef, stateVar, readyVar, err
 __omnivm_stream_obj = %s
 __omnivm_stream_iter = globals().get(%q)
 __omnivm_close_seen = set()
+def __omnivm_close_callable_without_required_args(__omnivm_method):
+    if not callable(__omnivm_method):
+        return None
+    try:
+        import inspect as __inspect
+        __omnivm_signature = __inspect.signature(__omnivm_method)
+    except (TypeError, ValueError):
+        return __omnivm_method
+    for __omnivm_param in __omnivm_signature.parameters.values():
+        if __omnivm_param.kind in (
+            __inspect.Parameter.POSITIONAL_ONLY,
+            __inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            __inspect.Parameter.KEYWORD_ONLY,
+        ) and __omnivm_param.default is __inspect._empty:
+            return None
+    return __omnivm_method
 async def __omnivm_close_one(__omnivm_target):
     if __omnivm_target is None:
         return
@@ -2347,11 +2363,11 @@ async def __omnivm_close_one(__omnivm_target):
     if __omnivm_target_id in __omnivm_close_seen:
         return
     __omnivm_close_seen.add(__omnivm_target_id)
-    __omnivm_target_aclose = getattr(__omnivm_target, 'aclose', None)
-    __omnivm_target_close = getattr(__omnivm_target, 'close', None)
-    if callable(__omnivm_target_aclose):
+    __omnivm_target_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_target, 'aclose', None))
+    __omnivm_target_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_target, 'close', None))
+    if __omnivm_target_aclose is not None:
         await __omnivm_target_aclose()
-    elif callable(__omnivm_target_close):
+    elif __omnivm_target_close is not None:
         __omnivm_target_close()
 async def __omnivm_close_frame_iterators(__omnivm_target):
     for __omnivm_frame_attr in ('ag_frame', 'gi_frame'):
@@ -2359,10 +2375,11 @@ async def __omnivm_close_frame_iterators(__omnivm_target):
         if __omnivm_frame is None:
             continue
         for __omnivm_local in list(getattr(__omnivm_frame, 'f_locals', {}).values()):
-            if __omnivm_local is not __omnivm_target and (
-                callable(getattr(__omnivm_local, 'aclose', None)) or
-                callable(getattr(__omnivm_local, 'close', None))
-            ):
+            if __omnivm_local is __omnivm_target:
+                continue
+            __omnivm_local_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_local, 'aclose', None))
+            __omnivm_local_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_local, 'close', None))
+            if __omnivm_local_aclose is not None or __omnivm_local_close is not None:
                 await __omnivm_close_one(__omnivm_local)
 async def __omnivm_stream_close_task():
     try:
@@ -3592,6 +3609,22 @@ func runtimeRefStreamCloseCode(ref RuntimeRef, stateVar string) (string, bool) {
 		return fmt.Sprintf(`__omnivm_stream_obj = %s
 __omnivm_stream_iter = globals().get(%q)
 __omnivm_close_seen = set()
+def __omnivm_close_callable_without_required_args(__omnivm_method):
+    if not callable(__omnivm_method):
+        return None
+    try:
+        import inspect as __inspect
+        __omnivm_signature = __inspect.signature(__omnivm_method)
+    except (TypeError, ValueError):
+        return __omnivm_method
+    for __omnivm_param in __omnivm_signature.parameters.values():
+        if __omnivm_param.kind in (
+            __inspect.Parameter.POSITIONAL_ONLY,
+            __inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            __inspect.Parameter.KEYWORD_ONLY,
+        ) and __omnivm_param.default is __inspect._empty:
+            return None
+    return __omnivm_method
 def __omnivm_maybe_await_close(__omnivm_result):
     import inspect as __inspect
     if not __inspect.isawaitable(__omnivm_result):
@@ -3624,11 +3657,11 @@ def __omnivm_close_one(__omnivm_target):
     if __omnivm_target_id in __omnivm_close_seen:
         return
     __omnivm_close_seen.add(__omnivm_target_id)
-    __omnivm_target_aclose = getattr(__omnivm_target, 'aclose', None)
-    __omnivm_target_close = getattr(__omnivm_target, 'close', None)
-    if callable(__omnivm_target_aclose):
+    __omnivm_target_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_target, 'aclose', None))
+    __omnivm_target_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_target, 'close', None))
+    if __omnivm_target_aclose is not None:
         __omnivm_maybe_await_close(__omnivm_target_aclose())
-    elif callable(__omnivm_target_close):
+    elif __omnivm_target_close is not None:
         __omnivm_target_close()
 def __omnivm_close_frame_iterators(__omnivm_target):
     for __omnivm_frame_attr in ('ag_frame', 'gi_frame'):
@@ -3636,25 +3669,26 @@ def __omnivm_close_frame_iterators(__omnivm_target):
         if __omnivm_frame is None:
             continue
         for __omnivm_local in list(getattr(__omnivm_frame, 'f_locals', {}).values()):
-            if __omnivm_local is not __omnivm_target and (
-                callable(getattr(__omnivm_local, 'aclose', None)) or
-                callable(getattr(__omnivm_local, 'close', None))
-            ):
+            if __omnivm_local is __omnivm_target:
+                continue
+            __omnivm_local_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_local, 'aclose', None))
+            __omnivm_local_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_local, 'close', None))
+            if __omnivm_local_aclose is not None or __omnivm_local_close is not None:
                 __omnivm_close_one(__omnivm_local)
 __omnivm_close_frame_iterators(__omnivm_stream_iter)
 __omnivm_close_frame_iterators(__omnivm_stream_obj)
-__omnivm_stream_iter_aclose = getattr(__omnivm_stream_iter, 'aclose', None)
-__omnivm_stream_iter_close = getattr(__omnivm_stream_iter, 'close', None)
-if callable(__omnivm_stream_iter_aclose):
+__omnivm_stream_iter_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_stream_iter, 'aclose', None))
+__omnivm_stream_iter_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_stream_iter, 'close', None))
+if __omnivm_stream_iter_aclose is not None:
     __omnivm_maybe_await_close(__omnivm_stream_iter_aclose())
-elif callable(__omnivm_stream_iter_close):
+elif __omnivm_stream_iter_close is not None:
     __omnivm_stream_iter_close()
-__omnivm_stream_aclose = getattr(__omnivm_stream_obj, 'aclose', None)
-__omnivm_stream_close = getattr(__omnivm_stream_obj, 'close', None)
+__omnivm_stream_aclose = __omnivm_close_callable_without_required_args(getattr(__omnivm_stream_obj, 'aclose', None))
+__omnivm_stream_close = __omnivm_close_callable_without_required_args(getattr(__omnivm_stream_obj, 'close', None))
 if __omnivm_stream_obj is not __omnivm_stream_iter:
-    if callable(__omnivm_stream_aclose):
+    if __omnivm_stream_aclose is not None:
         __omnivm_maybe_await_close(__omnivm_stream_aclose())
-    elif callable(__omnivm_stream_close):
+    elif __omnivm_stream_close is not None:
         __omnivm_stream_close()
 globals()[%q] = None`, base, stateVar, stateVar), true
 	case "ruby":

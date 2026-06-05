@@ -5617,6 +5617,60 @@ func TestRuntimeRefPythonAsyncStreamCloseUsesOwnerLoopContract(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefPythonStreamCloseSkipsRequiredArgCloseMethods(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code, ok := runtimeRefStreamCloseCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state")
+	if !ok {
+		t.Fatal("runtimeRefStreamCloseCode(python) unsupported")
+	}
+	script := `
+class RequiredClose:
+    def __init__(self):
+        self.calls = 0
+    def close(self, reason):
+        self.calls += 1
+        raise RuntimeError("required close should not run")
+
+rows = RequiredClose()
+__omnivm_stream_state = rows
+` + code + `
+if rows.calls != 0:
+    raise RuntimeError("required-arg close was invoked")
+
+class OptionalClose:
+    def __init__(self):
+        self.calls = 0
+    def close(self, reason=None):
+        self.calls += 1
+
+rows = OptionalClose()
+__omnivm_stream_state = rows
+` + code + `
+if rows.calls != 1:
+    raise RuntimeError(f"optional close call count mismatch: {rows.calls}")
+
+closed = []
+def generator_rows():
+    try:
+        yield "first"
+    finally:
+        closed.append(True)
+
+rows = generator_rows()
+__omnivm_stream_state = rows
+next(rows)
+` + code + `
+if closed != [True]:
+    raise RuntimeError(f"generator close was not preserved: {closed}")
+`
+	if out, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("python stream close required-arg guard failed: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeRefPythonAsyncStreamCloseStepAwaitsCancellation(t *testing.T) {
 	code, ok := runtimeRefPythonStreamCloseStepCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
 	if !ok {
@@ -5640,6 +5694,73 @@ func TestRuntimeRefPythonAsyncStreamCloseStepAwaitsCancellation(t *testing.T) {
 	}
 	if contains(code, "run_until_complete") || contains(code, "run_coroutine_threadsafe") {
 		t.Fatalf("runtimeRefPythonStreamCloseStepCode should schedule close for the pump loop, got %q", code)
+	}
+}
+
+func TestRuntimeRefPythonAsyncStreamCloseStepSkipsRequiredArgCloseMethods(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code, ok := runtimeRefPythonStreamCloseStepCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state", "__omnivm_close_ready", "__omnivm_close_error")
+	if !ok {
+		t.Fatal("runtimeRefPythonStreamCloseStepCode unsupported")
+	}
+	script := `
+import asyncio
+
+def run_close_task():
+    loop = globals()["__omnivm_stream_loop"]
+    loop.run_until_complete(asyncio.sleep(0))
+
+class RequiredAsyncClose:
+    def __init__(self):
+        self.calls = 0
+    async def aclose(self, reason):
+        self.calls += 1
+        raise RuntimeError("required aclose should not run")
+
+rows = RequiredAsyncClose()
+__omnivm_stream_state = rows
+` + code + `
+run_close_task()
+if not __omnivm_close_ready or __omnivm_close_error is not None:
+    raise RuntimeError(f"required aclose task failed: ready={__omnivm_close_ready} error={__omnivm_close_error}")
+if rows.calls != 0:
+    raise RuntimeError("required-arg aclose was invoked")
+
+class OptionalAsyncClose:
+    def __init__(self):
+        self.calls = 0
+    async def aclose(self, reason=None):
+        self.calls += 1
+
+rows = OptionalAsyncClose()
+__omnivm_stream_state = rows
+` + code + `
+run_close_task()
+if not __omnivm_close_ready or __omnivm_close_error is not None:
+    raise RuntimeError(f"optional aclose task failed: ready={__omnivm_close_ready} error={__omnivm_close_error}")
+if rows.calls != 1:
+    raise RuntimeError(f"optional aclose call count mismatch: {rows.calls}")
+
+closed = []
+async def async_generator_rows():
+    try:
+        yield "first"
+    finally:
+        closed.append(True)
+
+rows = async_generator_rows()
+__omnivm_stream_state = rows
+globals()["__omnivm_stream_loop"].run_until_complete(rows.__anext__())
+` + code + `
+run_close_task()
+if closed != [True]:
+    raise RuntimeError(f"async generator aclose was not preserved: {closed}")
+`
+	if out, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("python async stream close required-arg guard failed: %v\n%s", err, out)
 	}
 }
 
