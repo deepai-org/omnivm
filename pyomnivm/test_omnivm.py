@@ -2180,6 +2180,64 @@ class TestCallWithMockLib(unittest.TestCase):
         cancels = [request for request in requests if request.get("op") == "stream_cancel"]
         assert cancels == [{"op": "stream_cancel", "id": 51}]
 
+    def test_manifest_stream_iterator_materialization_error_keeps_failed_cancel_quiet_after_recording(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        request = object()
+        requests = []
+        if hasattr(builtins, "__omnivm_arg_refs"):
+            delattr(builtins, "__omnivm_arg_refs")
+        self.mock_lib.OmniExecHost.return_value = b"OK:"
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 52,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt" and request_payload.get("id") == 52:
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                return envelope({
+                    "done": False,
+                    "value": {
+                        "__omnivm_resource__": True,
+                        "id": 92,
+                        "runtime": "python",
+                        "kind": "row",
+                        "transfer": True,
+                    },
+                })
+            if request_payload.get("op") == "handle_adopt" and request_payload.get("id") == 92:
+                raise RuntimeError("chunk adopt failed")
+            if request_payload.get("op") == "stream_cancel":
+                raise RuntimeError("cancel failed")
+            if request_payload.get("op") == "handle_release_finalizer":
+                raise AssertionError("failed materialization cleanup should not fall back to finalizer release")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows", args=(request,))
+
+        iterator = iter(proxy)
+        with self.assertRaisesRegex(RuntimeError, "chunk adopt failed") as ctx:
+            next(iterator)
+
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "cancel failed"
+        assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
+        assert proxy.close() is False
+        gc.collect()
+        cancels = [request for request in requests if request.get("op") == "stream_cancel"]
+        assert cancels == [{"op": "stream_cancel", "id": 52}]
+
     def test_manifest_stream_iterator_detaches_on_next_error(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")

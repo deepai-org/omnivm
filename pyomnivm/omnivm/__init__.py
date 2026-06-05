@@ -1912,6 +1912,8 @@ class _ManifestStreamIterator:
                     close_exc,
                     f"OmniVM stream close failed during chunk materialization cleanup: {close_exc}",
                 )
+                self._detach_finalizer()
+                self._proxy._detach_after_remote_close()
             raise
 
     def close(self):
