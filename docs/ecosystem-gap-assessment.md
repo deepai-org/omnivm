@@ -397,6 +397,9 @@ Java manifest callers can use `OmniVM.proxyGet`, `OmniVM.proxySet`,
 `HandleProxy` values these helpers now force the remote handle operation before
 Java `Map` or reflection behavior can collide with keys such as `get`, `set`, `call`,
 `close`, or `length`.
+Go manifest callers can use `manifest.ProxyClose` or `manifest.OmnivmClose`
+for the same collision-safe handle/stream proxy close path, with `(closed,
+error)` return values so failed releases remain retryable.
 
 ### Error Fidelity
 

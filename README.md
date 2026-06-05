@@ -581,6 +581,10 @@ diagnostic-only boundary with `OmniVM.ownerDispatchStatus()`,
 `OmniVM.ownerDispatchTargetStatus(target)`,
 `OmniVM.assertOwnerDispatchSupported(label)`, or
 `OmniVM.assertOwnerDispatchTargetSupported(target, label)`.
+Go manifest callers can use `manifest.ProxyClose(value)` or
+`manifest.OmnivmClose(value)` to close handle proxies, stream proxies, or
+ordinary Go `Close() error` values through the same collision-safe lifecycle
+path; the helpers return `(closed, error)` so failed releases remain retryable.
 
 ```bash
 # Run a single manifest
