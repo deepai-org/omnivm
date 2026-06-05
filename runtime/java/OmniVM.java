@@ -694,7 +694,7 @@ public class OmniVM {
         ParsedRuntimeError parsed = new ParsedRuntimeError();
         parsed.runtime = nonEmptyJsonString(envelope.get("runtime"), safeString(fallbackRuntime));
         parsed.originRuntime = nonEmptyJsonString(jsonValue(envelope, "origin_runtime", "originRuntime"), parsed.runtime);
-        parsed.type = jsonString(jsonValue(envelope, "type", "name"));
+        parsed.type = jsonString(jsonValue(envelope, "type", "name", "error_type", "errorType"));
         parsed.message = jsonString(envelope.get("message"));
         parsed.traceback = jsonString(jsonValue(envelope, "traceback", "stack"));
         if (parsed.runtime.isEmpty() && parsed.type.isEmpty() && parsed.message.isEmpty() && safeString(parsed.traceback).isEmpty()) {
@@ -733,12 +733,14 @@ public class OmniVM {
         return rawDetails == null ? null : RuntimeError.copyJsonValue(rawDetails);
     }
 
-    private static Object jsonValue(Map<?, ?> value, String preferredKey, String fallbackKey) {
-        Object preferred = value.get(preferredKey);
-        if (preferred != null) {
-            return preferred;
+    private static Object jsonValue(Map<?, ?> value, String... keys) {
+        for (String key : keys) {
+            Object item = value.get(key);
+            if (item != null) {
+                return item;
+            }
         }
-        return value.get(fallbackKey);
+        return null;
     }
 
     private static String jsonString(Object value) {
@@ -779,7 +781,7 @@ public class OmniVM {
                 continue;
             }
             Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("type", jsonString(jsonValue(cause, "type", "name")));
+            entry.put("type", jsonString(jsonValue(cause, "type", "name", "error_type", "errorType")));
             entry.put("message", jsonString(cause.get("message")));
             String traceback = jsonString(jsonValue(cause, "traceback", "stack"));
             if (!traceback.isEmpty()) {

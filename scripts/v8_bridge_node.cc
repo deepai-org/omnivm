@@ -537,12 +537,20 @@ static std::string omnivm_v8_get_string_prop_fallback(v8::Isolate* isolate,
                                                       v8::Local<v8::Context> context,
                                                       v8::Local<v8::Object> object,
                                                       const char* preferred_key,
-                                                      const char* fallback_key) {
-    std::string value = omnivm_v8_get_string_prop(isolate, context, object, preferred_key);
-    if (!value.empty()) {
-        return value;
+                                                      const char* fallback_key,
+                                                      const char* fallback2_key = nullptr,
+                                                      const char* fallback3_key = nullptr) {
+    const char* keys[] = {preferred_key, fallback_key, fallback2_key, fallback3_key};
+    for (const char* key : keys) {
+        if (!key) {
+            continue;
+        }
+        std::string value = omnivm_v8_get_string_prop(isolate, context, object, key);
+        if (!value.empty()) {
+            return value;
+        }
     }
-    return omnivm_v8_get_string_prop(isolate, context, object, fallback_key);
+    return "";
 }
 
 static std::vector<std::string> omnivm_v8_get_string_array_prop_fallback(v8::Isolate* isolate,
@@ -592,7 +600,7 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
     if (env.origin_runtime.empty()) {
         env.origin_runtime = env.runtime;
     }
-    env.type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name");
+    env.type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name", "error_type", "errorType");
     env.message = omnivm_v8_get_string_prop(isolate, context, object, "message");
     env.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack");
     if (env.runtime.empty() && env.type.empty() && env.message.empty() && env.traceback.empty()) {
@@ -639,7 +647,7 @@ static bool omnivm_v8_parse_runtime_error_envelope_object(v8::Isolate* isolate,
         if (cause.origin_runtime.empty()) {
             cause.origin_runtime = cause.runtime;
         }
-        cause.type = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "type", "name");
+        cause.type = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "type", "name", "error_type", "errorType");
         cause.message = omnivm_v8_get_string_prop(isolate, context, cause_object, "message");
         cause.traceback = omnivm_v8_get_string_prop_fallback(isolate, context, cause_object, "traceback", "stack");
         cause.stack_frames = omnivm_v8_get_string_array_prop_fallback(isolate, context, cause_object, "stack_frames", "stackFrames");
@@ -665,7 +673,7 @@ static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
     if (runtime.empty()) {
         return "";
     }
-    std::string type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name");
+    std::string type = omnivm_v8_get_string_prop_fallback(isolate, context, object, "type", "name", "error_type", "errorType");
     std::string message = omnivm_v8_get_string_prop(isolate, context, object, "message");
     std::string traceback = omnivm_v8_get_string_prop_fallback(isolate, context, object, "traceback", "stack");
     std::string handle = omnivm_v8_get_string_prop_fallback(isolate, context, object, "original_error_handle", "originalErrorHandle");
@@ -700,7 +708,7 @@ static std::string omnivm_v8_format_runtime_error_object(v8::Isolate* isolate,
                 continue;
             }
             v8::Local<v8::Object> cause = cause_value.As<v8::Object>();
-            std::string cause_type = omnivm_v8_get_string_prop_fallback(isolate, context, cause, "type", "name");
+            std::string cause_type = omnivm_v8_get_string_prop_fallback(isolate, context, cause, "type", "name", "error_type", "errorType");
             std::string cause_message = omnivm_v8_get_string_prop(isolate, context, cause, "message");
             out += "\nCaused by: ";
             if (!cause_type.empty()) {
@@ -1120,6 +1128,41 @@ static void omnivm_v8_copy_prop_fallback(v8::Isolate* isolate,
     ).ToChecked();
 }
 
+static void omnivm_v8_copy_prop_fallback4(v8::Isolate* isolate,
+                                          v8::Local<v8::Context> context,
+                                          v8::Local<v8::Object> source,
+                                          v8::Local<v8::Object> target,
+                                          const char* first_key,
+                                          const char* second_key,
+                                          const char* third_key,
+                                          const char* fourth_key,
+                                          const char* target_key) {
+    const char* keys[] = {first_key, second_key, third_key, fourth_key};
+    v8::Local<v8::Value> value;
+    for (const char* key : keys) {
+        if (!key) {
+            continue;
+        }
+        if (source->Get(
+                context,
+                v8::String::NewFromUtf8(isolate, key).ToLocalChecked()
+            ).ToLocal(&value) && !value->IsUndefined()) {
+            value = omnivm_v8_json_clone_value(isolate, context, value);
+            target->Set(
+                context,
+                v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
+                value
+            ).ToChecked();
+            return;
+        }
+    }
+    target->Set(
+        context,
+        v8::String::NewFromUtf8(isolate, target_key).ToLocalChecked(),
+        v8::Null(isolate)
+    ).ToChecked();
+}
+
 static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::Value>& info) {
     v8::Isolate* isolate = info.GetIsolate();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
@@ -1128,7 +1171,7 @@ static void omnivm_v8_runtime_error_to_json(const v8::FunctionCallbackInfo<v8::V
         v8::Local<v8::Object> error = info.This();
         omnivm_v8_copy_prop(isolate, context, error, out, "runtime", "runtime");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "origin_runtime", "originRuntime", "origin_runtime");
-        omnivm_v8_copy_prop_fallback(isolate, context, error, out, "type", "name", "type");
+        omnivm_v8_copy_prop_fallback4(isolate, context, error, out, "type", "name", "error_type", "errorType", "type");
         omnivm_v8_copy_prop(isolate, context, error, out, "message", "message");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "traceback", "stack", "traceback");
         omnivm_v8_copy_prop_fallback(isolate, context, error, out, "stack_frames", "stackFrames", "stack_frames");

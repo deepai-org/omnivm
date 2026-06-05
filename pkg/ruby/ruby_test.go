@@ -210,6 +210,19 @@ raw_details = OmniVM::RuntimeError.new("ERR:javascript: AggregateError: invalid\
 raise "raw details #{raw_details.details.inspect}" unless raw_details.details == "not json"
 raise "raw details_json #{raw_details.details_json.inspect}" unless raw_details.details_json == "not json"
 raise "raw stack #{raw_details.stack_frames.inspect}" unless raw_details.stack_frames == []
+alias_payload = {
+  runtime: "java",
+  error_type: "IllegalArgumentException",
+  message: "outer",
+  cause_chain: [{
+    runtime: "javascript",
+    errorType: "TypeError",
+    message: "inner"
+  }]
+}
+alias_err = OmniVM::RuntimeError.new(JSON.generate(alias_payload), runtime: "go")
+raise "alias type #{alias_err.type.inspect}" unless alias_err.type == "IllegalArgumentException"
+raise "alias cause type #{alias_err.cause_chain.inspect}" unless alias_err.cause_chain[0][:type] == "TypeError"
 puts "ok"
 `)
 	if result.Err != nil {

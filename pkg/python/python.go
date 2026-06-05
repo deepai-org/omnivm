@@ -229,9 +229,12 @@ static const char* omnivm_py_runtime_error_code =
 "        return None\n"
 "    if not isinstance(envelope, dict):\n"
 "        return None\n"
-"    def field(preferred, fallback):\n"
-"        value = envelope.get(preferred)\n"
-"        return envelope.get(fallback) if value is None else value\n"
+"    def field(*keys):\n"
+"        for key in keys:\n"
+"            value = envelope.get(key)\n"
+"            if value is not None:\n"
+"                return value\n"
+"        return None\n"
 "    def text_field(value, fallback=''):\n"
 "        return str(value) if value is not None else fallback\n"
 "    def details_field(source):\n"
@@ -261,7 +264,7 @@ static const char* omnivm_py_runtime_error_code =
 "        return raw_details if isinstance(raw_details, str) else _runtime_error_details_json(raw_details)\n"
 "    runtime_name = text_field(envelope.get('runtime'), runtime)\n"
 "    origin_runtime = text_field(field('origin_runtime', 'originRuntime'), runtime_name)\n"
-"    err_type = text_field(field('type', 'name'))\n"
+"    err_type = text_field(field('type', 'name', 'error_type', 'errorType'))\n"
 "    detail = text_field(envelope.get('message'))\n"
 "    traceback = text_field(field('traceback', 'stack'))\n"
 "    if not any((runtime_name, err_type, detail, traceback)):\n"
@@ -277,7 +280,7 @@ static const char* omnivm_py_runtime_error_code =
 "        for cause in cause_chain:\n"
 "            if not isinstance(cause, dict):\n"
 "                continue\n"
-"            item = {'type': str(cause.get('type') or cause.get('name') or ''), 'message': str(cause.get('message') or '')}\n"
+"            item = {'type': str(cause.get('type') or cause.get('name') or cause.get('error_type') or cause.get('errorType') or ''), 'message': str(cause.get('message') or '')}\n"
 "            cause_traceback = cause.get('traceback')\n"
 "            if cause_traceback is None:\n"
 "                cause_traceback = cause.get('stack')\n"
@@ -2894,6 +2897,16 @@ static char* omnivm_py_unicode_attr_dup_fallback(PyObject* obj, const char* prim
     return omnivm_py_unicode_attr_dup(obj, fallback);
 }
 
+static char* omnivm_py_unicode_attr_dup_fallback4(PyObject* obj, const char* first, const char* second, const char* third, const char* fourth) {
+    const char* keys[] = {first, second, third, fourth};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        if (!keys[i]) continue;
+        char* out = omnivm_py_unicode_attr_dup(obj, keys[i]);
+        if (out) return out;
+    }
+    return NULL;
+}
+
 static PyObject* omnivm_py_mapping_get_item_fallback(PyObject* obj, const char* primary, const char* fallback) {
     if (!PyMapping_Check(obj)) return NULL;
     PyObject* value = PyMapping_GetItemString(obj, primary);
@@ -2902,6 +2915,18 @@ static PyObject* omnivm_py_mapping_get_item_fallback(PyObject* obj, const char* 
     value = PyMapping_GetItemString(obj, fallback);
     if (!value) PyErr_Clear();
     return value;
+}
+
+static PyObject* omnivm_py_mapping_get_item_fallback4(PyObject* obj, const char* first, const char* second, const char* third, const char* fourth) {
+    if (!PyMapping_Check(obj)) return NULL;
+    const char* keys[] = {first, second, third, fourth};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        if (!keys[i]) continue;
+        PyObject* value = PyMapping_GetItemString(obj, keys[i]);
+        if (value) return value;
+        PyErr_Clear();
+    }
+    return NULL;
 }
 
 static void omnivm_py_append_text(char** out, size_t* len, const char* text) {
@@ -3478,7 +3503,7 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
     if (!value) return NULL;
     char* runtime = omnivm_py_unicode_attr_dup(value, "runtime");
     if (!runtime) return NULL;
-    char* err_type = omnivm_py_unicode_attr_dup_fallback(value, "type", "name");
+    char* err_type = omnivm_py_unicode_attr_dup_fallback4(value, "type", "name", "error_type", "errorType");
     char* message = omnivm_py_unicode_attr_dup(value, "message");
     char* traceback = omnivm_py_unicode_attr_dup_fallback(value, "traceback", "stack");
     char* handle = omnivm_py_unicode_attr_dup(value, "original_error_handle");
@@ -3509,7 +3534,7 @@ static char* omnivm_py_format_runtime_error_value(PyObject* value) {
                 PyErr_Clear();
                 continue;
             }
-            PyObject* cause_type_obj = omnivm_py_mapping_get_item_fallback(cause, "type", "name");
+            PyObject* cause_type_obj = omnivm_py_mapping_get_item_fallback4(cause, "type", "name", "error_type", "errorType");
             PyObject* cause_msg_obj = PyMapping_Check(cause) ? PyMapping_GetItemString(cause, "message") : NULL;
             if (!cause_msg_obj) PyErr_Clear();
             char* cause_type = cause_type_obj ? omnivm_py_unicode_attr_dup(cause_type_obj, "__str__") : NULL;

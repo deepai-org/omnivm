@@ -473,6 +473,35 @@ class TestRuntimeError(unittest.TestCase):
             }
         ]
 
+    def test_runtime_error_accepts_error_type_aliases(self):
+        err = omnivm_mod.RuntimeError(
+            json.dumps(
+                {
+                    "runtime": "java",
+                    "error_type": "IllegalArgumentException",
+                    "message": "outer",
+                    "cause_chain": [
+                        {
+                            "runtime": "javascript",
+                            "errorType": "TypeError",
+                            "message": "inner",
+                        }
+                    ],
+                }
+            ),
+            runtime="go",
+        )
+
+        assert err.type == "IllegalArgumentException"
+        assert err.cause_chain == [
+            {
+                "type": "TypeError",
+                "message": "inner",
+                "runtime": "javascript",
+                "origin_runtime": "javascript",
+            }
+        ]
+
     def test_runtime_ref_assign_preserves_owner_runtime(self):
         err = omnivm_mod.RuntimeError(
             "runtime ref assign [python]: Traceback (most recent call last):\n"

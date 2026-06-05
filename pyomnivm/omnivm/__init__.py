@@ -403,9 +403,12 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return None
     if not isinstance(envelope, dict):
         return None
-    def field(preferred, fallback):
-        value = envelope.get(preferred)
-        return envelope.get(fallback) if value is None else value
+    def field(*keys):
+        for key in keys:
+            value = envelope.get(key)
+            if value is not None:
+                return value
+        return None
     def text_field(value, fallback=""):
         return str(value) if value is not None else fallback
     def details_field(source):
@@ -435,7 +438,7 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
         return raw_details if isinstance(raw_details, str) else _runtime_error_details_json(raw_details)
     runtime_name = text_field(envelope.get("runtime"), runtime)
     origin_runtime = text_field(field("origin_runtime", "originRuntime"), runtime_name)
-    err_type = text_field(field("type", "name"))
+    err_type = text_field(field("type", "name", "error_type", "errorType"))
     message = text_field(envelope.get("message"))
     traceback = text_field(field("traceback", "stack"))
     if not any((runtime_name, err_type, message, traceback)):
@@ -452,7 +455,13 @@ def _parse_runtime_error_envelope(text, runtime=None, boundary_path=None):
             if not isinstance(cause, dict):
                 continue
             item = {
-                "type": str(cause.get("type") or cause.get("name") or ""),
+                "type": str(
+                    cause.get("type")
+                    or cause.get("name")
+                    or cause.get("error_type")
+                    or cause.get("errorType")
+                    or ""
+                ),
                 "message": str(cause.get("message") or ""),
             }
             cause_traceback = cause.get("traceback")
