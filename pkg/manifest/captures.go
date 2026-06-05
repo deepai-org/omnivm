@@ -4733,6 +4733,9 @@ func (e *Executor) runtimeRefBulkTableCaptureJSON(binding, targetRuntime string,
 	e.nextRuntimeRefID++
 	name := fmt.Sprintf("__omnivm_auto_runtime_buffer_%p_%d", e, e.nextRuntimeRefID)
 	exported, ok, err := exporter.ExportBuffer(name, runtimeVarRef(ref.Runtime, ref.VarName))
+	if err != nil && isUnsupportedNativeMemoryExport(err) {
+		return "", false, nil
+	}
 	if err != nil || !ok {
 		return "", ok, err
 	}
@@ -4794,6 +4797,13 @@ func (e *Executor) runtimeRefBulkTableCaptureJSON(binding, targetRuntime string,
 		return "", true, err
 	}
 	return jsonVal, true, nil
+}
+
+func isUnsupportedNativeMemoryExport(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "native_memory unsupported zero-copy buffer export")
 }
 
 func (e *Executor) knownPrimitiveRuntimeRefCaptureJSON(binding, targetRuntime string, ref RuntimeRef) (string, bool, error) {

@@ -3214,6 +3214,39 @@ func tableProxyValue(ref *TableRef) map[string]interface{} {
 	return value
 }
 
+func tableMetadataValue(meta *TableMetadata) map[string]interface{} {
+	if meta == nil {
+		return nil
+	}
+	out := make(map[string]interface{})
+	if meta.Dtype != nil {
+		out["dtype"] = *meta.Dtype
+	}
+	if meta.ArrowFormat != "" {
+		out["arrow_format"] = meta.ArrowFormat
+	}
+	if meta.Buffer != "" {
+		out["buffer"] = meta.Buffer
+	}
+	if len(meta.Shape) > 0 {
+		out["shape"] = append([]int64(nil), meta.Shape...)
+	}
+	if len(meta.Strides) > 0 {
+		out["strides"] = append([]int64(nil), meta.Strides...)
+	}
+	if meta.Offset != 0 {
+		out["offset"] = meta.Offset
+	}
+	if meta.NullCount != nil {
+		out["null_count"] = *meta.NullCount
+	}
+	out["read_only"] = meta.ReadOnly
+	if meta.MemorySpace != "" {
+		out["memory_space"] = meta.MemorySpace
+	}
+	return out
+}
+
 func transferTableProxyValue(ref *TableRef) map[string]interface{} {
 	value := tableProxyValue(ref)
 	value["transfer"] = true

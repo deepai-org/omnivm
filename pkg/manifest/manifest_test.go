@@ -14405,6 +14405,45 @@ func TestResolveRuntimeRefCaptureExportsBufferProtocolAsArrowTable(t *testing.T)
 	}
 }
 
+func TestResolveRuntimeRefCaptureProxiesUnsupportedNativeMemory(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitive") {
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+		return pkg.Result{Value: `{"kind":"gpu-frame"}`}
+	}
+	mocks["python"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["python"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
+		if expr != "payload" {
+			t.Fatalf("ExportBuffer expr = %q, want payload", expr)
+		}
+		return pkg.ExportedBuffer{}, false, fmt.Errorf("python: native_memory unsupported zero-copy buffer export for %q: dataframe interchange data buffer is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory", name)
+	}
+
+	jsonVal, err := e.resolveRuntimeRefCapture("payload", "javascript", RuntimeRef{
+		Runtime:       "python",
+		VarName:       "payload",
+		SnapshotKnown: true,
+		Opaque:        true,
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeRefCapture: %v", err)
+	}
+	if !strings.Contains(jsonVal, `"__omnivm_resource__":true`) || strings.Contains(jsonVal, `"__omnivm_table__":true`) {
+		t.Fatalf("unsupported native-memory RuntimeRef should cross as resource proxy, got %s", jsonVal)
+	}
+	if len(mocks["python"].exports) != 1 {
+		t.Fatalf("ExportBuffer calls = %d, want 1", len(mocks["python"].exports))
+	}
+	stats := e.BoundaryStats()
+	if stats.ResourceProxyCaptures != 1 || stats.TableProxyCaptures != 0 || stats.ArrowTransfers != 0 || stats.JSONFallbacks != 0 {
+		t.Fatalf("unsupported native-memory RuntimeRef stats = %+v, want resource proxy without Arrow/JSON fallback", stats)
+	}
+}
+
 func TestStridedTableBufferProxyUsesShapeStrides(t *testing.T) {
 	e, _ := makeExecutor("python", "javascript")
 	name := "test_strided_table_buffer_proxy"
@@ -14469,6 +14508,16 @@ func TestStridedTableBufferProxyUsesShapeStrides(t *testing.T) {
 	env = decodeResultEnvelopeForTest(t, result)
 	if env.Kind != "number" || env.Value != float64(772) {
 		t.Fatalf("strided table index envelope = %#v, want 772", env)
+	}
+	result, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"metadata"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get metadata: %v", err)
+	}
+	env = decodeResultEnvelopeForTest(t, result)
+	metadata, ok := env.Value.(map[string]interface{})
+	strides, stridesOK := metadata["strides"].([]interface{})
+	if env.Kind != "json" || !ok || !stridesOK || len(strides) != 1 || strides[0] != float64(4) {
+		t.Fatalf("strided table metadata envelope = %#v, want JSON metadata with strides [4]", env)
 	}
 	result, err = e.HandleCall(`{"op":"handle_iter","id":` + strconv.FormatUint(uint64(id), 10) + `,"mode":"values"}`)
 	if err != nil {

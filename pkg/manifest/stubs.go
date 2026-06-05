@@ -1322,6 +1322,10 @@ func (e *Executor) bridgeResultValue(parent handles.ID, value interface{}) (inte
 			return nil, err
 		}
 		return tableProxyValue(&v), nil
+	case *TableMetadata:
+		return tableMetadataValue(v), nil
+	case TableMetadata:
+		return tableMetadataValue(&v), nil
 	case *JobHandle:
 		if v == nil {
 			return nil, nil
