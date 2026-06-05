@@ -1792,6 +1792,17 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 		if metadata["buffer"] != name || metadata["memory_space"] != "host" {
 			t.Fatalf("released table call %s structured table metadata mismatch: %#v", call, metadata)
 		}
+		buffer, _ := tableDetails["buffer"].(map[string]interface{})
+		if buffer["name"] != name || buffer["state"] != "live" || buffer["lease_state"] != "owned" || buffer["released"] != false || buffer["live"] != true {
+			t.Fatalf("released table call %s structured buffer lifecycle mismatch: %#v", call, buffer)
+		}
+		if buffer["dtype"] != float64(arrow.DtypeF64) || buffer["format"] != "g" || buffer["ownership"] != "producer" || buffer["memory_space"] != "host" || buffer["read_only"] != true {
+			t.Fatalf("released table call %s structured buffer metadata mismatch: %#v", call, buffer)
+		}
+		shape, _ := buffer["shape"].([]interface{})
+		if len(shape) != 1 || shape[0] != float64(2) {
+			t.Fatalf("released table call %s structured buffer shape should come from Arrow buffer status, got %#v", call, buffer)
+		}
 		if _, err := lifecycleErr.BridgeErrorJSON(); err != nil {
 			t.Fatalf("released table call %s BridgeErrorJSON: %v", call, err)
 		}
@@ -1846,6 +1857,57 @@ func TestTableExportReleaseAndCaptureProxy(t *testing.T) {
 	}
 	if !containsExecCall(mocks["python"].execCalls, "release_log.append('orders_view')") {
 		t.Fatalf("release hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+}
+
+func TestReleasedTableLifecycleErrorIncludesReleasedBufferStatus(t *testing.T) {
+	name := "test_released_table_lifecycle_buffer_status"
+	_ = arrow.GlobalStore().Free(name)
+	if _, err := arrow.GlobalStore().SetWithMetadata(name, []byte{1, 0, 2, 0}, arrow.BufferMetadata{
+		Dtype:       arrow.DtypeI16,
+		Format:      "s",
+		Shape:       []int64{2},
+		ReadOnly:    true,
+		Ownership:   "producer",
+		MemorySpace: "host",
+	}); err != nil {
+		t.Fatalf("SetWithMetadata: %v", err)
+	}
+	if err := arrow.GlobalStore().Free(name); err != nil {
+		t.Fatalf("Free: %v", err)
+	}
+
+	dtype := int32(arrow.DtypeI16)
+	ref := &TableRef{
+		ID:        handles.ID(7),
+		Runtime:   "python",
+		Format:    "arrow_c_data",
+		Ownership: "borrowed",
+		Release:   "producer",
+		Metadata: &TableMetadata{
+			Dtype:       &dtype,
+			ArrowFormat: "s",
+			Buffer:      name,
+			Shape:       []int64{99},
+			ReadOnly:    true,
+			MemorySpace: "host",
+		},
+		Released: true,
+	}
+
+	envelope := releasedTableLifecycleError(ref.ID, ref).ToMap()
+	details, _ := envelope["details"].(map[string]interface{})
+	table, _ := details["table"].(map[string]interface{})
+	buffer, _ := table["buffer"].(map[string]interface{})
+	if buffer["name"] != name || buffer["state"] != "released" || buffer["lease_state"] != "released" || buffer["released"] != true || buffer["live"] != false {
+		t.Fatalf("released table buffer lifecycle mismatch: %#v", buffer)
+	}
+	if buffer["dtype"] != float64(arrow.DtypeI16) || buffer["format"] != "s" || buffer["ownership"] != "producer" || buffer["memory_space"] != "host" || buffer["read_only"] != true {
+		t.Fatalf("released table buffer metadata mismatch: %#v", buffer)
+	}
+	shape, _ := buffer["shape"].([]interface{})
+	if len(shape) != 1 || shape[0] != float64(2) {
+		t.Fatalf("released table buffer shape should come from Arrow tombstone status, got %#v", buffer)
 	}
 }
 

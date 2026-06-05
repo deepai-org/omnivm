@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/handles"
 )
 
@@ -145,18 +146,72 @@ func releasedTableLifecycleDetails(id handles.ID, ref *TableRef, runtimeName, fo
 	if metadata != nil {
 		table["metadata"] = metadata
 		if buffer, _ := metadata["buffer"].(string); buffer != "" {
-			table["buffer"] = map[string]interface{}{
-				"name":        buffer,
-				"state":       "released",
-				"lease_state": "released",
-				"released":    true,
-			}
-			if memorySpace, _ := metadata["memory_space"].(string); memorySpace != "" {
-				table["buffer"].(map[string]interface{})["memory_space"] = memorySpace
-			}
+			table["buffer"] = releasedTableBufferDetails(buffer, metadata)
 		}
 	}
 	return map[string]interface{}{"table": table}
+}
+
+func releasedTableBufferDetails(name string, metadata map[string]interface{}) map[string]interface{} {
+	status := arrow.GlobalStore().Status(name)
+	if status.State == "" || status.State == "missing" {
+		return releasedTableBufferFallback(name, metadata)
+	}
+	out := bufferStatusDetails(status)
+	if memorySpace, _ := metadata["memory_space"].(string); memorySpace != "" {
+		if _, ok := out["memory_space"]; !ok {
+			out["memory_space"] = memorySpace
+		}
+	}
+	return out
+}
+
+func releasedTableBufferFallback(name string, metadata map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{
+		"name":        name,
+		"state":       "released",
+		"lease_state": "released",
+		"live":        false,
+		"released":    true,
+	}
+	if dtype, ok := metadata["dtype"]; ok {
+		out["dtype"] = dtype
+	}
+	if format, _ := metadata["arrow_format"].(string); format != "" {
+		out["format"] = format
+	}
+	if shape, ok := metadata["shape"]; ok {
+		out["shape"] = shape
+	}
+	if strides, ok := metadata["strides"]; ok {
+		out["strides"] = strides
+	}
+	if offset, ok := metadata["offset"]; ok {
+		out["offset"] = offset
+	}
+	if nullCount, ok := metadata["null_count"]; ok {
+		out["null_count"] = nullCount
+	}
+	if readOnly, ok := metadata["read_only"]; ok {
+		out["read_only"] = readOnly
+	}
+	if memorySpace, _ := metadata["memory_space"].(string); memorySpace != "" {
+		out["memory_space"] = memorySpace
+	}
+	return out
+}
+
+func bufferStatusDetails(status arrow.BufferStatus) map[string]interface{} {
+	out, _ := cloneJSONValue(status).(map[string]interface{})
+	if out != nil {
+		return out
+	}
+	return map[string]interface{}{
+		"name":     status.Name,
+		"state":    status.State,
+		"live":     status.Live,
+		"released": status.Released,
+	}
 }
 
 func releasedResourceLifecycleDetails(id handles.ID, ref *ResourceRef, runtimeName, kind string) map[string]interface{} {
