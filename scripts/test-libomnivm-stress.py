@@ -7874,7 +7874,12 @@ body_stream.close()
                 "code": (
                     "if (!body_dto.includes('ord-42')) throw new Error('materialized DTO missing in JS'); "
                     "let failed = false; "
-                    "try { req.read(); } catch (err) { failed = /closed|I\\/O|request body/.test(String(err && err.message || err)); } "
+                    "try { req.read(); } catch (err) { "
+                    "  failed = /closed|I\\/O|request body/.test(String(err && err.message || err)); "
+                    "  if (err.runtime !== 'python' || err.originRuntime !== 'python' || err.type !== 'ValueError' || err.boundaryPath !== 'call[python]') throw err; "
+                    "  if (!String(err.traceback || '').includes('ValueError') || !Array.isArray(err.stackFrames) || err.stackFrames.length === 0) throw err; "
+                    "  if (!Array.isArray(err.causeChain) || err.causeChain.length !== 0) throw err; "
+                    "} "
                     "if (!failed) throw new Error('JS read of closed Django body did not fail clearly');"
                 ),
                 "captures": {"req": "req", "body_dto": "body_dto"},
@@ -7885,7 +7890,15 @@ body_stream.close()
                 "code": (
                     "raise 'materialized DTO missing in Ruby' unless body_dto.include?('ord-42'); "
                     "failed = false; "
-                    "begin; reader = req.read; reader.respond_to?(:call) ? reader.call : reader; rescue => e; failed = e.message.include?('closed') || e.message.include?('I/O') || e.message.include?('request body'); end; "
+                    "begin\n"
+                    "  reader = req.read\n"
+                    "  reader.respond_to?(:call) ? reader.call : reader\n"
+                    "rescue => e\n"
+                    "  failed = e.message.include?('closed') || e.message.include?('I/O') || e.message.include?('request body')\n"
+                    "  raise e unless e.runtime == 'python' && e.origin_runtime == 'python' && e.type == 'ValueError' && e.boundary_path == 'call[python]'\n"
+                    "  raise e unless e.traceback.include?('ValueError') && e.stack_frames.is_a?(Array) && !e.stack_frames.empty?\n"
+                    "  raise e unless e.cause_chain == []\n"
+                    "end\n"
                     "raise 'Ruby read of closed Django body did not fail clearly' unless failed"
                 ),
                 "captures": {"req": "req", "body_dto": "body_dto"},
@@ -7899,7 +7912,13 @@ body_stream.close()
                     "if (!(raw instanceof omnivm.OmniVM.HandleProxy)) throw new RuntimeException(\"request did not materialize as handle proxy: \" + raw); "
                     "boolean failed = false; "
                     "try { ((omnivm.OmniVM.HandleProxy) raw).call(\"read\"); } "
-                    "catch (RuntimeException err) { String msg = String.valueOf(err.getMessage()); failed = msg.contains(\"closed\") || msg.contains(\"I/O\") || msg.contains(\"request body\"); } "
+                    "catch (omnivm.OmniVM.RuntimeError err) { "
+                    "  String msg = String.valueOf(err.getMessage()); "
+                    "  failed = msg.contains(\"closed\") || msg.contains(\"I/O\") || msg.contains(\"request body\"); "
+                    "  if (!\"python\".equals(err.getRuntime()) || !\"python\".equals(err.getOriginRuntime()) || !\"ValueError\".equals(err.getType()) || !\"call[python]\".equals(err.getBoundaryPath())) throw err; "
+                    "  if (!String.valueOf(err.getTraceback()).contains(\"ValueError\") || err.getStackFrames().isEmpty()) throw err; "
+                    "  if (!err.getCauseChain().isEmpty()) throw err; "
+                    "} "
                     "if (!failed) throw new RuntimeException(\"Java read of closed Django body did not fail clearly\");"
                 ),
                 "captures": {"req": "req", "body_dto": "body_dto"},
