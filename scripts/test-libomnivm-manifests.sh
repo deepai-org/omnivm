@@ -78,8 +78,8 @@ run "Nokogiri + Pandas + JS formatting" nokogiri-pandas-js-format.json
 run "NumPy + Pandas + D3 + Go channels" numpy-pandas-d3-go-channels.json
 run "Polyglot pipeline" polyglot-pipeline-manifest.json
 run "Pydantic + Zod + Go events" pydantic-zod-go-events.json
-run "Garbage generated resource/job manifest" runnable-resource-job-boundary.json "resource/job boundary result receipt-ok"
-run "Garbage generated zero-copy table manifest" runnable-zero-copy-table-boundary.json "zero-copy table boundary"
+run "PolyScript-generated resource/job manifest" runnable-resource-job-boundary.json "resource/job boundary result receipt-ok"
+run "PolyScript-generated zero-copy table manifest" runnable-zero-copy-table-boundary.json "zero-copy table boundary"
 run "SQLAlchemy + Lodash + Go batching" sqlalchemy-lodash-go-batching.json
 
 echo ""

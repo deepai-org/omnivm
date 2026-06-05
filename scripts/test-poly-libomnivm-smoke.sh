@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GARBAGE_DIR="${GARBAGE_DIR:-"$ROOT/../garbage"}"
+POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$ROOT/../garbage"}}"
 PASSENGER_FIXTURE="$ROOT/test/fixtures/passenger-django-polyscript"
 IMAGE="${OMNIVM_IMAGE:-omnivm:latest}"
 PYTHON_BIN="${PYTHON_BIN:-python3.14}"
 RUNNER="${LIBOMNIVM_MANIFEST_RUNNER:-/build/scripts/run-manifest-libomnivm.py}"
 
-if [ ! -d "$GARBAGE_DIR" ]; then
-  echo "Garbage repo not found at $GARBAGE_DIR; set GARBAGE_DIR=/path/to/garbage" >&2
+if [ ! -d "$POLYSCRIPT_DIR" ]; then
+  echo "PolyScript compiler checkout not found at $POLYSCRIPT_DIR; set POLYSCRIPT_DIR=/path/to/polyscript-compiler" >&2
   exit 2
 fi
 if [ ! -d "$PASSENGER_FIXTURE" ]; then
@@ -51,7 +51,7 @@ for example in "${examples[@]}"; do
   manifest="$TMP/manifests/$name.json"
 
   echo "compile $example"
-  (cd "$GARBAGE_DIR" && npm run polyc -- "examples/$example" -o "$manifest" >/dev/null)
+  (cd "$POLYSCRIPT_DIR" && npm run polyc -- "examples/$example" -o "$manifest" >/dev/null)
 
   echo "run $example"
   if ! output=$(docker run --rm \
@@ -81,10 +81,10 @@ echo "run Passenger-style Django .poly import fixture across fresh workers"
 for worker in 1 2 3; do
   docker run --rm \
     --entrypoint python3-polyscript \
-    -e POLYSCRIPT_COMPILER="node /garbage/dist/cli-manifest.js" \
+    -e POLYSCRIPT_COMPILER="node /polyscript-compiler/dist/cli-manifest.js" \
     -e POLYSCRIPT_CACHE_DIR=/tmp/polyscript-cache \
     -v "$fixture":/tmp/passenger-django:ro \
-    -v "$GARBAGE_DIR":/garbage:ro \
+    -v "$POLYSCRIPT_DIR":/polyscript-compiler:ro \
     "$IMAGE" \
     -c 'import io, sys
 sys.path.insert(0, "/tmp/passenger-django")

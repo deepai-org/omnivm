@@ -56,7 +56,7 @@ test-stress: build
 test: test-all
 
 # Run everything: local unit checks, Docker unit/integration tests, smoke tests,
-# CLI/stress/manifest suites, CPython-hosted libomnivm, and sibling Garbage .poly examples.
+# CLI/stress/manifest suites, CPython-hosted libomnivm, and sibling PolyScript examples.
 test-all: test-local test-python test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke
 
 # Start the REPL

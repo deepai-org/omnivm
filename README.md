@@ -524,7 +524,7 @@ Body:   {"fibonacci_50":"12586269025","ruby_reverse":"MVinmO"}
 
 ## Manifest Executor
 
-The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target produced by Garbage/PolyScript — each op specifies a runtime, code, captures, bindings, and control flow.
+The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target produced by the PolyScript compiler — each op specifies a runtime, code, captures, bindings, and control flow.
 
 JavaScript manifest proxies expose `omnivm.proxyGet(proxy, key)` for explicit
 remote field access, `omnivm.proxySet(proxy, key, value)` for explicit remote
@@ -936,7 +936,7 @@ scripts/
   test-manifests.sh    Manifest test suite runner
   test-cli.sh          CLI integration tests (29 tests)
   test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
-  test-poly-libomnivm-smoke.sh  Compile sibling Garbage .poly examples and run via CPython + libomnivm
+  test-poly-libomnivm-smoke.sh  Compile sibling PolyScript examples and run via CPython + libomnivm
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
@@ -972,20 +972,20 @@ make test-manifests       # Run manifest examples and edge contract fixtures
 make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
 make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
 make test-libomnivm-stress STRESS_ARGS="--category proxy --name materializes" # Filter stress checks
-make test-poly-libomnivm-smoke # Compile selected Garbage .poly examples, then run via CPython + libomnivm
+make test-poly-libomnivm-smoke # Compile selected PolyScript examples, then run via CPython + libomnivm
 make test-stress          # Run 71 stress tests
 ```
 
-The cross-repo `.poly` smoke expects a sibling `../garbage` checkout by default:
+The cross-repo `.poly` smoke expects a sibling PolyScript compiler checkout at `../garbage` by default. Prefer `POLYSCRIPT_DIR` for explicit paths; the older `GARBAGE_DIR` variable remains accepted for existing scripts:
 
 ```bash
-GARBAGE_DIR=/path/to/garbage make test-poly-libomnivm-smoke
+POLYSCRIPT_DIR=/path/to/polyscript-compiler make test-poly-libomnivm-smoke
 ```
 
 The README-level CI parity sequence is:
 
 ```bash
-# garbage
+# PolyScript compiler checkout
 npm test -- --runInBand
 npm run build
 node scripts/audit-manifests.js
@@ -1012,4 +1012,4 @@ make test-libomnivm-stress
 - **`LD_PRELOAD=libjsig.so`**: JVM uses SIGSEGV for NullPointerException safepoints. Without signal chaining, this crashes Ruby. libjsig.so chains handlers properly.
 - **`pthread_atfork` fork guard**: Child processes after `fork()` have dead JVM threads holding mutexes. The guard `_exit(71)`s with a diagnostic stack trace — both the C backtrace (via glibc `backtrace_symbols_fd`) and the Python traceback (via `faulthandler.dump_traceback`) are logged to stderr, identifying exactly which dependency triggered the fork. Python forced to `multiprocessing.set_start_method('spawn')`. The fork guard is **conditional** — it only fires when JVM or Ruby are loaded. Go+JS-only configurations are fork-safe when runtimes are initialized post-fork (the Gunicorn/Passenger pattern).
 - **Python interpreter mode**: When symlinked as `python3`, OmniVM calls `Py_BytesMain()` — CPython's own entry point. `PyImport_AppendInittab("omnivm", ...)` registers the `omnivm` module before CPython initializes, so `import omnivm` works in any Python code. Best for single-process deployments (dev, `gunicorn --workers 1 --threads N`, uvicorn). Not compatible with prefork — Go's runtime doesn't survive `fork()`.
-- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so`, starts a fresh Go runtime, and pins the calling Python worker thread as the c-shared host thread. Direct calls and manifest execution must enter from that host thread; non-host callers fail fast with structured `thread_affinity` diagnostics. The background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. Workers expose `omnivm.status()`, `omnivm.owner_dispatch_status()`, and conservative taint flags so servers can recycle after a non-recoverable Go plugin deadline and can fail fast when they require universal owner-loop/executor dispatch. Garbage `.poly` examples are compiled and executed through this path by `make test-poly-libomnivm-smoke`; all example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. See `docs/passenger-django-polyscript.md` for the Passenger/Django migration shape and `docs/example-suite.md` for example-suite coverage. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.
+- **c-shared library mode (`libomnivm.so`)**: For prefork servers (Gunicorn, Passenger, uWSGI). Built with `go build -buildmode=c-shared`. All 5 runtimes are supported: JavaScript, Java, Ruby, Go (via dlopen plugins), and Python (host - cross-runtime bridge calls back into the already-running CPython). The master process is pure CPython - no Go runtime loaded. Each worker calls `omnivm.init_runtimes()` post-fork, which `dlopen`s `libomnivm.so`, starts a fresh Go runtime, and pins the calling Python worker thread as the c-shared host thread. Direct calls and manifest execution must enter from that host thread; non-host callers fail fast with structured `thread_affinity` diagnostics. The background epoll dispatcher is intentionally not started in c-shared mode because CPython owns the process and thread state. Async runtimes are pumped cooperatively at host call boundaries, so Node/libuv timers progress without a Go-owned dispatcher thread. The watchdog, buffer bridge, cross-runtime bridge, and fork guard are active. Direct-call watchdog support is runtime-specific: JavaScript and Ruby can be preempted, Java receives `Thread.interrupt()`, Go plugin calls get a host-call deadline, and host Python uses CPython-native interruption. Workers expose `omnivm.status()`, `omnivm.owner_dispatch_status()`, and conservative taint flags so servers can recycle after a non-recoverable Go plugin deadline and can fail fast when they require universal owner-loop/executor dispatch. PolyScript examples are compiled and executed through this path by `make test-poly-libomnivm-smoke`; all example JSON manifests are covered by `make test-libomnivm-manifests`, and CPython-hosted nested callback/buffer/fork/prefork lifecycle/watchdog checks are covered by `make test-libomnivm-stress`. See `docs/passenger-django-polyscript.md` for the Passenger/Django migration shape and `docs/example-suite.md` for example-suite coverage. Both binaries share the `pkg/engine` package for runtime lifecycle, bridge wiring, watchdog setup, and shutdown - the `//export` C wrappers are thin. Go plugins must be built as `-buildmode=c-shared` (not `-buildmode=plugin`) and are loaded via `dlopen`/`dlsym`.

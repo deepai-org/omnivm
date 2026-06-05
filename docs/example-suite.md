@@ -5,7 +5,7 @@ The example suite is meant to prove real ecosystem shapes, not just toy arithmet
 ## Current milestone
 
 The CPython-hosted `libomnivm` path now runs the checked-in manifest examples,
-the selected sibling Garbage `.poly` examples, and the Passenger/Django import
+the selected sibling PolyScript examples, and the Passenger/Django import
 fixture with Python as the parent process. That coverage includes Go selector
 constants such as `http.StatusAccepted`, Go `main()` entrypoints compiled from
 `.go` examples, imported `.poly` functions returning nested proxy descriptors,
@@ -48,14 +48,14 @@ make test-poly-libomnivm-smoke
 ```
 
 `make test-all` is the canonical local and CI gate. The last command expects
-the sibling Garbage checkout and compiles selected `.poly` examples before
+the sibling PolyScript compiler checkout and compiles selected `.poly` examples before
 running them through CPython-hosted `libomnivm`.
 
 The public vertical example can also be run manually through the Docker-backed
-manifest runner after compiling it from the sibling Garbage checkout:
+manifest runner after compiling it from the sibling PolyScript compiler checkout:
 
 ```bash
-cd ../garbage
+cd "${POLYSCRIPT_DIR:-../garbage}"
 npm run polyc -- examples/vertical-order-review-app.poly -o /tmp/vertical-order-review-app.json
 docker run --rm \
   -v /tmp/vertical-order-review-app.json:/tmp/vertical-order-review-app.json:ro \

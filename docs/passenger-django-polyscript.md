@@ -71,7 +71,7 @@ works for progressively converted service/helper modules.
 }
 ```
 
-Set `POLYSCRIPT_COMPILER` to the installed Garbage compiler command and `POLYSCRIPT_CACHE_DIR` to a worker-writable directory. By default, `.poly` imports initialize JavaScript, Java, and Ruby so later imports do not depend on first-import ordering. Set `POLYSCRIPT_RUNTIMES=infer` only when a deployment wants lean first-import initialization and can guarantee all imported `.poly` modules use the same runtime set.
+Set `POLYSCRIPT_COMPILER` to the installed PolyScript compiler command and `POLYSCRIPT_CACHE_DIR` to a worker-writable directory. By default, `.poly` imports initialize JavaScript, Java, and Ruby so later imports do not depend on first-import ordering. Set `POLYSCRIPT_RUNTIMES=infer` only when a deployment wants lean first-import initialization and can guarantee all imported `.poly` modules use the same runtime set.
 
 ## Operational notes
 
@@ -96,4 +96,4 @@ Set `POLYSCRIPT_COMPILER` to the installed Garbage compiler command and `POLYSCR
 - `python3-polyscript` Django `get_wsgi_application()` smoke
 - a prefork WSGI worker lifecycle harness
 
-`make test-poly-libomnivm-smoke` compiles selected sibling Garbage `.poly` examples, executes the generated manifests through CPython-hosted `libomnivm`, and runs the checked-in `test/fixtures/passenger-django-polyscript` fixture. The fixture keeps the Django stack realistic enough to catch migration issues: a middleware attaches request/session-style state, a class-based view delegates to a service object that imports the `.poly` feature module, the `.poly` code reads `request.headers` and `request.META`, and a nested dict/list response crosses back through Django's WSGI handler.
+`make test-poly-libomnivm-smoke` compiles selected sibling PolyScript examples, executes the generated manifests through CPython-hosted `libomnivm`, and runs the checked-in `test/fixtures/passenger-django-polyscript` fixture. The fixture keeps the Django stack realistic enough to catch migration issues: a middleware attaches request/session-style state, a class-based view delegates to a service object that imports the `.poly` feature module, the `.poly` code reads `request.headers` and `request.META`, and a nested dict/list response crosses back through Django's WSGI handler.

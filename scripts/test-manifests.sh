@@ -144,8 +144,8 @@ run "Go HTTP HandlerFunc docs"               go-http-handler-docs.json false "Go
 echo "── Edge Runtime Contracts ──"
 run "Stream proxy bridge"                    edge-stream-proxy.json false "Edge stream proxy labels=ALPHA\\|BETA\\|GAMMA length=3"
 run "Opaque resource and job handles"        edge-resource-job-handles.json false "Edge resource closed=true result=receipt-ok"
-run "Garbage generated resource/job manifest" runnable-resource-job-boundary.json false "resource/job boundary result receipt-ok"
-run "Garbage generated zero-copy table manifest" runnable-zero-copy-table-boundary.json false "zero-copy table boundary"
+run "PolyScript-generated resource/job manifest" runnable-resource-job-boundary.json false "resource/job boundary result receipt-ok"
+run "PolyScript-generated zero-copy table manifest" runnable-zero-copy-table-boundary.json false "zero-copy table boundary"
 run "Table copy and validation error bridges" edge-table-validation-bridges.json false "Edge table bridge west=30 errors=1"
 
 # ── Summary ────────────────────────────────────────────────────
