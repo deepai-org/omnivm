@@ -12672,6 +12672,22 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/python/python.go"], "g_buf_status(name)") || !contains(files["../../pkg/python/python.go"], `PyErr_Format(PyExc_RuntimeError, "omnivm.release_buffer failed: %s", raw)`) {
 		t.Fatalf("embedded Python explicit release_buffer should include buffer status diagnostics on release failure")
 	}
+	pythonGetBuffer := files["../../pkg/python/python.go"]
+	getBufferStart := strings.Index(pythonGetBuffer, "static PyObject* py_omnivm_get_buffer")
+	if getBufferStart < 0 {
+		t.Fatal("embedded Python get_buffer implementation is missing")
+	}
+	pythonGetBuffer = pythonGetBuffer[getBufferStart:]
+	getBufferEnd := strings.Index(pythonGetBuffer, "// py_omnivm_set_buffer")
+	if getBufferEnd < 0 {
+		t.Fatal("embedded Python get_buffer implementation end marker is missing")
+	}
+	pythonGetBuffer = pythonGetBuffer[:getBufferEnd]
+	if !contains(pythonGetBuffer, `if (buf.len < 0 || (buf.data == NULL && buf.len > 0))`) ||
+		!contains(pythonGetBuffer, "return py_omnivm_memoryview_from_buffer(name, &buf)") ||
+		contains(pythonGetBuffer, `return PyBytes_FromStringAndSize("", 0)`) {
+		t.Fatalf("embedded Python get_buffer should keep zero-length borrows as buffer views and reject invalid positive-length null borrows")
+	}
 	for _, want := range []string{
 		"omnivm_py_last_export_rejection",
 		"omnivm_py_has_export_rejection",

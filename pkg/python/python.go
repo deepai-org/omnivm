@@ -3773,11 +3773,11 @@ static PyObject* py_omnivm_get_buffer(PyObject* self, PyObject* args) {
         Py_RETURN_NONE;
     }
 
-    if (buf.data == NULL || buf.len <= 0) {
+    if (buf.len < 0 || (buf.data == NULL && buf.len > 0)) {
         if (g_buf_release) {
             g_buf_release(name);
         }
-        return PyBytes_FromStringAndSize("", 0);
+        Py_RETURN_NONE;
     }
 
 	// Return a private buffer-protocol view. Its deallocator releases the
