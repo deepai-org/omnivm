@@ -584,7 +584,8 @@ diagnostic-only boundary with `OmniVM.ownerDispatchStatus()`,
 Go manifest callers can use `manifest.ProxyClose(value)` or
 `manifest.OmnivmClose(value)` to close handle proxies, stream proxies, or
 ordinary Go `Close() error` values through the same collision-safe lifecycle
-path; the helpers return `(closed, error)` so failed releases remain retryable.
+path; the helpers return `(closed, error)` so failed owner cleanup is not
+mistaken for a successful close.
 
 ```bash
 # Run a single manifest

@@ -573,7 +573,8 @@ func (p *GoHandleProxy) Close() error {
 // ProxyClose closes an OmniVM Go proxy or ordinary Go closeable through the
 // same collision-safe lifecycle path exposed by guest runtimes. It returns
 // false,nil when the value is nil, has no close operation, or was already
-// closed; release/cancel failures are returned and remain retryable.
+// closed; release/cancel failures are returned with closed=false so callers do
+// not mistake failed owner cleanup for a successful local close.
 func ProxyClose(value interface{}) (bool, error) {
 	if goProxyValueIsNil(value) {
 		return false, nil

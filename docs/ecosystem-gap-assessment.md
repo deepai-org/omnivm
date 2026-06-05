@@ -399,7 +399,8 @@ Java `Map` or reflection behavior can collide with keys such as `get`, `set`, `c
 `close`, or `length`.
 Go manifest callers can use `manifest.ProxyClose` or `manifest.OmnivmClose`
 for the same collision-safe handle/stream proxy close path, with `(closed,
-error)` return values so failed releases remain retryable.
+error)` return values so failed owner cleanup is not mistaken for a successful
+close.
 
 ### Error Fidelity
 

@@ -2859,6 +2859,28 @@ func TestGoProxyCloseHelperPreservesRetryableErrors(t *testing.T) {
 	}
 }
 
+func TestGoProxyCloseHelperReportsStreamCloseFailureAsNotClosed(t *testing.T) {
+	e, _ := makeExecutor("go")
+	id, err := e.genericStreamHandle("go", &closeErrorReader{Reader: strings.NewReader("reader-body")})
+	if err != nil {
+		t.Fatalf("genericStreamHandle reader: %v", err)
+	}
+	stream, ok := e.normalizeGoArg(streamProxyValue(id, "go", "reader")).(*GoStreamProxy)
+	if !ok {
+		t.Fatalf("normalizeGoArg stream = %T, want *GoStreamProxy", e.normalizeGoArg(streamProxyValue(id, "go", "reader")))
+	}
+
+	if closed, err := ProxyClose(stream); closed || err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("ProxyClose(failing stream) = (%v, %v), want false,close failure", closed, err)
+	}
+	if stream.closed {
+		t.Fatal("ProxyClose marked stream closed after failed owner close")
+	}
+	if closed, err := ProxyClose(stream); closed || err == nil || !strings.Contains(err.Error(), "closed stream handle") {
+		t.Fatalf("second ProxyClose(failing stream) = (%v, %v), want false,lifecycle error", closed, err)
+	}
+}
+
 func TestGoHandleProxyCloseClosesLastOwnedHandle(t *testing.T) {
 	e, _ := makeExecutor("python", "go")
 	if _, err := e.executeOp(&Op{

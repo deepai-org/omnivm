@@ -749,7 +749,8 @@ Go manifest callers can use `manifest.ProxyClose(value)` or
 `manifest.OmnivmClose(value)` for the same collision-safe close path. The
 helpers return `(closed, error)`: `closed=false` means the value was nil,
 already closed, or had no close operation; release/cancel errors are returned
-without marking the proxy closed so callers can retry.
+with `closed=false` so failed owner cleanup is not mistaken for a successful
+close.
 
 The shared Arrow data plane exposes generic bulk-data diagnostics under
 `omnivm.status()["arrow"]`:
