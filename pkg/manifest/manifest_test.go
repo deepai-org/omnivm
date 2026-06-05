@@ -9041,6 +9041,116 @@ public final class ProxyCloseCheck {
 	}
 }
 
+func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData), "public class OmniVM {\n", `public class OmniVM {
+    public static int setBufferCalls = 0;
+    public static int releaseBufferCalls = 0;
+    public static String lastSetName = "";
+    public static int lastSetDtype = -1;
+    public static boolean failRelease = false;
+`, 1)
+	runtimeCode = strings.Replace(runtimeCode, `    public static void setBuffer(String name, byte[] data, int dtype) {
+        nativeSetBuffer(name, data, dtype);
+    }`, `    public static void setBuffer(String name, byte[] data, int dtype) {
+        setBufferCalls++;
+        lastSetName = String.valueOf(name);
+        lastSetDtype = dtype;
+    }`, 1)
+	runtimeCode = strings.Replace(runtimeCode, `    public static void releaseBuffer(String name) {
+        nativeReleaseBuffer(name);
+    }`, `    public static void releaseBuffer(String name) {
+        releaseBufferCalls++;
+        if (failRelease) {
+            throw new RuntimeException("release failed for " + name);
+        }
+    }`, 1)
+	runtimeCode = strings.Replace(runtimeCode, `    public static String bufferStatus(String name) {
+        return nativeBufferStatus(name);
+    }`, `    public static String bufferStatus(String name) {
+        return "{\"name\":\"" + name + "\",\"lease_state\":\"owned\"}";
+    }`, 1)
+
+	tmp := t.TempDir()
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper copy: %v", err)
+	}
+	checkPath := tmp + "/ScopedBufferOwnerCheck.java"
+	check := `package omnivm;
+
+public final class ScopedBufferOwnerCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        String result = OmniVM.bufferOwner("payload", new byte[] {1, 2, 3}, 7, owner -> {
+            require("payload".equals(owner.name()), "owner name mismatch");
+            require(!owner.isReleased(), "owner released before callback returned");
+            require(owner.status().contains("\"lease_state\":\"owned\""), "status mismatch: " + owner.status());
+            return owner.name() + "-done";
+        });
+        require("payload-done".equals(result), "scoped result mismatch: " + result);
+        require(OmniVM.setBufferCalls == 1, "setBuffer calls mismatch: " + OmniVM.setBufferCalls);
+        require("payload".equals(OmniVM.lastSetName), "last set name mismatch: " + OmniVM.lastSetName);
+        require(OmniVM.lastSetDtype == 7, "last set dtype mismatch: " + OmniVM.lastSetDtype);
+        require(OmniVM.releaseBufferCalls == 1, "release calls mismatch after success: " + OmniVM.releaseBufferCalls);
+
+        OmniVM.failRelease = true;
+        try {
+            OmniVM.bufferOwner("failing", owner -> {
+                throw new IllegalStateException("body failed");
+            });
+            throw new AssertionError("body exception was not raised");
+        } catch (IllegalStateException err) {
+            require("body failed".equals(err.getMessage()), "body exception was masked: " + err);
+            Throwable[] suppressed = err.getSuppressed();
+            require(suppressed.length == 1, "cleanup failure was not suppressed: " + suppressed.length);
+            require(String.valueOf(suppressed[0].getMessage()).contains("release failed for failing"), "suppressed cleanup mismatch: " + suppressed[0]);
+        }
+        require(OmniVM.releaseBufferCalls == 2, "release calls mismatch after failure: " + OmniVM.releaseBufferCalls);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java scoped buffer owner check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java scoped buffer owner check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ScopedBufferOwnerCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java scoped buffer owner check: %v\n%s", err, out)
+	}
+}
+
 func TestJavaHandleProxyToStringPrefersMaterializedField(t *testing.T) {
 	javac, err := exec.LookPath("javac")
 	if err != nil {
