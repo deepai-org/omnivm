@@ -875,6 +875,84 @@ payload = GPUOnlyDLPack()
 	}
 }
 
+func TestPythonExportBufferReleasesRejectedDLPackManagedTensor(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	if result := r.Execute(`
+import ctypes
+released = ctypes.c_int(0)
+
+class DLDevice(ctypes.Structure):
+    _fields_ = [("device_type", ctypes.c_int32), ("device_id", ctypes.c_int32)]
+
+class DLDataType(ctypes.Structure):
+    _fields_ = [("code", ctypes.c_uint8), ("bits", ctypes.c_uint8), ("lanes", ctypes.c_uint16)]
+
+class DLTensor(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p),
+        ("device", DLDevice),
+        ("ndim", ctypes.c_int32),
+        ("dtype", DLDataType),
+        ("shape", ctypes.POINTER(ctypes.c_int64)),
+        ("strides", ctypes.POINTER(ctypes.c_int64)),
+        ("byte_offset", ctypes.c_uint64),
+    ]
+
+class DLManagedTensor(ctypes.Structure):
+    pass
+
+Deleter = ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensor))
+DLManagedTensor._fields_ = [("dl_tensor", DLTensor), ("manager_ctx", ctypes.c_void_p), ("deleter", Deleter)]
+
+@Deleter
+def managed_deleter(ptr):
+    released.value += 1
+
+class DLPackNoDeviceHintGPU:
+    def __init__(self):
+        self.backing = (ctypes.c_int32 * 2)(11, 22)
+        self.shape = (ctypes.c_int64 * 1)(2)
+        self.strides = (ctypes.c_int64 * 1)(1)
+        self.deleter = managed_deleter
+        self.managed = DLManagedTensor(
+            DLTensor(
+                ctypes.cast(self.backing, ctypes.c_void_p),
+                DLDevice(2, 0),
+                1,
+                DLDataType(0, 32, 1),
+                self.shape,
+                self.strides,
+                0,
+            ),
+            None,
+            self.deleter,
+        )
+
+    def __dlpack__(self, stream=None):
+        ctypes.pythonapi.PyCapsule_New.restype = ctypes.py_object
+        ctypes.pythonapi.PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+        return ctypes.pythonapi.PyCapsule_New(ctypes.cast(ctypes.pointer(self.managed), ctypes.c_void_p), b"dltensor", None)
+
+payload = DLPackNoDeviceHintGPU()
+`); result.Err != nil {
+		t.Fatalf("create rejected __dlpack__ payload: %v", result.Err)
+	}
+	exported, ok, err := r.ExportBuffer("python-export-dlpack-rejected-gpu", "payload")
+	if err == nil || ok ||
+		!strings.Contains(err.Error(), "DLPack tensor memory is not CPU-addressable") ||
+		!strings.Contains(err.Error(), "host memory") {
+		t.Fatalf("rejected __dlpack__ export = (%+v,%v,%v), want host-memory diagnostic", exported, ok, err)
+	}
+	if result := r.Eval("released.value"); result.Err != nil || result.Value != "1" {
+		t.Fatalf("rejected DLPack deleter did not run exactly once: value=%v err=%v", result.Value, result.Err)
+	}
+}
+
 func TestPythonExportBufferRejectsCUDAArrayInterfaceWithoutFallback(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

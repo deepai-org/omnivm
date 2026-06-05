@@ -1546,6 +1546,18 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	return exported;
 }
 
+static void omnivm_py_release_rejected_dlpack(PyObject* capsule, DLManagedTensor* managed) {
+	if (capsule) {
+		if (PyCapsule_SetName(capsule, "used_dltensor") != 0) {
+			PyErr_Clear();
+		}
+	}
+	if (managed && managed->deleter) {
+		managed->deleter(managed);
+	}
+	Py_XDECREF(capsule);
+}
+
 static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 	if (!omnivm_py_dlpack_device_allows_cpu_export(obj)) {
 		omnivm_py_set_export_rejection("__dlpack__ device is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
@@ -1585,19 +1597,19 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 	DLTensor* tensor = &managed->dl_tensor;
 	if (!tensor->data || tensor->ndim <= 0 || tensor->ndim > 8 ||
 	    !tensor->shape || tensor->byte_offset > (uint64_t)PY_SSIZE_T_MAX) {
-		Py_DECREF(capsule);
+		omnivm_py_release_rejected_dlpack(capsule, managed);
 		return NULL;
 	}
 	if (tensor->device.device_type != kDLCPU) {
 		omnivm_py_set_export_rejection("DLPack tensor memory is not CPU-addressable; OmniVM zero-copy native memory currently requires host memory");
-		Py_DECREF(capsule);
+		omnivm_py_release_rejected_dlpack(capsule, managed);
 		return NULL;
 	}
 
 	char format[2] = {0};
 	Py_ssize_t itemsize = 0;
 	if (!omnivm_py_dlpack_format(tensor->dtype, format, sizeof(format), &itemsize)) {
-		Py_DECREF(capsule);
+		omnivm_py_release_rejected_dlpack(capsule, managed);
 		return NULL;
 	}
 
@@ -1605,7 +1617,7 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 	Py_ssize_t byte_strides[8] = {0};
 	for (int32_t i = 0; i < tensor->ndim; i++) {
 		if (tensor->shape[i] < 0 || tensor->shape[i] > PY_SSIZE_T_MAX) {
-			Py_DECREF(capsule);
+			omnivm_py_release_rejected_dlpack(capsule, managed);
 			return NULL;
 		}
 		shape[i] = (Py_ssize_t)tensor->shape[i];
@@ -1615,7 +1627,7 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 			if (tensor->strides[i] == 0 ||
 			    tensor->strides[i] > PY_SSIZE_T_MAX / itemsize ||
 			    tensor->strides[i] < PY_SSIZE_T_MIN / itemsize) {
-				Py_DECREF(capsule);
+				omnivm_py_release_rejected_dlpack(capsule, managed);
 				return NULL;
 			}
 			byte_strides[i] = (Py_ssize_t)(tensor->strides[i] * itemsize);
@@ -1624,7 +1636,7 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 		byte_strides[tensor->ndim - 1] = itemsize;
 		for (int32_t i = tensor->ndim - 1; i > 0; i--) {
 			if (shape[i] > 0 && byte_strides[i] > PY_SSIZE_T_MAX / shape[i]) {
-				Py_DECREF(capsule);
+				omnivm_py_release_rejected_dlpack(capsule, managed);
 				return NULL;
 			}
 			byte_strides[i - 1] = byte_strides[i] * shape[i];
@@ -1634,12 +1646,12 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_dlpack(PyObject* obj) {
 	Py_ssize_t min_offset = 0;
 	Py_ssize_t byte_span = 0;
 	if (!omnivm_py_strided_bounds(tensor->ndim, shape, byte_strides, itemsize, &min_offset, &byte_span)) {
-		Py_DECREF(capsule);
+		omnivm_py_release_rejected_dlpack(capsule, managed);
 		return NULL;
 	}
 	if (PyCapsule_SetName(capsule, "used_dltensor") != 0) {
 		PyErr_Clear();
-		Py_DECREF(capsule);
+		omnivm_py_release_rejected_dlpack(capsule, managed);
 		return NULL;
 	}
 
