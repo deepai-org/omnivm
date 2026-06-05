@@ -2143,7 +2143,8 @@ class _ManifestStreamIterator:
 
     def close(self):
         result = self._proxy._omnivm_close()
-        self._detach_finalizer()
+        if result or object.__getattribute__(self._proxy, "_closed"):
+            self._detach_finalizer()
         return result
 
     def _omnivm_close(self):

@@ -2357,6 +2357,46 @@ class TestCallWithMockLib(unittest.TestCase):
             next(iterator)
         assert sum(1 for request in requests if request.get("op") == "stream_cancel") == 1
 
+    def test_manifest_stream_iterator_false_close_keeps_finalizer_retryable(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        cancel_results = iter([False, True])
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 47,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "stream_cancel":
+                return envelope(next(cancel_results), "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+        iterator = iter(proxy)
+
+        assert iterator.close() is False
+        assert object.__getattribute__(proxy, "_closed") is False
+        assert object.__getattribute__(iterator, "_finalizer").alive is True
+
+        assert iterator.close() is True
+        assert object.__getattribute__(proxy, "_closed") is True
+        assert object.__getattribute__(iterator, "_finalizer").alive is False
+        assert [request for request in requests if request.get("op") == "stream_cancel"] == [
+            {"op": "stream_cancel", "id": 47},
+            {"op": "stream_cancel", "id": 47},
+        ]
+
     def test_manifest_stream_iterator_detaches_on_eof(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
