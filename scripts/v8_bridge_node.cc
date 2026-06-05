@@ -731,6 +731,8 @@ static bool omnivm_is_runtime_error_metadata_line(const std::string& line) {
     });
     return omnivm_starts_with(lower, "caused by:") ||
            omnivm_starts_with(lower, "details:") ||
+           omnivm_starts_with(lower, "details_json:") ||
+           omnivm_starts_with(lower, "detailsjson:") ||
            omnivm_starts_with(lower, "original_error_handle:") ||
            omnivm_starts_with(lower, "original error handle:") ||
            omnivm_starts_with(lower, "original-error-handle:");
@@ -847,10 +849,11 @@ static OmniRuntimeErrorEnvelope omnivm_parse_runtime_error_text(
         env.original_error_handle = handle_match[3].str();
     }
     static const std::regex details_re(
-        R"((^|\n)\s*Details:\s*([^\n\r]+)\s*($|\n))");
+        R"((^|\n)\s*(Details|details_json|detailsJson):\s*([^\n\r]+)\s*($|\n))",
+        std::regex_constants::icase);
     std::smatch details_match;
     if (std::regex_search(body, details_match, details_re)) {
-        env.details_json = details_match[2].str();
+        env.details_json = details_match[3].str();
     }
 
     if (omnivm_starts_with(first_line, "Traceback ")) {
