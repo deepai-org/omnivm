@@ -540,13 +540,20 @@ def _omnivm_runtime_error_details_json(value):
     except Exception:
         return str(value)
 
+def _omnivm_traceback_frames(error):
+    try:
+        import traceback as __tb
+        return __tb.format_tb(error.__traceback__) if error.__traceback__ is not None else []
+    except Exception:
+        return []
+
 class _OmniVMRuntimeError(RuntimeError):
     def __init__(self, message, boundary_path=None, details=None):
         super().__init__(message)
         self.runtime = "python"
         self.origin_runtime = "python"
         self.type = "RuntimeError"
-        self.traceback = ""
+        self._traceback = ""
         self._stack_frames = []
         self._cause_chain = []
         self.boundary_path = boundary_path
@@ -555,8 +562,14 @@ class _OmniVMRuntimeError(RuntimeError):
         self._details_json = _omnivm_runtime_error_details_json(self._details)
 
     @property
+    def traceback(self):
+        frames = _omnivm_traceback_frames(self)
+        return "".join(frames) if frames else self._traceback
+
+    @property
     def stack_frames(self):
-        return list(self._stack_frames)
+        frames = _omnivm_traceback_frames(self)
+        return list(frames) if frames else list(self._stack_frames)
 
     @property
     def stackFrames(self):

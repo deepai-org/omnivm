@@ -6761,6 +6761,9 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "return runtime_error(message, runtime=\"python\", boundary_path=boundary_path, details=details)") ||
 		!contains(code, "err = _omnivm_runtime_error(") ||
 		!contains(code, `{"stream": {"id": self._value.get("id"), "chunk": item}}`) ||
+		!contains(code, "def _omnivm_traceback_frames(error):") ||
+		!contains(code, "return __tb.format_tb(error.__traceback__) if error.__traceback__ is not None else []") ||
+		!contains(code, "def traceback(self):") ||
 		!contains(code, "def to_json(self):") ||
 		!contains(code, "def details_json(self, value):") ||
 		!contains(code, "try:\n                    self.close()\n                except Exception as close_exc:\n                    _omnivm_record_cleanup_error") ||
@@ -7125,6 +7128,10 @@ except RuntimeError as exc:
         raise RuntimeError("malformed stream runtime mismatch: " + repr(getattr(exc, "runtime", None)))
     if getattr(exc, "boundary_path", None) != "stream_next":
         raise RuntimeError("malformed stream boundary mismatch: " + repr(getattr(exc, "boundary_path", None)))
+    if not exc.stack_frames:
+        raise RuntimeError("malformed stream error missing stack frames")
+    if "in _pull_next" not in exc.traceback:
+        raise RuntimeError("malformed stream traceback missing origin frame: " + repr(exc.traceback))
     if exc.details != {"stream": {"id": 90, "chunk": ""}}:
         raise RuntimeError("malformed stream details mismatch: " + repr(exc.details))
     details = exc.details
@@ -7140,6 +7147,8 @@ except RuntimeError as exc:
     envelope = json.loads(exc.to_json())
     if envelope["boundary_path"] != "stream_next":
         raise RuntimeError("malformed stream json boundary mismatch: " + repr(envelope))
+    if not envelope["stack_frames"]:
+        raise RuntimeError("malformed stream json stack_frames missing: " + repr(envelope))
     if envelope["details"] != {"stream": {"id": 92, "chunk": "alias"}}:
         raise RuntimeError("malformed stream json details mismatch: " + repr(envelope))
 if not stream._closed:
