@@ -16914,6 +16914,54 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefRubyIterGuardsNonSequenceObjects(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	keysExpr, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "keys")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr ruby keys: ok=%v err=%v", ok, err)
+	}
+	itemsExpr, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "items")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr ruby items: ok=%v err=%v", ok, err)
+	}
+	valuesExpr, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "values")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr ruby values: ok=%v err=%v", ok, err)
+	}
+	for label, expr := range map[string]string{
+		"keys":   keysExpr,
+		"items":  itemsExpr,
+		"values": valuesExpr,
+	} {
+		if strings.Contains(expr, "__o.length).to_a") && !strings.Contains(expr, "respond_to?(:length)") {
+			t.Fatalf("ruby %s iteration should guard length fallback, got %q", label, expr)
+		}
+		if strings.Contains(expr, "__o.each_with_index") && !strings.Contains(expr, "respond_to?(:each_with_index)") {
+			t.Fatalf("ruby %s iteration should guard each_with_index fallback, got %q", label, expr)
+		}
+	}
+	script := `
+class TaskLike
+  def finished?
+    true
+  end
+end
+payload = TaskLike.new
+keys_result = ` + keysExpr + `
+items_result = ` + itemsExpr + `
+values_result = ` + valuesExpr + `
+raise "keys=#{keys_result.inspect}" unless keys_result == []
+raise "items=#{items_result.inspect}" unless items_result == []
+raise "values=#{values_result.inspect}" unless values_result == []
+`
+	if out, err := exec.Command(ruby, "-e", script).CombinedOutput(); err != nil {
+		t.Fatalf("ruby RuntimeRef iteration should not probe length on non-sequence object: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeRefPythonContainsAvoidsDynamicAttributeProbes(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

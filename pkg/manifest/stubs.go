@@ -4043,11 +4043,11 @@ func runtimeRefIterExpr(ref RuntimeRef, mode string) (string, bool, error) {
 	case "ruby":
 		switch mode {
 		case "items":
-			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:to_h) ? __o.to_h.to_a : __o.each_with_index.map { |v, i| [i, v] }; end)", base), true, nil
+			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:to_h) ? __o.to_h.to_a : (__o.respond_to?(:each_with_index) ? __o.each_with_index.map { |v, i| [i, v] } : []); end)", base), true, nil
 		case "keys":
-			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:keys) ? __o.keys : (0...__o.length).to_a; end)", base), true, nil
+			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:keys) ? __o.keys : ((__o.respond_to?(:length) && __o.respond_to?(:each_with_index)) ? (0...__o.length).to_a : []); end)", base), true, nil
 		default:
-			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:values) ? __o.values : __o.to_a; end)", base), true, nil
+			return fmt.Sprintf("(begin; __o = %s; __o.respond_to?(:values) ? __o.values : (__o.respond_to?(:to_a) ? __o.to_a : []); end)", base), true, nil
 		}
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxyIter(%s, %s)", base, jsonStringLiteral(mode)), true, nil
