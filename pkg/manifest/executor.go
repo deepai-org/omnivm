@@ -1121,6 +1121,15 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 			}
 			val = ref.Value
 		}
+		if op.Await {
+			handled, err := e.opLoopForeachStreamValue(op, val)
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				return nil, nil
+			}
+		}
 		arr, ok := val.([]interface{})
 		if !ok {
 			return nil, fmt.Errorf("foreach: iterable %q is not an array (got %T)", op.Iterable.Name, val)
@@ -1158,10 +1167,37 @@ func (e *Executor) opLoopForeachRuntimeRefStream(op *Op, ref RuntimeRef) (bool, 
 	if err != nil {
 		return true, fmt.Errorf("foreach: runtime ref stream %q: %w", op.Iterable.Name, err)
 	}
+	return e.opLoopForeachStreamHandle(op, id, fmt.Sprintf("runtime ref stream %q", op.Iterable.Name))
+}
+
+func (e *Executor) opLoopForeachStreamValue(op *Op, value interface{}) (bool, error) {
+	var id handles.ID
+	var err error
+	switch v := value.(type) {
+	case *ChanRef:
+		id, err = e.channelStreamHandle(v)
+	case *GoStreamProxy:
+		return e.opLoopForeachGoStreamProxy(op, v)
+	default:
+		if !isReceivableChannelValue(value) && !isReaderStreamValue(value) {
+			return false, nil
+		}
+		id, err = e.genericStreamHandle("go", value)
+	}
+	if err != nil {
+		return true, fmt.Errorf("foreach: stream %q: %w", op.Iterable.Name, err)
+	}
+	return e.opLoopForeachStreamHandle(op, id, fmt.Sprintf("stream %q", op.Iterable.Name))
+}
+
+func (e *Executor) opLoopForeachStreamHandle(op *Op, id handles.ID, label string) (bool, error) {
 	for {
-		elem, done, err := e.runtimeRefStreamNext(id, ref)
+		elem, done, ok, err := e.handleStreamNext(id)
 		if err != nil {
-			return true, fmt.Errorf("foreach: runtime ref stream %q: %w", op.Iterable.Name, err)
+			return true, fmt.Errorf("foreach: %s: %w", label, err)
+		}
+		if !ok {
+			return false, nil
 		}
 		if done {
 			return true, nil
@@ -1169,6 +1205,25 @@ func (e *Executor) opLoopForeachRuntimeRefStream(op *Op, ref RuntimeRef) (bool, 
 		e.setBinding(op.Variable, elem)
 		if _, err := e.executeOps(op.Body); err != nil {
 			if releaseErr := e.ensureHandleTable().ReleaseAllRefs(id); releaseErr != nil {
+				return true, fmt.Errorf("%w; additionally failed to close foreach stream after body error: %w", err, releaseErr)
+			}
+			return true, err
+		}
+	}
+}
+
+func (e *Executor) opLoopForeachGoStreamProxy(op *Op, stream *GoStreamProxy) (bool, error) {
+	for {
+		elem, ok, err := stream.Next()
+		if err != nil {
+			return true, fmt.Errorf("foreach: stream %q: %w", op.Iterable.Name, err)
+		}
+		if !ok {
+			return true, nil
+		}
+		e.setBinding(op.Variable, elem)
+		if _, err := e.executeOps(op.Body); err != nil {
+			if releaseErr := stream.Close(); releaseErr != nil {
 				return true, fmt.Errorf("%w; additionally failed to close foreach stream after body error: %w", err, releaseErr)
 			}
 			return true, err

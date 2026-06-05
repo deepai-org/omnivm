@@ -720,6 +720,72 @@ func TestOpAwaitForeachRuntimeRefStreamPullsOneAtATimeAndClosesOnBodyError(t *te
 	}
 }
 
+func TestOpAwaitForeachChannelStreamStopsAfterBodyError(t *testing.T) {
+	e, _ := makeExecutor("go")
+	ch := &ChanRef{ch: make(chan interface{}, 2)}
+	ch.ch <- "event-1"
+	ch.ch <- "event-2"
+	if err := ch.close(); err != nil {
+		t.Fatalf("close channel: %v", err)
+	}
+	e.setBinding("events", ch)
+
+	op := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Await:    true,
+		Variable: "event",
+		Iterable: &ValueExpr{Kind: "ref", Name: "events"},
+		Body: []*Op{
+			{OpType: "throw", Value: &ValueExpr{Kind: "literal", Value: "stop"}},
+		},
+	}
+
+	_, err := e.executeOp(op)
+	if err == nil {
+		t.Fatal("await foreach channel body error did not propagate")
+	}
+	val, _ := e.getBinding("event")
+	if val != "event-1" {
+		t.Fatalf("loop variable = %#v, want event-1", val)
+	}
+	if remaining := len(ch.ch); remaining != 1 {
+		t.Fatalf("await foreach channel should not drain after body error, remaining = %d", remaining)
+	}
+}
+
+func TestOpAwaitForeachGoStreamProxyClosesAfterBodyError(t *testing.T) {
+	e, _ := makeExecutor("go")
+	stream := newGoLocalStreamProxy([]interface{}{"row-1", "row-2"}, nil)
+	e.setBinding("rows", stream)
+
+	op := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Await:    true,
+		Variable: "row",
+		Iterable: &ValueExpr{Kind: "ref", Name: "rows"},
+		Body: []*Op{
+			{OpType: "throw", Value: &ValueExpr{Kind: "literal", Value: "stop"}},
+		},
+	}
+
+	_, err := e.executeOp(op)
+	if err == nil {
+		t.Fatal("await foreach stream proxy body error did not propagate")
+	}
+	val, _ := e.getBinding("row")
+	if val != "row-1" {
+		t.Fatalf("loop variable = %#v, want row-1", val)
+	}
+	if !stream.closed {
+		t.Fatal("await foreach body error did not close stream proxy")
+	}
+	if stream.localIndex != 1 {
+		t.Fatalf("await foreach stream proxy should pull one row, localIndex = %d", stream.localIndex)
+	}
+}
+
 func TestOpUnknownType(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"
