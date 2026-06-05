@@ -419,6 +419,10 @@ func (o *BufferOwner) Release() (bool, error) {
 		store = GlobalStore()
 	}
 	if err := store.Free(o.name); err != nil {
+		status := store.Status(o.name)
+		if status.Released || status.State == "released" || status.State == "released_detached" {
+			o.released = true
+		}
 		return false, err
 	}
 	o.released = true

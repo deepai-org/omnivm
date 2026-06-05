@@ -986,7 +986,7 @@ func TestBufferOwnerSetReleaseAndCloseAreIdempotent(t *testing.T) {
 	}
 }
 
-func TestBufferOwnerReleaseFailureDoesNotMarkReleased(t *testing.T) {
+func TestBufferOwnerReleaseFailureMarksReleasedAfterTombstone(t *testing.T) {
 	s := NewSharedStore()
 	data := []byte{1, 2, 3, 4}
 	releaseErr := errors.New("producer release failed")
@@ -1005,19 +1005,16 @@ func TestBufferOwnerReleaseFailureDoesNotMarkReleased(t *testing.T) {
 	if !errors.Is(err, releaseErr) || released {
 		t.Fatalf("owner Release = %v,%v; want false, producer release failure", released, err)
 	}
-	if owner.Released() {
-		t.Fatal("owner marked released after failed release")
+	if !owner.Released() {
+		t.Fatal("owner did not report released after the public name was tombstoned")
 	}
 	status := owner.Status()
 	if status.State != "released" || status.ReleaseError != "producer release failed" {
 		t.Fatalf("owner Status after failed release = %+v, want released tombstone with producer failure", status)
 	}
 	released, err = owner.Release()
-	if err == nil || released {
-		t.Fatalf("retry owner Release after failed producer release = %v,%v; want false,error", released, err)
-	}
-	if !strings.Contains(err.Error(), `buffer "payload" was released`) {
-		t.Fatalf("retry owner Release error = %v, want released tombstone diagnostic", err)
+	if err != nil || released {
+		t.Fatalf("retry owner Release after tombstone = %v,%v; want false,nil", released, err)
 	}
 }
 
