@@ -5502,6 +5502,24 @@ func TestRuntimeRefStreamCloseCodeUsesHostProtocols(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefJavaStreamNextClosesBaseStreamAtEOF(t *testing.T) {
+	code := runtimeRefJavaStreamNextCode("rows", "__omnivm_stream_value", "__omnivm_stream_done", "__omnivm_stream_state")
+	for _, want := range []string{
+		"java.util.stream.BaseStream __omnivm_base_stream = null;",
+		"new Object[] { __omnivm_base_stream, __omnivm_next }",
+		"__omnivm_base_stream.close();",
+		`omnivm.OmniVM.setCaptureObject("__omnivm_stream_state", null);`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("runtimeRefJavaStreamNextCode should close BaseStream at EOF and clear state, missing %q in %q", want, code)
+		}
+	}
+	baseStreamBranch := code[strings.Index(code, "java.util.stream.BaseStream __omnivm_base_stream = null;"):]
+	if strings.Index(baseStreamBranch, "__omnivm_base_stream.close();") > strings.Index(baseStreamBranch, `omnivm.OmniVM.setCaptureObject("__omnivm_stream_state", null);`) {
+		t.Fatalf("runtimeRefJavaStreamNextCode should close BaseStream before clearing state: %q", code)
+	}
+}
+
 func TestRuntimeRefPythonAsyncStreamCloseUsesOwnerLoopContract(t *testing.T) {
 	code, ok := runtimeRefStreamCloseCode(RuntimeRef{Runtime: "python", VarName: "rows"}, "__omnivm_stream_state")
 	if !ok {
