@@ -7593,8 +7593,12 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		`original_error_handle: err.original_error_handle`,
 		`detailsSnapshot = globalThis.__omnivm_clone_json(details)`,
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
-		`err.stack_frames = stackFrames.slice()`,
-		`err.cause_chain = causeChain.slice()`,
+		`Object.defineProperty(err, "stack_frames"`,
+		`get: function() { return stackFrames.slice(); }`,
+		`Object.defineProperty(err, "cause_chain"`,
+		`get: function() { return globalThis.__omnivm_clone_json(causeChain); }`,
+		`Object.defineProperty(err, "details"`,
+		`get: function() { return globalThis.__omnivm_clone_json(detailsSnapshot); }`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,
 	} {
 		if !contains(code, want) {
@@ -7815,6 +7819,9 @@ try {
   err.cause_chain.push({message: "mutated-error"});
   err.causeChain.push({message: "mutated-error"});
   err.details.owner_dispatch.mode = "mutated-error";
+  if (err.stack_frames.length === 0 || err.stackFrames.length === 0) throw new Error("error stack reader leaked mutable state");
+  if (err.cause_chain.length !== 0 || err.causeChain.length !== 0) throw new Error("error cause reader leaked mutable state");
+  if (err.details.owner_dispatch.mode !== "diagnostic_only") throw new Error("error details reader leaked mutable state");
   var stableEnvelope = err.toJSON();
   if (!Array.isArray(stableEnvelope.stack_frames) || stableEnvelope.stack_frames.length === 0) throw new Error("error stack mutation changed snapshot");
   if (!Array.isArray(stableEnvelope.cause_chain) || stableEnvelope.cause_chain.length !== 0) throw new Error("error cause mutation changed snapshot");
@@ -12068,8 +12075,12 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		`detailsJson = JSON.stringify(detailsSnapshot)`,
 		`err.toJSON = function()`,
 		`err.originRuntime = err.origin_runtime`,
-		`err.stack_frames = stackFrames.slice()`,
-		`err.cause_chain = causeChain.slice()`,
+		`Object.defineProperty(err, "stack_frames"`,
+		`get: function() { return stackFrames.slice(); }`,
+		`Object.defineProperty(err, "cause_chain"`,
+		`get: function() { return globalThis.__omnivm_clone_json(causeChain); }`,
+		`Object.defineProperty(err, "details"`,
+		`get: function() { return globalThis.__omnivm_clone_json(detailsSnapshot); }`,
 		`stack_frames: stackFrames.slice()`,
 		`cause_chain: globalThis.__omnivm_clone_json(causeChain)`,
 		`details: globalThis.__omnivm_clone_json(detailsSnapshot)`,

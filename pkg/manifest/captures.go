@@ -1850,13 +1850,51 @@ if (typeof omnivm !== 'undefined' && omnivm) {
     err.originalErrorHandle = null;
     err.traceback = err.stack || "";
     stackFrames = String(err.traceback).split("\n").filter(function(frame) { return frame.length > 0; });
-    err.stack_frames = stackFrames.slice();
-    err.stackFrames = stackFrames.slice();
-    err.cause_chain = causeChain.slice();
-    err.causeChain = causeChain.slice();
-    err.details = globalThis.__omnivm_clone_json(detailsSnapshot);
-    err.details_json = detailsJson;
-    err.detailsJson = detailsJson;
+    Object.defineProperty(err, "stack_frames", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return stackFrames.slice(); },
+      set: function(value) { stackFrames = Array.isArray(value) ? value.slice() : []; }
+    });
+    Object.defineProperty(err, "stackFrames", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return stackFrames.slice(); },
+      set: function(value) { stackFrames = Array.isArray(value) ? value.slice() : []; }
+    });
+    Object.defineProperty(err, "cause_chain", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return globalThis.__omnivm_clone_json(causeChain); },
+      set: function(value) { causeChain = globalThis.__omnivm_clone_json(Array.isArray(value) ? value : []); }
+    });
+    Object.defineProperty(err, "causeChain", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return globalThis.__omnivm_clone_json(causeChain); },
+      set: function(value) { causeChain = globalThis.__omnivm_clone_json(Array.isArray(value) ? value : []); }
+    });
+    Object.defineProperty(err, "details", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return globalThis.__omnivm_clone_json(detailsSnapshot); },
+      set: function(value) {
+        detailsSnapshot = globalThis.__omnivm_clone_json(value);
+        detailsJson = JSON.stringify(detailsSnapshot);
+      }
+    });
+    Object.defineProperty(err, "details_json", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return detailsJson; },
+      set: function(value) { detailsJson = value == null ? value : String(value); }
+    });
+    Object.defineProperty(err, "detailsJson", {
+      enumerable: true,
+      configurable: true,
+      get: function() { return detailsJson; },
+      set: function(value) { detailsJson = value == null ? value : String(value); }
+    });
     err.toJSON = function() {
       return {
         runtime: err.runtime,
