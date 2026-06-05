@@ -882,7 +882,9 @@ def init_runtimes(runtimes):
     Initialize OmniVM runtimes. Call this in Gunicorn's post_fork hook.
 
     This is when libomnivm.so is loaded (via dlopen) and the Go runtime starts.
-    Must be called AFTER fork in prefork servers. Safe to call from any thread.
+    Must be called AFTER fork in prefork servers. The initializing thread
+    becomes the libomnivm host thread; framework integrations should call this
+    from the worker thread that will own direct OmniVM runtime calls.
 
     Args:
         runtimes: List of runtime names, e.g. ["go", "javascript"]
@@ -2125,8 +2127,9 @@ def assert_host_thread(label=""):
     Raise RuntimeError if called from a non-host Python thread.
 
     Use this in server lifecycle callbacks or framework integrations that must
-    run on the worker's owner thread. Foreign threads can still call OmniVM, but
-    this check gives integrations an explicit guard when affinity matters.
+    run on the worker's owner thread. In c-shared mode direct runtime entrypoints
+    reject foreign threads; this guard lets integrations fail before registering
+    callbacks or request hooks that would later cross that boundary.
     """
     info = affinity_status()
     if info["on_host_thread"]:

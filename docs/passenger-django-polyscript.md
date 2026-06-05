@@ -40,7 +40,13 @@ from billing_rules import rank_user
 ```
 
 No app-level `omnivm.init_runtimes()` hook is required for imported `.poly`
-modules. The runtime initialization is lazy and worker-local. Top-level
+modules in the single-request-per-process WSGI shape shown below. The runtime
+initialization is lazy and worker-local: the first `.poly` import initializes
+`libomnivm`, and that importing thread becomes the c-shared host thread for
+direct OmniVM calls. Threaded WSGI/ASGI deployments should either ensure the
+same worker thread performs later `.poly` calls, or fail fast during startup
+with `omnivm.assert_host_thread()` / `omnivm.owner_dispatch_status()` before
+registering request handlers that would need owner-loop dispatch. Top-level
 manifest functions are exposed as Python callables, so `from ... import ...`
 works for progressively converted service/helper modules.
 
@@ -69,7 +75,7 @@ Set `POLYSCRIPT_COMPILER` to the installed Garbage compiler command and `POLYSCR
 
 ## Operational notes
 
-- `force_max_concurrent_requests_per_process: 1` maps cleanly to the current WSGI model. Runtime state is worker-local.
+- `force_max_concurrent_requests_per_process: 1` maps cleanly to the current WSGI model. Runtime state is worker-local, and OmniVM calls stay on the thread that first initialized `libomnivm`.
 - `max_requests` recycling is still useful. It bounds memory growth from Django, native libraries, and embedded runtimes in the same way it bounds regular Python extension state.
 - SIGTERM and ALB draining stay Passenger-owned. Workers can usually let process
   exit reclaim embedded runtime state; call `omnivm.drain_worker_hook(server,
