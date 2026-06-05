@@ -8049,6 +8049,8 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"omnivm.releaseBuffer(this.name)",
 		"__omnivm_buffer_owner_error",
 		`"native_memory"`,
+		`lease_state: "active"`,
+		`lease_state: "released"`,
 		`active_owner: true`,
 		"cannot be re-entered after release",
 		"is already active",
@@ -8431,7 +8433,7 @@ try {
 } catch (err) {
   if (err.message.indexOf("already active") < 0) throw err;
   if (err.boundary_path !== "native_memory") throw new Error("active owner boundary mismatch: " + err.boundary_path);
-  if (!err.details || !err.details.buffer || err.details.buffer.active_owner !== true || err.details.buffer.state !== "active") throw new Error("active owner details mismatch: " + JSON.stringify(err.details));
+  if (!err.details || !err.details.buffer || err.details.buffer.active_owner !== true || err.details.buffer.state !== "active" || err.details.buffer.lease_state !== "active") throw new Error("active owner details mismatch: " + JSON.stringify(err.details));
 }
 if (owner.release() !== true) throw new Error("release did not return true");
 if (owner.release() !== false) throw new Error("second release was not idempotent");
@@ -8442,7 +8444,7 @@ try {
 } catch (err) {
   if (err.message.indexOf("cannot be re-entered after release") < 0) throw err;
   if (err.boundary_path !== "native_memory") throw new Error("released owner boundary mismatch: " + err.boundary_path);
-  if (!err.details || !err.details.buffer || err.details.buffer.released !== true || err.details.buffer.state !== "released") throw new Error("released owner details mismatch: " + JSON.stringify(err.details));
+  if (!err.details || !err.details.buffer || err.details.buffer.released !== true || err.details.buffer.state !== "released" || err.details.buffer.lease_state !== "released") throw new Error("released owner details mismatch: " + JSON.stringify(err.details));
 }
 if (JSON.stringify(omnivm.events) !== JSON.stringify([["set", "payload", "abc", 7], ["status", "payload"], ["release", "payload"]])) throw new Error("re-enter changed owner events: " + JSON.stringify(omnivm.events));
 
@@ -10988,6 +10990,8 @@ public final class ScopedBufferOwnerCheck {
             require(err.getMessage().contains("is already active"), "active re-entry message mismatch: " + err.getMessage());
             require("native_memory".equals(err.getBoundaryPath()), "active re-entry boundary mismatch: " + err.getBoundaryPath());
             require(String.valueOf(err.getDetails()).contains("active_owner=true"), "active re-entry details mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("state=active"), "active re-entry state mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("lease_state=active"), "active re-entry lease state mismatch: " + err.getDetails());
         }
         require(OmniVM.setBufferCalls == setBeforeDirect + 1, "active re-entry republished buffer: " + OmniVM.setBufferCalls);
         require(OmniVM.releaseBufferCalls == releaseBeforeDirect, "active re-entry released buffer: " + OmniVM.releaseBufferCalls);
@@ -11000,6 +11004,8 @@ public final class ScopedBufferOwnerCheck {
             require(err.getMessage().contains("cannot be re-entered after release"), "released re-entry message mismatch: " + err.getMessage());
             require("native_memory".equals(err.getBoundaryPath()), "released re-entry boundary mismatch: " + err.getBoundaryPath());
             require(String.valueOf(err.getDetails()).contains("released=true"), "released re-entry details mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("state=released"), "released re-entry state mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("lease_state=released"), "released re-entry lease state mismatch: " + err.getDetails());
         }
         require(OmniVM.setBufferCalls == setBeforeDirect + 1, "released re-entry republished buffer: " + OmniVM.setBufferCalls);
         require(OmniVM.releaseBufferCalls == releaseBeforeDirect + 1, "released re-entry release mismatch: " + OmniVM.releaseBufferCalls);
@@ -12754,6 +12760,10 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"def self.buffer_owner(name, data = BUFFER_OWNER_UNSET, dtype: 0)",
 		"cannot be re-entered after release",
 		"is already active",
+		`\"state\" => \"released\"`,
+		`\"state\" => \"active\"`,
+		`\"lease_state\" => \"released\"`,
+		`\"lease_state\" => \"active\"`,
 		"OmniVM.set_buffer(@name, @data, @dtype) unless @data.equal?(BUFFER_OWNER_UNSET)",
 		"return false if @released",
 		"OmniVM.release_buffer(@name)",
@@ -12813,6 +12823,10 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 		"cannot be re-entered after release",
 		"is already active",
 		"\"native_memory\"",
+		`"state", "released"`,
+		`"state", "active"`,
+		`"lease_state", "released"`,
+		`"lease_state", "active"`,
 		"setBuffer(name, data, dtype)",
 		"if (released) {\n                return false;",
 		"releaseBuffer(name)",
@@ -13084,6 +13098,8 @@ func TestV8BridgeRegistersCoreProxyCloseHelper(t *testing.T) {
 		"globalThis.omnivm.releaseBuffer(this.name)",
 		"__omnivm_buffer_owner_error",
 		`"native_memory"`,
+		`lease_state: "active"`,
+		`lease_state: "released"`,
 		`active_owner: true`,
 		"cannot be re-entered after release",
 		"is already active",

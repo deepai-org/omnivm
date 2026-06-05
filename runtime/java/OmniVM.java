@@ -428,13 +428,13 @@ public class OmniVM {
                 throw runtimeError(
                     "OmniVM.bufferOwner \"" + name + "\" cannot be re-entered after release",
                     "native_memory",
-                    ownerDispatchMap("buffer", ownerDispatchMap("name", name, "released", true)));
+                    ownerDispatchMap("buffer", ownerDispatchMap("name", name, "state", "released", "lease_state", "released", "released", true)));
             }
             if (entered) {
                 throw runtimeError(
                     "OmniVM.bufferOwner \"" + name + "\" is already active",
                     "native_memory",
-                    ownerDispatchMap("buffer", ownerDispatchMap("name", name, "active_owner", true)));
+                    ownerDispatchMap("buffer", ownerDispatchMap("name", name, "state", "active", "lease_state", "active", "active_owner", true)));
             }
             if (hasData) {
                 if (data == null) {

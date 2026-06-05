@@ -394,7 +394,7 @@ begin
 rescue OmniVM::RuntimeError => err
   raise "active re-entry error mismatch #{err.message.inspect}" unless err.message.include?("is already active")
   raise "active re-entry boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
-  raise "active re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "active_owner" => true}}
+  raise "active re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "state" => "active", "lease_state" => "active", "active_owner" => true}}
 else
   raise "active re-entry did not fail"
 end
@@ -409,7 +409,7 @@ begin
 rescue OmniVM::RuntimeError => err
   raise "released re-entry error mismatch #{err.message.inspect}" unless err.message.include?("cannot be re-entered after release")
   raise "released re-entry boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
-  raise "released re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "released" => true}}
+  raise "released re-entry details mismatch #{err.details.inspect}" unless err.details == {"buffer" => {"name" => "payload", "state" => "released", "lease_state" => "released", "released" => true}}
 else
   raise "released re-entry did not fail"
 end
