@@ -620,7 +620,8 @@ queued proxy-finalizer releases on a best-effort basis and returns `False`
 instead of raising when cleanup is unavailable or fails, preserving the
 distinction between user-initiated lifecycle operations and quiet GC teardown.
 `omnivm.lifecycle_scope()` wraps the same cleanup behavior in a context manager
-for request/job bodies and does not suppress exceptions raised by the body.
+for sync or async request/job bodies and does not suppress exceptions raised by
+the body.
 
 `omnivm.affinity_status()` reports the current Python native thread id, the
 libomnivm host thread id, whether the call is on the host thread, and any

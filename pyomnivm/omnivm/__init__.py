@@ -1238,9 +1238,15 @@ class _LifecycleScope:
     def __enter__(self):
         return self
 
+    async def __aenter__(self):
+        return self
+
     def __exit__(self, _exc_type, _exc, _tb):
         self.drained_finalizers = drain_finalizer_releases(self.max_finalizer_releases)
         return False
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return self.__exit__(exc_type, exc, tb)
 
 
 def lifecycle_scope(max_finalizer_releases=0):
@@ -1250,7 +1256,8 @@ def lifecycle_scope(max_finalizer_releases=0):
     The scope does not own live proxies; callers should still close streams,
     handles, and buffers explicitly when their lifetime is known. This only
     drains queued GC/finalizer releases as quiet teardown, preserving any
-    exception raised by the application body.
+    exception raised by the application body. The returned scope supports both
+    sync ``with`` and async ``async with`` request/job bodies.
     """
     return _LifecycleScope(max_finalizer_releases)
 

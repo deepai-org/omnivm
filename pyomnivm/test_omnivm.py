@@ -1063,6 +1063,15 @@ class TestNotInitialized(unittest.TestCase):
             assert scope.drained_finalizers is None
         assert scope.drained_finalizers is False
 
+    def test_async_lifecycle_scope_noops_without_runtime(self):
+        async def run():
+            async with omnivm_mod.lifecycle_scope() as scope:
+                assert scope.drained_finalizers is None
+            return scope
+
+        scope = asyncio.run(run())
+        assert scope.drained_finalizers is False
+
     @patch.object(omnivm_mod.atexit, "register")
     def test_install_worker_drain_hook_registers_once(self, register):
         assert omnivm_mod.install_worker_drain_hook() is omnivm_mod.drain_worker_hook
@@ -1364,6 +1373,18 @@ class TestCallWithMockLib(unittest.TestCase):
         assert scope.drained_finalizers is True
         self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(5)
 
+    def test_async_lifecycle_scope_drains_finalizers_on_exit(self):
+        self.mock_lib.OmniDrainFinalizerReleases.return_value = 0
+
+        async def run():
+            async with omnivm_mod.lifecycle_scope(max_finalizer_releases=7) as scope:
+                assert scope.drained_finalizers is None
+            return scope
+
+        scope = asyncio.run(run())
+        assert scope.drained_finalizers is True
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(7)
+
     def test_lifecycle_scope_preserves_body_exception_when_cleanup_fails(self):
         self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
         with self.assertRaisesRegex(ValueError, "body failed") as ctx:
@@ -1371,6 +1392,21 @@ class TestCallWithMockLib(unittest.TestCase):
                 raise ValueError("body failed")
         assert str(ctx.exception) == "body failed"
         assert scope.drained_finalizers is False
+        self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
+
+    def test_async_lifecycle_scope_preserves_body_exception_when_cleanup_fails(self):
+        self.mock_lib.OmniDrainFinalizerReleases.side_effect = RuntimeError("drain failed")
+        holder = {}
+
+        async def run():
+            async with omnivm_mod.lifecycle_scope() as scope:
+                holder["scope"] = scope
+                raise ValueError("body failed")
+
+        with self.assertRaisesRegex(ValueError, "body failed") as ctx:
+            asyncio.run(run())
+        assert str(ctx.exception) == "body failed"
+        assert holder["scope"].drained_finalizers is False
         self.mock_lib.OmniDrainFinalizerReleases.assert_called_once_with(0)
 
     def test_manifest_call_decodes_return_envelope(self):
