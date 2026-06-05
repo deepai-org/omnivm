@@ -16655,6 +16655,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
 		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
 	}
+	if !strings.Contains(pythonProp, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonProp, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonProp, "model_fields") {
+		t.Fatalf("python property lookup should prefer static _mapping row fields before attributes, got %q", pythonProp)
+	}
 	if !strings.Contains(pythonProp, "else None") || !strings.Contains(pythonProp, "__o[int(__k)]") {
 		t.Fatalf("python property lookup should avoid unconditional item access on unscriptable objects, got %q", pythonProp)
 	}
@@ -16685,13 +16688,19 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(rubyProp, "has_attribute?") || strings.Index(rubyProp, "has_attribute?") > strings.Index(rubyProp, "public_send") {
 		t.Fatalf("ruby property lookup should prefer ActiveRecord attributes before methods, got %q", rubyProp)
 	}
+	if !strings.Contains(rubyProp, "__seq_index") || !strings.Contains(rubyProp, "__o[__k.to_i]") || !strings.Contains(rubyProp, "rescue TypeError, IndexError, NoMethodError; nil") {
+		t.Fatalf("ruby property lookup should avoid arbitrary string indexing on sequence-like objects, got %q", rubyProp)
+	}
 
 	pythonCallable, ok, err := runtimeRefCallableExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefCallableExpr python: ok=%v err=%v", ok, err)
 	}
-	if !strings.Contains(pythonCallable, "callable(__o[__k]) if ((isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
+	if !strings.Contains(pythonCallable, "callable(__o[__k]) if (isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
 		t.Fatalf("python callable lookup should inspect mapping keys before attributes, got %q", pythonCallable)
+	}
+	if !strings.Contains(pythonCallable, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonCallable, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonCallable, "model_fields") {
+		t.Fatalf("python callable lookup should inspect static _mapping row fields before attributes, got %q", pythonCallable)
 	}
 	if !strings.Contains(pythonCallable, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonCallable, "any('keys' in __omnivm_cls.__dict__") {
 		t.Fatalf("python callable lookup should inspect key-addressable session-like objects before attributes without broad membership probes, got %q", pythonCallable)
@@ -16709,6 +16718,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 	if !strings.Contains(pythonCall, "model_fields") || strings.Index(pythonCall, "Mapping) and __k in __o") > strings.Index(pythonCall, "model_fields") || strings.Index(pythonCall, "model_fields") > strings.LastIndex(pythonCall, "hasattr(__o, __k)") {
 		t.Fatalf("python call lookup should inspect Pydantic fields before same-named methods, got %q", pythonCall)
+	}
+	if !strings.Contains(pythonCall, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonCall, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonCall, "model_fields") {
+		t.Fatalf("python call lookup should inspect static _mapping row fields before attributes, got %q", pythonCall)
 	}
 
 	pythonItemsIter, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")

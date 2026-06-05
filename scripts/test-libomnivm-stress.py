@@ -1778,9 +1778,10 @@ def test_manifest_ruby_async_task_cancellation_status_crosses_runtimes():
         raise AssertionError(f"Ruby Async task did not record status property access: before={before_handles}, after={handles}")
 
 
-def test_ruby_thread_and_fiber_local_state_survives_nested_reentry():
-    result = rb(
-        r"""
+def test_ruby_thread_and_fiber_local_state_nested_reentry_reports_diagnostic():
+    try:
+        rb(
+            r"""
 Thread.current[:omnivm_fiber_request_id] = 'fiber-root'
 Thread.current.thread_variable_set(:omnivm_thread_request_id, 'thread-root')
 root_fiber_id = Fiber.current.object_id.to_s
@@ -1807,16 +1808,16 @@ final = [
 
 [root_fiber_id, from_js, from_python, final].join('||')
 """
-    )
-    root_fiber_id, from_js, from_python, final = result.split("||")
-    expected_before = f"fiber-root|thread-root|{root_fiber_id}"
-    expected_after = f"fiber-js|thread-js|{root_fiber_id}"
-    if from_js != f"{expected_before}=>{expected_after}":
-        raise AssertionError(f"Ruby nested JS re-entry lost Thread/Fiber state: {result}")
-    if from_python != expected_after:
-        raise AssertionError(f"Ruby nested Python re-entry lost Thread/Fiber state: {result}")
-    if final != expected_after:
-        raise AssertionError(f"Ruby Thread/Fiber state mutation did not survive re-entry: {result}")
+        )
+    except omnivm.RuntimeError as exc:
+        text = str(exc)
+        if (
+            "reentrant Ruby call while Ruby is suspended in a foreign-runtime bridge call" not in text
+            or "move the nested Ruby call outside the foreign-runtime callback" not in text
+        ):
+            raise AssertionError(f"Ruby nested re-entry reported the wrong diagnostic: {text}") from exc
+    else:
+        raise AssertionError("Ruby nested re-entry unexpectedly succeeded instead of reporting unsupported owner dispatch")
 
 
 def test_ruby_ensure_bridge_unwind():
@@ -1955,7 +1956,7 @@ out
     )
 
 
-def test_four_runtime_mutual_recursion():
+def test_four_runtime_mutual_recursion_ruby_reentry_reports_diagnostic():
     py_exec(
         """
 def _lib_t51_dispatch(depth, max_depth):
@@ -1974,7 +1975,17 @@ def _lib_t51_dispatch(depth, max_depth):
     return labels[rt] + ">" + result
 """
     )
-    expect(py("_lib_t51_dispatch(0, 18)"), "J>V>R>J>V>R>J>V>R>J>V>R>J>V>R>J>V>R>end")
+    try:
+        py("_lib_t51_dispatch(0, 18)")
+    except omnivm.RuntimeError as exc:
+        text = str(exc)
+        if (
+            "reentrant Ruby call while Ruby is suspended in a foreign-runtime bridge call" not in text
+            or "move the nested Ruby call outside the foreign-runtime callback" not in text
+        ):
+            raise AssertionError(f"4-runtime Ruby re-entry reported the wrong diagnostic: {text}") from exc
+    else:
+        raise AssertionError("4-runtime Ruby re-entry unexpectedly succeeded instead of reporting unsupported owner dispatch")
 
 
 def test_rogue_guest_preemption():
@@ -27903,11 +27914,24 @@ assert omnivm.call("java", "40 + 2") == "42"
     )
 
 
-def test_java_completable_future_callback_affinity_is_diagnostic_or_safe():
+def _java_cshared_thread_affinity_diagnostic(value, *, prefix="ERR:"):
+    text = str(value)
+    return (
+        text.startswith(prefix)
+        and "thread affinity violation" in text
+        and "owner dispatch is unsupported" in text
+    )
+
+
+def test_java_completable_future_callback_affinity_reports_diagnostic():
     result = omnivm.call(
         "java",
         r'''
 ((java.util.concurrent.Callable<String>)(() -> {
+java.util.function.Predicate<String> affinityDiagnostic = value ->
+    value.startsWith("ERR:") &&
+    value.contains("thread affinity violation") &&
+    value.contains("owner dispatch is unsupported");
 java.util.concurrent.CompletableFuture<String> pyFuture =
     java.util.concurrent.CompletableFuture.supplyAsync(() -> "py")
         .thenApplyAsync(label -> {
@@ -27929,12 +27953,8 @@ java.util.concurrent.CompletableFuture<String> jsFuture =
 String pyResult = pyFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
 String jsResult = jsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
 String combined = pyResult + "|" + jsResult;
-boolean pySafe = pyResult.equals("OK:from-py");
-boolean jsSafe = jsResult.equals("OK:from-js");
-boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
-boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
-if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python callback affinity was neither safe nor diagnostic: " + pyResult);
-if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS callback affinity was neither safe nor diagnostic: " + jsResult);
+if (!affinityDiagnostic.test(pyResult)) throw new RuntimeException("Python callback affinity did not report c-shared diagnostic: " + pyResult);
+if (!affinityDiagnostic.test(jsResult)) throw new RuntimeException("JS callback affinity did not report c-shared diagnostic: " + jsResult);
 return combined;
 })).call()
 '''
@@ -27943,16 +27963,20 @@ return combined;
     if len(parts) != 2:
         raise AssertionError(f"unexpected Java CompletableFuture callback result: {result}")
     for part in parts:
-        if not (part.startswith("OK:from-") or ("ERR:" in part and "non-Golden Thread" in part)):
-            raise AssertionError(f"Java CompletableFuture callback affinity was not safe or diagnostic: {result}")
+        if not _java_cshared_thread_affinity_diagnostic(part):
+            raise AssertionError(f"Java CompletableFuture callback affinity did not report c-shared diagnostic: {result}")
 
 
-def test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe():
+def test_java_completable_future_custom_executor_callback_affinity_reports_diagnostic():
     result = omnivm.call(
         "java",
         r'''
 ((java.util.concurrent.Callable<String>)(() -> {
 java.util.concurrent.atomic.AtomicBoolean shutdown = new java.util.concurrent.atomic.AtomicBoolean(false);
+java.util.function.Predicate<String> affinityDiagnostic = value ->
+    value.startsWith("ERR:omnivm-cf-custom-") &&
+    value.contains("thread affinity violation") &&
+    value.contains("owner dispatch is unsupported");
 java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
     Thread thread = new Thread(runnable);
     thread.setName("omnivm-cf-custom-" + thread.getId());
@@ -27979,12 +28003,8 @@ try {
             }, exec);
     String pyResult = pyFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
     String jsResult = jsFuture.get(3, java.util.concurrent.TimeUnit.SECONDS);
-    boolean pySafe = pyResult.startsWith("OK:omnivm-cf-custom-") && pyResult.endsWith(":from-cf-custom-py");
-    boolean jsSafe = jsResult.startsWith("OK:omnivm-cf-custom-") && jsResult.endsWith(":from-cf-custom-js");
-    boolean pyDiagnostic = pyResult.startsWith("ERR:omnivm-cf-custom-") && pyResult.contains("non-Golden Thread");
-    boolean jsDiagnostic = jsResult.startsWith("ERR:omnivm-cf-custom-") && jsResult.contains("non-Golden Thread");
-    if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python custom-executor CompletableFuture callback affinity was neither safe nor diagnostic: " + pyResult);
-    if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS custom-executor CompletableFuture callback affinity was neither safe nor diagnostic: " + jsResult);
+    if (!affinityDiagnostic.test(pyResult)) throw new RuntimeException("Python custom-executor CompletableFuture callback affinity did not report c-shared diagnostic: " + pyResult);
+    if (!affinityDiagnostic.test(jsResult)) throw new RuntimeException("JS custom-executor CompletableFuture callback affinity did not report c-shared diagnostic: " + jsResult);
     return pyResult + "|" + jsResult;
 } finally {
     exec.shutdownNow();
@@ -27998,11 +28018,8 @@ try {
     if len(parts) != 2:
         raise AssertionError(f"unexpected Java CompletableFuture custom-executor callback result: {result}")
     for part in parts:
-        if not (
-            part.startswith("OK:omnivm-cf-custom-")
-            or (part.startswith("ERR:omnivm-cf-custom-") and "non-Golden Thread" in part)
-        ):
-            raise AssertionError(f"Java CompletableFuture custom-executor callback affinity was not safe or diagnostic: {result}")
+        if not _java_cshared_thread_affinity_diagnostic(part, prefix="ERR:omnivm-cf-custom-"):
+            raise AssertionError(f"Java CompletableFuture custom-executor callback affinity did not report c-shared diagnostic: {result}")
 
 
 def test_manifest_java_completable_future_cancel_status_crosses_runtimes():
@@ -28582,11 +28599,15 @@ def test_manifest_java_guava_listenable_future_cancel_status_crosses_runtimes():
         raise AssertionError(f"Guava future cancellation status did not record proxy method calls: before={before_handles}, after={handles}")
 
 
-def test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe():
+def test_java_reactor_scheduler_callback_affinity_reports_diagnostic():
     result = omnivm.call(
         "java",
         r'''
 ((java.util.concurrent.Callable<String>)(() -> {
+java.util.function.Predicate<String> affinityDiagnostic = value ->
+    value.startsWith("ERR:") &&
+    value.contains("thread affinity violation") &&
+    value.contains("owner dispatch is unsupported");
 reactor.core.publisher.Mono<String> pyMono =
     reactor.core.publisher.Mono.fromCallable(() -> {
         try {
@@ -28606,12 +28627,8 @@ reactor.core.publisher.Mono<String> jsMono =
 String pyResult = pyMono.block(java.time.Duration.ofSeconds(3));
 String jsResult = jsMono.block(java.time.Duration.ofSeconds(3));
 String combined = pyResult + "|" + jsResult;
-boolean pySafe = pyResult.equals("OK:from-reactor-py");
-boolean jsSafe = jsResult.equals("OK:from-reactor-js");
-boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
-boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
-if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python Reactor callback affinity was neither safe nor diagnostic: " + pyResult);
-if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS Reactor callback affinity was neither safe nor diagnostic: " + jsResult);
+if (!affinityDiagnostic.test(pyResult)) throw new RuntimeException("Python Reactor callback affinity did not report c-shared diagnostic: " + pyResult);
+if (!affinityDiagnostic.test(jsResult)) throw new RuntimeException("JS Reactor callback affinity did not report c-shared diagnostic: " + jsResult);
 return combined;
 })).call()
 '''
@@ -28620,15 +28637,19 @@ return combined;
     if len(parts) != 2:
         raise AssertionError(f"unexpected Java Reactor callback result: {result}")
     for part in parts:
-        if not (part.startswith("OK:from-reactor-") or ("ERR:" in part and "non-Golden Thread" in part)):
-            raise AssertionError(f"Java Reactor callback affinity was not safe or diagnostic: {result}")
+        if not _java_cshared_thread_affinity_diagnostic(part):
+            raise AssertionError(f"Java Reactor callback affinity did not report c-shared diagnostic: {result}")
 
 
-def test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe():
+def test_java_rxjava_custom_executor_callback_affinity_reports_diagnostic():
     result = omnivm.call(
         "java",
         r'''
 ((java.util.concurrent.Callable<String>)(() -> {
+java.util.function.Predicate<String> affinityDiagnostic = value ->
+    value.startsWith("ERR:") &&
+    value.contains("thread affinity violation") &&
+    value.contains("owner dispatch is unsupported");
 java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newFixedThreadPool(2);
 try {
     io.reactivex.rxjava3.core.Scheduler scheduler = io.reactivex.rxjava3.schedulers.Schedulers.from(exec);
@@ -28651,12 +28672,8 @@ try {
     String pyResult = pySingle.blockingGet();
     String jsResult = jsSingle.blockingGet();
     String combined = pyResult + "|" + jsResult;
-    boolean pySafe = pyResult.equals("OK:from-rxjava-py");
-    boolean jsSafe = jsResult.equals("OK:from-rxjava-js");
-    boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
-    boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
-    if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python RxJava callback affinity was neither safe nor diagnostic: " + pyResult);
-    if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS RxJava callback affinity was neither safe nor diagnostic: " + jsResult);
+    if (!affinityDiagnostic.test(pyResult)) throw new RuntimeException("Python RxJava callback affinity did not report c-shared diagnostic: " + pyResult);
+    if (!affinityDiagnostic.test(jsResult)) throw new RuntimeException("JS RxJava callback affinity did not report c-shared diagnostic: " + jsResult);
     return combined;
 } finally {
     exec.shutdownNow();
@@ -28668,15 +28685,19 @@ try {
     if len(parts) != 2:
         raise AssertionError(f"unexpected Java RxJava callback result: {result}")
     for part in parts:
-        if not (part.startswith("OK:from-rxjava-") or ("ERR:" in part and "non-Golden Thread" in part)):
-            raise AssertionError(f"Java RxJava callback affinity was not safe or diagnostic: {result}")
+        if not _java_cshared_thread_affinity_diagnostic(part):
+            raise AssertionError(f"Java RxJava callback affinity did not report c-shared diagnostic: {result}")
 
 
-def test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe():
+def test_java_kotlin_coroutine_callback_affinity_reports_diagnostic():
     result = omnivm.call(
         "java",
         r'''
 ((java.util.concurrent.Callable<String>)(() -> {
+java.util.function.Predicate<String> affinityDiagnostic = value ->
+    value.startsWith("ERR:") &&
+    value.contains("thread affinity violation") &&
+    value.contains("owner dispatch is unsupported");
 java.util.function.Function<String, String> callPython = label -> {
     try {
         return "OK:" + omnivm.OmniVM.call("python", "'from-kotlin-' + '" + label + "'");
@@ -28702,12 +28723,8 @@ Object js = kotlinx.coroutines.BuildersKt.runBlocking(
 String pyResult = String.valueOf(py);
 String jsResult = String.valueOf(js);
 String combined = pyResult + "|" + jsResult;
-boolean pySafe = pyResult.equals("OK:from-kotlin-py");
-boolean jsSafe = jsResult.equals("OK:from-kotlin-js");
-boolean pyDiagnostic = pyResult.startsWith("ERR:") && pyResult.contains("non-Golden Thread");
-boolean jsDiagnostic = jsResult.startsWith("ERR:") && jsResult.contains("non-Golden Thread");
-if (!(pySafe || pyDiagnostic)) throw new RuntimeException("Python Kotlin coroutine callback affinity was neither safe nor diagnostic: " + pyResult);
-if (!(jsSafe || jsDiagnostic)) throw new RuntimeException("JS Kotlin coroutine callback affinity was neither safe nor diagnostic: " + jsResult);
+if (!affinityDiagnostic.test(pyResult)) throw new RuntimeException("Python Kotlin coroutine callback affinity did not report c-shared diagnostic: " + pyResult);
+if (!affinityDiagnostic.test(jsResult)) throw new RuntimeException("JS Kotlin coroutine callback affinity did not report c-shared diagnostic: " + jsResult);
 return combined;
 })).call()
 '''
@@ -28716,8 +28733,8 @@ return combined;
     if len(parts) != 2:
         raise AssertionError(f"unexpected Java Kotlin coroutine callback result: {result}")
     for part in parts:
-        if not (part.startswith("OK:from-kotlin-") or ("ERR:" in part and "non-Golden Thread" in part)):
-            raise AssertionError(f"Java Kotlin coroutine callback affinity was not safe or diagnostic: {result}")
+        if not _java_cshared_thread_affinity_diagnostic(part):
+            raise AssertionError(f"Java Kotlin coroutine callback affinity did not report c-shared diagnostic: {result}")
 
 
 def test_nested_js_to_java_interrupt_timeout():
@@ -29824,7 +29841,7 @@ def main():
         check("Ruby Fiber cooperative bridge (C stack switching)", test_ruby_fiber_cooperative_bridge)
         check("Ruby Async gem callback affinity is diagnostic or safe", test_ruby_async_gem_callback_affinity_is_diagnostic_or_safe)
         check("Manifest Ruby Async task cancellation status crosses runtimes", test_manifest_ruby_async_task_cancellation_status_crosses_runtimes)
-        check("Ruby Thread/Fiber local state survives nested re-entry", test_ruby_thread_and_fiber_local_state_survives_nested_reentry)
+        check("Ruby Thread/Fiber local state nested re-entry reports diagnostic", test_ruby_thread_and_fiber_local_state_nested_reentry_reports_diagnostic)
         check("Ruby ensure with bridge during exception unwind", test_ruby_ensure_bridge_unwind)
         check("Ruby catch/throw with bridge calls", test_ruby_catch_throw_bridge)
         check("Ruby bootstrap core surface", test_ruby_bootstrap_core_surface)
@@ -29832,7 +29849,7 @@ def main():
         check("Ruby Puma server threading reports unsupported diagnostic", test_ruby_puma_server_threading_reports_diagnostic)
         check("Ruby Thread.new reports unsupported diagnostic", test_ruby_thread_new_reports_diagnostic)
         check("JS try/finally with bridge throw + bridge in finally", test_js_try_finally_bridge_throw)
-        check("4-runtime mutual recursion (18 levels deep)", test_four_runtime_mutual_recursion)
+        check("4-runtime mutual recursion Ruby re-entry reports diagnostic", test_four_runtime_mutual_recursion_ruby_reentry_reports_diagnostic)
         check("Rogue guest preemption (JS+Ruby infinite loops)", test_rogue_guest_preemption)
         check("Post-termination V8 storm (terminate + 50 rapid evals)", test_post_termination_v8_storm)
         check("JVM thread -> Python (6*9=54)", test_jvm_thread_to_python)
@@ -30159,8 +30176,8 @@ def main():
         check("Manifest closed resource proxy reports owner lifecycle error", test_manifest_closed_resource_proxy_reports_owner_lifecycle_error)
         check("Manifest returned proxy finalizer releases transfer", test_manifest_returned_proxy_finalizer_releases_transfer)
         check("JVM direct call timeout uses Thread.interrupt", test_jvm_interruptible_direct_call_timeout)
-        check("Java CompletableFuture callback affinity is diagnostic or safe", test_java_completable_future_callback_affinity_is_diagnostic_or_safe)
-        check("Java CompletableFuture custom executor callback affinity is diagnostic or safe", test_java_completable_future_custom_executor_callback_affinity_is_diagnostic_or_safe)
+        check("Java CompletableFuture callback affinity reports diagnostic", test_java_completable_future_callback_affinity_reports_diagnostic)
+        check("Java CompletableFuture custom executor callback affinity reports diagnostic", test_java_completable_future_custom_executor_callback_affinity_reports_diagnostic)
         check("Manifest Java CompletableFuture cancellation status crosses runtimes", test_manifest_java_completable_future_cancel_status_crosses_runtimes)
         check("Manifest Java ScheduledFuture cancellation status crosses runtimes", test_manifest_java_scheduled_future_cancel_status_crosses_runtimes)
         check("Manifest Java ExecutorService Future cancellation interrupts owner", test_manifest_java_executor_service_future_cancel_interrupts_owner)
@@ -30169,9 +30186,9 @@ def main():
         check("Manifest Ruby Java reactive Disposable and FutureTask cancellation status crosses runtimes", test_manifest_ruby_java_reactive_disposable_and_futuretask_cancel_status_crosses_runtimes)
         check("Manifest Java Kotlin Job cancellation status crosses runtimes", test_manifest_java_kotlin_job_cancel_status_crosses_runtimes)
         check("Manifest Java Guava ListenableFuture cancellation status crosses runtimes", test_manifest_java_guava_listenable_future_cancel_status_crosses_runtimes)
-        check("Java Reactor scheduler callback affinity is diagnostic or safe", test_java_reactor_scheduler_callback_affinity_is_diagnostic_or_safe)
-        check("Java RxJava custom executor callback affinity is diagnostic or safe", test_java_rxjava_custom_executor_callback_affinity_is_diagnostic_or_safe)
-        check("Java Kotlin coroutine callback affinity is diagnostic or safe", test_java_kotlin_coroutine_callback_affinity_is_diagnostic_or_safe)
+        check("Java Reactor scheduler callback affinity reports diagnostic", test_java_reactor_scheduler_callback_affinity_reports_diagnostic)
+        check("Java RxJava custom executor callback affinity reports diagnostic", test_java_rxjava_custom_executor_callback_affinity_reports_diagnostic)
+        check("Java Kotlin coroutine callback affinity reports diagnostic", test_java_kotlin_coroutine_callback_affinity_reports_diagnostic)
         check("Nested JS -> Java timeout uses Thread.interrupt", test_nested_js_to_java_interrupt_timeout)
         check("Go plugin direct call deadline returns to host", test_go_plugin_deadline_direct_call_timeout)
     finally:

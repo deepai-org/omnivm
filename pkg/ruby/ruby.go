@@ -264,6 +264,7 @@ static __thread int tls_holds_gvl = 0;
 // a thread created by Ruby). Foreign threads (JVM, Python, Go background)
 // cannot use rb_thread_call_with_gvl — it crashes with "non-ruby thread".
 static __thread int tls_is_ruby_thread = 0;
+static __thread int tls_is_ruby_proxy_thread = 0;
 
 typedef struct { const char* code; char* result; } ruby_gvl_args;
 
@@ -315,6 +316,73 @@ typedef void* (*rb_fproxy_callback_fn)(void*);
 static rb_fproxy_callback_fn rb_fproxy_callback = NULL;
 static void* rb_fproxy_callback_arg = NULL;
 
+static const char* rb_fproxy_bridge_runtime = NULL;
+static const char* rb_fproxy_bridge_code = NULL;
+static char* rb_fproxy_bridge_result = NULL;
+static volatile int rb_fproxy_bridge_has_request = 0;
+static volatile int rb_fproxy_bridge_owner_active = 0;
+
+static int rb_fproxy_owner_waiting(void) {
+    return rb_fproxy_has_request && !rb_fproxy_shutdown;
+}
+
+static char* omnivm_ruby_bridge_call_direct(const char* runtime, const char* code) {
+    pthread_mutex_lock(&g_ruby_bridge_call_mu);
+    char* result = g_bridge_call(runtime, code);
+    pthread_mutex_unlock(&g_ruby_bridge_call_mu);
+    return result;
+}
+
+static char* rb_fproxy_submit_bridge_call(const char* runtime, const char* code) {
+    pthread_mutex_lock(&rb_fproxy_mtx);
+    if (!tls_is_ruby_proxy_thread || !rb_fproxy_owner_waiting()) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return omnivm_ruby_bridge_call_direct(runtime, code);
+    }
+
+    while (rb_fproxy_bridge_has_request && !rb_fproxy_shutdown) {
+        pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+    }
+    if (rb_fproxy_shutdown) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return strdup("ERR:Ruby runtime is shutting down");
+    }
+
+    rb_fproxy_bridge_runtime = runtime;
+    rb_fproxy_bridge_code = code;
+    rb_fproxy_bridge_result = NULL;
+    rb_fproxy_bridge_has_request = 1;
+    pthread_cond_signal(&rb_fproxy_res_cv);
+
+    while (rb_fproxy_bridge_has_request && !rb_fproxy_shutdown) {
+        pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+    }
+    char* result = rb_fproxy_bridge_result;
+    rb_fproxy_bridge_result = NULL;
+    pthread_mutex_unlock(&rb_fproxy_mtx);
+    if (!result) return strdup("ERR:Ruby bridge owner dispatch returned NULL");
+    return result;
+}
+
+static int rb_fproxy_service_bridge_call_locked(void) {
+    if (!rb_fproxy_bridge_has_request) return 0;
+
+    const char* runtime = rb_fproxy_bridge_runtime;
+    const char* code = rb_fproxy_bridge_code;
+    rb_fproxy_bridge_owner_active = 1;
+    pthread_mutex_unlock(&rb_fproxy_mtx);
+    char* result = omnivm_ruby_bridge_call_direct(runtime, code);
+    pthread_mutex_lock(&rb_fproxy_mtx);
+    rb_fproxy_bridge_owner_active = 0;
+
+    rb_fproxy_bridge_runtime = NULL;
+    rb_fproxy_bridge_code = NULL;
+    rb_fproxy_bridge_result = result;
+    rb_fproxy_bridge_has_request = 0;
+    pthread_cond_broadcast(&rb_fproxy_res_cv);
+    return 1;
+}
+
 static char* rb_fproxy_submit(const char* code, int is_eval) {
     // Reject if the proxy is shutting down / already dead
     if (rb_fproxy_shutdown) {
@@ -334,6 +402,17 @@ static char* rb_fproxy_submit(const char* code, int is_eval) {
         pthread_mutex_unlock(&rb_fproxy_mtx);
         return strdup("RubyError: runtime is shutting down");
     }
+    if (rb_fproxy_has_request && rb_fproxy_bridge_owner_active) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return strdup("RubyError: reentrant Ruby call while Ruby is suspended in a foreign-runtime bridge call is unsupported; move the nested Ruby call outside the foreign-runtime callback or return a value to the original Ruby frame first");
+    }
+    while (rb_fproxy_has_request && !rb_fproxy_shutdown) {
+        pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+    }
+    if (rb_fproxy_shutdown) {
+        pthread_mutex_unlock(&rb_fproxy_mtx);
+        return strdup("RubyError: runtime is shutting down");
+    }
     rb_fproxy_code = code;
     rb_fproxy_is_eval = is_eval;
     rb_fproxy_callback = NULL;
@@ -343,7 +422,9 @@ static char* rb_fproxy_submit(const char* code, int is_eval) {
 
     // Wait for result — also bail if the proxy shuts down mid-request
     while (rb_fproxy_has_request && !rb_fproxy_shutdown) {
-        pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+        if (!rb_fproxy_service_bridge_call_locked()) {
+            pthread_cond_wait(&rb_fproxy_res_cv, &rb_fproxy_mtx);
+        }
     }
     if (rb_fproxy_shutdown && rb_fproxy_has_request) {
         // Proxy died before completing our request
@@ -426,6 +507,7 @@ static void fix_signal_handlers_sa_onstack(void) {
 
 static void* ruby_init_thread_func(void* arg) {
     (void)arg;
+    tls_is_ruby_proxy_thread = 1;
 
     // Set up alternate signal stack BEFORE Ruby installs signal handlers.
     setup_sigaltstack();
@@ -2338,9 +2420,7 @@ typedef struct {
 static void* ruby_bridge_no_gvl(void* raw) {
     tls_holds_gvl = 0;  // We explicitly dropped the GVL
     ruby_bridge_args* a = (ruby_bridge_args*)raw;
-    pthread_mutex_lock(&g_ruby_bridge_call_mu);
-    a->result = g_bridge_call(a->runtime, a->code);
-    pthread_mutex_unlock(&g_ruby_bridge_call_mu);
+    a->result = rb_fproxy_submit_bridge_call(a->runtime, a->code);
     tls_holds_gvl = 1;  // GVL reacquired upon return from rb_thread_call_without_gvl
     return NULL;
 }
@@ -2378,9 +2458,7 @@ static VALUE rb_omnivm_call(VALUE self, VALUE rb_runtime, VALUE rb_code) {
 
     char* result = NULL;
     if (strcmp(runtime, "python") == 0) {
-        pthread_mutex_lock(&g_ruby_bridge_call_mu);
-        result = g_bridge_call(runtime, code);
-        pthread_mutex_unlock(&g_ruby_bridge_call_mu);
+        result = rb_fproxy_submit_bridge_call(runtime, code);
     } else {
         ruby_bridge_args bargs = { .runtime = runtime, .code = code, .result = NULL };
         rb_thread_call_without_gvl(ruby_bridge_no_gvl, &bargs, RUBY_UBF_IO, NULL);
