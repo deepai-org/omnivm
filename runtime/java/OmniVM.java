@@ -560,6 +560,10 @@ public class OmniVM {
             return out;
         }
 
+        public String toJson() {
+            return jsonValue(toMap());
+        }
+
         static RuntimeError fromBridge(String bridgeMessage, String fallbackRuntime, String fallbackBoundary, Throwable cause) {
             return new RuntimeError(parseBridgeRuntimeError(bridgeMessage, fallbackRuntime, fallbackBoundary), cause);
         }

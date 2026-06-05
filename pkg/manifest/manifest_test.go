@@ -9147,6 +9147,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"public Object getDetails()",
 		`out.put("details", copyJsonValue(details))`,
 		`out.put("details_json", detailsJson)`,
+		"public String toJson()",
+		"return jsonValue(toMap());",
 		"private static Object parseDetailsJson(String detailsJson)",
 		"return detailsJson;",
 		"private static Object copyJsonValue(Object value)",
@@ -9923,6 +9925,10 @@ public final class RuntimeErrorCheck {
         Map<String, Object> envelope = err.toMap();
         ((Map<String, Object>) ((List<Map<String, Object>>) envelope.get("cause_chain")).get(0).get("details")).put("code", "changed-again");
         require("E_INNER".equals(((Map<String, Object>) err.getCauseChain().get(0).get("details")).get("code")), "toMap leaked nested cause details mutation");
+        String json = err.toJson();
+        require(json.contains("\"origin_runtime\":\"python\""), "toJson missing origin runtime: " + json);
+        require(json.contains("\"cause_chain\":[{\"type\":\"TypeError\""), "toJson missing cause chain: " + json);
+        require(json.contains("\"details_json\":\"[{\\\"path\\\":[\\\"user\\\",\\\"age\\\"]}]\""), "toJson missing raw details_json: " + json);
     }
 }
 `
