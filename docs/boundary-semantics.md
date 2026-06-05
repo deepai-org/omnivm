@@ -805,8 +805,9 @@ use `ReleaseWithError()`. Go code that owns the public name can use
 `arrow.OwnBuffer(name)` for an existing name or
 `arrow.SetOwnedBuffer(name, data, metadata)` for publish-and-own. The returned
 `BufferOwner` releases through `SharedStore.Free`, reports producer release
-failures, returns `false,nil` on later idempotent releases, and exposes
-`Status()` for the same per-name lifecycle diagnostic as `SharedStore.Status`.
+failures, marks itself released once the public name has been tombstoned, returns
+`false,nil` on later idempotent releases, and exposes `Status()` for the same
+per-name lifecycle diagnostic as `SharedStore.Status`.
 Native buffer callback failures clear pointer/length/type/read-only outputs
 before returning an error code, so a stale pointer from an earlier successful
 borrow cannot be reused after a name is missing or released. Native buffer
@@ -819,9 +820,12 @@ Python borrowed `memoryview` cleanup follows the same finalizer rule:
 object: optional data is published on entry, `owner.status()` delegates to
 `buffer_status(name)`, `release_buffer(name)` runs on exit, and release failures
 keep the native-memory diagnostic while preserving any exception raised by the
-body. A Python `BufferOwner` is single-active-use: re-entering the same owner
-while active, or after release, raises a native-memory `RuntimeError` instead of
-republishing a name that will no longer be released.
+body. If the release failure status says the name is already `released` or
+`released_detached`, the owner becomes locally released so later close attempts
+stay idempotent while `buffer_status(name)` retains the `release_error`
+diagnostic. A Python `BufferOwner` is single-active-use: re-entering the same
+owner while active, or after release, raises a native-memory `RuntimeError`
+instead of republishing a name that will no longer be released.
 Embedded Ruby mirrors the scoped owner shape with
 `OmniVM.buffer_owner(name[, data], dtype: 0) { |owner| ... }`; without a block
 it returns an entered single-active-use owner whose `release`/`close` method is
