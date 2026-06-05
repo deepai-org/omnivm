@@ -9369,6 +9369,22 @@ public final class ProxyCloseCheck {
         }
     }
 
+    public static final class RequiredCloseAndDispose {
+        public Boolean close(String reason) {
+            throw new AssertionError("required-arg close should not run");
+        }
+
+        public String dispose() {
+            return "disposed-after-required-close";
+        }
+    }
+
+    public static final class RequiredOnlyClose {
+        public Boolean close(String reason) {
+            throw new AssertionError("required-arg close should not run");
+        }
+    }
+
     public static final class NoClose {
     }
 
@@ -9406,6 +9422,8 @@ public final class ProxyCloseCheck {
         require(!privateDispose.disposed, "private dispose was invoked");
 
         require(OmniVM.proxyClose(new CloseAndDispose()), "close should take priority over dispose");
+        require(OmniVM.proxyClose(new RequiredCloseAndDispose()), "required-arg close should be skipped for dispose");
+        require(!OmniVM.proxyClose(new RequiredOnlyClose()), "required-arg close should not be treated as lifecycle close");
 
         require(!OmniVM.proxyClose(new NoClose()), "object without close should return false");
         require(!OmniVM.proxyClose(null), "null close should return false");
