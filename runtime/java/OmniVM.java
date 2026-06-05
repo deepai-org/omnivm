@@ -2658,6 +2658,17 @@ public class OmniVM {
             return true;
         }
 
+        private void cancelAfterLoadFailure(RuntimeException err) {
+            try {
+                if (!StreamProxy.this.cancel()) {
+                    markReleased();
+                }
+            } catch (RuntimeException closeErr) {
+                markReleased();
+                err.addSuppressed(closeErr);
+            }
+        }
+
         @Override
         public void close() {
             cancel();
@@ -2728,7 +2739,7 @@ public class OmniVM {
                         result = bridgeManifestOp("{\"op\":\"stream_next\",\"id\":" + jsonScalar(id) + "}");
                     } catch (RuntimeException err) {
                         done = true;
-                        markReleased();
+                        cancelAfterLoadFailure(err);
                         throw err;
                     }
                     if (!(result instanceof Map<?, ?> item)) {
@@ -2745,11 +2756,7 @@ public class OmniVM {
                         next = materializeStreamChunk(((Map<String, Object>) item).get("value"));
                     } catch (RuntimeException err) {
                         done = true;
-                        try {
-                            StreamProxy.this.cancel();
-                        } catch (RuntimeException closeErr) {
-                            err.addSuppressed(closeErr);
-                        }
+                        cancelAfterLoadFailure(err);
                         throw err;
                     }
                 }
