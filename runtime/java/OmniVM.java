@@ -1641,6 +1641,19 @@ public class OmniVM {
             || "value".equals(text);
     }
 
+    private static Object futureProxyCall(Future<?> future, String key, List<?> args) {
+        if (!"cancel".equals(key)) {
+            return PROXY_LIFECYCLE_METHOD_MISSING;
+        }
+        if (args == null || args.isEmpty()) {
+            return future.cancel(true);
+        }
+        if (args.size() == 1) {
+            return future.cancel(Boolean.TRUE.equals(args.get(0)));
+        }
+        return PROXY_LIFECYCLE_METHOD_MISSING;
+    }
+
     private static Object invokePublicProxyLifecycleMethod(Object target, String name) {
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
             if (method.getName().equals(name) && method.getParameterCount() == 0
@@ -1664,6 +1677,9 @@ public class OmniVM {
         if (key == null || key.isEmpty()) {
             return isCallableTarget(target);
         }
+        if (target instanceof Future<?> && "cancel".equals(key)) {
+            return true;
+        }
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
             if (method.getName().equals(key)) {
                 return true;
@@ -1677,6 +1693,9 @@ public class OmniVM {
         String key = proxyKey(keyValue);
         if (target == null || key == null || key.isEmpty()) {
             return false;
+        }
+        if (target instanceof Future<?> && "cancel".equals(key)) {
+            return true;
         }
         for (java.lang.reflect.Method method : proxyMethods(target.getClass())) {
             if (method.getName().equals(key) && method.getParameterCount() == 0) {
@@ -1699,6 +1718,12 @@ public class OmniVM {
                 return proxy.apply(args.toArray());
             }
             return proxy.call(key, args.toArray());
+        }
+        if (target instanceof Future<?> future) {
+            Object futureCall = futureProxyCall(future, key, args);
+            if (futureCall != PROXY_LIFECYCLE_METHOD_MISSING) {
+                return futureCall;
+            }
         }
         if (key == null || key.isEmpty()) {
             return invokeCallableTarget(target, args);

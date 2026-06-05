@@ -11199,6 +11199,8 @@ public final class FutureProxyCheck {
         require(Boolean.FALSE.equals(OmniVM.proxyGet(pending, "done")), "pending future done mismatch");
         require(Boolean.FALSE.equals(OmniVM.proxyGet(pending, "cancelled")), "pending future cancelled mismatch");
         require(OmniVM.proxyGet(pending, "result") == null, "pending future result should not block");
+        require(OmniVM.proxyCallable(pending, "cancel"), "future cancel should be callable");
+        require(OmniVM.proxyZeroArgCallable(pending, "cancel"), "future cancel should be zero-arg callable");
 
         Map<String, Object> pendingStatus = (Map<String, Object>) OmniVM.proxyGet(pending, "status");
         require(Boolean.FALSE.equals(pendingStatus.get("done")), "pending status done mismatch");
@@ -11210,10 +11212,16 @@ public final class FutureProxyCheck {
         require(!OmniVM.proxyClose(pending), "completed future cancel should report false");
 
         FutureTask<String> cancellable = new FutureTask<>(() -> "late");
-        require(OmniVM.proxyClose(cancellable), "pending FutureTask did not cancel");
+        require(Boolean.TRUE.equals(OmniVM.proxyCall(cancellable, "cancel", OmniVM.listOf(new Object[] {}))), "no-arg FutureTask cancel did not cancel");
         require(Boolean.TRUE.equals(OmniVM.proxyGet(cancellable, "cancelled")), "cancelled FutureTask status mismatch");
         require(Boolean.TRUE.equals(OmniVM.proxyGet(cancellable, "done")), "cancelled FutureTask done mismatch");
         require(OmniVM.proxyGet(cancellable, "result") == null, "cancelled FutureTask result should be null");
+
+        FutureTask<String> closeCancellable = new FutureTask<>(() -> "late");
+        require(OmniVM.proxyClose(closeCancellable), "pending FutureTask proxyClose did not cancel");
+
+        FutureTask<String> falseInterruptCancel = new FutureTask<>(() -> "late");
+        require(Boolean.TRUE.equals(OmniVM.proxyCall(falseInterruptCancel, "cancel", OmniVM.listOf(new Object[] {Boolean.FALSE}))), "explicit false FutureTask cancel did not cancel");
 
         CompletableFuture<String> failed = new CompletableFuture<>();
         failed.completeExceptionally(new IllegalStateException("future boom"));
