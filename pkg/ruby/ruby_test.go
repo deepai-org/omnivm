@@ -245,15 +245,15 @@ func TestRubyNativeThreadingGuardReportsStructuredDiagnostic(t *testing.T) {
 status = OmniVM.ruby_threading_status
 raise "mode #{status.inspect}" unless status["mode"] == "single_vm_thread"
 raise "native thread status #{status.inspect}" unless status["native_threads_supported"] == false
-raise "Puma boundary #{status.inspect}" unless status["app_server_boundary"].include?("Puma")
+raise "thread boundary #{status.inspect}" unless status["app_server_boundary"].include?("native-threaded Ruby hosts out of process")
 status["mode"] = "mutated"
 raise "status leaked mutation" unless OmniVM.ruby_threading_status["mode"] == "single_vm_thread"
 
 begin
-  OmniVM.assert_ruby_native_threads_supported("puma startup")
+  OmniVM.assert_ruby_native_threads_supported("ruby host startup")
   raise "missing diagnostic"
 rescue OmniVM::RuntimeError => e
-  raise "message #{e.message.inspect}" unless e.message.include?("puma startup: native Ruby threads unsupported")
+  raise "message #{e.message.inspect}" unless e.message.include?("ruby host startup: native Ruby threads unsupported")
   raise "boundary #{e.boundary_path.inspect}" unless e.boundary_path == "ruby_threading"
   details = e.details
   raise "details #{details.inspect}" unless details["ruby_threading"]["native_threads_supported"] == false

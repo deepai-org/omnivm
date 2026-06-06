@@ -35,7 +35,7 @@ func (e ErrThrow) Error() string { return fmt.Sprintf("throw: %v", e.Value) }
 // is already in scope. Cross-runtime captures skip module refs entirely.
 type ImportRef struct {
 	Runtime string // which runtime owns this import
-	Name    string // module name (e.g. "os", "re", "express")
+	Name    string // module name from the source runtime
 }
 
 // RuntimeRef marks a binding as a variable that lives in a specific runtime's
@@ -224,30 +224,6 @@ if (typeof globalThis.print === 'undefined') {
 if (typeof globalThis.os === 'undefined') {
   globalThis.os = {path: {getsize: function(p) { return 0; }}};
 }
-`)
-	}
-
-	if pyRT, ok := e.runtimes["python"]; ok {
-		pyRT.Execute(`
-import types as _t, sys as _s
-try:
-    import requests as _omnivm_real_requests
-except Exception:
-    _omnivm_real_requests = None
-if _omnivm_real_requests is not None:
-    _s.modules['requests'] = _omnivm_real_requests
-elif 'requests' not in _s.modules:
-    _m = _t.ModuleType('requests')
-    _r = type('Response', (), {'status_code': 200, 'text': 'mock', 'json': lambda self: {'data': 'mock'}})
-    _req = type('Request', (), {'__init__': lambda self, method='GET', url='', **kw: (setattr(self, 'method', method), setattr(self, 'url', url), None)[-1]})
-    _prep = type('PreparedRequest', (), {'__init__': lambda self: setattr(self, 'url', None), 'prepare_url': lambda self, url, params=None: setattr(self, 'url', url)})
-    _sess = type('Session', (), {'get': lambda self, url, **kw: _r(), 'post': lambda self, url, **kw: _r(), 'prepare_request': lambda self, req: _prep()})
-    _m.get = lambda url, **kw: _r()
-    _m.post = lambda url, **kw: _r()
-    _m.Request = _req
-    _m.PreparedRequest = _prep
-    _m.Session = _sess
-    _s.modules['requests'] = _m
 `)
 	}
 
@@ -2168,22 +2144,6 @@ func inferJavaBindType(expr string) string {
 	}
 	if strings.Contains(expr, ".readValue(") {
 		return "java.util.Map"
-	}
-	staticFactories := []struct {
-		prefix string
-		typ    string
-	}{
-		{"com.fasterxml.jackson.databind.json.JsonMapper.builder().findAndAddModules().build()", "com.fasterxml.jackson.databind.ObjectMapper"},
-		{"com.fasterxml.jackson.databind.json.JsonMapper.builder().build()", "com.fasterxml.jackson.databind.ObjectMapper"},
-		{"reactor.core.publisher.Flux.just(", "reactor.core.publisher.Flux<String>"},
-	}
-	for _, factory := range staticFactories {
-		if strings.HasPrefix(expr, factory.prefix) {
-			return factory.typ
-		}
-	}
-	if strings.HasPrefix(expr, "org.jsoup.Jsoup.parse(") && !strings.Contains(expr, ").") {
-		return "org.jsoup.nodes.Document"
 	}
 	if strings.Contains(expr, ".collectList().block()") {
 		return "java.util.List"

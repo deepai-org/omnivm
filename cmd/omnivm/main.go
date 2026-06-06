@@ -641,7 +641,7 @@ func pythonModeThreadAffinityStatus(hostThreadID int64) map[string]interface{} {
 				"owner_kind":          "ruby_fiber_or_thread",
 				"required_capability": "resume callbacks on the owning Ruby fiber or native Ruby thread without leaving the Golden Thread model",
 				"current_behavior":    "Ruby runs on the single VM thread with native Ruby thread scheduling disabled",
-				"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported",
+				"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and in-process native thread ownership remain unsupported",
 			},
 		},
 		"python_asyncio_loop":     "observable_when_running",
@@ -669,7 +669,7 @@ func OmniPyModeStatus() *C.char {
 			"native_threads_supported": false,
 			"thread_new":               "unsupported_diagnostic",
 			"supported_concurrency":    "fiber_async_or_external_process_threads",
-			"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.",
+			"app_server_boundary":      "Use only single-thread in-process Ruby entry points; run native-threaded Ruby hosts out of process.",
 		},
 		"arrow": arrow.GlobalStore().Stats(),
 	}

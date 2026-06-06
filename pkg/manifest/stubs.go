@@ -2316,7 +2316,7 @@ func (e *Executor) runtimeRefIsPythonAsyncStream(ref RuntimeRef) (bool, error) {
 		return false, nil
 	}
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
-	expr := fmt.Sprintf("(lambda __v: (lambda __omnivm_http_message: hasattr(__v, '__aiter__') and not hasattr(__v, '__len__') and not __omnivm_http_message and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)))(%s))(%s)", pythonHTTPMessageProbeExpr("__v"), base)
+	expr := fmt.Sprintf("(lambda __v: (hasattr(__v, '__aiter__') and not hasattr(__v, '__len__') and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)))(%s)", base)
 	value, err := e.runtimeRefEvalPrimitive(ref, expr)
 	if err != nil {
 		return false, err
@@ -3406,22 +3406,13 @@ func runtimeRefPropertyExpr(ref RuntimeRef, key string) (string, bool, error) {
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
-		return pythonRuntimeRefLookupExpr(base, keyLit, pythonHTTPMessageAttributeKey(key)), true, nil
+		return pythonRuntimeRefLookupExpr(base, keyLit), true, nil
 	case "ruby":
-		return fmt.Sprintf("(begin; __o = %s; __k = %s; __mapping_key = (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)); __seq_index = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; if __mapping_key; __o[__k]; elsif __seq_index; __o[__k.to_i]; elsif __k.is_a?(String) && __o.respond_to?(__k); __o.public_send(__k); else; begin; __o[__k]; rescue TypeError, IndexError, NoMethodError; nil; end; end; end)", base, keyLit), true, nil
+		return fmt.Sprintf("(begin; __o = %s; __k = %s; __mapping_key = __o.respond_to?(:key?) && __o.key?(__k); __seq_index = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; if __mapping_key; __o[__k]; elsif __seq_index; __o[__k.to_i]; elsif __k.is_a?(String) && __o.respond_to?(__k); __o.public_send(__k); else; begin; __o[__k]; rescue TypeError, IndexError, NoMethodError; nil; end; end; end)", base, keyLit), true, nil
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxyGet(%s, %s)", base, keyLit), true, nil
 	default:
 		return "", false, nil
-	}
-}
-
-func pythonHTTPMessageAttributeKey(key string) bool {
-	switch key {
-	case "body", "content", "headers", "META", "method", "path", "streaming_content", "status_code", "url":
-		return true
-	default:
-		return false
 	}
 }
 
@@ -3435,7 +3426,7 @@ func runtimeRefIndexExpr(ref RuntimeRef, key interface{}) (string, bool, error) 
 	case "javascript", "ruby":
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
-		return pythonRuntimeRefLookupExpr(base, keyLit, false), true, nil
+		return pythonRuntimeRefLookupExpr(base, keyLit), true, nil
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxyIndex(%s, %s)", base, keyLit), true, nil
 	default:
@@ -3459,7 +3450,7 @@ func runtimeRefIndexExprWithBuilder(ref RuntimeRef, key interface{}, builder *ru
 	case "javascript", "ruby":
 		expr = fmt.Sprintf("(%s)[%s]", base, keyLit)
 	case "python":
-		expr = pythonRuntimeRefLookupExpr(base, keyLit, false)
+		expr = pythonRuntimeRefLookupExpr(base, keyLit)
 	case "java":
 		expr = fmt.Sprintf("omnivm.OmniVM.proxyIndex(%s, %s)", base, keyLit)
 	default:
@@ -3468,42 +3459,28 @@ func runtimeRefIndexExprWithBuilder(ref RuntimeRef, key interface{}, builder *ru
 	return expr, true, nil
 }
 
-func pythonRuntimeRefLookupExpr(base, keyLit string, preferHTTPAttribute bool) string {
+func pythonRuntimeRefLookupExpr(base, keyLit string) string {
 	mappingType := "__import__('collections.abc', fromlist=['Mapping']).Mapping"
 	mappingLookup := fmt.Sprintf("(isinstance(__o, %s) and __k in __o)", mappingType)
-	mappingViewLookup := pythonRuntimeRefMappingViewContainsExpr("__o", "__k")
 	keyAddressableLookup := pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__")
 	sequenceLookup := fmt.Sprintf("((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, %s) and int(__k) >= 0 and int(__k) < len(__o))", mappingType)
-	modelFieldLookup := pythonRuntimeRefModelFieldContainsExpr("__o", "__k")
-	attrLookup := fmt.Sprintf("(getattr(__o, __k) if %s else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else None))", modelFieldLookup)
-	lookup := fmt.Sprintf("(__o[__k] if %s else (getattr(__o, '_mapping')[__k] if %s else (__o[__k] if %s else (__o[int(__k)] if %s else %s))))", mappingLookup, mappingViewLookup, keyAddressableLookup, sequenceLookup, attrLookup)
-	if preferHTTPAttribute {
-		lookup = fmt.Sprintf("(getattr(__o, __k) if isinstance(__k, str) and %s and hasattr(__o, __k) else %s)", pythonHTTPMessageProbeExpr("__o"), lookup)
-	}
+	attrLookup := "(getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else None)"
+	lookup := fmt.Sprintf("(__o[__k] if %s else (__o[__k] if %s else (__o[int(__k)] if %s else %s)))", mappingLookup, keyAddressableLookup, sequenceLookup, attrLookup)
 	return fmt.Sprintf("(lambda __o, __k: %s)(%s, %s)", lookup, base, keyLit)
-}
-
-func pythonRuntimeRefMappingViewContainsExpr(obj, key string) string {
-	mappingType := "__import__('collections.abc', fromlist=['Mapping']).Mapping"
-	return fmt.Sprintf("(__import__('inspect').getattr_static(%s, '_mapping', None) is not None and isinstance(getattr(%s, '_mapping'), %s) and %s in getattr(%s, '_mapping'))", obj, obj, mappingType, key, obj)
-}
-
-func pythonRuntimeRefModelFieldContainsExpr(obj, key string) string {
-	return fmt.Sprintf("(isinstance(%s, str) and ((%s in getattr(type(%s), 'model_fields', {})) or (%s in getattr(__import__('inspect').getattr_static(%s, 'DESCRIPTOR', None), 'fields_by_name', {}))))", key, key, obj, key, obj)
 }
 
 func pythonRuntimeRefKeyAddressableContainsExpr(obj, key, itemMethod string) string {
 	itemMethodLit := strconv.Quote(itemMethod)
-	return fmt.Sprintf("(not (%s) and not (%s) and not isinstance(%s, (str, bytes, bytearray)) and any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and any('keys' in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and %s in %s.keys())", pythonRuntimeRefStaticHTTPMessageProbeExpr(obj), pythonRuntimeRefModelFieldContainsExpr(obj, key), obj, itemMethodLit, obj, obj, key, obj)
+	return fmt.Sprintf("(not isinstance(%s, (str, bytes, bytearray)) and any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and any('keys' in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__) and %s in %s.keys())", obj, itemMethodLit, obj, obj, key, obj)
 }
 
 func pythonRuntimeRefStaticAttributeContainsExpr(obj, key string) string {
-	return fmt.Sprintf("(isinstance(%s, str) and ((%s) or (%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__)))", key, pythonRuntimeRefModelFieldContainsExpr(obj, key), key, obj, key, obj)
+	return fmt.Sprintf("(isinstance(%s, str) and ((%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__)))", key, key, obj, key, obj)
 }
 
 func pythonRuntimeRefStaticNamedAttributeContainsExpr(obj, name string) string {
 	nameLit := strconv.Quote(name)
-	return fmt.Sprintf("((%s) or (%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__))", pythonRuntimeRefModelFieldContainsExpr(obj, nameLit), nameLit, obj, nameLit, obj)
+	return fmt.Sprintf("((%s in getattr(%s, '__dict__', {})) or any(%s in __omnivm_cls.__dict__ for __omnivm_cls in type(%s).__mro__))", nameLit, obj, nameLit, obj)
 }
 
 func runtimeRefRubyZeroArgMethodExpr(ref RuntimeRef, key string) (string, bool, error) {
@@ -3546,14 +3523,13 @@ func runtimeRefStreamProbeExpr(ref RuntimeRef) (string, bool) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("(function(__v){ return !!(__v && !__v.__omnivm_proxy__ && !Array.isArray(__v) && !(typeof Map !== 'undefined' && __v instanceof Map) && !(typeof Set !== 'undefined' && __v instanceof Set) && !(typeof ArrayBuffer !== 'undefined' && (__v instanceof ArrayBuffer || ArrayBuffer.isView(__v))) && !(typeof __v === 'string' || __v instanceof String) && !(typeof __v.method !== 'undefined' && (__v.path || __v.url || __v.headers)) && ((typeof __v.next === 'function' && (typeof __v[Symbol.iterator] !== 'function' || __v[Symbol.iterator]() === __v)) || (typeof __v.getReader === 'function') || (typeof __v.next !== 'function' && typeof __v[Symbol.iterator] === 'function') || (typeof Symbol !== 'undefined' && typeof Symbol.asyncIterator !== 'undefined' && typeof __v[Symbol.asyncIterator] === 'function'))); })(%s)", base), true
+		return fmt.Sprintf("(function(__v){ return !!(__v && !__v.__omnivm_proxy__ && !Array.isArray(__v) && !(typeof Map !== 'undefined' && __v instanceof Map) && !(typeof Set !== 'undefined' && __v instanceof Set) && !(typeof ArrayBuffer !== 'undefined' && (__v instanceof ArrayBuffer || ArrayBuffer.isView(__v))) && !(typeof __v === 'string' || __v instanceof String) && ((typeof __v.next === 'function' && (typeof __v[Symbol.iterator] !== 'function' || __v[Symbol.iterator]() === __v)) || (typeof __v.getReader === 'function') || (typeof __v.next !== 'function' && typeof __v[Symbol.iterator] === 'function') || (typeof Symbol !== 'undefined' && typeof Symbol.asyncIterator !== 'undefined' && typeof __v[Symbol.asyncIterator] === 'function'))); })(%s)", base), true
 	case "python":
-		return fmt.Sprintf("(lambda __v: (getattr(type(__v), 'model_fields', None) is None and not (%s) and (((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable())))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview))))))(%s)", pythonHTTPMessageProbeExpr("__v"), base), true
+		return fmt.Sprintf("(lambda __v: ((hasattr(__v, '__next__') and iter(__v) is __v) or (callable(getattr(__v, 'read', None)) and (isinstance(__v, __import__('io').IOBase) or (callable(getattr(__v, 'readable', None)) and __v.readable()))) or ((hasattr(__v, '__iter__') or hasattr(__v, '__aiter__')) and not hasattr(__v, '__len__') and not isinstance(__v, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)))))(%s)", base), true
 	case "ruby":
-		return fmt.Sprintf("(begin; __v = %s; __omnivm_http_message = %s; __omnivm_response_writer = __v.respond_to?(:write) && __v.respond_to?(:close) && __v.respond_to?(:closed?) && !__v.respond_to?(:read); !__omnivm_http_message && !__omnivm_response_writer && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base, rubyHTTPMessageProbeExpr("__v")), true
+		return fmt.Sprintf("(begin; __v = %s; __omnivm_response_writer = __v.respond_to?(:write) && __v.respond_to?(:close) && __v.respond_to?(:closed?) && !__v.respond_to?(:read); !__omnivm_response_writer && (__v.respond_to?(:next) || __v.respond_to?(:read) || (__v.respond_to?(:to_io) && __v.to_io.respond_to?(:read)) || (__v.respond_to?(:each) && !__v.is_a?(Array) && !__v.is_a?(Hash) && !__v.is_a?(String))); end)", base), true
 	case "java":
-		httpMessage := javaHTTPMessageProbeExpr(base)
-		return fmt.Sprintf("(!%s && ((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence))))", httpMessage, base, base, base, base, base, javaFlowPublisherProbeExpr(base), javaToStreamProbeExpr(base), base, base, base, base), true
+		return fmt.Sprintf("((%s instanceof java.util.Iterator) || (%s instanceof java.io.InputStream) || (%s instanceof java.nio.channels.ReadableByteChannel) || (%s instanceof java.io.Reader) || (%s instanceof java.util.stream.BaseStream) || %s || %s || ((%s instanceof java.lang.Iterable) && !(%s instanceof java.util.Collection) && !(%s instanceof java.util.Map) && !(%s instanceof java.lang.CharSequence)))", base, base, base, base, base, javaFlowPublisherProbeExpr(base), javaToStreamProbeExpr(base), base, base, base, base), true
 	default:
 		return "", false
 	}
@@ -3565,54 +3541,6 @@ func javaToStreamProbeExpr(base string) string {
 
 func javaFlowPublisherProbeExpr(base string) string {
 	return fmt.Sprintf("(%s instanceof java.util.concurrent.Flow.Publisher)", base)
-}
-
-func pythonHTTPMessageProbeExpr(base string) string {
-	return fmt.Sprintf("((hasattr(%s, 'method') and (hasattr(%s, 'path') or hasattr(%s, 'url') or hasattr(%s, 'headers') or hasattr(%s, 'META'))) or (hasattr(%s, 'status_code') and (hasattr(%s, 'headers') or hasattr(%s, 'content') or hasattr(%s, 'streaming_content'))))", base, base, base, base, base, base, base, base, base)
-}
-
-func pythonRuntimeRefStaticHTTPMessageProbeExpr(base string) string {
-	methodLike := pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "method")
-	requestTarget := strings.Join([]string{
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "path"),
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "url"),
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "headers"),
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "META"),
-	}, " or ")
-	statusLike := pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "status_code")
-	responseTarget := strings.Join([]string{
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "headers"),
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "content"),
-		pythonRuntimeRefStaticNamedAttributeContainsExpr(base, "streaming_content"),
-	}, " or ")
-	return fmt.Sprintf("((%s and (%s)) or (%s and (%s)))", methodLike, requestTarget, statusLike, responseTarget)
-}
-
-func rubyHTTPMessageProbeExpr(base string) string {
-	return fmt.Sprintf("((begin; __omnivm_method_like = %s.respond_to?(:request_method) || (begin; %s.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(%s.method(:method).owner); rescue; false; end); __omnivm_method_like && (%s.respond_to?(:path) || %s.respond_to?(:url) || %s.respond_to?(:headers) || %s.respond_to?(:env) || %s.respond_to?(:path_info)); end) || ((%s.respond_to?(:status) || %s.respond_to?(:status_code) || %s.respond_to?(:code)) && (%s.respond_to?(:headers) || %s.respond_to?(:get_header) || %s.respond_to?(:body) || %s.respond_to?(:each))))", base, base, base, base, base, base, base, base, base, base, base, base, base, base, base)
-}
-
-func javaHTTPMessageProbeExpr(base string) string {
-	return fmt.Sprintf(`(new java.util.function.Predicate<Object>() {
-  public boolean test(Object __v) {
-    if (__v == null) return false;
-    boolean __methodLike = false;
-    boolean __targetLike = false;
-    for (java.lang.reflect.Method __m : __v.getClass().getMethods()) {
-      if (__m.getParameterCount() == 0) {
-        String __n = __m.getName();
-        if (__n.equals("getMethod") || __n.equals("method") || __n.equals("requestMethod") || __n.equals("getRequestMethod")) __methodLike = true;
-        if (__n.equals("getPath") || __n.equals("path") || __n.equals("getUrl") || __n.equals("url") || __n.equals("getURI") || __n.equals("uri") || __n.equals("getHeaders") || __n.equals("headers") || __n.equals("getPathInfo") || __n.equals("pathInfo") || __n.equals("getEnv") || __n.equals("env")) __targetLike = true;
-      }
-    }
-    for (java.lang.reflect.Field __f : __v.getClass().getFields()) {
-      String __n = __f.getName();
-      if (__n.equals("method") || __n.equals("requestMethod")) __methodLike = true;
-      if (__n.equals("path") || __n.equals("url") || __n.equals("uri") || __n.equals("headers") || __n.equals("pathInfo") || __n.equals("env")) __targetLike = true;
-    }
-    return __methodLike && __targetLike;
-  }
-}).test(%s)`, base)
 }
 
 func runtimeRefJSStreamNextStepCode(ref RuntimeRef, valueVar, doneVar, readyVar, errVar, stateVar string) (string, bool) {
@@ -3663,25 +3591,24 @@ func runtimeRefPythonStreamNextStepCode(ref RuntimeRef, valueVar, doneVar, ready
 	return fmt.Sprintf(`%s = False
 %s = None
 __omnivm_stream_obj = %s
-__omnivm_http_message = %s
 try:
-    if not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, '__next__', None)):
+    if callable(getattr(__omnivm_stream_obj, '__next__', None)):
         %s = next(__omnivm_stream_obj)
         %s = False
         %s = True
-    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):
+    elif callable(getattr(__omnivm_stream_obj, 'read', None)):
         try:
             %s = __omnivm_stream_obj.read(8192)
         except TypeError:
             %s = __omnivm_stream_obj.read()
         %s = (%s is None or %s == b'' or %s == '')
         %s = True
-    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
+    elif hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview):
         %s = globals().get(%q) or iter(__omnivm_stream_obj)
         %s = next(%s)
         %s = False
         %s = True
-    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__aiter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):
+    elif hasattr(__omnivm_stream_obj, '__aiter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview):
         import asyncio as __aio
         __omnivm_async_iter = globals().get(%q)
         if __omnivm_async_iter is None:
@@ -3716,7 +3643,7 @@ except StopIteration:
     %s = True
 except BaseException as e:
     %s = type(e).__name__ + ": " + str(e)
-    %s = True`, readyVar, errVar, base, pythonHTTPMessageProbeExpr("__omnivm_stream_obj"), valueVar, doneVar, readyVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, readyVar, stateRef, stateVar, valueVar, stateRef, doneVar, readyVar, stateVar, stateVar, valueVar, doneVar, valueVar, doneVar, stateVar, errVar, readyVar, valueVar, doneVar, readyVar, valueVar, stateRef, doneVar, readyVar, errVar, readyVar), true
+    %s = True`, readyVar, errVar, base, valueVar, doneVar, readyVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, readyVar, stateRef, stateVar, valueVar, stateRef, doneVar, readyVar, stateVar, stateVar, valueVar, doneVar, valueVar, doneVar, stateVar, errVar, readyVar, valueVar, doneVar, readyVar, valueVar, stateRef, doneVar, readyVar, errVar, readyVar), true
 }
 
 func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string) (string, bool) {
@@ -3726,7 +3653,7 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
 	case "javascript":
 		return fmt.Sprintf("{ const __omnivm_stream_obj = %s; const __omnivm_iter = (typeof __omnivm_stream_obj.next === 'function') ? __omnivm_stream_obj : (%s || (%s = __omnivm_stream_obj[Symbol.iterator]())); const __omnivm_next = __omnivm_iter.next(); globalThis.%s = __omnivm_next.value; globalThis.%s = !!__omnivm_next.done; }", base, stateRef, stateRef, valueVar, doneVar), true
 	case "python":
-		return fmt.Sprintf("__omnivm_stream_obj = %s\n__omnivm_http_message = %s\ntry:\n    if not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, '__next__', None)):\n        %s = next(__omnivm_stream_obj)\n        %s = False\n    elif not __omnivm_http_message and callable(getattr(__omnivm_stream_obj, 'read', None)):\n        try:\n            %s = __omnivm_stream_obj.read(8192)\n        except TypeError:\n            %s = __omnivm_stream_obj.read()\n        %s = (%s is None or %s == b'' or %s == '')\n    elif not __omnivm_http_message and hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):\n        %s = globals().get(%q) or iter(__omnivm_stream_obj)\n        %s = next(%s)\n        %s = False\n    else:\n        %s = None\n        %s = True\nexcept StopIteration:\n    %s = None\n    %s = None\n    %s = True", base, pythonHTTPMessageProbeExpr("__omnivm_stream_obj"), valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, stateRef, stateVar, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
+		return fmt.Sprintf("__omnivm_stream_obj = %s\ntry:\n    if callable(getattr(__omnivm_stream_obj, '__next__', None)):\n        %s = next(__omnivm_stream_obj)\n        %s = False\n    elif callable(getattr(__omnivm_stream_obj, 'read', None)):\n        try:\n            %s = __omnivm_stream_obj.read(8192)\n        except TypeError:\n            %s = __omnivm_stream_obj.read()\n        %s = (%s is None or %s == b'' or %s == '')\n    elif hasattr(__omnivm_stream_obj, '__iter__') and not hasattr(__omnivm_stream_obj, '__len__') and not isinstance(__omnivm_stream_obj, (__import__('collections.abc', fromlist=['Mapping']).Mapping, __import__('collections.abc', fromlist=['Sequence']).Sequence, __import__('collections.abc', fromlist=['Set']).Set, memoryview)):\n        %s = globals().get(%q) or iter(__omnivm_stream_obj)\n        %s = next(%s)\n        %s = False\n    else:\n        %s = None\n        %s = True\nexcept StopIteration:\n    %s = None\n    %s = None\n    %s = True", base, valueVar, doneVar, valueVar, valueVar, doneVar, valueVar, valueVar, valueVar, stateRef, stateVar, valueVar, stateRef, doneVar, valueVar, doneVar, stateRef, valueVar, doneVar), true
 	case "ruby":
 		return fmt.Sprintf(`begin
   __omnivm_stream_obj = %s
@@ -3739,13 +3666,11 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
       false
     end
   end
-  __omnivm_method_like = __omnivm_stream_obj.respond_to?(:request_method) || (begin; __omnivm_stream_obj.respond_to?(:method) && ![Kernel, Object, BasicObject].include?(__omnivm_stream_obj.method(:method).owner); rescue; false; end)
-  __omnivm_http_message = __omnivm_method_like && (__omnivm_stream_obj.respond_to?(:path) || __omnivm_stream_obj.respond_to?(:url) || __omnivm_stream_obj.respond_to?(:headers) || __omnivm_stream_obj.respond_to?(:env) || __omnivm_stream_obj.respond_to?(:path_info))
-  __omnivm_io = (!__omnivm_http_message && __omnivm_stream_obj.respond_to?(:to_io)) ? __omnivm_stream_obj.to_io : nil
-  if !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:next)
+  __omnivm_io = __omnivm_stream_obj.respond_to?(:to_io) ? __omnivm_stream_obj.to_io : nil
+  if __omnivm_stream_obj.respond_to?(:next)
     $%s = __omnivm_stream_obj.next
     $%s = false
-  elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:read)
+  elsif __omnivm_stream_obj.respond_to?(:read)
     $%s = __omnivm_stream_obj.read(8192)
     $%s = ($%s.nil? || $%s == "")
     __omnivm_close_without_required_args.call(__omnivm_stream_obj) if $%s
@@ -3757,7 +3682,7 @@ func runtimeRefStreamNextCode(ref RuntimeRef, valueVar, doneVar, stateVar string
         __omnivm_close_without_required_args.call(__omnivm_io)
       end
     end
-  elsif !__omnivm_http_message && __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String)
+  elsif __omnivm_stream_obj.respond_to?(:each) && !__omnivm_stream_obj.is_a?(Array) && !__omnivm_stream_obj.is_a?(Hash) && !__omnivm_stream_obj.is_a?(String)
     %s ||= __omnivm_stream_obj.each
     $%s = %s.next
     $%s = false
@@ -4060,11 +3985,11 @@ try {
 }
 
 func pythonRuntimeRefSetCode(base, keyLit, valueLit string) string {
-	return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\n__abc = __import__('collections.abc', fromlist=['MutableMapping', 'MutableSequence'])\nif isinstance(__o, __abc.MutableMapping) or %s:\n    __o[__k] = __v\nelif __k == 'length' and isinstance(__o, __abc.MutableSequence) and not isinstance(__o, (str, bytes, bytearray)):\n    __n = __import__('operator').index(__v)\n    if __n < 0:\n        raise ValueError('negative length')\n    del __o[__n:]\n    if __n > len(__o):\n        __o.extend([None] * (__n - len(__o)))\nelif %s:\n    setattr(__o, __k, __v)\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit, pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__setitem__"), pythonRuntimeRefModelFieldContainsExpr("__o", "__k"))
+	return fmt.Sprintf("__o = %s\n__k = %s\n__v = %s\n__abc = __import__('collections.abc', fromlist=['MutableMapping', 'MutableSequence'])\nif isinstance(__o, __abc.MutableMapping) or %s:\n    __o[__k] = __v\nelif __k == 'length' and isinstance(__o, __abc.MutableSequence) and not isinstance(__o, (str, bytes, bytearray)):\n    __n = __import__('operator').index(__v)\n    if __n < 0:\n        raise ValueError('negative length')\n    del __o[__n:]\n    if __n > len(__o):\n        __o.extend([None] * (__n - len(__o)))\nelif isinstance(__k, str) and __k.isdigit() and hasattr(__o, '__setitem__') and not hasattr(__o, __k):\n    try:\n        __o.__setitem__(int(__k), __v)\n    except (TypeError, IndexError, KeyError):\n        __o.__setitem__(__k, __v)\nelif isinstance(__k, str) and hasattr(__o, __k):\n    setattr(__o, __k, __v)\nelse:\n    __o.__setitem__(__k, __v)", base, keyLit, valueLit, pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__setitem__"))
 }
 
 func rubyRuntimeRefSetCode(base, keyLit, valueLit string) string {
-	return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __k == \"length\" && __o.is_a?(Array); __n = Integer(__v); raise RangeError, \"negative length\" if __n < 0; if __n < __o.length; __o.slice!(__n, __o.length - __n); elsif __n > __o.length; __o.concat(Array.new(__n - __o.length)); end; elsif __o.respond_to?(:has_attribute?) && __o.has_attribute?(__k) && __o.respond_to?(:[]=); __o[__k] = __v; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
+	return fmt.Sprintf("begin; __o = %s; __k = %s; __v = %s; __setter = \"#{__k}=\"; __seq_index = __k.is_a?(String) && __k.match?(/\\A\\d+\\z/) && __o.respond_to?(:[]=) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?); if __seq_index; begin; __o[__k.to_i] = __v; rescue TypeError, IndexError; __o[__k] = __v; end; elsif __k == \"length\" && __o.is_a?(Array); __n = Integer(__v); raise RangeError, \"negative length\" if __n < 0; if __n < __o.length; __o.slice!(__n, __o.length - __n); elsif __n > __o.length; __o.concat(Array.new(__n - __o.length)); end; elsif __o.respond_to?(__setter); __o.public_send(__setter, __v); else; __o[__k] = __v; end; end", base, keyLit, valueLit)
 }
 
 func javaRuntimeRefSetCode(base, keyLit, valueLit string) string {
@@ -4185,7 +4110,7 @@ func runtimeRefContainsExpr(ref RuntimeRef, key interface{}) (string, bool, erro
 	case "javascript":
 		return fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefMappingViewContainsExpr("__o", "__k"), pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit), true, nil
 	case "java":
@@ -4211,7 +4136,7 @@ func runtimeRefContainsExprWithBuilder(ref RuntimeRef, key interface{}, builder 
 	case "javascript":
 		expr = fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefMappingViewContainsExpr("__o", "__k"), pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit)
+		expr = fmt.Sprintf("(lambda __o, __k: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s, %s)", pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit)
 	case "ruby":
 		expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __idx = (__k.is_a?(Integer) || (__k.is_a?(String) && __k.match?(/\\A\\d+\\z/))) && __o.respond_to?(:length) && __o.respond_to?(:each_with_index) && !__o.respond_to?(:key?) && __k.to_i >= 0 && __k.to_i < __o.length; __idx || (__o.respond_to?(:key?) && __o.key?(__k)) || (__k.is_a?(String) && __o.respond_to?(__k)) || (__o.respond_to?(:include?) && __o.include?(__k)); end)", base, keyLit)
 	case "java":
@@ -4236,9 +4161,9 @@ func runtimeRefCallableExpr(ref RuntimeRef, key string) (string, bool, error) {
 	case "javascript":
 		return fmt.Sprintf("(typeof (%s)[%s] === 'function')", base, keyLit), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k: (callable(__o[__k]) if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (callable(getattr(__o, '_mapping')[__k]) if %s else (callable(__o[__k]) if %s else (callable(getattr(__o, __k)) if %s else (callable(getattr(__o, __k)) if isinstance(__k, str) and hasattr(__o, __k) else False))))))(%s, %s)", pythonRuntimeRefMappingViewContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), pythonRuntimeRefModelFieldContainsExpr("__o", "__k"), base, keyLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k: (callable(__o[__k]) if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (callable(__o[__k]) if %s else (callable(getattr(__o, __k)) if isinstance(__k, str) and hasattr(__o, __k) else False))))(%s, %s)", pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit), true, nil
 	case "ruby":
-		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) || (__o.respond_to?(:has_attribute?) && __o.has_attribute?(__k)) ? __o[__k].respond_to?(:call) : __o.respond_to?(__k); end)", base, keyLit), true, nil
+		return fmt.Sprintf("(begin; __o = %s; __k = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].respond_to?(:call) : __o.respond_to?(__k); end)", base, keyLit), true, nil
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.proxyCallable(%s, %s)", base, keyLit), true, nil
 	default:
@@ -4290,7 +4215,7 @@ func runtimeRefCallExpr(ref RuntimeRef, key string, args []interface{}) (string,
 	case "javascript":
 		return fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit), true, nil
 	case "python":
-		return fmt.Sprintf("(lambda __o, __k, __args: (__o[__k] if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (getattr(__o, '_mapping')[__k] if %s else (__o[__k] if %s else (getattr(__o, __k) if %s else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))))(*__args))(%s, %s, %s)", pythonRuntimeRefMappingViewContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), pythonRuntimeRefModelFieldContainsExpr("__o", "__k"), base, keyLit, argsLit), true, nil
+		return fmt.Sprintf("(lambda __o, __k, __args: (__o[__k] if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (__o[__k] if %s else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))(*__args))(%s, %s, %s)", pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit, argsLit), true, nil
 	case "ruby":
 		return fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args) : __o[__k].call(*__args)); end)", base, keyLit, argsLit), true, nil
 	case "java":
@@ -4371,7 +4296,7 @@ func runtimeRefCallExprWithBuilder(ref RuntimeRef, key string, args []interface{
 		}
 		expr = fmt.Sprintf("(%s)[%s].apply(%s, %s)", base, keyLit, base, argsLit)
 	case "python":
-		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (getattr(__o, '_mapping')[__k] if %s else (__o[__k] if %s else (getattr(__o, __k) if %s else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))))(*__args, **__kwargs))(%s, %s, %s, %s)", pythonRuntimeRefMappingViewContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), pythonRuntimeRefModelFieldContainsExpr("__o", "__k"), base, keyLit, argsLit, kwargsLit)
+		expr = fmt.Sprintf("(lambda __o, __k, __args, __kwargs: (__o[__k] if (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) else (__o[__k] if %s else (getattr(__o, __k) if isinstance(__k, str) and hasattr(__o, __k) else __o[__k])))(*__args, **__kwargs))(%s, %s, %s, %s)", pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), base, keyLit, argsLit, kwargsLit)
 	case "ruby":
 		if len(kwargs) > 0 {
 			expr = fmt.Sprintf("(begin; __o = %s; __k = %s; __args = %s; __kwargs = (%s).transform_keys { |k| k.respond_to?(:to_sym) ? k.to_sym : k }; (__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call(*__args, **__kwargs) : (__o.respond_to?(__k) ? __o.public_send(__k, *__args, **__kwargs) : __o[__k].call(*__args, **__kwargs)); end)", base, keyLit, argsLit, kwargsLit)

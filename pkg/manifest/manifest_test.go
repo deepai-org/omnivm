@@ -5218,26 +5218,36 @@ func TestRuntimeRefPythonLenExprSkipsUnsizedObjects(t *testing.T) {
 	}
 }
 
-func TestRuntimeRefRubyStreamProbeTreatsHTTPMessagesAsResources(t *testing.T) {
+func TestRuntimeRefRubyStreamProbeUsesGenericStreamShape(t *testing.T) {
 	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "ruby", VarName: "response"})
 	if !ok {
 		t.Fatal("ruby stream probe should be available")
 	}
-	for _, want := range []string{"respond_to?(:request_method)", "respond_to?(:status)", "respond_to?(:get_header)", "!__omnivm_http_message"} {
+	for _, want := range []string{"respond_to?(:next)", "respond_to?(:read)", "respond_to?(:each)", "!__v.is_a?(Array)"} {
 		if !strings.Contains(expr, want) {
 			t.Fatalf("ruby stream probe missing %q in %q", want, expr)
 		}
 	}
+	for _, unwanted := range []string{"request_method", "__omnivm_http_message", "get_header"} {
+		if strings.Contains(expr, unwanted) {
+			t.Fatalf("ruby stream probe should not contain domain-specific guard %q in %q", unwanted, expr)
+		}
+	}
 }
 
-func TestRuntimeRefPythonStreamProbeTreatsPydanticModelsAsResources(t *testing.T) {
-	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "python", VarName: "model"})
+func TestRuntimeRefPythonStreamProbeUsesGenericStreamShape(t *testing.T) {
+	expr, ok := runtimeRefStreamProbeExpr(RuntimeRef{Runtime: "python", VarName: "value"})
 	if !ok {
 		t.Fatal("python stream probe should be available")
 	}
-	for _, want := range []string{"getattr(type(__v), 'model_fields', None)", "model_fields', None) is None"} {
+	for _, want := range []string{"hasattr(__v, '__next__')", "callable(getattr(__v, 'read', None))", "hasattr(__v, '__iter__')", "collections.abc"} {
 		if !strings.Contains(expr, want) {
-			t.Fatalf("python stream probe missing Pydantic model guard %q in %q", want, expr)
+			t.Fatalf("python stream probe missing generic guard %q in %q", want, expr)
+		}
+	}
+	for _, unwanted := range []string{"model_fields", "status_code", "streaming_content"} {
+		if strings.Contains(expr, unwanted) {
+			t.Fatalf("python stream probe should not contain domain-specific guard %q in %q", unwanted, expr)
 		}
 	}
 	if strings.Count(expr, "(") != strings.Count(expr, ")") {
@@ -13898,10 +13908,10 @@ func TestEmbeddedRubyThreadCreationAliasesReportUnsupportedDiagnostic(t *testing
 		"Thread.new diagnostic",
 		"Thread.start diagnostic",
 		"Thread.fork diagnostic",
-		"native-threaded Ruby app servers such as Puma out of process",
+		"native-threaded Ruby hosts out of process",
 		"def self.ruby_threading_status",
 		`\"native_threads_supported\" => false`,
-		`\"app_server_boundary\" => \"Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process.\"`,
+		`\"app_server_boundary\" => \"Use only single-thread in-process Ruby entry points; run native-threaded Ruby hosts out of process.\"`,
 		"def self.assert_ruby_native_threads_supported(label = nil)",
 		`boundary_path: \"ruby_threading\"`,
 		`details: {\"ruby_threading\" => info}`,
@@ -13954,8 +13964,8 @@ func TestLibOmniVMThreadAffinityStatusReportsUnsupportedOwnerDispatch(t *testing
 		`"java_executor": map[string]interface{}{`,
 		`"ruby_fiber_thread": map[string]interface{}{`,
 		`"current_behavior":    "Ruby runs on the single VM thread with native Ruby thread scheduling disabled"`,
-		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"`,
-		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
+		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and in-process native thread ownership remain unsupported"`,
+		`"app_server_boundary":      "Use only single-thread in-process Ruby entry points; run native-threaded Ruby hosts out of process."`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("libomnivm thread affinity status should expose diagnostic-only owner dispatch boundary, missing %q", want)
@@ -14080,11 +14090,11 @@ func TestPythonInterpreterModeExposesDiagnosticStatusGuards(t *testing.T) {
 		`"python_asyncio": map[string]interface{}{`,
 		`"narrow_capabilities": []string{"python_async_stream_pull", "python_async_stream_close"}`,
 		`"ruby_fiber_thread": map[string]interface{}{`,
-		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and Puma-style in-process thread ownership remain unsupported"`,
+		`"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and in-process native thread ownership remain unsupported"`,
 		"func OmniPyModeStatus() *C.char",
 		`"ruby_threading": map[string]interface{}{`,
 		`"native_threads_supported": false`,
-		`"app_server_boundary":      "Use Fiber/Async or single-thread Rack servers in process; run native-threaded Ruby app servers such as Puma out of process."`,
+		`"app_server_boundary":      "Use only single-thread in-process Ruby entry points; run native-threaded Ruby hosts out of process."`,
 		"Python interpreter mode runs direct runtime calls on the pinned host",
 		"Starting a Go background dispatcher here would move runtime",
 		`if err := requireGoldenThreadForRuntimeCall("call", threadID); err != nil`,
@@ -17498,19 +17508,15 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 		t.Fatalf("python property lookup should prefer mapping keys before attributes, got %q", pythonProp)
 	}
 	if !strings.Contains(pythonProp, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonProp, "any('keys' in __omnivm_cls.__dict__") {
-		t.Fatalf("python property lookup should treat key-addressable session-like objects as data before attributes without broad membership probes, got %q", pythonProp)
+		t.Fatalf("python property lookup should treat key-addressable objects as data before attributes without broad membership probes, got %q", pythonProp)
 	}
 	if strings.Contains(pythonProp, "hasattr(__o, '__contains__')") {
 		t.Fatalf("python property lookup should not call arbitrary __contains__ while probing key-addressable objects, got %q", pythonProp)
 	}
-	if !strings.Contains(pythonProp, "model_fields") || strings.Index(pythonProp, "Mapping) and __k in __o") > strings.Index(pythonProp, "model_fields") || strings.Index(pythonProp, "model_fields") > strings.LastIndex(pythonProp, "hasattr(__o, __k)") {
-		t.Fatalf("python property lookup should prefer Pydantic fields before same-named methods, got %q", pythonProp)
-	}
-	if !strings.Contains(pythonProp, "DESCRIPTOR") || !strings.Contains(pythonProp, "fields_by_name") {
-		t.Fatalf("python property lookup should prefer Protobuf descriptor fields before same-named methods, got %q", pythonProp)
-	}
-	if !strings.Contains(pythonProp, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonProp, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonProp, "model_fields") {
-		t.Fatalf("python property lookup should prefer static _mapping row fields before attributes, got %q", pythonProp)
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
+		if strings.Contains(pythonProp, unwanted) {
+			t.Fatalf("python property lookup should not contain named-library probe %q in %q", unwanted, pythonProp)
+		}
 	}
 	if !strings.Contains(pythonProp, "else None") || !strings.Contains(pythonProp, "__o[int(__k)]") {
 		t.Fatalf("python property lookup should avoid unconditional item access on unscriptable objects, got %q", pythonProp)
@@ -17524,14 +17530,6 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 		t.Fatalf("python index lookup should only index mappings or bounded sequences, got %q", pythonIndex)
 	}
 
-	pythonHeadersProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "python", VarName: "request"}, "headers")
-	if err != nil || !ok {
-		t.Fatalf("runtimeRefPropertyExpr python headers: ok=%v err=%v", ok, err)
-	}
-	if !strings.Contains(pythonHeadersProp, "hasattr(__o, 'method')") || strings.Index(pythonHeadersProp, "getattr(__o, __k)") > strings.Index(pythonHeadersProp, "Mapping) and __k in __o") {
-		t.Fatalf("python HTTP message lookup should prefer request/response attributes before scope mapping keys, got %q", pythonHeadersProp)
-	}
-
 	rubyProp, ok, err := runtimeRefPropertyExpr(RuntimeRef{Runtime: "ruby", VarName: "payload"}, "count")
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefPropertyExpr ruby: ok=%v err=%v", ok, err)
@@ -17539,8 +17537,8 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(rubyProp, "respond_to?(:key?)") || !strings.Contains(rubyProp, "__o.key?(__k)") || strings.Index(rubyProp, "__o[__k]") > strings.Index(rubyProp, "public_send") {
 		t.Fatalf("ruby property lookup should prefer mapping keys before methods, got %q", rubyProp)
 	}
-	if !strings.Contains(rubyProp, "has_attribute?") || strings.Index(rubyProp, "has_attribute?") > strings.Index(rubyProp, "public_send") {
-		t.Fatalf("ruby property lookup should prefer ActiveRecord attributes before methods, got %q", rubyProp)
+	if strings.Contains(rubyProp, "has_attribute?") {
+		t.Fatalf("ruby property lookup should not contain named-library attribute probe, got %q", rubyProp)
 	}
 	if !strings.Contains(rubyProp, "__seq_index") || !strings.Contains(rubyProp, "__o[__k.to_i]") || !strings.Contains(rubyProp, "rescue TypeError, IndexError, NoMethodError; nil") {
 		t.Fatalf("ruby property lookup should avoid arbitrary string indexing on sequence-like objects, got %q", rubyProp)
@@ -17553,34 +17551,26 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(pythonCallable, "callable(__o[__k]) if (isinstance(__o, __import__('collections.abc'") || !strings.Contains(pythonCallable, "Mapping) and __k in __o") {
 		t.Fatalf("python callable lookup should inspect mapping keys before attributes, got %q", pythonCallable)
 	}
-	if !strings.Contains(pythonCallable, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonCallable, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonCallable, "model_fields") {
-		t.Fatalf("python callable lookup should inspect static _mapping row fields before attributes, got %q", pythonCallable)
-	}
 	if !strings.Contains(pythonCallable, `any("__getitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonCallable, "any('keys' in __omnivm_cls.__dict__") {
-		t.Fatalf("python callable lookup should inspect key-addressable session-like objects before attributes without broad membership probes, got %q", pythonCallable)
+		t.Fatalf("python callable lookup should inspect key-addressable objects before attributes without broad membership probes, got %q", pythonCallable)
 	}
 	if strings.Contains(pythonCallable, "hasattr(__o, '__contains__')") {
 		t.Fatalf("python callable lookup should not call arbitrary __contains__ while probing key-addressable objects, got %q", pythonCallable)
 	}
-	if !strings.Contains(pythonCallable, "model_fields") || strings.Index(pythonCallable, "Mapping) and __k in __o") > strings.Index(pythonCallable, "model_fields") || strings.Index(pythonCallable, "model_fields") > strings.LastIndex(pythonCallable, "hasattr(__o, __k)") {
-		t.Fatalf("python callable lookup should inspect Pydantic fields before same-named methods, got %q", pythonCallable)
-	}
-	if !strings.Contains(pythonCallable, "DESCRIPTOR") || !strings.Contains(pythonCallable, "fields_by_name") {
-		t.Fatalf("python callable lookup should inspect Protobuf descriptor fields before same-named methods, got %q", pythonCallable)
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
+		if strings.Contains(pythonCallable, unwanted) {
+			t.Fatalf("python callable lookup should not contain named-library probe %q in %q", unwanted, pythonCallable)
+		}
 	}
 
 	pythonCall, ok, err := runtimeRefCallExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items", []interface{}{})
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefCallExpr python: ok=%v err=%v", ok, err)
 	}
-	if !strings.Contains(pythonCall, "model_fields") || strings.Index(pythonCall, "Mapping) and __k in __o") > strings.Index(pythonCall, "model_fields") || strings.Index(pythonCall, "model_fields") > strings.LastIndex(pythonCall, "hasattr(__o, __k)") {
-		t.Fatalf("python call lookup should inspect Pydantic fields before same-named methods, got %q", pythonCall)
-	}
-	if !strings.Contains(pythonCall, "DESCRIPTOR") || !strings.Contains(pythonCall, "fields_by_name") {
-		t.Fatalf("python call lookup should inspect Protobuf descriptor fields before same-named methods, got %q", pythonCall)
-	}
-	if !strings.Contains(pythonCall, "getattr_static(__o, '_mapping', None)") || strings.Index(pythonCall, "getattr(__o, '_mapping')[__k]") > strings.Index(pythonCall, "model_fields") {
-		t.Fatalf("python call lookup should inspect static _mapping row fields before attributes, got %q", pythonCall)
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
+		if strings.Contains(pythonCall, unwanted) {
+			t.Fatalf("python call lookup should not contain named-library probe %q in %q", unwanted, pythonCall)
+		}
 	}
 
 	pythonItemsIter, ok, err := runtimeRefIterExpr(RuntimeRef{Runtime: "python", VarName: "payload"}, "items")
@@ -17719,7 +17709,7 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 		t.Fatalf("python RuntimeRef set should prefer mutable mapping keys before attributes, got %q", pythonCode)
 	}
 	if !strings.Contains(pythonCode, `any("__setitem__" in __omnivm_cls.__dict__`) || !strings.Contains(pythonCode, "any('keys' in __omnivm_cls.__dict__") {
-		t.Fatalf("python RuntimeRef set should update existing key-addressable session-like keys before attributes without broad membership probes, got %q", pythonCode)
+		t.Fatalf("python RuntimeRef set should update existing key-addressable keys before attributes without broad membership probes, got %q", pythonCode)
 	}
 	if strings.Contains(pythonCode, "hasattr(__o, '__contains__')") {
 		t.Fatalf("python RuntimeRef set should not call arbitrary __contains__ while probing key-addressable objects, got %q", pythonCode)
@@ -17727,11 +17717,10 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(pythonCode, "MutableSequence") || !strings.Contains(pythonCode, "__k == 'length'") || !strings.Contains(pythonCode, "del __o[__n:]") {
 		t.Fatalf("python RuntimeRef set should resize mutable sequences for length writes, got %q", pythonCode)
 	}
-	if !strings.Contains(pythonCode, "model_fields") || strings.Index(pythonCode, "MutableMapping") > strings.Index(pythonCode, "model_fields") || strings.Index(pythonCode, "model_fields") > strings.Index(pythonCode, "hasattr(__o, __k)") {
-		t.Fatalf("python RuntimeRef set should prefer Pydantic fields before same-named methods, got %q", pythonCode)
-	}
-	if !strings.Contains(pythonCode, "DESCRIPTOR") || !strings.Contains(pythonCode, "fields_by_name") {
-		t.Fatalf("python RuntimeRef set should prefer Protobuf descriptor fields before same-named methods, got %q", pythonCode)
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name"} {
+		if strings.Contains(pythonCode, unwanted) {
+			t.Fatalf("python RuntimeRef set should not contain named-library probe %q in %q", unwanted, pythonCode)
+		}
 	}
 
 	rubyCode, ok, err := runtimeRefSetCode(RuntimeRef{Runtime: "ruby", VarName: "items"}, "0", "updated")
@@ -17741,8 +17730,8 @@ func TestRuntimeRefSetCodeCoercesNumericSequenceKeys(t *testing.T) {
 	if !strings.Contains(rubyCode, "__k.to_i") || !strings.Contains(rubyCode, "each_with_index") {
 		t.Fatalf("ruby RuntimeRef set should coerce numeric sequence keys with generic shape checks, got %q", rubyCode)
 	}
-	if !strings.Contains(rubyCode, "has_attribute?") || strings.Index(rubyCode, "has_attribute?") > strings.Index(rubyCode, "public_send") {
-		t.Fatalf("ruby RuntimeRef set should prefer ActiveRecord attributes before setters, got %q", rubyCode)
+	if strings.Contains(rubyCode, "has_attribute?") {
+		t.Fatalf("ruby RuntimeRef set should not contain named-library attribute probe, got %q", rubyCode)
 	}
 	if !strings.Contains(rubyCode, `__k == "length"`) || !strings.Contains(rubyCode, "__o.is_a?(Array)") || !strings.Contains(rubyCode, "__o.concat(Array.new") {
 		t.Fatalf("ruby RuntimeRef set should resize arrays for length writes, got %q", rubyCode)
@@ -17908,13 +17897,13 @@ func TestOpImportPythonUsesSafeAliases(t *testing.T) {
 
 func TestOpImportRubyLoadsBaselineStdlib(t *testing.T) {
 	e, mocks := makeExecutor("ruby")
-	if _, err := e.opImport(&Op{Runtime: "ruby", Path: "active_record"}); err != nil {
+	if _, err := e.opImport(&Op{Runtime: "ruby", Path: "json"}); err != nil {
 		t.Fatalf("opImport ruby: %v", err)
 	}
 	if len(mocks["ruby"].execCalls) != 1 ||
 		!strings.Contains(mocks["ruby"].execCalls[0], "require 'set'") ||
 		!strings.Contains(mocks["ruby"].execCalls[0], "Gem::Specification.each") ||
-		!strings.Contains(mocks["ruby"].execCalls[0], "require 'active_record'") {
+		!strings.Contains(mocks["ruby"].execCalls[0], "require 'json'") {
 		t.Fatalf("Ruby import should load baseline stdlib before package import, calls=%q", mocks["ruby"].execCalls)
 	}
 }

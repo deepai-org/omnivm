@@ -2,7 +2,7 @@
 // using Apache Arrow columnar format.
 //
 // Data flows: Go creates Arrow buffers, then passes raw pointers to
-// guest runtimes (Python via pyarrow, JS via C++ bindings, etc.)
+// guest runtimes through their native Arrow-compatible bindings.
 // for zero-copy access.
 package arrow
 
