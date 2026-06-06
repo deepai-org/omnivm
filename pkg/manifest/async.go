@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -264,6 +265,58 @@ Promise.resolve(%s).then(function(v) {
 	val := valResult.Value
 	if op.Bind != "" {
 		e.setBinding(op.Bind, val)
+	}
+	return val, nil
+}
+
+func (e *Executor) awaitJavaScriptRuntimeRef(ref RuntimeRef, bind string) (interface{}, error) {
+	rt, ok := e.runtimes["javascript"]
+	if !ok {
+		return nil, fmt.Errorf("await [javascript]: runtime not found")
+	}
+
+	e.nextRuntimeRefID++
+	id := e.nextRuntimeRefID
+	doneVar := fmt.Sprintf("__omnivm_await_%d_done", id)
+	errorVar := fmt.Sprintf("__omnivm_await_%d_error", id)
+	resultVar := bind
+	if resultVar == "" {
+		resultVar = fmt.Sprintf("__omnivm_await_%d_result", id)
+	}
+
+	wrapper := fmt.Sprintf(`
+globalThis[%s] = false;
+globalThis[%s] = undefined;
+%s
+Promise.resolve(%s).then(function(v) {
+  globalThis[%s] = v;
+  globalThis[%s] = true;
+}).catch(function(e) {
+  globalThis[%s] = globalThis.__omnivm_async_error_envelope(e);
+  globalThis[%s] = true;
+});
+`, strconv.Quote(doneVar), strconv.Quote(errorVar), jsAsyncErrorPrelude(), runtimeVarRef("javascript", ref.VarName), strconv.Quote(resultVar), strconv.Quote(doneVar), strconv.Quote(errorVar), strconv.Quote(doneVar))
+
+	result := rt.Execute(wrapper)
+	if result.Err != nil {
+		return nil, fmt.Errorf("await [javascript]: %w", result.Err)
+	}
+	if err := e.pumpUntilDone(func() bool {
+		check := rt.Eval(runtimeVarRef("javascript", doneVar))
+		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "true"
+	}); err != nil {
+		return nil, fmt.Errorf("await [javascript]: %w", err)
+	}
+	if err := e.asyncJSError(rt, runtimeVarRef("javascript", errorVar)); err != nil {
+		return nil, fmt.Errorf("await [javascript]: %w", err)
+	}
+
+	resolvedRef, val, err := e.boundRuntimeRefSnapshot("javascript", resultVar)
+	if err != nil {
+		return nil, fmt.Errorf("await [javascript]: %w", err)
+	}
+	if bind != "" {
+		e.setBinding(bind, resolvedRef)
 	}
 	return val, nil
 }

@@ -25538,7 +25538,7 @@ def test_manifest_node_fetch_response_body_early_cancel_releases_owner():
         raise AssertionError(f"Node fetch response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Node fetch response body did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Node fetch response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 

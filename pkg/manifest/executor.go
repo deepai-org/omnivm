@@ -2512,9 +2512,7 @@ func (e *Executor) freezeYieldValue(val interface{}) (interface{}, error) {
 	return frozenVal, nil
 }
 
-// opAwait executes the inner from op and binds the result.
-// In the current single-threaded executor, this is a passthrough —
-// the await semantics are preserved in the IR for future async runtimes.
+// opAwait executes the inner from op and binds the resolved result.
 func (e *Executor) opAwait(op *Op) (interface{}, error) {
 	if op.From == nil {
 		return nil, nil
@@ -2522,6 +2520,9 @@ func (e *Executor) opAwait(op *Op) (interface{}, error) {
 	val, err := e.executeOp(op.From)
 	if err != nil {
 		return nil, err
+	}
+	if ref, ok := val.(RuntimeRef); ok && ref.Runtime == "javascript" {
+		return e.awaitJavaScriptRuntimeRef(ref, op.Bind)
 	}
 	if op.Bind != "" {
 		e.setBinding(op.Bind, val)

@@ -1239,6 +1239,58 @@ func TestAwaitExecutesFromOpAndBindsResult(t *testing.T) {
 	}
 }
 
+func TestAwaitResolvesJavaScriptRuntimeRefPromise(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	js := mocks["javascript"]
+	snapshotCalls := 0
+	js.evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__omnivm_await_") && strings.Contains(code, "_done"):
+			return pkg.Result{Value: true}
+		case strings.Contains(code, "__omnivm_await_") && strings.Contains(code, "_error"):
+			return pkg.Result{Value: nil}
+		case strings.Contains(code, `globalThis["answer"]`):
+			snapshotCalls++
+			if snapshotCalls == 1 {
+				return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+			}
+			return pkg.Result{Value: `{"primitive":true,"value":"done"}`}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	val, err := e.executeOp(&Op{
+		OpType:  "await",
+		Runtime: "javascript",
+		Bind:    "answer",
+		From: &Op{
+			OpType:  "eval",
+			Runtime: "javascript",
+			Bind:    "answer",
+			Code:    "makePromise()",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != "done" {
+		t.Fatalf("await value = %#v, want done", val)
+	}
+	got, _ := e.getBinding("answer")
+	ref, ok := got.(RuntimeRef)
+	if !ok || ref.Runtime != "javascript" || ref.VarName != "answer" || !ref.SnapshotKnown || ref.Value != "done" {
+		t.Fatalf("await binding = %#v, want resolved JavaScript RuntimeRef snapshot", got)
+	}
+	if len(js.execCalls) != 2 {
+		t.Fatalf("JavaScript exec calls = %d, want eval assignment and await wrapper: %#v", len(js.execCalls), js.execCalls)
+	}
+	if !strings.Contains(js.execCalls[1], `Promise.resolve(globalThis["answer"])`) ||
+		!strings.Contains(js.execCalls[1], `globalThis["answer"] = v`) {
+		t.Fatalf("await wrapper did not await and rebind answer: %s", js.execCalls[1])
+	}
+}
+
 func TestPumpUntilDoneTimeoutReturnsError(t *testing.T) {
 	oldTimeout := asyncPumpTimeout
 	oldInterval := asyncPumpInterval
