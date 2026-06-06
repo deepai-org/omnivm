@@ -41,6 +41,7 @@ examples=(
   "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
   "beautifulsoup-cheerio-go-cache.poly"
+  "python-map-collision-docs.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
@@ -136,6 +137,10 @@ for example in "${examples[@]}"; do
       echo "expected BeautifulSoup/Cheerio/Go cache output without Go plugin panic text, got: $output" >&2
       exit 1
     fi
+  fi
+  if [ "$example" = "python-map-collision-docs.poly" ] && [[ "$output" != *'Python map collision docs object={"then":"called:manual","items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7} dict={"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
+    echo "expected Python map collision natural access output, got: $output" >&2
+    exit 1
   fi
   if [ "$example" = "python-generator-js-cancel.poly" ] && [[ "$output" != *"Python generator JS cancel 0:break|1:break errors=0:throw|stop-stream"* || "$output" != *"Python generator JS closed ['break', 'throw']"* ]]; then
     echo "expected Python generator JS cancellation/error release output, got: $output" >&2

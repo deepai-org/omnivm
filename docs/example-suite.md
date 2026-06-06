@@ -23,7 +23,7 @@ manual JSON encode/decode glue for runtime boundaries.
 | `java-manifest-function-proxy.json` | Java manifest stubs calling Python manifest functions with live object identity and unsafe-name fallback |
 | `vertical-order-review-app.poly` | Source-level Django/FastAPI/Pydantic intake, Express/Zod routing, React rendering, Java service enrichment, Ruby ActiveRecord/Fiber normalization, Go worker fan-out, and checked runtime output golden |
 
-Broader application fixtures cover Django/Zod/Go HMAC, Express/Pandas/Go workers, Java Gson/Pandas/Zod/Express, Java OkHttp/HTTPX/Go retry, Jinja2/Marked/Go docs, and other cross-runtime package combinations.
+Broader application fixtures cover Django/Zod/Go HMAC, Express/Pandas/Go workers, Java Gson/Pandas/Zod/Express, Java OkHttp/HTTPX/Go retry, Jinja2/Marked/Go docs, Python/JavaScript/Ruby/Java collision-heavy map fields, and other cross-runtime package combinations.
 
 ## Boundary contracts
 
