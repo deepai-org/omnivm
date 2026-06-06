@@ -10726,14 +10726,16 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "def __omnivm_mark_closed") ||
 		!contains(code, "unless __omnivm_bridge_active?(@__omnivm_bridge_token)\n          __omnivm_mark_closed\n          break\n        end") ||
 		!contains(code, "loop do\n        break if @__omnivm_closed == true") ||
-		!contains(code, "rescue\n          __omnivm_mark_closed\n          raise") ||
+		!contains(code, "rescue => pull_error") ||
+		!contains(code, "released = close\n            __omnivm_mark_closed if released != true") ||
+		!contains(code, "OmniVM.__record_cleanup_error(pull_error, cleanup_error)") ||
 		!contains(code, `JSON.generate({op: "stream_cancel", id: @value["id"]})`) ||
 		!contains(code, "unless __omnivm_bridge_active?(@__omnivm_bridge_token)\n      __omnivm_mark_closed\n      return false\n    end") ||
 		!contains(code, `released = env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"] == true`) ||
 		!contains(code, "__omnivm_mark_closed if released") ||
 		!contains(code, "def omnivm_close\n    close\n  end") ||
 		!contains(code, "OmniVM.__record_cleanup_error(body_error, cleanup_error)") {
-		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and mark pull errors closed, got %q", code)
+		t.Fatalf("Ruby stream proxies should expose idempotent collision-safe close helpers, return the manifest release result, and cancel pull errors before closing, got %q", code)
 	}
 	if contains(code, "def close\n    return false if @__omnivm_closed == true\n    begin\n      OmniVM.call(\"__manifest\", JSON.generate({op: \"stream_cancel\"") {
 		t.Fatalf("Ruby stream close should not swallow user-initiated cancellation failures")
@@ -11247,6 +11249,49 @@ raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.lengt
 	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ruby remote stream closed-pull check failed: %v\n%s", err, out)
+	}
+}
+
+func TestRubyRemoteStreamCancelsOnOwnerPullError(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    raise "owner read failed" if req["op"] == "stream_next"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "stream_cancel"
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+stream = __omnivm_materialize_capture({"__omnivm_stream__" => true, "id" => 92, "runtime" => "ruby", "kind" => "stream"})
+begin
+  stream.each { |_item| }
+  raise "owner pull error was not raised"
+rescue => e
+  raise "owner read error was masked: #{e.message}" unless e.message.include?("owner read failed")
+end
+raise "stream was not marked closed" unless stream.instance_variable_get(:@__omnivm_closed) == true
+raise "close was not idempotent" unless stream.close == false
+raise "stream handle was not retained" unless OmniVM.requests.any? { |req| req["op"] == "handle_retain" && req["id"] == 92 }
+cancels = OmniVM.requests.select { |req| req["op"] == "stream_cancel" }
+raise "stream cancel requests mismatch: #{cancels.inspect}" unless cancels.length == 1 && cancels[0]["id"] == 92
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby remote stream owner-pull-error lifecycle check failed: %v\n%s", err, out)
 	}
 }
 

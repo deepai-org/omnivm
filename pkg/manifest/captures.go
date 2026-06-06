@@ -4357,8 +4357,14 @@ class OmniVMStreamProxy
         begin
           raw = OmniVM.call("__manifest", JSON.generate({op: "stream_next", id: @value["id"]}))
           env = JSON.parse(raw)
-        rescue
-          __omnivm_mark_closed
+        rescue => pull_error
+          begin
+            released = close
+            __omnivm_mark_closed if released != true
+          rescue => cleanup_error
+            OmniVM.__record_cleanup_error(pull_error, cleanup_error) if defined?(OmniVM) && OmniVM.respond_to?(:__record_cleanup_error)
+            __omnivm_mark_closed
+          end
           raise
         end
         item = env.is_a?(Hash) && env["__omnivm_result__"] == true ? env["value"] : {"done" => true}
