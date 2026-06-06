@@ -2488,8 +2488,8 @@ def ruby_threading_status():
     """
     Return the embedded Ruby threading capability contract.
 
-    This lets host startup code decide whether a Ruby framework that requires
-    native Ruby threads can run in process before loading that framework.
+    This lets host startup code decide whether Ruby entry points that require
+    native Ruby threads can run in process before loading them.
     """
     status_info = status()
     info = status_info.get("ruby_threading")
@@ -2506,8 +2506,8 @@ def assert_ruby_native_threads_supported(label=""):
     """
     Raise RuntimeError when embedded Ruby cannot run native Ruby threads.
 
-    Puma and other native-threaded Ruby app servers should use this as a
-    startup guard and choose an out-of-process deployment when it fails.
+    Native-threaded Ruby hosts should use this as a startup guard and choose an
+    out-of-process deployment when it fails.
     """
     info = ruby_threading_status()
     if info.get("native_threads_supported") is True:

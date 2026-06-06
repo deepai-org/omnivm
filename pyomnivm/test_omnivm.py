@@ -3924,12 +3924,12 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniStatus.return_value = (
             b'{"ruby_threading":{"mode":"single_vm_thread",'
             b'"native_threads_supported":false,'
-            b'"app_server_boundary":"run Puma out of process"}}'
+            b'"app_server_boundary":"run native-threaded Ruby hosts out of process"}}'
         )
         info = omnivm_mod.ruby_threading_status()
         assert info["mode"] == "single_vm_thread"
         assert info["native_threads_supported"] is False
-        assert "Puma" in info["app_server_boundary"]
+        assert "native-threaded Ruby hosts" in info["app_server_boundary"]
 
     def test_ruby_threading_status_requires_status_capability(self):
         self.mock_lib.OmniStatus.return_value = b'{"initialized":true}'
@@ -3941,15 +3941,15 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniStatus.return_value = (
             b'{"ruby_threading":{"mode":"single_vm_thread",'
             b'"native_threads_supported":false,'
-            b'"app_server_boundary":"run Puma out of process"}}'
+            b'"app_server_boundary":"run native-threaded Ruby hosts out of process"}}'
         )
         with self.assertRaises(omnivm_mod.RuntimeError) as ctx:
-            omnivm_mod.assert_ruby_native_threads_supported("puma startup")
-        assert "puma startup: native Ruby threads unsupported" in str(ctx.exception)
+            omnivm_mod.assert_ruby_native_threads_supported("ruby host startup")
+        assert "ruby host startup: native Ruby threads unsupported" in str(ctx.exception)
         assert "single_vm_thread" in str(ctx.exception)
         assert ctx.exception.boundary_path == "ruby_threading"
         assert ctx.exception.details["ruby_threading"]["native_threads_supported"] is False
-        assert "Puma" in ctx.exception.details["ruby_threading"]["app_server_boundary"]
+        assert "native-threaded Ruby hosts" in ctx.exception.details["ruby_threading"]["app_server_boundary"]
 
     def test_assert_ruby_native_threads_supported_accepts_supported_status(self):
         self.mock_lib.OmniStatus.return_value = (
