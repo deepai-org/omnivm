@@ -81,15 +81,15 @@ for example in "${examples[@]}"; do
     echo "expected compat-go-status.go main() output to contain ok:200, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "java-map-collision-docs.poly" ] && [[ "$output" != *'Java map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
+  if [ "$example" = "java-map-collision-docs.poly" ] && [[ "$output" != *'Java map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
     echo "expected Java map collision natural access output, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "ruby-map-collision-docs.poly" ] && [[ "$output" != *'Ruby map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
+  if [ "$example" = "ruby-map-collision-docs.poly" ] && [[ "$output" != *'Ruby map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
     echo "expected Ruby map collision natural access output, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "javascript-map-collision-docs.poly" ] && [[ "$output" != *"JavaScript map collision docs py=2:alpha:2:id:field-get:field-close:2:7 ruby=2:alpha:2:id:field-get:field-close:2:7 java=7:2"* ]]; then
+  if [ "$example" = "javascript-map-collision-docs.poly" ] && [[ "$output" != *"JavaScript map collision docs py=2:alpha:2:id:field-then:field-get:field-close:2:7 ruby=2:alpha:2:id:field-then:field-get:field-close:2:7 java=7:2:field-then"* ]]; then
     echo "expected JavaScript-owned map collision natural access output, got: $output" >&2
     exit 1
   fi
