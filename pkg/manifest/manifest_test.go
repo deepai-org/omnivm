@@ -609,7 +609,7 @@ func TestOpTryBindsRuntimeErrorEnvelope(t *testing.T) {
 	e, mocks := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"
 	mocks["javascript"].execFn = func(code string) pkg.Result {
-		return pkg.Result{Err: errors.New("javascript: Error: stop-stream\n    at <anonymous>:1:1")}
+		return pkg.Result{Err: errors.New("javascript: Error: stop-stream\n    at <anonymous>:1:1\nCaused by: TypeError: inner cause\n    at <anonymous>:1:5\nDetails: {\"code\":\"E_STOP\",\"path\":[\"stream\",\"body\"]}")}
 	}
 
 	op := &Op{
@@ -659,6 +659,29 @@ func TestOpTryBindsRuntimeErrorEnvelope(t *testing.T) {
 	}
 	if !reflect.DeepEqual(envelope["causeChain"], envelope["cause_chain"]) {
 		t.Fatalf("causeChain alias = %#v, want %#v", envelope["causeChain"], envelope["cause_chain"])
+	}
+	causes, ok := envelope["cause_chain"].([]interface{})
+	if !ok || len(causes) != 1 {
+		t.Fatalf("cause_chain = %#v, want one parsed cause", envelope["cause_chain"])
+	}
+	cause, ok := causes[0].(map[string]interface{})
+	if !ok || cause["type"] != "TypeError" || cause["message"] != "inner cause" || cause["runtime"] != "javascript" {
+		t.Fatalf("cause = %#v, want typed javascript cause", causes[0])
+	}
+	details, ok := envelope["details"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("details = %#v, want structured map", envelope["details"])
+	}
+	if details["code"] != "E_STOP" {
+		t.Fatalf("details code = %#v, want E_STOP", details["code"])
+	}
+	path, ok := details["path"].([]interface{})
+	if !ok || len(path) != 2 || path[0] != "stream" || path[1] != "body" {
+		t.Fatalf("details path = %#v, want stream/body", details["path"])
+	}
+	if envelope["details_json"] != "{\"code\":\"E_STOP\",\"path\":[\"stream\",\"body\"]}" ||
+		envelope["detailsJson"] != envelope["details_json"] {
+		t.Fatalf("details json aliases = %#v / %#v", envelope["details_json"], envelope["detailsJson"])
 	}
 }
 

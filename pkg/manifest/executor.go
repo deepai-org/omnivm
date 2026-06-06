@@ -1443,8 +1443,9 @@ func manifestCatchRuntimeErrorValue(err error, runtimeName string) map[string]in
 	}
 	errorType, message := manifestRuntimeErrorTypeAndMessage(text, runtimeName)
 	stackFrames := manifestRuntimeErrorStackFrames(text)
-	causeChain := []interface{}{}
+	causeChain := manifestRuntimeErrorCauseChain(text, runtimeName)
 	boundaryPath := manifestRuntimeErrorBoundary(text, runtimeName)
+	details, detailsJSON := manifestRuntimeErrorDetails(text)
 	return map[string]interface{}{
 		"runtime":               runtimeName,
 		"origin_runtime":        runtimeName,
@@ -1462,6 +1463,9 @@ func manifestCatchRuntimeErrorValue(err error, runtimeName string) map[string]in
 		"boundaryPath":          boundaryPath,
 		"original_error_handle": "",
 		"originalErrorHandle":   "",
+		"details":               details,
+		"details_json":          detailsJSON,
+		"detailsJson":           detailsJSON,
 	}
 }
 
@@ -1544,11 +1548,85 @@ func manifestRuntimeErrorStackFrames(text string) []interface{} {
 	frames := []interface{}{}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && !manifestRuntimeErrorMetadataLine(line) {
 			frames = append(frames, line)
 		}
 	}
 	return frames
+}
+
+func manifestRuntimeErrorCauseChain(text, runtimeName string) []interface{} {
+	causes := []interface{}{}
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(strings.ToLower(line), "caused by:") {
+			continue
+		}
+		body := strings.TrimSpace(line[len("Caused by:"):])
+		causeType, causeMessage := manifestRuntimeErrorTypeAndMessage(body, runtimeName)
+		traceLines := []string{body}
+		stackFrames := []interface{}{}
+		for j := i + 1; j < len(lines); j++ {
+			next := strings.TrimSpace(lines[j])
+			lower := strings.ToLower(next)
+			if next == "" || strings.HasPrefix(lower, "caused by:") || manifestRuntimeErrorMetadataLine(next) {
+				break
+			}
+			traceLines = append(traceLines, next)
+			stackFrames = append(stackFrames, next)
+		}
+		causes = append(causes, map[string]interface{}{
+			"runtime":        runtimeName,
+			"origin_runtime": runtimeName,
+			"originRuntime":  runtimeName,
+			"type":           causeType,
+			"name":           causeType,
+			"message":        causeMessage,
+			"traceback":      strings.Join(traceLines, "\n"),
+			"stack":          strings.Join(traceLines, "\n"),
+			"stack_frames":   stackFrames,
+			"stackFrames":    stackFrames,
+		})
+	}
+	return causes
+}
+
+func manifestRuntimeErrorDetails(text string) (interface{}, string) {
+	for _, line := range strings.Split(text, "\n") {
+		label, raw, ok := manifestRuntimeErrorMetadata(line)
+		if !ok {
+			continue
+		}
+		if label == "details" || label == "details_json" || label == "detailsjson" {
+			var decoded interface{}
+			if raw != "" && json.Unmarshal([]byte(raw), &decoded) == nil {
+				return decoded, raw
+			}
+			return raw, raw
+		}
+	}
+	return nil, ""
+}
+
+func manifestRuntimeErrorMetadataLine(line string) bool {
+	_, _, ok := manifestRuntimeErrorMetadata(line)
+	return ok
+}
+
+func manifestRuntimeErrorMetadata(line string) (string, string, bool) {
+	trimmed := strings.TrimSpace(line)
+	idx := strings.Index(trimmed, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	label := strings.ToLower(strings.TrimSpace(trimmed[:idx]))
+	switch label {
+	case "details", "details_json", "detailsjson", "original_error_handle", "original error handle", "original-error-handle":
+		return label, strings.TrimSpace(trimmed[idx+1:]), true
+	default:
+		return "", "", false
+	}
 }
 
 func manifestRuntimeErrorBoundary(text, runtimeName string) string {

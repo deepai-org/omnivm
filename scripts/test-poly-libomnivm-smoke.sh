@@ -37,6 +37,7 @@ examples=(
   "javascript-docs-popular-packages.poly"
   "javascript-error-fields.poly"
   "python-error-js-catch.poly"
+  "javascript-error-cause-details.poly"
   "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
@@ -114,6 +115,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "python-error-js-catch.poly" ] && [[ "$output" != *"Python error JS catch python:python:ValueError:bad order:true:exec[python]"* ]]; then
     echo "expected Python error caught naturally in JavaScript with fidelity fields, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-error-cause-details.poly" ] && [[ "$output" != *"JavaScript error Python details javascript:javascript:TypeError:outer type:True:exec[javascript]:E_OUTER:order.id:Error:inner cause"* ]]; then
+    echo "expected JavaScript error details and cause caught naturally in Python, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "ruby-java-error-fields.poly" ] && [[ "$output" != *"Ruby Java error fields ruby=ruby:ruby:RuntimeError:bad ruby:true:exec[ruby] java=java:java:IllegalStateException:bad java:true:exec[java]"* ]]; then
