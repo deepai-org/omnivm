@@ -42,6 +42,7 @@ examples=(
   "go-docs-popular-packages.poly"
   "beautifulsoup-cheerio-go-cache.poly"
   "python-map-collision-docs.poly"
+  "python-dataframe-js-table-docs.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
@@ -140,6 +141,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "python-map-collision-docs.poly" ] && [[ "$output" != *'Python map collision docs object={"then":"called:manual","items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7} dict={"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
     echo "expected Python map collision natural access output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-dataframe-js-table-docs.poly" ] && [[ "$output" != *"Python DataFrame JS table docs pandas=3:3x2:4x12:1:4:3:6 polars=3:3:1.5:2.5:3.5"* ]]; then
+    echo "expected Python DataFrame/Polars table proxy output, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "python-generator-js-cancel.poly" ] && [[ "$output" != *"Python generator JS cancel 0:break|1:break errors=0:throw|stop-stream"* || "$output" != *"Python generator JS closed ['break', 'throw']"* ]]; then
