@@ -460,6 +460,88 @@ puts "ok"
 	}
 }
 
+func TestRubyReleaseBufferFailureHasStructuredDetails(t *testing.T) {
+	r := New()
+	if err := r.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer r.Shutdown()
+
+	result := r.Execute(`
+module OmniVM
+  @events = []
+  class << self
+    attr_reader :events
+    def __omnivm_native_release_buffer(name)
+      @events << [:release, name]
+      raise ::RuntimeError, "native release failed for #{name}"
+    end
+    def buffer_status_json(name)
+      @events << [:status, name]
+      JSON.generate({
+        "name" => name,
+        "state" => "released_detached",
+        "lease_state" => "detached",
+        "released" => true,
+        "dtype" => 1,
+        "format" => "i",
+        "arrow_format" => "i",
+        "shape" => [2],
+        "strides" => [4],
+        "offset" => 1,
+        "null_count" => 1,
+        "validity_bytes" => 1,
+        "validity_bit_offset" => 3,
+        "read_only" => true,
+        "ownership" => "producer"
+      })
+    end
+  end
+end
+
+begin
+  OmniVM.release_buffer("payload")
+rescue OmniVM::RuntimeError => err
+  raise "boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
+  buffer = err.details["buffer"]
+  raise "buffer name mismatch #{buffer.inspect}" unless buffer["name"] == "payload"
+  raise "lease state mismatch #{buffer.inspect}" unless buffer["lease_state"] == "detached"
+  raise "dtype mismatch #{buffer.inspect}" unless buffer["dtype"] == 1
+  raise "format mismatch #{buffer.inspect}" unless buffer["format"] == "i"
+  raise "arrow format mismatch #{buffer.inspect}" unless buffer["arrow_format"] == "i"
+  raise "shape mismatch #{buffer.inspect}" unless buffer["shape"] == [2]
+  raise "strides mismatch #{buffer.inspect}" unless buffer["strides"] == [4]
+  raise "offset mismatch #{buffer.inspect}" unless buffer["offset"] == 1
+  raise "null_count mismatch #{buffer.inspect}" unless buffer["null_count"] == 1
+  raise "validity_bytes mismatch #{buffer.inspect}" unless buffer["validity_bytes"] == 1
+  raise "validity_bit_offset mismatch #{buffer.inspect}" unless buffer["validity_bit_offset"] == 3
+  raise "read_only mismatch #{buffer.inspect}" unless buffer["read_only"] == true
+  raise "ownership mismatch #{buffer.inspect}" unless buffer["ownership"] == "producer"
+else
+  raise "release failure was not raised"
+end
+
+owner = OmniVM.buffer_owner("payload")
+begin
+  owner.release
+rescue OmniVM::RuntimeError => err
+  raise "owner release boundary mismatch #{err.boundary_path.inspect}" unless err.boundary_path == "native_memory"
+else
+  raise "owner release failure was not raised"
+end
+raise "owner did not mark released after released-buffer diagnostic" unless owner.released?
+raise "owner release was not idempotent after failure" unless owner.release == false
+raise "events mismatch #{OmniVM.events.inspect}" unless OmniVM.events == [[:release, "payload"], [:status, "payload"], [:release, "payload"], [:status, "payload"]]
+puts "ok"
+`)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
+	}
+	if result.Output != "ok\n" {
+		t.Fatalf("expected ok output, got %q", result.Output)
+	}
+}
+
 func TestRubyBufferOwnerPreservesBodyExceptionWhenReleaseFails(t *testing.T) {
 	r := New()
 	if err := r.Initialize(); err != nil {

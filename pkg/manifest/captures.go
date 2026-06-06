@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,6 +135,7 @@ func drainChannel(ch *ChanRef) []interface{} {
 func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]string) (string, error) {
 	// Resolve capture values from the binding stack
 	resolved := make(map[string]string) // varname → JSON string
+	var aliasLines []string
 	for varName, bindingName := range captures {
 		val, ok := e.getBinding(bindingName)
 		if !ok {
@@ -176,6 +178,8 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 				if ref.VarName == bindingName {
 					continue
 				}
+				aliasLines = append(aliasLines, sameRuntimeRefAliasCode(rtName, varName, ref))
+				continue
 			}
 			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
@@ -202,25 +206,36 @@ func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]str
 	}
 
 	// If all captures were skipped (e.g. all ImportRefs), return code as-is
-	if len(resolved) == 0 {
+	if len(resolved) == 0 && len(aliasLines) == 0 {
 		return code, nil
 	}
 	e.addBoundaryStat(func(stats *BoundaryStats) {
 		stats.CaptureInjections++
 	})
 
+	prefix := strings.Join(aliasLines, "\n")
 	switch rtName {
 	case "python":
-		return wrapPythonCaptures(code, resolved), nil
+		return prependCaptureSetup(wrapPythonCaptures(code, resolved), prefix), nil
 	case "javascript":
-		return wrapJavaScriptCaptures(code, resolved), nil
+		return prependCaptureSetup(wrapJavaScriptCaptures(code, resolved), prefix), nil
 	case "ruby":
-		return wrapRubyCaptures(code, resolved), nil
+		return prependCaptureSetup(wrapRubyCaptures(code, resolved), prefix), nil
 	case "java":
-		return wrapJavaCaptures(code, resolved), nil
+		return prependCaptureSetup(wrapJavaCaptures(code, resolved), prefix), nil
 	default:
 		return "", fmt.Errorf("captures not supported for runtime %q", rtName)
 	}
+}
+
+func prependCaptureSetup(code, setup string) string {
+	if setup == "" {
+		return code
+	}
+	if code == "" {
+		return setup
+	}
+	return setup + "\n" + code
 }
 
 // wrapPythonCaptures wraps code in a scope where captures are local variables.
@@ -313,8 +328,12 @@ func wrapJavaCaptures(code string, captures map[string]string) string {
 	var body []string
 	injection := javaCaptureInjection(captures)
 	imports, bodyCode := splitJavaImports(code)
+	bodyCode = lowerJavaCapturedMemberAccess(bodyCode, injection.javaCaptureNames)
 	body = append(body, imports...)
 	body = append(body, injection.setup)
+	if aliases := javaCaptureAliasCodeForBody(injection.javaCaptureNames, bodyCode); aliases != "" {
+		body = append(body, aliases)
+	}
 	body = append(body, "try {")
 	body = append(body, bodyCode)
 	body = append(body, "} finally {")
@@ -429,6 +448,7 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 
 func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]string) captureInjection {
 	resolved := make(map[string]string)
+	var aliasLines []string
 	for varName, bindingName := range captures {
 		val, ok := e.getBinding(bindingName)
 		if !ok {
@@ -460,6 +480,8 @@ func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]
 				if ref.VarName == bindingName {
 					continue
 				}
+				aliasLines = append(aliasLines, sameRuntimeRefAliasCode(rtName, varName, ref))
+				continue
 			}
 			jsonVal, err := e.resolveRuntimeRefCapture(bindingName, rtName, ref)
 			if err != nil {
@@ -482,22 +504,102 @@ func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]
 		resolved[varName] = jsonVal
 	}
 
-	if len(resolved) == 0 {
+	if len(resolved) == 0 && len(aliasLines) == 0 {
 		return captureInjection{}
 	}
 	e.addBoundaryStat(func(stats *BoundaryStats) {
 		stats.CaptureInjections++
 	})
+	aliasSetup := strings.Join(aliasLines, "\n")
 
 	switch rtName {
 	case "python":
-		return captureInjection{setup: injectPythonCaptures(resolved)}
+		return captureInjection{setup: prependCaptureSetup(injectCaptureSetup(rtName, resolved).setup, aliasSetup)}
 	case "javascript":
-		return captureInjection{setup: injectJSCaptures(resolved)}
+		return captureInjection{setup: prependCaptureSetup(injectCaptureSetup(rtName, resolved).setup, aliasSetup)}
 	case "ruby":
-		return captureInjection{setup: injectRubyCaptures(resolved)}
+		return captureInjection{setup: prependCaptureSetup(injectCaptureSetup(rtName, resolved).setup, aliasSetup)}
 	case "java":
-		return javaCaptureInjection(resolved)
+		injection := injectCaptureSetup(rtName, resolved)
+		injection.setup = prependCaptureSetup(injection.setup, aliasSetup)
+		return injection
+	default:
+		return captureInjection{}
+	}
+}
+
+func sameRuntimeRefAliasCode(rtName, varName string, ref RuntimeRef) string {
+	return runtimeAssign(rtName, varName, runtimeVarRef(rtName, ref.VarName))
+}
+
+func javaCaptureAliasCode(names []string) string {
+	return javaCaptureAliasCodeForBody(names, "")
+}
+
+func javaCaptureAliasCodeForBody(names []string, body string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	var lines []string
+	seen := make(map[string]bool)
+	for _, name := range names {
+		if seen[name] || !isJavaIdentifier(name) {
+			continue
+		}
+		seen[name] = true
+		if javaBodyDeclaresLocal(body, name) {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Object %s = omnivm.OmniVM.getCapture(\"%s\");", name, escapeJavaString(name)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func javaBodyDeclaresLocal(body, name string) bool {
+	if body == "" {
+		return false
+	}
+	pattern := `(?m)(^|[;{}]\s*)(?:final\s+)?(?:var|[A-Za-z_$][A-Za-z0-9_$.]*(?:\s*<[^;{}=]*>)?(?:\s*\[\])?)\s+` + regexp.QuoteMeta(name) + `\s*(?:=|;|,)`
+	return regexp.MustCompile(pattern).FindStringIndex(body) != nil
+}
+
+func lowerJavaCapturedMemberAccess(code string, names []string) string {
+	for _, name := range names {
+		if !isJavaIdentifier(name) {
+			continue
+		}
+		quotedName := regexp.QuoteMeta(name)
+		indexedProperty := regexp.MustCompile(`\b` + quotedName + `\.([A-Za-z_$][A-Za-z0-9_$]*)\[([^\]\n]+)\]`)
+		code = indexedProperty.ReplaceAllString(code, `omnivm.OmniVM.proxyIndex(omnivm.OmniVM.proxyGet(`+name+`, "$1"), $2)`)
+
+		propertyLength := regexp.MustCompile(`\b` + quotedName + `\.([A-Za-z_$][A-Za-z0-9_$]*)\.length\b`)
+		code = propertyLength.ReplaceAllString(code, `omnivm.OmniVM.proxyLen(omnivm.OmniVM.proxyGet(`+name+`, "$1"))`)
+
+		property := regexp.MustCompile(`\b` + quotedName + `\.([A-Za-z_$][A-Za-z0-9_$]*)\b(\s*\()?`)
+		code = property.ReplaceAllStringFunc(code, func(match string) string {
+			if strings.Contains(match, "(") {
+				return match
+			}
+			member := strings.TrimPrefix(match, name+".")
+			return `omnivm.OmniVM.proxyGet(` + name + `, "` + member + `")`
+		})
+	}
+	return code
+}
+
+func injectCaptureSetup(rtName string, captures map[string]string) captureInjection {
+	if len(captures) == 0 {
+		return captureInjection{}
+	}
+	switch rtName {
+	case "python":
+		return captureInjection{setup: injectPythonCaptures(captures)}
+	case "javascript":
+		return captureInjection{setup: injectJSCaptures(captures)}
+	case "ruby":
+		return captureInjection{setup: injectRubyCaptures(captures)}
+	case "java":
+		return javaCaptureInjection(captures)
 	default:
 		return captureInjection{}
 	}
@@ -1155,6 +1257,10 @@ class __OmniVMHandleProxy:
         if not self._bridge_active():
             self._mark_closed()
             return False
+        caller = globals()["__omnivm_bridge_module"]()
+        if caller is None or not hasattr(caller, "call"):
+            self._mark_closed()
+            return False
         result = self._bridge({"op": "handle_release_explicit"})
         released = bool(result)
         if released:
@@ -1467,8 +1573,17 @@ class __OmniVMStreamProxy:
             return True
         try:
             item = self._next_envelope()
-        except Exception:
-            self._mark_closed("owner_lifecycle")
+        except Exception as err:
+            try:
+                if not self.close():
+                    self._mark_closed("owner_lifecycle")
+            except Exception as close_exc:
+                _omnivm_record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during pull error cleanup: {close_exc}",
+                )
+                self._mark_closed("owner_lifecycle")
             raise
         if not isinstance(item, dict) or "done" not in item:
             err = _omnivm_runtime_error(
@@ -1598,6 +1713,7 @@ class __OmniVMStreamProxy:
             return False
         caller = globals()["__omnivm_bridge_module"]()
         if caller is None or not hasattr(caller, "call"):
+            self._mark_closed("explicit_release")
             return False
         import json as __j
         raw = caller.call("__manifest", __j.dumps({"op": "stream_cancel", "id": self._value.get("id")}))
@@ -2410,6 +2526,30 @@ if (typeof omnivm !== 'undefined' && omnivm) {
   globalThis.__omnivm_buffer_owner_error = globalThis.__omnivm_buffer_owner_error || function(message, buffer) {
     return globalThis.__omnivm_owner_dispatch_error(message, "native_memory", {buffer: buffer});
   };
+  if (typeof omnivm.releaseBuffer === 'function' && omnivm.releaseBuffer.__omnivm_structured_release !== true) {
+    var __omnivm_native_release_buffer = omnivm.releaseBuffer.bind(omnivm);
+    Object.defineProperty(omnivm, "releaseBuffer", {
+      configurable: true,
+      value: function(name) {
+        try {
+          return __omnivm_native_release_buffer(name);
+        } catch (err) {
+          if (err && (err.boundary_path === "native_memory" || err.boundaryPath === "native_memory")) throw err;
+          var details = {buffer: {name: String(name)}};
+          if (typeof omnivm.bufferStatus === 'function') {
+            try {
+              details.buffer = omnivm.bufferStatus(name);
+            } catch (_statusError) {}
+          }
+          var message = err && err.message ? err.message : String(err);
+          throw globalThis.__omnivm_owner_dispatch_error(message, "native_memory", details);
+        }
+      }
+    });
+    try {
+      Object.defineProperty(omnivm.releaseBuffer, "__omnivm_structured_release", {value: true});
+    } catch (_markError) {}
+  }
   if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
     Object.defineProperty(globalThis, "__omnivm_BufferOwner", {
       configurable: true,
@@ -2741,13 +2881,28 @@ globalThis.__omnivm_make_handle_proxy = globalThis.__omnivm_make_handle_proxy ||
     ensureOpen("contains");
     return !!bridge({op: "handle_contains", value: globalThis.__omnivm_encode_arg(key)});
   };
+  var suppressNextThenableAccess = false;
   var bridgeThenForNaturalAccess = function() {
-    if (target.__omnivm_closed__ === true) return undefined;
-    if (!globalThis.__omnivm_bridge_active(bridgeToken)) return undefined;
+    if (suppressNextThenableAccess === true) {
+      suppressNextThenableAccess = false;
+      return undefined;
+    }
+    if (target.__omnivm_closed__ === true) throw closedOperationError("then");
+    if (!globalThis.__omnivm_bridge_active(bridgeToken)) throw closedOperationError("then");
     var missing = {};
     try {
       var value = bridgeGet("then", missing, true);
-      if (value === missing || typeof value === "function") return undefined;
+      if (value === missing) return undefined;
+      if (typeof value === "function") {
+        return function() {
+          var args = Array.prototype.slice.call(arguments);
+          if (args.length >= 2 && typeof args[0] === "function" && typeof args[1] === "function") {
+            suppressNextThenableAccess = true;
+            return args[0](proxy);
+          }
+          return value.apply(this, args);
+        };
+      }
       return value;
     } catch (_thenError) {
       if (!globalThis.__omnivm_is_missing_bridge_error(_thenError)) throw _thenError;
@@ -4149,7 +4304,11 @@ class OmniVMHandleProxy
   end
 
   def then(*args, &block)
-    return __omnivm_data_key_value("then") if args.empty? && !block_given? && __omnivm_data_key?("then")
+    if __omnivm_data_key?("then")
+      value = __omnivm_data_key_value("then")
+      return value if args.empty? && !block_given?
+      return value.call(*args, &block) if value.respond_to?(:call)
+    end
     super
   end
 
@@ -4668,6 +4827,9 @@ func (e *Executor) resolveRuntimeRefCapture(binding, targetRuntime string, ref R
 	if jsonVal, ok, err := e.runtimeRefStreamCaptureJSON(binding, targetRuntime, ref); ok || err != nil {
 		return jsonVal, err
 	}
+	if e.bridgeOpsRequireRuntimeRefProxy(binding, targetRuntime, ref) {
+		return e.runtimeRefProxyCaptureJSON(ref)
+	}
 	if e.shouldProxyRuntimeRefCapture(binding, targetRuntime, ref) {
 		return e.runtimeRefProxyCaptureJSON(ref)
 	}
@@ -4743,6 +4905,7 @@ func (e *Executor) unknownRuntimeRefPrimitiveCaptureJSON(binding, targetRuntime 
 	}
 	if !snapshot.Primitive {
 		ref.CallableKnown = true
+		ref.TypeName = snapshot.TypeName
 		ref.Callable = snapshot.Callable
 		ref.CallableShape = snapshot.CallableShape
 		jsonVal, err := e.runtimeRefProxyCaptureJSON(ref)
@@ -4895,6 +5058,19 @@ func (e *Executor) shouldProxyRuntimeRefCapture(binding, targetRuntime string, r
 		return false
 	}
 	return true
+}
+
+func (e *Executor) bridgeOpsRequireRuntimeRefProxy(binding, targetRuntime string, ref RuntimeRef) bool {
+	if ref.Runtime == "" || ref.VarName == "" || len(e.bridgeOps) == 0 {
+		return false
+	}
+	ops := e.bridgeOps[bridgeKey(binding, ref.Runtime, targetRuntime)]
+	for _, op := range ops {
+		if boundaryFormFromBridgeOp(op) == BoundaryRef {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Executor) isAmbiguousBoundary(binding, from, to, jsonVal string) bool {

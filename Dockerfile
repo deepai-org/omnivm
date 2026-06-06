@@ -111,7 +111,8 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       Markdown \
       httpx \
       aiohttp \
-      requests
+      requests \
+      pytest
 ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
 RUN cd /usr/local/lib && npm install \
       express \
@@ -168,8 +169,9 @@ COPY runtime/java/ runtime/java/
 COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
 COPY test/fixtures/prisma/ test/fixtures/prisma/
-RUN chmod +x scripts/python3-polyscript && \
-    ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript
+RUN chmod +x scripts/python3-polyscript scripts/run-manifest-libomnivm.py && \
+    ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript && \
+    ln -sf /build/scripts/run-manifest-libomnivm.py /usr/local/bin/run-manifest-libomnivm.py
 
 # Prisma code generation forks a Node helper process, so do it during image
 # construction rather than inside the embedded polyglot process.
@@ -304,6 +306,7 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
 
 # Python package unit tests (pyomnivm — pure Python, no libomnivm.so needed)
 RUN python3 -m unittest discover -s pyomnivm -p 'test_*.py' -v
+RUN python3 -m pytest pyomnivm/test_omnivm.py -q
 
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)
@@ -319,12 +322,15 @@ RUN apt-get update && apt-get install -y \
     python3.14-dev \
     python3.14-venv \
     ruby \
+    ruby-dev \
     ruby-nokogiri \
     ruby-rack \
     libruby \
     default-jdk \
     nodejs \
     npm \
+    postgresql \
+    redis-server \
     build-essential \
     binutils-gold \
     libsqlite3-dev \
@@ -427,7 +433,8 @@ RUN ln -sf /usr/local/bin/omnivm /usr/local/bin/python3-omnivm
 # loaded until explicit post-fork OmniVM initialization or an external
 # manifest-runner process is used.
 COPY --from=builder /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript
-RUN chmod +x /usr/local/bin/python3-polyscript
+COPY --from=builder /build/scripts/run-manifest-libomnivm.py /usr/local/bin/run-manifest-libomnivm.py
+RUN chmod +x /usr/local/bin/python3-polyscript /usr/local/bin/run-manifest-libomnivm.py
 ENV POLYSCRIPT_PYTHON_BIN=python3.14
 
 # libomnivm.so — c-shared library for pip-installable Python package.

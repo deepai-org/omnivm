@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,6 +217,44 @@ func TestParseManifestLoopAwaitMetadata(t *testing.T) {
 	}
 	if loop.Variable != "row" || loop.Iterable == nil || loop.Iterable.Name != "rows" {
 		t.Fatalf("bad foreach metadata: variable=%q iterable=%#v", loop.Variable, loop.Iterable)
+	}
+}
+
+func TestParseManifestSourceArtifactStringAndObjectShapes(t *testing.T) {
+	data := `{
+	  "version": 1,
+	  "defaultRuntime": "python",
+	  "ops": [
+	    {
+	      "op": "import",
+	      "runtime": "python",
+	      "path": ".",
+	      "sourceArtifact": "from . import views",
+	      "specifiers": [{"imported": "views", "local": "views"}]
+	    },
+	    {
+	      "op": "func_def",
+	      "name": "read_item",
+	      "params": [{"name": "item_id"}],
+	      "body": [],
+	      "bodyRuntime": "python",
+	      "sourceArtifact": {
+	        "paramsSource": ["item_id"],
+	        "bodySource": "return item_id",
+	        "functionSource": "@app.get(\"/items/{item_id}\")\ndef read_item(item_id):\n  return item_id"
+	      }
+	    }
+	  ]
+	}`
+	m, err := ParseManifest([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseManifest sourceArtifact union: %v", err)
+	}
+	if got := m.Ops[0].SourceArtifact.Source; got != "from . import views" {
+		t.Fatalf("import sourceArtifact source = %q, want relative import source", got)
+	}
+	if got := m.Ops[1].SourceArtifact.FunctionSource; !strings.Contains(got, "@app.get") {
+		t.Fatalf("func_def sourceArtifact functionSource = %q, want decorated source", got)
 	}
 }
 
@@ -566,6 +605,153 @@ func TestOpThrowAndTry(t *testing.T) {
 	}
 }
 
+func TestOpTryBindsRuntimeErrorEnvelope(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	e.defaultRuntime = "javascript"
+	mocks["javascript"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Err: errors.New("javascript: Error: stop-stream\n    at <anonymous>:1:1")}
+	}
+
+	op := &Op{
+		OpType: "try",
+		Body: []*Op{
+			{OpType: "exec", Runtime: "javascript", Code: `throw new Error("stop-stream")`},
+		},
+		Catches: []*CatchClause{
+			{
+				Param: "err",
+				Body: []*Op{
+					{OpType: "return", Value: &ValueExpr{Kind: "ref", Name: "err"}},
+				},
+				Runtime: "javascript",
+			},
+		},
+	}
+	_, err := e.executeOp(op)
+	ret, ok := err.(ErrReturn)
+	if !ok {
+		t.Fatalf("expected ErrReturn from catch, got %v", err)
+	}
+	envelope, ok := ret.Value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("caught = %T, want runtime error envelope map", ret.Value)
+	}
+	if envelope["runtime"] != "javascript" || envelope["origin_runtime"] != "javascript" {
+		t.Fatalf("runtime envelope = %#v, want javascript origin/runtime", envelope)
+	}
+	if envelope["originRuntime"] != envelope["origin_runtime"] {
+		t.Fatalf("originRuntime alias = %#v, want %#v", envelope["originRuntime"], envelope["origin_runtime"])
+	}
+	if envelope["type"] != "Error" || envelope["name"] != "Error" || envelope["message"] != "stop-stream" {
+		t.Fatalf("error identity fields = %#v, want Error stop-stream", envelope)
+	}
+	if envelope["boundary_path"] != "exec[javascript]" {
+		t.Fatalf("boundary_path = %#v, want exec[javascript]", envelope["boundary_path"])
+	}
+	if envelope["boundaryPath"] != envelope["boundary_path"] {
+		t.Fatalf("boundaryPath alias = %#v, want %#v", envelope["boundaryPath"], envelope["boundary_path"])
+	}
+	if frames, ok := envelope["stack_frames"].([]interface{}); !ok || len(frames) < 2 {
+		t.Fatalf("stack_frames = %#v, want captured stack text", envelope["stack_frames"])
+	}
+	if !reflect.DeepEqual(envelope["stackFrames"], envelope["stack_frames"]) {
+		t.Fatalf("stackFrames alias = %#v, want %#v", envelope["stackFrames"], envelope["stack_frames"])
+	}
+	if !reflect.DeepEqual(envelope["causeChain"], envelope["cause_chain"]) {
+		t.Fatalf("causeChain alias = %#v, want %#v", envelope["causeChain"], envelope["cause_chain"])
+	}
+}
+
+func TestOpTryBindsThrownRuntimeNotCatchRuntime(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	e.defaultRuntime = "javascript"
+	mocks["python"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Err: errors.New("python: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nValueError: bad order")}
+	}
+
+	op := &Op{
+		OpType: "try",
+		Body: []*Op{
+			{OpType: "exec", Runtime: "python", Code: `fail_py()`},
+		},
+		Catches: []*CatchClause{
+			{
+				Param: "err",
+				Body: []*Op{
+					{OpType: "return", Value: &ValueExpr{Kind: "ref", Name: "err"}},
+				},
+				Runtime: "javascript",
+			},
+		},
+	}
+	_, err := e.executeOp(op)
+	ret, ok := err.(ErrReturn)
+	if !ok {
+		t.Fatalf("expected ErrReturn from catch, got %v", err)
+	}
+	envelope, ok := ret.Value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("caught = %T, want runtime error envelope map", ret.Value)
+	}
+	if envelope["runtime"] != "python" || envelope["origin_runtime"] != "python" || envelope["originRuntime"] != "python" {
+		t.Fatalf("runtime envelope = %#v, want python origin/runtime with aliases", envelope)
+	}
+	if envelope["type"] != "ValueError" || envelope["name"] != "ValueError" || envelope["message"] != "bad order" {
+		t.Fatalf("error identity fields = %#v, want ValueError bad order", envelope)
+	}
+	if envelope["boundary_path"] != "exec[python]" || envelope["boundaryPath"] != "exec[python]" {
+		t.Fatalf("boundary aliases = %#v / %#v, want exec[python]", envelope["boundary_path"], envelope["boundaryPath"])
+	}
+	if frames, ok := envelope["stackFrames"].([]interface{}); !ok || len(frames) < 3 {
+		t.Fatalf("stackFrames = %#v, want Python traceback frames", envelope["stackFrames"])
+	}
+}
+
+func TestOpTryBindsJavaRuntimeErrorConcreteType(t *testing.T) {
+	e, mocks := makeExecutor("java", "javascript")
+	e.defaultRuntime = "javascript"
+	mocks["java"].execFn = func(code string) pkg.Result {
+		return pkg.Result{Err: errors.New("java: jvm: java.lang.IllegalStateException: bad java")}
+	}
+
+	op := &Op{
+		OpType: "try",
+		Body: []*Op{
+			{OpType: "exec", Runtime: "java", Code: `throw new java.lang.IllegalStateException("bad java");`},
+		},
+		Catches: []*CatchClause{
+			{
+				Param: "err",
+				Body: []*Op{
+					{OpType: "return", Value: &ValueExpr{Kind: "ref", Name: "err"}},
+				},
+				Runtime: "javascript",
+			},
+		},
+	}
+	_, err := e.executeOp(op)
+	ret, ok := err.(ErrReturn)
+	if !ok {
+		t.Fatalf("expected ErrReturn from catch, got %v", err)
+	}
+	envelope, ok := ret.Value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("caught = %T, want runtime error envelope map", ret.Value)
+	}
+	if envelope["runtime"] != "java" || envelope["origin_runtime"] != "java" || envelope["originRuntime"] != "java" {
+		t.Fatalf("runtime envelope = %#v, want java origin/runtime with aliases", envelope)
+	}
+	if envelope["type"] != "IllegalStateException" || envelope["name"] != "IllegalStateException" || envelope["message"] != "bad java" {
+		t.Fatalf("error identity fields = %#v, want IllegalStateException bad java", envelope)
+	}
+	if envelope["boundary_path"] != "exec[java]" || envelope["boundaryPath"] != "exec[java]" {
+		t.Fatalf("boundary aliases = %#v / %#v, want exec[java]", envelope["boundary_path"], envelope["boundaryPath"])
+	}
+	if frames, ok := envelope["stackFrames"].([]interface{}); !ok || len(frames) < 1 {
+		t.Fatalf("stackFrames = %#v, want Java error text frame", envelope["stackFrames"])
+	}
+}
+
 func TestOpTryFinally(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"
@@ -631,7 +817,7 @@ func TestOpForeach(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.defaultRuntime = "javascript"
 	e.setBinding("items", []interface{}{"a", "b", "c"})
-	e.setBinding("collected", "")
+	e.setBinding("collected", 0)
 
 	op := &Op{
 		OpType:   "loop",
@@ -643,7 +829,7 @@ func TestOpForeach(t *testing.T) {
 				OpType:   "assign",
 				Target:   "collected",
 				Operator: "+=",
-				Value:    &ValueExpr{Kind: "ref", Name: "item"},
+				Value:    &ValueExpr{Kind: "literal", Value: 1},
 			},
 		},
 	}
@@ -652,6 +838,92 @@ func TestOpForeach(t *testing.T) {
 	// The applyOperator will try to convert "a" to float (0) and add — that's fine for this test
 	if err != nil {
 		t.Fatalf("foreach: %v", err)
+	}
+}
+
+func TestOpForeachHonorsBreakAndContinueControlFlow(t *testing.T) {
+	breakExec, _ := makeExecutor("javascript")
+	breakExec.defaultRuntime = "javascript"
+	breakExec.setBinding("items", []interface{}{"a", "b", "c"})
+	breakExec.setBinding("count", 0)
+
+	breakOp := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Variable: "item",
+		Iterable: &ValueExpr{Kind: "ref", Name: "items"},
+		Body: []*Op{
+			{OpType: "native", Runtime: "javascript", Code: "break"},
+			{
+				OpType:   "assign",
+				Target:   "count",
+				Operator: "+=",
+				Value:    &ValueExpr{Kind: "literal", Value: 1},
+			},
+		},
+	}
+	if _, err := breakExec.executeOp(breakOp); err != nil {
+		t.Fatalf("foreach break control flow: %v", err)
+	}
+	got, _ := breakExec.getBinding("count")
+	if got != 0 {
+		t.Fatalf("count after break = %#v, want 0", got)
+	}
+
+	continueExec, _ := makeExecutor("javascript")
+	continueExec.defaultRuntime = "javascript"
+	continueExec.setBinding("items", []interface{}{"a", "b", "c"})
+	continueExec.setBinding("count", 0)
+
+	continueOp := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Variable: "item",
+		Iterable: &ValueExpr{Kind: "ref", Name: "items"},
+		Body: []*Op{
+			{OpType: "native", Runtime: "javascript", Code: "continue"},
+			{
+				OpType:   "assign",
+				Target:   "count",
+				Operator: "+=",
+				Value:    &ValueExpr{Kind: "literal", Value: 1},
+			},
+		},
+	}
+	if _, err := continueExec.executeOp(continueOp); err != nil {
+		t.Fatalf("foreach continue control flow: %v", err)
+	}
+	got, _ = continueExec.getBinding("count")
+	if got != 0 {
+		t.Fatalf("count after continue = %#v, want 0", got)
+	}
+}
+
+func TestOpForeachStreamHonorsBreakControlFlow(t *testing.T) {
+	e, _ := makeExecutor("javascript")
+	ch := &ChanRef{ch: make(chan interface{}, 2)}
+	ch.ch <- "first"
+	ch.ch <- "second"
+	if err := ch.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	id, err := e.channelStreamHandle(ch)
+	if err != nil {
+		t.Fatalf("channelStreamHandle: %v", err)
+	}
+	op := &Op{
+		OpType:   "loop",
+		Mode:     "foreach",
+		Variable: "item",
+		Iterable: &ValueExpr{Kind: "ref", Name: "rows"},
+		Body:     []*Op{{OpType: "native", Runtime: "javascript", Code: "break"}},
+	}
+	if _, err := e.opLoopForeachStreamHandle(op, id, "test stream"); err != nil {
+		t.Fatalf("stream foreach break control flow: %v", err)
+	}
+	stats := e.handleTable.Stats(time.Now())
+	if stats.Live != 0 || stats.ExplicitReleases != 1 || stats.HandleAccessesByKind["stream"] != 1 {
+		t.Fatalf("stream foreach break stats = %+v, want one pull and release", stats)
 	}
 }
 
@@ -792,6 +1064,132 @@ func TestOpUnknownType(t *testing.T) {
 	_, err := e.executeOp(&Op{OpType: "nonsense"})
 	if err == nil {
 		t.Error("expected error for unknown op type")
+	}
+}
+
+func TestFuncDefExecutesPythonSourceArtifactAsNativeBindingWithoutOverwriting(t *testing.T) {
+	data := `{
+	  "version": 1,
+	  "defaultRuntime": "javascript",
+	  "ops": [{
+	    "op": "func_def",
+	    "name": "row_stream",
+	    "params": [],
+	    "bodyRuntime": "python",
+	    "body": [],
+	    "sourceArtifact": {
+	      "functionSource": "def row_stream():\n  yield {\"items\": 1}"
+	    }
+	  }]
+	}`
+	m, err := ParseManifest([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+
+	e, mocks := makeExecutor("python", "javascript")
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "row_stream") {
+			return pkg.Result{Output: `{"primitive":false,"callable":true,"callableShape":{"parameterNames":[],"arity":0}}`}
+		}
+		return pkg.Result{Output: `null`}
+	}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute source func_def: %v", err)
+	}
+
+	calls := mocks["python"].execCalls
+	if len(calls) != 1 {
+		t.Fatalf("python Execute calls = %#v, want only native function source", calls)
+	}
+	if !strings.Contains(calls[0], "def row_stream") || !strings.Contains(calls[0], "yield") {
+		t.Fatalf("Python Execute call = %q, want native function source", calls[0])
+	}
+	if strings.Contains(calls[0], "__omnivm_manifest_invoke") {
+		t.Fatalf("Python source function was overwritten by manifest stub: %q", calls[0])
+	}
+	val, ok := e.getBinding("row_stream")
+	if !ok {
+		t.Fatal("row_stream binding was not recorded")
+	}
+	ref, ok := val.(RuntimeRef)
+	if !ok || ref.Runtime != "python" || ref.VarName != "row_stream" || !ref.CallableKnown || !ref.Callable {
+		t.Fatalf("row_stream binding = %#v, want callable Python RuntimeRef", val)
+	}
+}
+
+func TestFuncDefWrapsAsyncPythonSourceArtifactForSameRuntimeCalls(t *testing.T) {
+	data := `{
+	  "version": 1,
+	  "defaultRuntime": "javascript",
+	  "ops": [{
+	    "op": "func_def",
+	    "name": "submit_order",
+	    "params": [],
+	    "bodyRuntime": "python",
+	    "async": true,
+	    "body": [],
+	    "sourceArtifact": {
+	      "functionSource": "async def submit_order():\n  return {\"order_id\": \"ord-42\"}"
+	    }
+	  }]
+	}`
+	m, err := ParseManifest([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+
+	e, mocks := makeExecutor("python", "javascript")
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "submit_order") {
+			return pkg.Result{Output: `{"primitive":false,"callable":true,"callableShape":{"parameterNames":[],"arity":0}}`}
+		}
+		return pkg.Result{Output: `null`}
+	}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute async source func_def: %v", err)
+	}
+
+	calls := mocks["python"].execCalls
+	if len(calls) != 2 {
+		t.Fatalf("python Execute calls = %#v, want source plus async wrapper", calls)
+	}
+	if !strings.Contains(calls[0], "async def submit_order") {
+		t.Fatalf("first Python Execute call = %q, want async source function", calls[0])
+	}
+	if !strings.Contains(calls[1], "__omnivm_native_async_submit_order = submit_order") ||
+		!strings.Contains(calls[1], "asyncio.run") ||
+		!strings.Contains(calls[1], "submit_order = __omnivm_functools.wraps(__omnivm_native_async_submit_order)(__omnivm_sync_submit_order)") {
+		t.Fatalf("second Python Execute call = %q, want async source wrapper", calls[1])
+	}
+}
+
+func TestProxyCallableBridgeCapturesRuntimeRefAsCallableHandle(t *testing.T) {
+	e, _ := makeExecutor("python", "javascript")
+	e.bridgeOps = buildBridgeIndex([]*BridgeOp{{
+		Binding: "row_stream",
+		From:    "python",
+		To:      "javascript",
+		Op:      "proxy_callable",
+	}})
+
+	jsonVal, err := e.resolveRuntimeRefCapture("row_stream", "javascript", RuntimeRef{
+		Runtime:       "python",
+		VarName:       "row_stream",
+		Opaque:        true,
+		CallableKnown: true,
+		Callable:      true,
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeRefCapture: %v", err)
+	}
+
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	if descriptor["__omnivm_resource__"] != true || descriptor["kind"] != "callable" || descriptor["runtime"] != "python" {
+		t.Fatalf("descriptor = %#v, want Python callable resource", descriptor)
 	}
 }
 
@@ -1588,6 +1986,23 @@ func TestResourceCloseExecutesCleanupHook(t *testing.T) {
 	}
 	if !containsExecCall(mocks["python"].execCalls, "cleanup_log.append('rollback')") {
 		t.Fatalf("cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+}
+
+func TestResourceCloseExecutesCleanupHookForPlainContextValue(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	e.setBinding("session", map[string]interface{}{"closed": false})
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "close",
+		Runtime: "python",
+		Target:  "session",
+		Code:    "session.__exit__(None, None, None)",
+	}); err != nil {
+		t.Fatalf("plain context close: %v", err)
+	}
+	if !containsExecCall(mocks["python"].execCalls, "session.__exit__(None, None, None)") {
+		t.Fatalf("plain context cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
 	}
 }
 
@@ -5085,6 +5500,66 @@ func TestHandleCallGenerator(t *testing.T) {
 	}
 }
 
+func TestFuncDefExecutesJavaScriptGeneratorSourceArtifactNatively(t *testing.T) {
+	e, mocks := makeExecutor("javascript", "python")
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitive") {
+			return pkg.Result{Value: `{"primitive":false,"callable":true}`}
+		}
+		return pkg.Result{Value: nil}
+	}
+	op := &Op{
+		OpType:      "func_def",
+		Name:        "rows",
+		BodyRuntime: "javascript",
+		Generator:   true,
+		SourceArtifact: &SourceArtifact{
+			FunctionSource: "* rows() { yield 1 }",
+		},
+	}
+	if _, err := e.opFuncDef(op); err != nil {
+		t.Fatalf("opFuncDef javascript source artifact: %v", err)
+	}
+	fd := e.funcs["rows"]
+	if fd == nil || fd.NativeRuntime != "javascript" {
+		t.Fatalf("func native runtime = %#v, want javascript", fd)
+	}
+	if len(mocks["javascript"].execCalls) == 0 || !strings.Contains(mocks["javascript"].execCalls[0], "function* rows()") {
+		t.Fatalf("javascript native source was not executable function*: %q", mocks["javascript"].execCalls)
+	}
+	if containsExecCall(mocks["javascript"].execCalls[1:], "__omnivm_manifest_invoke") {
+		t.Fatalf("native runtime should not receive manifest callback stub: %q", mocks["javascript"].execCalls)
+	}
+	if !containsExecCall(mocks["python"].execCalls, "__omnivm_manifest_invoke") {
+		t.Fatalf("other runtimes should still receive manifest callback stubs: %q", mocks["python"].execCalls)
+	}
+}
+
+func TestNativeGeneratorCallRuntimeRefUsesOwnerRuntimeStream(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	e.funcs["rows"] = &FuncDef{Name: "rows", Generator: true, NativeRuntime: "javascript"}
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "primitive"):
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		case strings.Contains(code, "Symbol.iterator"):
+			return pkg.Result{Value: true}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+	ref, ok, err := e.nativeGeneratorCallRuntimeRef(`rows("break")`)
+	if err != nil {
+		t.Fatalf("nativeGeneratorCallRuntimeRef: %v", err)
+	}
+	if !ok || ref.Runtime != "javascript" || !strings.HasPrefix(ref.VarName, "__omnivm_native_generator_") {
+		t.Fatalf("native generator ref = (%#v, %v), want javascript stream ref", ref, ok)
+	}
+	if len(mocks["javascript"].execCalls) == 0 || !strings.Contains(mocks["javascript"].execCalls[0], `rows("break")`) {
+		t.Fatalf("native generator call was not assigned in owner runtime: %q", mocks["javascript"].execCalls)
+	}
+}
+
 func TestHandleCallSpread(t *testing.T) {
 	e, _ := makeExecutor("javascript")
 	e.funcs["variadic"] = &FuncDef{
@@ -5200,9 +5675,73 @@ func TestRuntimePrimitiveSnapshotExprProbesCallableShape(t *testing.T) {
 	if !strings.Contains(rb, "Encoding::ASCII_8BIT") {
 		t.Fatalf("Ruby primitive snapshot should keep binary strings out of text captures, got %q", rb)
 	}
+	if !strings.Contains(rb, "force_encoding(Encoding::UTF_8)") || !strings.Contains(rb, "valid_encoding?") {
+		t.Fatalf("Ruby primitive snapshot should validate ASCII-8BIT strings before text capture, got %q", rb)
+	}
 	java := runtimePrimitiveSnapshotExpr("java", "handler")
 	if !strings.Contains(java, "primitiveSnapshot(handler)") {
 		t.Fatalf("Java primitive snapshot should delegate to Java reflection helper, got %q", java)
+	}
+}
+
+func TestJavaRuntimeRefSnapshotPreservesSourceUsableTypeName(t *testing.T) {
+	e, mocks := makeExecutor("java")
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitiveSnapshot") {
+			return pkg.Result{Value: `{"primitive":false,"typeName":"java.nio.ByteBuffer","callable":false}`}
+		}
+		return pkg.Result{Value: `null`}
+	}
+
+	ref, val, err := e.boundRuntimeRefSnapshot("java", "java_buffer")
+	if err != nil {
+		t.Fatalf("boundRuntimeRefSnapshot: %v", err)
+	}
+	if !ref.SnapshotKnown || !ref.Opaque || ref.TypeName != "java.nio.ByteBuffer" {
+		t.Fatalf("Java runtime ref snapshot = %+v, want opaque java.nio.ByteBuffer", ref)
+	}
+	if _, ok := val.(RuntimeRef); !ok {
+		t.Fatalf("Java opaque snapshot value = %#v, want RuntimeRef", val)
+	}
+	e.setBinding("java_buffer", ref)
+	prefix := e.javaPersistentAliasPrefix(nil)
+	if !strings.Contains(prefix, `java.nio.ByteBuffer java_buffer = (java.nio.ByteBuffer) omnivm.OmniVM.getCapture("java_buffer");`) {
+		t.Fatalf("Java persistent alias should use snapshot type, got %q", prefix)
+	}
+}
+
+func TestOpEvalJavaPreservesSnapshotTypeForStaticFactoryBind(t *testing.T) {
+	e, mocks := makeExecutor("java")
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitiveSnapshot") {
+			return pkg.Result{Value: `{"primitive":false,"typeName":"java.nio.ByteBuffer","callable":false}`}
+		}
+		return pkg.Result{Value: `null`}
+	}
+
+	_, err := e.opEval(&Op{
+		OpType:  "eval",
+		Runtime: "java",
+		Code:    "java.nio.ByteBuffer.allocateDirect(4)",
+		Bind:    "java_buffer",
+	})
+	if err != nil {
+		t.Fatalf("opEval failed: %v", err)
+	}
+	binding, ok := e.getBinding("java_buffer")
+	if !ok {
+		t.Fatal("java_buffer binding was not recorded")
+	}
+	ref, ok := binding.(RuntimeRef)
+	if !ok {
+		t.Fatalf("java_buffer binding = %T, want RuntimeRef", binding)
+	}
+	if ref.TypeName != "java.nio.ByteBuffer" {
+		t.Fatalf("java_buffer TypeName = %q, want snapshot java.nio.ByteBuffer", ref.TypeName)
+	}
+	prefix := e.javaPersistentAliasPrefix(nil)
+	if !strings.Contains(prefix, `java.nio.ByteBuffer java_buffer = (java.nio.ByteBuffer) omnivm.OmniVM.getCapture("java_buffer");`) {
+		t.Fatalf("Java persistent alias should use static-factory snapshot type, got %q", prefix)
 	}
 }
 
@@ -5228,9 +5767,9 @@ func TestRuntimeRefRubyStreamProbeUsesGenericStreamShape(t *testing.T) {
 			t.Fatalf("ruby stream probe missing %q in %q", want, expr)
 		}
 	}
-	for _, unwanted := range []string{"request_method", "__omnivm_http_message", "get_header"} {
-		if strings.Contains(expr, unwanted) {
-			t.Fatalf("ruby stream probe should not contain domain-specific guard %q in %q", unwanted, expr)
+	for _, want := range []string{"request_method", "__omnivm_http_message", "get_header", "!__omnivm_http_message"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("ruby stream probe missing HTTP message guard %q in %q", want, expr)
 		}
 	}
 }
@@ -5245,9 +5784,14 @@ func TestRuntimeRefPythonStreamProbeUsesGenericStreamShape(t *testing.T) {
 			t.Fatalf("python stream probe missing generic guard %q in %q", want, expr)
 		}
 	}
-	for _, unwanted := range []string{"model_fields", "status_code", "streaming_content"} {
-		if strings.Contains(expr, unwanted) {
-			t.Fatalf("python stream probe should not contain domain-specific guard %q in %q", unwanted, expr)
+	for _, want := range []string{"method", "request_method", "status_code", "streaming_content"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("python stream probe missing HTTP message guard %q in %q", want, expr)
+		}
+	}
+	for _, want := range []string{"model_fields", "DESCRIPTOR", "fields_by_name"} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("python stream probe missing framework-field guard %q in %q", want, expr)
 		}
 	}
 	if strings.Count(expr, "(") != strings.Count(expr, ")") {
@@ -7262,7 +7806,8 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
-		!contains(code, "except Exception:\n            self._mark_closed(\"owner_lifecycle\")\n            raise") ||
+		!contains(code, "except Exception as err:\n            try:\n                if not self.close():") ||
+		!contains(code, "f\"OmniVM stream close failed during pull error cleanup: {close_exc}\"") ||
 		!contains(code, "if self._closed:\n            return False") ||
 		!contains(code, "if self._local_values is not None:\n            self._cache = self._cache[:self._cursor]\n            return self._mark_closed(\"explicit_release\")") ||
 		!contains(code, `"op": "stream_cancel"`) ||
@@ -7768,6 +8313,47 @@ if old_cleanup:
 	}
 }
 
+func TestPythonProxyCloseWithoutBridgeMarksClosed(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := code + `
+resource = __omnivm_materialize_capture({"__omnivm_resource__": True, "id": 601, "runtime": "python", "kind": "request"})
+stream = __omnivm_materialize_capture({"__omnivm_stream__": True, "id": 602, "runtime": "python", "kind": "stream"})
+
+if resource.close() is not False:
+    raise RuntimeError("bridge-less resource close should return idempotent false")
+if not object.__getattribute__(resource, "_closed"):
+    raise RuntimeError("bridge-less resource was not marked closed")
+if resource.close() is not False:
+    raise RuntimeError("second bridge-less resource close should remain false")
+try:
+    resource.path
+    raise RuntimeError("closed bridge-less resource access unexpectedly succeeded")
+except RuntimeError as exc:
+    if "closed request handle #601" not in str(exc):
+        raise
+
+if stream.close() is not False:
+    raise RuntimeError("bridge-less stream close should return idempotent false")
+if not stream._closed:
+    raise RuntimeError("bridge-less stream was not marked closed")
+if stream.close() is not False:
+    raise RuntimeError("second bridge-less stream close should remain false")
+try:
+    next(stream)
+    raise RuntimeError("closed bridge-less stream unexpectedly yielded")
+except StopIteration:
+    pass
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python bridge-less proxy close check failed: %v\n%s", err, out)
+	}
+}
+
 func TestPythonRemoteStreamRejectsMalformedNextChunk(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -8145,6 +8731,53 @@ if len(cancels) != 1 or cancels[0].get("id") != 89:
 	out, err := exec.Command(python, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("python remote stream materialization-error cancellation check failed: %v\n%s", err, out)
+	}
+}
+
+func TestPythonRemoteStreamCancelsOnOwnerPullError(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	code := injectPythonCaptures(nil)
+	script := `
+import json
+class Bridge:
+    requests = []
+    @staticmethod
+    def call(runtime, payload):
+        if runtime != "__manifest":
+            raise RuntimeError("unexpected runtime " + runtime)
+        req = json.loads(payload)
+        Bridge.requests.append(req)
+        if req["op"] == "handle_retain":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        if req["op"] == "stream_next":
+            raise RuntimeError("owner read failed")
+        if req["op"] == "stream_cancel":
+            return json.dumps({"__omnivm_result__": True, "value": True})
+        raise RuntimeError("unexpected manifest op " + req["op"])
+` + code + `
+omnivm = Bridge
+stream = __OmniVMStreamProxy({"__omnivm_stream__": True, "id": 91, "runtime": "python", "kind": "stream"})
+try:
+    next(stream)
+except RuntimeError as exc:
+    if "owner read failed" not in str(exc):
+        raise
+else:
+    raise RuntimeError("owner pull error was not raised")
+if not stream._closed:
+    raise RuntimeError("stream was not marked closed")
+if stream.close() is not False:
+    raise RuntimeError("close was not idempotent")
+cancels = [req for req in Bridge.requests if req.get("op") == "stream_cancel"]
+if len(cancels) != 1 or cancels[0].get("id") != 91:
+    raise RuntimeError("stream cancel requests mismatch: " + repr(cancels))
+`
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python remote stream owner-pull-error lifecycle check failed: %v\n%s", err, out)
 	}
 }
 
@@ -8544,6 +9177,10 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 		"Object.defineProperty(omnivm, \"bufferOwner\"",
 		"omnivm.setBuffer(this.name, this.__omnivm_data, this.__omnivm_dtype)",
 		"omnivm.releaseBuffer(this.name)",
+		"__omnivm_native_release_buffer",
+		"__omnivm_structured_release",
+		"omnivm.bufferStatus(name)",
+		`__omnivm_owner_dispatch_error(message, "native_memory", details)`,
 		"__omnivm_buffer_owner_error",
 		`"native_memory"`,
 		`lease_state: "active"`,
@@ -8590,9 +9227,11 @@ func TestJSCaptureMaterializerHandlesTableProxy(t *testing.T) {
 	}
 	if !contains(code, `var bridgeThenForNaturalAccess = function()`) ||
 		!contains(code, `var value = bridgeGet("then", missing, true);`) ||
-		!contains(code, `if (value === missing || typeof value === "function") return undefined;`) ||
+		!contains(code, `var suppressNextThenableAccess = false;`) ||
+		!contains(code, `return args[0](proxy);`) ||
+		!contains(code, `return value.apply(this, args);`) ||
 		!contains(code, `if (prop === 'then') return bridgeThenForNaturalAccess();`) {
-		t.Fatalf("JS materializer should expose non-callable remote then fields while hiding callable thenables, got %q", code)
+		t.Fatalf("JS materializer should expose remote then fields and methods while suppressing Promise thenable recursion, got %q", code)
 	}
 	if !contains(code, `env.value.zeroArg === true`) || !contains(code, `return bridge({op: "handle_call", key: env.value.key, args: []});`) {
 		t.Fatalf("JS materializer should invoke zero-arg callable descriptors as property access, got %q", code)
@@ -9186,6 +9825,73 @@ return promiseResult.then(function(value) {
 	}
 }
 
+func TestJSCaptureReleaseBufferFailureHasStructuredDetails(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	code := injectJSCaptures(nil)
+	script := `
+globalThis.omnivm = {
+  events: [],
+  releaseBuffer: function(name) {
+    this.events.push(["release", name]);
+    throw new Error("native release failed");
+  },
+  bufferStatus: function(name) {
+    this.events.push(["status", name]);
+    return {
+      name: name,
+      state: "released_detached",
+      lease_state: "detached",
+      released: true,
+      len: 4,
+      dtype: 1,
+      format: "i",
+      arrow_format: "i",
+      shape: [2, 2],
+      strides: [8, 4],
+      offset: 0,
+      null_count: 1,
+      validity_bytes: 1,
+      validity_bit_offset: 3,
+      read_only: true,
+      ownership: "producer"
+    };
+  }
+};
+` + code + `
+try {
+  omnivm.releaseBuffer("payload");
+  throw new Error("releaseBuffer failure did not throw");
+} catch (err) {
+  if (err.message !== "native release failed") throw err;
+  if (err.runtime !== "javascript") throw new Error("runtime mismatch: " + err.runtime);
+  if (err.originRuntime !== "javascript") throw new Error("originRuntime mismatch: " + err.originRuntime);
+  if (err.type !== "RuntimeError") throw new Error("type mismatch: " + err.type);
+  if (err.boundaryPath !== "native_memory" || err.boundary_path !== "native_memory") throw new Error("boundary mismatch: " + err.boundaryPath);
+  var buffer = err.details && err.details.buffer;
+  if (!buffer) throw new Error("missing buffer details: " + JSON.stringify(err.details));
+  for (const key of ["name", "state", "lease_state", "released", "len", "dtype", "format", "arrow_format", "shape", "strides", "offset", "null_count", "validity_bytes", "validity_bit_offset", "read_only", "ownership"]) {
+    if (!(key in buffer)) throw new Error("missing buffer detail " + key + ": " + JSON.stringify(buffer));
+  }
+  if (buffer.name !== "payload" || buffer.lease_state !== "detached" || buffer.arrow_format !== "i" || buffer.validity_bit_offset !== 3 || buffer.ownership !== "producer") {
+    throw new Error("buffer details mismatch: " + JSON.stringify(buffer));
+  }
+  var envelope = err.toJSON();
+  if (envelope.boundary_path !== "native_memory" || envelope.details.buffer.name !== "payload") {
+    throw new Error("structured JSON mismatch: " + JSON.stringify(envelope));
+  }
+}
+var expected = JSON.stringify([["release", "payload"], ["status", "payload"]]);
+if (JSON.stringify(omnivm.events) !== expected) throw new Error("release/status calls mismatch: " + JSON.stringify(omnivm.events));
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node releaseBuffer structured failure check failed: %v\n%s", err, out)
+	}
+}
+
 func TestJSCaptureProxyIdentityNameCollisionsPreferRemoteFields(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -9519,10 +10225,8 @@ globalThis.omnivm = {
 };
 ` + code + `
 var callableThen = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 78, runtime: "javascript", kind: "object"});
-if (callableThen.then !== undefined) throw new Error("callable remote then became a JS thenable");
-var thenMethod = omnivm.proxyGet(callableThen, "then");
-if (typeof thenMethod !== "function") throw new Error("proxyGet did not recover callable remote then");
-if (thenMethod("ok") !== "called:ok") throw new Error("callable remote then did not dispatch through handle_call");
+if (typeof callableThen.then !== "function") throw new Error("callable remote then was not exposed naturally");
+if (callableThen.then("ok") !== "called:ok") throw new Error("callable remote then did not dispatch through handle_call");
 var plainThen = globalThis.__omnivm_materialize_capture({__omnivm_resource__: true, id: 79, runtime: "javascript", kind: "object"});
 if (plainThen.then !== "remote-then") throw new Error("non-callable remote then field was not natural: " + String(plainThen.then));
 if (omnivm.proxyGet(plainThen, "then") !== "remote-then") throw new Error("proxyGet did not recover non-callable remote then");
@@ -9530,11 +10234,19 @@ var beforePromise = omnivm.calls.length;
 var callablePromise = Promise.resolve(callableThen);
 var plainPromise = Promise.resolve(plainThen);
 if (omnivm.calls.length <= beforePromise) throw new Error("Promise.resolve did not inspect then through the proxy contract");
+var callableResolved = false;
+var plainResolved = false;
 callablePromise.then(function(value) {
   if (value !== callableThen) throw new Error("callable remote then assimilated the proxy");
+  callableResolved = true;
 });
 plainPromise.then(function(value) {
   if (value !== plainThen) throw new Error("non-callable remote then assimilated the proxy");
+  plainResolved = true;
+});
+setImmediate(function() {
+  if (!callableResolved) throw new Error("callable remote then Promise.resolve stayed pending");
+  if (!plainResolved) throw new Error("non-callable remote then Promise.resolve stayed pending");
 });
 `
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
@@ -10592,7 +11304,10 @@ func TestInjectRubyCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "OMNIVM_MISSING = Object.new") || !contains(code, "def __omnivm_data_key?") || !contains(code, "def __omnivm_data_key_value") {
 		t.Fatalf("Ruby materializer should prefer remote data keys before local proxy methods, got %q", code)
 	}
-	if !contains(code, "def then(*args, &block)") || !contains(code, `__omnivm_data_key_value("then")`) {
+	if !contains(code, "def then(*args, &block)") ||
+		!contains(code, `value = __omnivm_data_key_value("then")`) ||
+		!contains(code, "return value if args.empty? && !block_given?") ||
+		!contains(code, "return value.call(*args, &block) if value.respond_to?(:call)") {
 		t.Fatalf("Ruby materializer should let remote then fields beat Object#then, got %q", code)
 	}
 	if !contains(code, "def class") || !contains(code, `__omnivm_data_key_value("class")`) ||
@@ -11076,6 +11791,52 @@ end
 	}
 }
 
+func TestRubyHandleProxyCallableThenCollisionIsNatural(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => req["value"] == "then"}) if req["op"] == "handle_contains"
+    if req["op"] == "handle_index"
+      raise "manifest HandleCall: handle #{req["id"]} has no index #{req["value"]}"
+    end
+    if req["op"] == "handle_get" && req["key"] == "then"
+      return JSON.generate({"__omnivm_result__" => true, "value" => {"__omnivm_callable__" => true, "key" => "then"}})
+    end
+    if req["op"] == "handle_call" && req["key"] == "then"
+      return JSON.generate({"__omnivm_result__" => true, "value" => "called:#{req["args"][0]}"})
+    end
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 82, "runtime" => "python", "kind" => "object"})
+then_field = proxy.then
+raise "remote then property should be callable: #{then_field.inspect}" unless then_field.respond_to?(:call)
+raise "callable then did not dispatch naturally" unless proxy.then("ok") == "called:ok"
+then_calls = OmniVM.requests.select { |req| req["op"] == "handle_call" && req["key"] == "then" }
+raise "remote then call mismatch: #{then_calls.inspect}" unless then_calls.length == 1 && then_calls[0]["args"] == ["ok"]
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby callable then collision check failed: %v\n%s", err, out)
+	}
+}
+
 func TestRubyHandleProxyTableDescriptorMetadataDoesNotShadowRemoteFields(t *testing.T) {
 	ruby, err := exec.LookPath("ruby")
 	if err != nil {
@@ -11483,7 +12244,8 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		`"owner_dispatch_target"`,
 		"private static RuntimeError runtimeError(String message, String boundaryPath, Object details)",
 		`parsed.runtime = "java"`,
-		"parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(details))",
+		"parsed.details = RuntimeError.copyJsonValue(details)",
+		"parsed.detailsJson = jsonValue(parsed.details)",
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java runtime should expose owner-dispatch diagnostic guards, missing %q", want)
@@ -11656,7 +12418,10 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 	}
 	for _, want := range []string{
 		"private final Object details;",
-		"this.details = copyJsonValue(parseDetailsJson(parsed.detailsJson));",
+		"Object parsedDetails = parsed.details != null ? parsed.details : parseDetailsJson(parsed.detailsJson);",
+		"this.details = copyJsonValue(parsedDetails);",
+		"this.detailsJson = parsed.detailsJson != null",
+		"Object details;",
 		"public Object getDetails()",
 		`out.put("details", copyJsonValue(details))`,
 		`out.put("details_json", detailsJson)`,
@@ -11669,6 +12434,7 @@ func TestJavaRuntimeAdoptsReturnedTransferHandles(t *testing.T) {
 		"return copyCauseChain(causeChain);",
 		`out.put("cause_chain", copyJsonValue(causeChain))`,
 		"private static ParsedRuntimeError parseStructuredErrorEnvelope",
+		"parsed.details = RuntimeError.copyJsonValue(envelope.get(\"details\"))",
 		`parsed.detailsJson = detailsJsonValue(envelope)`,
 		"private static String detailsJsonValue(Map<?, ?> envelope)",
 		`Object rawDetails = jsonValue(envelope, "details_json", "detailsJson")`,
@@ -12123,9 +12889,7 @@ func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) 
         lastSetName = String.valueOf(name);
         lastSetDtype = dtype;
     }`, 1)
-	runtimeCode = strings.Replace(runtimeCode, `    public static void releaseBuffer(String name) {
-        nativeReleaseBuffer(name);
-    }`, `    public static void releaseBuffer(String name) {
+	runtimeCode = strings.Replace(runtimeCode, `            nativeReleaseBuffer(name);`, `            if (true) {
         releaseBufferCalls++;
         if (failReleaseWithTombstone) {
             throw runtimeError(
@@ -12142,10 +12906,15 @@ func TestJavaScopedBufferOwnerReleasesAndSuppressesCleanupFailure(t *testing.T) 
         if (failRelease) {
             throw new RuntimeException("release failed for " + name);
         }
-    }`, 1)
+            return;
+        }
+        nativeReleaseBuffer(name);`, 1)
 	runtimeCode = strings.Replace(runtimeCode, `    public static String bufferStatus(String name) {
         return nativeBufferStatus(name);
     }`, `    public static String bufferStatus(String name) {
+        if ("failing".equals(name) || "plain-tombstoned".equals(name)) {
+            return "{\"name\":\"" + name + "\",\"state\":\"released_detached\",\"lease_state\":\"detached\",\"released\":true,\"dtype\":1,\"format\":\"i\",\"arrow_format\":\"i\",\"shape\":[2],\"strides\":[4],\"offset\":1,\"null_count\":1,\"validity_bytes\":1,\"validity_bit_offset\":3,\"read_only\":true,\"ownership\":\"producer\"}";
+        }
         return "{\"name\":\"" + name + "\",\"lease_state\":\"owned\"}";
     }`, 1)
 
@@ -12219,8 +12988,30 @@ public final class ScopedBufferOwnerCheck {
             Throwable[] suppressed = err.getSuppressed();
             require(suppressed.length == 1, "cleanup failure was not suppressed: " + suppressed.length);
             require(String.valueOf(suppressed[0].getMessage()).contains("release failed for failing"), "suppressed cleanup mismatch: " + suppressed[0]);
+            require(suppressed[0] instanceof OmniVM.RuntimeError, "suppressed cleanup was not structured: " + suppressed[0].getClass());
+            OmniVM.RuntimeError cleanup = (OmniVM.RuntimeError) suppressed[0];
+            require("native_memory".equals(cleanup.getBoundaryPath()), "suppressed cleanup boundary mismatch: " + cleanup.getBoundaryPath());
+            require(String.valueOf(cleanup.getDetails()).contains("lease_state=detached"), "suppressed cleanup lease state missing: " + cleanup.getDetails());
+            require(String.valueOf(cleanup.getDetails()).contains("arrow_format=i"), "suppressed cleanup arrow format missing: " + cleanup.getDetails());
+            require(String.valueOf(cleanup.getDetails()).contains("validity_bit_offset=3"), "suppressed cleanup validity bit offset missing: " + cleanup.getDetails());
+            require(String.valueOf(cleanup.getDetails()).contains("ownership=producer"), "suppressed cleanup ownership missing: " + cleanup.getDetails());
         }
         require(OmniVM.releaseBufferCalls == 3, "release calls mismatch after failure: " + OmniVM.releaseBufferCalls);
+        OmniVM.failRelease = false;
+        OmniVM.failRelease = true;
+        OmniVM.BufferOwner plainTombstoned = OmniVM.bufferOwner("plain-tombstoned", new byte[] {7}, 1);
+        try {
+            plainTombstoned.release();
+            throw new AssertionError("plain tombstone release failure was not raised");
+        } catch (OmniVM.RuntimeError err) {
+            require("native_memory".equals(err.getBoundaryPath()), "plain tombstone boundary mismatch: " + err.getBoundaryPath());
+            require(String.valueOf(err.getDetails()).contains("released=true"), "plain tombstone details mismatch: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("null_count=1"), "plain tombstone null count missing: " + err.getDetails());
+            require(String.valueOf(err.getDetails()).contains("read_only=true"), "plain tombstone read-only missing: " + err.getDetails());
+        }
+        require(plainTombstoned.isReleased(), "plain tombstoned owner did not mark released after wrapped release failure");
+        require(!plainTombstoned.release(), "plain tombstoned owner second release was not idempotent");
+        require(OmniVM.releaseBufferCalls == 4, "release calls mismatch after plain tombstone failure: " + OmniVM.releaseBufferCalls);
         OmniVM.failRelease = false;
         OmniVM.failReleaseWithTombstone = true;
         OmniVM.BufferOwner tombstoned = OmniVM.bufferOwner("tombstoned", new byte[] {6}, 1);
@@ -12234,7 +13025,7 @@ public final class ScopedBufferOwnerCheck {
         }
         require(tombstoned.isReleased(), "tombstoned owner did not mark released after release failure");
         require(!tombstoned.release(), "tombstoned owner second release was not idempotent");
-        require(OmniVM.releaseBufferCalls == 4, "release calls mismatch after tombstone failure: " + OmniVM.releaseBufferCalls);
+        require(OmniVM.releaseBufferCalls == 5, "release calls mismatch after tombstone failure: " + OmniVM.releaseBufferCalls);
     }
 }
 `
@@ -12321,6 +13112,93 @@ public final class ProxyToStringCheck {
 	}
 	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyToStringCheck").CombinedOutput(); err != nil {
 		t.Fatalf("run Java proxy toString check: %v\n%s", err, out)
+	}
+}
+
+func TestJavaHandleProxyGetAndCallPreferRemoteCollisionFields(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static String nativeCall(String runtime, String code) {
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_get\"")) {
+            if (code.contains("\"key\":\"items\"")) return "{\"__omnivm_result__\":true,\"value\":\"remote-items\"}";
+            if (code.contains("\"key\":\"keys\"")) return "{\"__omnivm_result__\":true,\"value\":\"remote-keys\"}";
+            if (code.contains("\"key\":\"get\"")) return "{\"__omnivm_result__\":true,\"value\":\"remote-get\"}";
+            if (code.contains("\"key\":\"close\"")) return "{\"__omnivm_result__\":true,\"value\":\"remote-close\"}";
+            if (code.contains("\"key\":\"length\"")) return "{\"__omnivm_result__\":true,\"value\":11}";
+            if (code.contains("\"key\":\"count\"")) return "{\"__omnivm_result__\":true,\"value\":7}";
+            if (code.contains("\"key\":\"then\"")) return "{\"__omnivm_result__\":true,\"value\":{\"__omnivm_callable__\":true,\"key\":\"then\"}}";
+        }
+        if (code.contains("\"op\":\"handle_call\"") && code.contains("\"key\":\"then\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":\"called:ok\"}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/ProxyCollisionCheck.java"
+	check := `package omnivm;
+
+public final class ProxyCollisionCheck {
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.HandleProxy proxy = (OmniVM.HandleProxy) OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":84,\"runtime\":\"python\",\"kind\":\"object\"}");
+        require("remote-items".equals(proxy.get("items")), "items field mismatch: " + proxy.get("items"));
+        require("remote-keys".equals(proxy.get("keys")), "keys field mismatch: " + proxy.get("keys"));
+        require("remote-get".equals(proxy.get("get")), "get field mismatch: " + proxy.get("get"));
+        require("remote-close".equals(proxy.get("close")), "close field mismatch: " + proxy.get("close"));
+        require(proxy.get("length") instanceof Number && ((Number) proxy.get("length")).intValue() == 11, "length field mismatch: " + proxy.get("length"));
+        require(proxy.get("count") instanceof Number && ((Number) proxy.get("count")).intValue() == 7, "count field mismatch: " + proxy.get("count"));
+        require(proxy.get("then") != null, "then callable descriptor was not natural through get");
+        require("called:ok".equals(proxy.call("then", "ok")), "callable then mismatch: " + proxy.call("then", "ok"));
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java proxy collision check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java proxy collision check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyCollisionCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java proxy collision check: %v\n%s", err, out)
 	}
 }
 
@@ -13170,10 +14048,12 @@ public final class RuntimeErrorCheck {
     "stackFrames": ["at cause (<anonymous>:2:4)"],
     "boundaryPath": "call[javascript] > callback[java]",
     "originalErrorHandle": "java-error-3",
-    "details": {"code": "E_INNER", "path": ["user", "age"]}
+    "details": {"code": "E_INNER", "path": ["user", "age"]},
+    "detailsJson": "{\\\"inner\\\":\\\"raw\\\"}"
   }],
   "originalErrorHandle": "js-error-7",
-  "details": [{"path": ["user", "age"]}]
+  "details": [{"path": ["user", "age"]}],
+  "details_json": "{\\\"code\\\":\\\"E_OUTER\\\"}"
 }
 """;
         OmniVM.RuntimeError err = OmniVM.RuntimeError.fromBridge(
@@ -13205,6 +14085,7 @@ public final class RuntimeErrorCheck {
         require("java-error-3".equals(first.get("original_error_handle")), "cause handle mismatch: " + first);
         Map<String, Object> causeDetails = (Map<String, Object>) first.get("details");
         require("E_INNER".equals(causeDetails.get("code")), "cause details mismatch: " + causeDetails);
+        require("{\"inner\":\"raw\"}".equals(first.get("details_json")), "cause details_json mismatch: " + first);
         causeDetails.put("code", "changed");
         causes.get(0).put("message", "changed");
 
@@ -13218,7 +14099,8 @@ public final class RuntimeErrorCheck {
         String json = err.toJson();
         require(json.contains("\"origin_runtime\":\"python\""), "toJson missing origin runtime: " + json);
         require(json.contains("\"cause_chain\":[{\"type\":\"TypeError\""), "toJson missing cause chain: " + json);
-        require(json.contains("\"details_json\":\"[{\\\"path\\\":[\\\"user\\\",\\\"age\\\"]}]\""), "toJson missing raw details_json: " + json);
+        require(json.contains("\"details\":[{\"path\":[\"user\",\"age\"]}]"), "toJson missing structured details: " + json);
+        require(json.contains("\"details_json\":\"{\\\"code\\\":\\\"E_OUTER\\\"}\""), "toJson missing raw details_json: " + json);
 
         OmniVM.RuntimeError textDetails = OmniVM.RuntimeError.fromBridge(
             "ERR:javascript: AggregateError: invalid\n"
@@ -14186,6 +15068,13 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	if !contains(files["../../pkg/ruby/ruby.go"], "g_buf_status(name)") || !contains(files["../../pkg/ruby/ruby.go"], `rb_str_cat2(message, ": ")`) {
 		t.Fatalf("embedded Ruby explicit release_buffer should include buffer status diagnostics on release failure")
 	}
+	if !contains(files["../../pkg/ruby/ruby.go"], "alias __omnivm_native_release_buffer release_buffer") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "def self.release_buffer(name)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], "status = buffer_status(name)") ||
+		!contains(files["../../pkg/ruby/ruby.go"], `details = status.is_a?(Hash) ? {\"buffer\" => status} : nil`) ||
+		!contains(files["../../pkg/ruby/ruby.go"], `boundary_path: \"native_memory\"`) {
+		t.Fatalf("embedded Ruby release_buffer should wrap native release failures as structured OmniVM::RuntimeError values")
+	}
 	for _, want := range []string{
 		"class BufferOwner",
 		"def self.buffer_owner(name, data = BUFFER_OWNER_UNSET, dtype: 0)",
@@ -14223,6 +15112,12 @@ func TestRuntimeBufferCallbacksSeparateFreeFromBorrowRelease(t *testing.T) {
 	}
 	if !contains(files["../../scripts/v8_bridge_node.cc"], "omnivmBufferStatus") || !contains(files["../../scripts/v8_bridge_node.cc"], `message += status_json`) {
 		t.Fatalf("V8 releaseBuffer failure should include parsed buffer status diagnostics")
+	}
+	if !contains(files["../../scripts/v8_bridge_node.cc"], "__omnivm_native_release_buffer") ||
+		!contains(files["../../scripts/v8_bridge_node.cc"], "__omnivm_structured_release") ||
+		!contains(files["../../scripts/v8_bridge_node.cc"], `globalThis.omnivm.bufferStatus(name)`) ||
+		!contains(files["../../scripts/v8_bridge_node.cc"], `__omnivm_owner_dispatch_error(message, "native_memory", details)`) {
+		t.Fatalf("V8 JS bootstrap should normalize plain releaseBuffer failures with structured native_memory details")
 	}
 	if !contains(files["../../scripts/jvm_docker.go"], "g_buf_free(name)") || !contains(files["../../scripts/jvm_docker.go"], "g_buf_release(name)") {
 		t.Fatalf("JVM bridge should use g_buf_free for releaseBuffer and g_buf_release for copied buffer cleanup")
@@ -14623,6 +15518,24 @@ func TestWrapJavaCapturesClearsTemporaryCaptures(t *testing.T) {
 	}
 }
 
+func TestWrapJavaCapturesAliasesAndLowersNaturalMemberAccess(t *testing.T) {
+	code := wrapJavaCaptures(`String out = String.valueOf(payload.count) + ":" + String.valueOf(payload.items.length) + ":" + String.valueOf(payload.items[0]);`, map[string]string{
+		"payload": `{"__omnivm_resource__":true,"id":7,"runtime":"javascript","kind":"object","closed":false}`,
+	})
+	if !contains(code, `Object payload = omnivm.OmniVM.getCapture("payload");`) {
+		t.Fatalf("Java capture wrapper should expose captured names as local aliases, got %q", code)
+	}
+	for _, want := range []string{
+		`String.valueOf(omnivm.OmniVM.proxyGet(payload, "count"))`,
+		`String.valueOf(omnivm.OmniVM.proxyLen(omnivm.OmniVM.proxyGet(payload, "items")))`,
+		`String.valueOf(omnivm.OmniVM.proxyIndex(omnivm.OmniVM.proxyGet(payload, "items"), 0))`,
+	} {
+		if !contains(code, want) {
+			t.Fatalf("Java capture wrapper missing lowered access %q in %q", want, code)
+		}
+	}
+}
+
 func TestJavaCaptureInjectionCleanupCanSkipBind(t *testing.T) {
 	injection := javaCaptureInjection(map[string]string{
 		"out": `{"name":"result"}`,
@@ -14698,6 +15611,44 @@ func TestOpEvalJavaCaptureCleanupPreservesBind(t *testing.T) {
 	}
 }
 
+func TestOpEvalJavaAliasesExplicitCapturesForNaturalMemberAccess(t *testing.T) {
+	e, mocks := makeExecutor("java", "javascript")
+	e.setBinding("payload", RuntimeRef{Runtime: "javascript", VarName: "payload", SnapshotKnown: true, Opaque: true})
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitiveSnapshot") {
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+		return pkg.Result{Value: `{"__omnivm_runtime_ref__":true,"runtime":"javascript","var":"payload"}`}
+	}
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `{"ok":true}`}
+	}
+
+	_, err := e.opEval(&Op{
+		OpType:  "eval",
+		Runtime: "java",
+		Code:    `java.lang.String.valueOf(payload.count) + ":" + java.lang.String.valueOf(payload.items.length)`,
+		Bind:    "out",
+		Captures: map[string]string{
+			"payload": "payload",
+		},
+	})
+	if err != nil {
+		t.Fatalf("opEval failed: %v", err)
+	}
+
+	joined := strings.Join(mocks["java"].execCalls, "\n")
+	for _, want := range []string{
+		`Object payload = omnivm.OmniVM.getCapture("payload");`,
+		`java.lang.String.valueOf(omnivm.OmniVM.proxyGet(payload, "count"))`,
+		`java.lang.String.valueOf(omnivm.OmniVM.proxyLen(omnivm.OmniVM.proxyGet(payload, "items")))`,
+	} {
+		if !contains(joined, want) {
+			t.Fatalf("Java eval missing %q in %q", want, joined)
+		}
+	}
+}
+
 func TestWrapEmptyCaptures(t *testing.T) {
 	code := wrapPythonCaptures("print(1)", map[string]string{})
 	if code != "print(1)" {
@@ -14747,6 +15698,30 @@ func TestResolveRuntimeRefCaptureUsesKnownPrimitiveSnapshot(t *testing.T) {
 	stats := e.BoundaryStats()
 	if stats.RuntimeSerializations != 0 || stats.ResourceProxyCaptures != 0 || stats.JSONFallbacks != 0 {
 		t.Fatalf("known primitive RuntimeRef stats = %+v, want typed copy without runtime serialization", stats)
+	}
+}
+
+func TestSameRuntimeRuntimeRefCaptureAliasesHostObject(t *testing.T) {
+	e, _ := makeExecutor("python")
+	e.setBinding("request", RuntimeRef{
+		Runtime: "python",
+		VarName: `__omnivm_arg_refs['arg_1']`,
+		Opaque:  true,
+	})
+
+	injection := e.buildCaptureInjectionPlan("python", map[string]string{
+		"request": "request",
+	})
+	if injection.err != nil {
+		t.Fatalf("buildCaptureInjectionPlan: %v", injection.err)
+	}
+	if !contains(injection.setup, `request = __omnivm_arg_refs['arg_1']`) {
+		t.Fatalf("same-runtime arg ref should alias host object directly, setup=%q", injection.setup)
+	}
+	for _, unwanted := range []string{`"__omnivm_stream__"`, `"__omnivm_resource__"`, "handle_get"} {
+		if contains(injection.setup, unwanted) {
+			t.Fatalf("same-runtime arg ref setup should not proxy through %q: %s", unwanted, injection.setup)
+		}
 	}
 }
 
@@ -14929,45 +15904,96 @@ func TestResolveRuntimeRefCapturePreservesRubyTextPrimitive(t *testing.T) {
 	}
 }
 
-func TestBridgeRuntimeRefResultPreservesRubyASCII8BITText(t *testing.T) {
-	e, mocks := makeExecutor("ruby", "javascript")
+func TestBoundRuntimeRefSnapshotKeepsInvalidRubyASCII8BITOpaque(t *testing.T) {
+	e, mocks := makeExecutor("ruby")
 	mocks["ruby"].evalFn = func(code string) pkg.Result {
-		if !strings.Contains(code, "force_encoding(Encoding::UTF_8)") || !strings.Contains(code, "$chunk") {
-			t.Fatalf("Ruby stream text probe did not coerce ASCII-8BIT text: %q", code)
+		if !strings.Contains(code, `payload`) ||
+			!strings.Contains(code, `Encoding::ASCII_8BIT`) ||
+			!strings.Contains(code, `__text_value`) {
+			t.Fatalf("Ruby primitive snapshot should validate ASCII-8BIT strings without mutating source strings, got %q", code)
 		}
-		return pkg.Result{Value: `{"primitive":true,"value":"ruby-body"}`}
-	}
-	mocks["ruby"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
-		t.Fatalf("Ruby stream text should not use ExportBuffer, got name=%q expr=%q", name, expr)
-		return pkg.ExportedBuffer{}, false, nil
+		if !strings.Contains(code, `force_encoding(Encoding::UTF_8)`) || !strings.Contains(code, `valid_encoding?`) {
+			t.Fatalf("Ruby primitive snapshot should reject invalid ASCII-8BIT byte strings after validation, got %q", code)
+		}
+		return pkg.Result{Value: `{"primitive":false,"callable":false}`}
 	}
 
-	value, err := e.bridgeStreamItemValue(0, RuntimeRef{
+	ref, val, err := e.boundRuntimeRefSnapshot("ruby", "payload")
+	if err != nil {
+		t.Fatalf("boundRuntimeRefSnapshot: %v", err)
+	}
+	if !ref.SnapshotKnown || !ref.Opaque || ref.Value != nil {
+		t.Fatalf("Ruby invalid ASCII-8BIT snapshot = ref=%+v val=%#v, want opaque runtime ref", ref, val)
+	}
+	if got, ok := val.(RuntimeRef); !ok || got.Runtime != "ruby" || got.VarName != "payload" {
+		t.Fatalf("Ruby ASCII-8BIT opaque value = %#v, want RuntimeRef", val)
+	}
+}
+
+func TestBridgeRuntimeRefResultExportsRubyASCII8BITAsArrow(t *testing.T) {
+	e, mocks := makeExecutor("ruby", "javascript")
+	payload := []byte("ruby-body")
+	parent, err := e.ensureHandleTable().Register(map[string]interface{}{"owner": "ruby-binary-parent"}, handles.RegisterOptions{
+		Runtime: "javascript",
+		Kind:    "object",
+		ScopeID: e.currentHandleScope(),
+	})
+	if err != nil {
+		t.Fatalf("register parent handle: %v", err)
+	}
+	mocks["ruby"].evalFn = func(code string) pkg.Result {
+		if !strings.Contains(code, "Encoding::ASCII_8BIT") || !strings.Contains(code, "$chunk") {
+			t.Fatalf("Ruby stream text probe did not check ASCII-8BIT encoding: %q", code)
+		}
+		return pkg.Result{Value: `{"primitive":false}`}
+	}
+	mocks["ruby"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
+		if expr != "$chunk" {
+			t.Fatalf("Ruby binary string ExportBuffer expr = %q, want $chunk", expr)
+		}
+		if _, err := arrow.GlobalStore().SetWithMetadata(name, payload, arrow.BufferMetadata{
+			Dtype:     arrow.DtypeBytes,
+			Format:    "C",
+			Shape:     []int64{int64(len(payload))},
+			Strides:   []int64{1},
+			ReadOnly:  true,
+			Ownership: "producer",
+		}); err != nil {
+			return pkg.ExportedBuffer{}, false, err
+		}
+		return pkg.ExportedBuffer{
+			Name:        name,
+			Dtype:       arrow.DtypeBytes,
+			ArrowFormat: "C",
+			Elements:    int64(len(payload)),
+			Shape:       []int64{int64(len(payload))},
+			Strides:     []int64{1},
+			ReadOnly:    true,
+		}, true, nil
+	}
+
+	value, err := e.bridgeStreamItemValue(parent, RuntimeRef{
 		Runtime: "ruby",
 		VarName: "$chunk",
 	})
 	if err != nil {
 		t.Fatalf("bridgeStreamItemValue: %v", err)
 	}
-	if value != "ruby-body" {
-		t.Fatalf("Ruby stream item = %#v, want text", value)
-	}
-	if len(mocks["ruby"].exports) != 0 {
-		t.Fatalf("Ruby stream item used ExportBuffer: %v", mocks["ruby"].exports)
+	descriptor, ok := value.(map[string]interface{})
+	if !ok || descriptor["__omnivm_table__"] != true {
+		t.Fatalf("Ruby binary stream item = %#v, want table descriptor", value)
 	}
 
-	value, err = e.bridgeResultRuntimeRef(0, RuntimeRef{
+	value, err = e.bridgeResultRuntimeRef(parent, RuntimeRef{
 		Runtime: "ruby",
 		VarName: "$chunk",
 	})
 	if err != nil {
 		t.Fatalf("bridgeResultRuntimeRef: %v", err)
 	}
-	if value != "ruby-body" {
-		t.Fatalf("Ruby proxy result = %#v, want text", value)
-	}
-	if len(mocks["ruby"].exports) != 0 {
-		t.Fatalf("Ruby proxy result used ExportBuffer: %v", mocks["ruby"].exports)
+	descriptor, ok = value.(map[string]interface{})
+	if !ok || descriptor["__omnivm_table__"] != true {
+		t.Fatalf("Ruby binary proxy result = %#v, want table descriptor", value)
 	}
 }
 
@@ -16015,6 +17041,9 @@ func TestRuntimeRefProxyComplexPropertyStaysProxied(t *testing.T) {
 		if strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_") {
 			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
 		}
+		if strings.Contains(code, "callable(getattr") && strings.Contains(code, "any('get'") {
+			return pkg.Result{Value: "true"}
+		}
 		if strings.Contains(code, "callable(") {
 			return pkg.Result{Value: "false"}
 		}
@@ -16703,6 +17732,56 @@ func TestRuntimeRefProxyCallArgumentsStayLiveRefs(t *testing.T) {
 	}
 }
 
+func TestHandleCallSameRuntimeCallableDescriptorArgAliasesOwnerObject(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitiveSnapshot") {
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+		if strings.Contains(code, "isawaitable") {
+			return pkg.Result{Value: "false"}
+		}
+		return pkg.Result{Value: `{"__omnivm_runtime_ref__":true,"runtime":"python","var":"__result"}`}
+	}
+
+	poolJSON, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "python", VarName: "pool", Opaque: true})
+	if err != nil {
+		t.Fatalf("pool proxy: %v", err)
+	}
+	var poolDescriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(poolJSON), &poolDescriptor); err != nil {
+		t.Fatalf("pool descriptor: %v", err)
+	}
+	poolID, err := bridgeHandleID(poolDescriptor["id"])
+	if err != nil {
+		t.Fatalf("pool id: %v", err)
+	}
+
+	callbackJSON, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{
+		Runtime:       "python",
+		VarName:       "build_record",
+		Opaque:        true,
+		CallableKnown: true,
+		Callable:      true,
+	})
+	if err != nil {
+		t.Fatalf("callback proxy: %v", err)
+	}
+
+	_, err = e.HandleCall(fmt.Sprintf(`{"op":"handle_call","id":%d,"key":"map","args":[%s,["alpha","beta"]]}`, poolID, callbackJSON))
+	if err != nil {
+		t.Fatalf("HandleCall pool.map: %v", err)
+	}
+
+	joined := strings.Join(mocks["python"].execCalls, "\n")
+	if !strings.Contains(joined, "pool") || !strings.Contains(joined, "build_record") {
+		t.Fatalf("same-runtime callable descriptor should alias owner symbol in call, got %q", joined)
+	}
+	if strings.Contains(joined, "__omnivm_materialize_capture") || strings.Contains(joined, "__omnivm_resource__") {
+		t.Fatalf("same-runtime callable descriptor should not rematerialize as proxy, got %q", joined)
+	}
+}
+
 func TestRuntimeRefPythonCallMaterializesJSByteArrayArgAsBytes(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	before := arrow.GlobalStore().Stats()
@@ -17369,6 +18448,51 @@ func TestRuntimeRefProxyReadsLiveJavaProperty(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefProxyJavaMappingKeysBeatMethods(t *testing.T) {
+	e, mocks := makeExecutor("java", "javascript")
+	var assignedGet bool
+	mocks["java"].execFn = func(code string) pkg.Result {
+		if strings.Contains(code, "proxyGet") && strings.Contains(code, "get") {
+			assignedGet = true
+		}
+		return pkg.Result{}
+	}
+	mocks["java"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "proxyContains") && strings.Contains(code, "get"):
+			return pkg.Result{Value: "true"}
+		case strings.Contains(code, "proxyCallable") && strings.Contains(code, "get"):
+			return pkg.Result{Value: "true"}
+		case assignedGet && strings.Contains(code, "primitiveSnapshot"):
+			return pkg.Result{Value: `{"primitive":true,"value":"field-get"}`}
+		default:
+			return pkg.Result{Value: `{"__omnivm_java_object__":true,"class":"java.util.HashMap"}`}
+		}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "java", VarName: "payload", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	result, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"get"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get get: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "string" || env.Value != "field-get" {
+		t.Fatalf("Java mapping get key envelope = %#v, want field-get", env)
+	}
+}
+
 func TestRuntimeRefProxyMarksJavaZeroArgMethodDescriptor(t *testing.T) {
 	e, mocks := makeExecutor("java", "javascript")
 	mocks["java"].execFn = func(code string) pkg.Result {
@@ -17513,9 +18637,9 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if strings.Contains(pythonProp, "hasattr(__o, '__contains__')") {
 		t.Fatalf("python property lookup should not call arbitrary __contains__ while probing key-addressable objects, got %q", pythonProp)
 	}
-	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
-		if strings.Contains(pythonProp, unwanted) {
-			t.Fatalf("python property lookup should not contain named-library probe %q in %q", unwanted, pythonProp)
+	for _, wanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name"} {
+		if !strings.Contains(pythonProp, wanted) {
+			t.Fatalf("python property lookup should recognize framework-declared fields before class methods, missing %q in %q", wanted, pythonProp)
 		}
 	}
 	if !strings.Contains(pythonProp, "else None") || !strings.Contains(pythonProp, "__o[int(__k)]") {
@@ -17537,8 +18661,8 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if !strings.Contains(rubyProp, "respond_to?(:key?)") || !strings.Contains(rubyProp, "__o.key?(__k)") || strings.Index(rubyProp, "__o[__k]") > strings.Index(rubyProp, "public_send") {
 		t.Fatalf("ruby property lookup should prefer mapping keys before methods, got %q", rubyProp)
 	}
-	if strings.Contains(rubyProp, "has_attribute?") {
-		t.Fatalf("ruby property lookup should not contain named-library attribute probe, got %q", rubyProp)
+	if !strings.Contains(rubyProp, "has_attribute?") {
+		t.Fatalf("ruby property lookup should support ActiveRecord-style attribute fields, got %q", rubyProp)
 	}
 	if !strings.Contains(rubyProp, "__seq_index") || !strings.Contains(rubyProp, "__o[__k.to_i]") || !strings.Contains(rubyProp, "rescue TypeError, IndexError, NoMethodError; nil") {
 		t.Fatalf("ruby property lookup should avoid arbitrary string indexing on sequence-like objects, got %q", rubyProp)
@@ -17557,7 +18681,7 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if strings.Contains(pythonCallable, "hasattr(__o, '__contains__')") {
 		t.Fatalf("python callable lookup should not call arbitrary __contains__ while probing key-addressable objects, got %q", pythonCallable)
 	}
-	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name"} {
 		if strings.Contains(pythonCallable, unwanted) {
 			t.Fatalf("python callable lookup should not contain named-library probe %q in %q", unwanted, pythonCallable)
 		}
@@ -17567,7 +18691,7 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("runtimeRefCallExpr python: ok=%v err=%v", ok, err)
 	}
-	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name", "getattr_static(__o, '_mapping', None)"} {
+	for _, unwanted := range []string{"model_fields", "DESCRIPTOR", "fields_by_name"} {
 		if strings.Contains(pythonCall, unwanted) {
 			t.Fatalf("python call lookup should not contain named-library probe %q in %q", unwanted, pythonCall)
 		}
@@ -17691,6 +18815,21 @@ if contains_result is not True:
 property_result = ` + propertyExpr + `
 if property_result != "session-items":
     raise RuntimeError(f"session-like property result = {property_result!r}")
+
+class PydanticLike:
+    model_fields = {"items": object()}
+    def __init__(self):
+        self.items = "field-items"
+    def items(self):
+        return [("method", "items")]
+
+payload = PydanticLike()
+contains_result = ` + containsExpr + `
+if contains_result is not True:
+    raise RuntimeError(f"pydantic-like contains result = {contains_result!r}, want True")
+property_result = ` + propertyExpr + `
+if property_result != "field-items":
+    raise RuntimeError(f"pydantic-like property result = {property_result!r}")
 `
 	if out, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
 		t.Fatalf("python RuntimeRef contains dynamic probe guard failed: %v\n%s", err, out)
@@ -18094,6 +19233,39 @@ func TestYieldDelegate(t *testing.T) {
 	}
 	if len(e.yieldCollectors[0]) != 3 {
 		t.Errorf("collected %d items, want 3", len(e.yieldCollectors[0]))
+	}
+}
+
+func TestYieldFreezesTemporaryRuntimeRefs(t *testing.T) {
+	e, mocks := makeExecutor("javascript")
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+	}
+
+	first, err := e.freezeYieldValue(RuntimeRef{Runtime: "javascript", VarName: "__yield", Opaque: true})
+	if err != nil {
+		t.Fatalf("freeze first yield: %v", err)
+	}
+	second, err := e.freezeYieldValue(RuntimeRef{Runtime: "javascript", VarName: "__yield", Opaque: true})
+	if err != nil {
+		t.Fatalf("freeze second yield: %v", err)
+	}
+
+	firstRef, ok := first.(RuntimeRef)
+	if !ok {
+		t.Fatalf("first frozen value = %#v, want RuntimeRef", first)
+	}
+	secondRef, ok := second.(RuntimeRef)
+	if !ok {
+		t.Fatalf("second frozen value = %#v, want RuntimeRef", second)
+	}
+	if firstRef.VarName != "__yield_1" || secondRef.VarName != "__yield_2" {
+		t.Fatalf("frozen refs = %q/%q, want __yield_1/__yield_2", firstRef.VarName, secondRef.VarName)
+	}
+	if len(mocks["javascript"].execCalls) != 2 ||
+		!strings.Contains(mocks["javascript"].execCalls[0], `globalThis["__yield_1"] = globalThis["__yield"]`) ||
+		!strings.Contains(mocks["javascript"].execCalls[1], `globalThis["__yield_2"] = globalThis["__yield"]`) {
+		t.Fatalf("freeze exec calls = %#v", mocks["javascript"].execCalls)
 	}
 }
 

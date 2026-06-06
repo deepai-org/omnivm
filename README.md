@@ -345,6 +345,12 @@ For most Django deployments (Gunicorn prefork), use the c-shared library.
 | `omnivm.buffer_owner(name[, data], dtype=0)` | Single-active-use sync/async context object for named buffer ownership; publishes optional data on entry, exposes `owner.status()`, and releases the owner name on exit |
 | `omnivm.buffer_status(name)` | Return per-name buffer lifecycle diagnostics (`state`, `lease_state`, shape/stride/nullability metadata, and `memory_space`, currently `host` for zero-copy buffers) |
 
+The named-buffer functions are explicit ownership tools for integrations that
+publish or borrow shared host memory by name. Ordinary `.poly` snippets that
+move buffers, tensors, Arrow arrays, ByteBuffers, memory views, or dataframe
+columns across a runtime boundary should keep using native object access; they
+should not need manual materialize/release helpers.
+
 Guard failures such as `assert_owner_dispatch_supported()`,
 `assert_owner_dispatch_target_supported()`, `assert_host_thread()`, and
 `assert_ruby_native_threads_supported()` attach the relevant status block to
@@ -536,6 +542,11 @@ cleanup even when owner objects have fields named `then`, `items`, `keys`,
 `OmniVM.proxyGet` remain available for diagnostics and extremely rare manual
 escape-hatch debugging, but `.poly` user code should not need them in normal
 use. If it does, treat that as a bug in the automatic proxy/codegen behavior.
+The same rule applies to native-ish values: generated `.poly` code should pass
+and inspect buffers, tensors, Arrow arrays, Java `ByteBuffer`s, Python
+`memoryview`s, and similar host-memory objects through the manifest boundary
+without rewriting snippets into `get_buffer`, `to_buffer`, `to_arrow`, or
+manual release calls.
 
 JavaScript handle and stream proxies also expose `Symbol.dispose` and
 `Symbol.asyncDispose` when available for generated cleanup paths. Embedded

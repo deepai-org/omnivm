@@ -108,13 +108,14 @@ type Op struct {
 	DefaultImport string `json:"defaultImport,omitempty"`
 
 	// func_def
-	Name        string   `json:"name,omitempty"`
-	Params      []*Param `json:"params,omitempty"`
-	Body        []*Op    `json:"body,omitempty"`
-	BodyRuntime string   `json:"bodyRuntime,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Exports     []string `json:"exports,omitempty"`
-	Requires    []string `json:"requires,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	Params         []*Param        `json:"params,omitempty"`
+	Body           []*Op           `json:"body,omitempty"`
+	BodyRuntime    string          `json:"bodyRuntime,omitempty"`
+	SourceArtifact *SourceArtifact `json:"sourceArtifact,omitempty"`
+	Source         string          `json:"source,omitempty"`
+	Exports        []string        `json:"exports,omitempty"`
+	Requires       []string        `json:"requires,omitempty"`
 
 	// return
 	From  *Op        `json:"from,omitempty"`
@@ -180,6 +181,25 @@ type Param struct {
 	Spread        bool           `json:"spread,omitempty"`
 	DefaultValue  interface{}    `json:"defaultValue,omitempty"`
 	CallableShape *CallableShape `json:"callableShape,omitempty"`
+}
+
+// SourceArtifact carries source slices produced by the Polyscript compiler.
+// Imports emit this as a source string; func_def emits an object with slices.
+type SourceArtifact struct {
+	Source         string   `json:"-"`
+	ParamsSource   []string `json:"paramsSource,omitempty"`
+	BodySource     string   `json:"bodySource,omitempty"`
+	FunctionSource string   `json:"functionSource,omitempty"`
+}
+
+func (a *SourceArtifact) UnmarshalJSON(data []byte) error {
+	var source string
+	if err := json.Unmarshal(data, &source); err == nil {
+		a.Source = source
+		return nil
+	}
+	type objectArtifact SourceArtifact
+	return json.Unmarshal(data, (*objectArtifact)(a))
 }
 
 // IfArm represents a single condition+body branch in an if op.

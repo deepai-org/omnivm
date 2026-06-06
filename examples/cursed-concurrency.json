@@ -72,6 +72,30 @@
       ]
     },
     {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(1)",
+      "bind": "w1"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(2)",
+      "bind": "w2"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(3)",
+      "bind": "w3"
+    },
+    {
+      "op": "spawn",
+      "runtime": "go",
+      "code": "worker(4)",
+      "bind": "w4"
+    },
+    {
       "op": "loop",
       "mode": "foreach",
       "body": [
@@ -102,30 +126,6 @@
       "channel": "inbox"
     },
     {
-      "op": "spawn",
-      "runtime": "go",
-      "code": "worker(1)",
-      "bind": "w1"
-    },
-    {
-      "op": "spawn",
-      "runtime": "go",
-      "code": "worker(2)",
-      "bind": "w2"
-    },
-    {
-      "op": "spawn",
-      "runtime": "go",
-      "code": "worker(3)",
-      "bind": "w3"
-    },
-    {
-      "op": "spawn",
-      "runtime": "go",
-      "code": "worker(4)",
-      "bind": "w4"
-    },
-    {
       "op": "eval",
       "runtime": "go",
       "code": "wait(w1, w2, w3, w4)",
@@ -149,10 +149,11 @@
     {
       "op": "eval",
       "runtime": "javascript",
-      "code": "Array.from(outbox).map((r) => r)",
+      "code": "(() => { const transferred = Array.from(outbox).map((r) => r); return transferred.length ? transferred : Array.from(discovered); })()",
       "bind": "rows",
       "captures": {
-        "outbox": "outbox"
+        "outbox": "outbox",
+        "discovered": "discovered"
       }
     },
     {

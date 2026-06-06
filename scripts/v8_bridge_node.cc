@@ -2318,6 +2318,30 @@ static void register_omnivm_proxy_helpers(v8::Isolate* isolate,
     globalThis.__omnivm_buffer_owner_error = globalThis.__omnivm_buffer_owner_error || function(message, buffer) {
       return globalThis.__omnivm_owner_dispatch_error(message, "native_memory", {buffer: buffer});
     };
+    if (typeof globalThis.omnivm.releaseBuffer === 'function' && globalThis.omnivm.releaseBuffer.__omnivm_structured_release !== true) {
+      var __omnivm_native_release_buffer = globalThis.omnivm.releaseBuffer.bind(globalThis.omnivm);
+      Object.defineProperty(globalThis.omnivm, "releaseBuffer", {
+        configurable: true,
+        value: function(name) {
+          try {
+            return __omnivm_native_release_buffer(name);
+          } catch (err) {
+            if (err && (err.boundary_path === "native_memory" || err.boundaryPath === "native_memory")) throw err;
+            var details = {buffer: {name: String(name)}};
+            if (typeof globalThis.omnivm.bufferStatus === 'function') {
+              try {
+                details.buffer = globalThis.omnivm.bufferStatus(name);
+              } catch (_statusError) {}
+            }
+            var message = err && err.message ? err.message : String(err);
+            throw globalThis.__omnivm_owner_dispatch_error(message, "native_memory", details);
+          }
+        }
+      });
+      try {
+        Object.defineProperty(globalThis.omnivm.releaseBuffer, "__omnivm_structured_release", {value: true});
+      } catch (_markError) {}
+    }
     if (typeof globalThis.__omnivm_BufferOwner !== 'function') {
       Object.defineProperty(globalThis, "__omnivm_BufferOwner", {
         configurable: true,

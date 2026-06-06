@@ -708,6 +708,17 @@ func Request() *RequestData {
 	if _, err := e.HandleCall(`{"op":"handle_set","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"name","value":"changed"}`); err != nil {
 		t.Fatalf("HandleCall handle_set name: %v", err)
 	}
+	if _, err := e.HandleCall(`{"op":"handle_set","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"count","value":17}`); err != nil {
+		t.Fatalf("HandleCall handle_set count: %v", err)
+	}
+	count, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"count"}`)
+	if err != nil {
+		t.Fatalf("HandleCall handle_get count after set: %v", err)
+	}
+	countEnv := decodeResultEnvelopeForTest(t, count)
+	if countEnv.Value != float64(17) {
+		t.Fatalf("c-shared struct count after set = %#v, want 17", countEnv)
+	}
 	callJSON, err := json.Marshal(map[string]interface{}{
 		"op":   "handle_call",
 		"id":   uint64(id),

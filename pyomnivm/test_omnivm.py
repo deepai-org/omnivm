@@ -2910,7 +2910,7 @@ class TestCallWithMockLib(unittest.TestCase):
         cancels = [request for request in requests if request.get("op") == "stream_cancel"]
         assert cancels == [{"op": "stream_cancel", "id": 53}]
 
-    def test_manifest_stream_iterator_detaches_on_next_error(self):
+    def test_manifest_stream_iterator_cancels_on_next_error(self):
         def envelope(value, kind="json"):
             return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
 
@@ -2935,8 +2935,10 @@ class TestCallWithMockLib(unittest.TestCase):
                 return envelope(True, "bool")
             if request_payload.get("op") == "stream_next":
                 raise RuntimeError("owner read failed")
-            if request_payload.get("op") in {"stream_cancel", "handle_release_finalizer"}:
-                raise AssertionError("terminal stream error should detach without later cleanup")
+            if request_payload.get("op") == "stream_cancel":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "handle_release_finalizer":
+                raise AssertionError("terminal stream error should cancel explicitly")
             raise AssertionError(request_payload)
 
         self.mock_lib.OmniManifestCall.side_effect = manifest_call
@@ -2947,7 +2949,49 @@ class TestCallWithMockLib(unittest.TestCase):
             next(iterator)
         assert request not in getattr(builtins, "__omnivm_arg_refs", {}).values()
         assert proxy.close() is False
-        assert not any(request.get("op") == "stream_cancel" for request in requests)
+        cancels = [request for request in requests if request.get("op") == "stream_cancel"]
+        assert cancels == [{"op": "stream_cancel", "id": 50}]
+
+    def test_manifest_stream_iterator_next_error_records_cancel_failure(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+
+        def manifest_call(_module_id, payload):
+            request_payload = json.loads(payload.decode("utf-8"))
+            requests.append(request_payload)
+            if request_payload.get("func") == "rows":
+                return envelope({
+                    "__omnivm_stream__": True,
+                    "id": 56,
+                    "runtime": "python",
+                    "kind": "queryset",
+                    "transfer": True,
+                })
+            if request_payload.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request_payload.get("op") == "stream_next":
+                raise RuntimeError("owner read failed")
+            if request_payload.get("op") == "stream_cancel":
+                raise RuntimeError("cancel failed")
+            if request_payload.get("op") == "handle_release_finalizer":
+                raise AssertionError("failed pull cleanup should not fall back to finalizer release")
+            raise AssertionError(request_payload)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+        proxy = omnivm_mod.manifest_call("demo", "rows")
+
+        iterator = iter(proxy)
+        with self.assertRaisesRegex(RuntimeError, "owner read failed") as ctx:
+            next(iterator)
+
+        cleanup = omnivm_mod.cleanup_errors(ctx.exception)
+        assert len(cleanup) == 1
+        assert str(cleanup[0]) == "cancel failed"
+        assert proxy.close() is False
+        cancels = [request for request in requests if request.get("op") == "stream_cancel"]
+        assert cancels == [{"op": "stream_cancel", "id": 56}]
 
     def test_manifest_stream_iterator_context_preserves_body_exception_when_close_fails(self):
         def envelope(value, kind="json"):
@@ -3362,7 +3406,11 @@ class TestCallWithMockLib(unittest.TestCase):
         self.mock_lib.OmniBufStatus.return_value = (
             b'{"name":"payload","state":"released_detached","live":false,'
             b'"lease_state":"detached","memory_space":"host",'
-            b'"released":true,"active_borrows":2,'
+            b'"released":true,"len":6,"dtype":1,"format":"i",'
+            b'"arrow_format":"i","shape":[2,3],"strides":[12,4],'
+            b'"offset":4,"null_count":1,"validity_bytes":1,'
+            b'"validity_bit_offset":3,"read_only":true,'
+            b'"ownership":"omnivm","active_borrows":2,'
             b'"active_named_borrows":2,"named_borrow_queue":2,'
             b'"active_borrowed_bytes":6,"detached_buffers":1,'
             b'"release_error":"producer release failed"}'
@@ -3373,6 +3421,18 @@ class TestCallWithMockLib(unittest.TestCase):
         assert "state='released_detached'" in str(ctx.exception)
         assert "lease_state='detached'" in str(ctx.exception)
         assert "memory_space='host'" in str(ctx.exception)
+        assert "len=6" in str(ctx.exception)
+        assert "dtype=1" in str(ctx.exception)
+        assert "format='i'" in str(ctx.exception)
+        assert "arrow_format='i'" in str(ctx.exception)
+        assert "shape=[2, 3]" in str(ctx.exception)
+        assert "strides=[12, 4]" in str(ctx.exception)
+        assert "offset=4" in str(ctx.exception)
+        assert "null_count=1" in str(ctx.exception)
+        assert "validity_bytes=1" in str(ctx.exception)
+        assert "validity_bit_offset=3" in str(ctx.exception)
+        assert "read_only=True" in str(ctx.exception)
+        assert "ownership='omnivm'" in str(ctx.exception)
         assert "active_borrows=2" in str(ctx.exception)
         assert "active_named_borrows=2" in str(ctx.exception)
         assert "named_borrow_queue=2" in str(ctx.exception)
@@ -3382,6 +3442,18 @@ class TestCallWithMockLib(unittest.TestCase):
         assert ctx.exception.details["buffer"]["state"] == "released_detached"
         assert ctx.exception.details["buffer"]["lease_state"] == "detached"
         assert ctx.exception.details["buffer"]["memory_space"] == "host"
+        assert ctx.exception.details["buffer"]["len"] == 6
+        assert ctx.exception.details["buffer"]["dtype"] == 1
+        assert ctx.exception.details["buffer"]["format"] == "i"
+        assert ctx.exception.details["buffer"]["arrow_format"] == "i"
+        assert ctx.exception.details["buffer"]["shape"] == [2, 3]
+        assert ctx.exception.details["buffer"]["strides"] == [12, 4]
+        assert ctx.exception.details["buffer"]["offset"] == 4
+        assert ctx.exception.details["buffer"]["null_count"] == 1
+        assert ctx.exception.details["buffer"]["validity_bytes"] == 1
+        assert ctx.exception.details["buffer"]["validity_bit_offset"] == 3
+        assert ctx.exception.details["buffer"]["read_only"] is True
+        assert ctx.exception.details["buffer"]["ownership"] == "omnivm"
         assert ctx.exception.details["buffer"]["active_borrows"] == 2
         assert ctx.exception.details["buffer"]["active_named_borrows"] == 2
         assert ctx.exception.details["buffer"]["named_borrow_queue"] == 2
@@ -3562,6 +3634,7 @@ class TestCallWithMockLib(unittest.TestCase):
             b'"lease_state":"detached","memory_space":"host","released":true,'
             b'"dtype":1,"format":"i","shape":[2],"strides":[4],'
             b'"offset":1,"null_count":1,"validity_bytes":1,"validity_bit_offset":3,'
+            b'"read_only":true,"ownership":"producer",'
             b'"active_borrows":1,"active_named_borrows":1,'
             b'"named_borrow_queue":1,"detached_buffers":1}'
         )
@@ -3579,6 +3652,8 @@ class TestCallWithMockLib(unittest.TestCase):
         assert status["null_count"] == 1
         assert status["validity_bytes"] == 1
         assert status["validity_bit_offset"] == 3
+        assert status["read_only"] is True
+        assert status["ownership"] == "producer"
         assert status["active_borrows"] == 1
         assert status["active_named_borrows"] == 1
         assert status["named_borrow_queue"] == 1

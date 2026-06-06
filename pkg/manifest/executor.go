@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -25,10 +26,29 @@ type ErrReturn struct{ Value interface{} }
 
 func (e ErrReturn) Error() string { return "return" }
 
+// ErrBreak and ErrContinue are sentinels used to unwind manifest loop bodies.
+type ErrBreak struct{}
+type ErrContinue struct{}
+
+func (e ErrBreak) Error() string    { return "break" }
+func (e ErrContinue) Error() string { return "continue" }
+
 // ErrThrow is a sentinel used for manifest-level throw ops.
 type ErrThrow struct{ Value interface{} }
 
 func (e ErrThrow) Error() string { return fmt.Sprintf("throw: %v", e.Value) }
+
+func isManifestControlFlow(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.(type) {
+	case ErrReturn, ErrBreak, ErrContinue:
+		return true
+	default:
+		return false
+	}
+}
 
 // ImportRef marks a binding as a module import in a specific runtime.
 // Captures for the same runtime skip JSON injection since the module
@@ -127,10 +147,11 @@ type BoundaryStats struct {
 
 // FuncDef stores a manifest-level function definition.
 type FuncDef struct {
-	Name      string
-	Params    []*Param
-	Body      []*Op
-	Generator bool
+	Name          string
+	Params        []*Param
+	Body          []*Op
+	Generator     bool
+	NativeRuntime string
 }
 
 // Executor runs manifest ops against a set of runtimes.
@@ -291,6 +312,12 @@ func (e *Executor) executeOp(op *Op) (interface{}, error) {
 	case "eval":
 		return e.opEval(op)
 	case "native":
+		if strings.TrimSpace(op.Code) == "break" {
+			return nil, ErrBreak{}
+		}
+		if strings.TrimSpace(op.Code) == "continue" {
+			return nil, ErrContinue{}
+		}
 		return e.opExec(op) // same as exec
 	case "import":
 		return e.opImport(op)
@@ -416,6 +443,9 @@ func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 	// Convert Python f-strings to JS template literals when targeting JavaScript
 	if rt.Name() == "javascript" {
 		code = convertFStringToTemplateLiteral(code)
+		if len(op.Captures) == 0 && javascriptExecNeedsLexicalIsolation(code) {
+			code = wrapJavaScriptExecLexicalScope(code)
+		}
 	}
 
 	result := rt.Execute(code)
@@ -433,6 +463,14 @@ func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 		e.setBinding(op.Bind, output)
 	}
 	return output, nil
+}
+
+func javascriptExecNeedsLexicalIsolation(code string) bool {
+	return regexp.MustCompile(`\b(?:const|let)\s+[A-Za-z_$]`).FindStringIndex(code) != nil
+}
+
+func wrapJavaScriptExecLexicalScope(code string) string {
+	return "(function(){\n" + code + "\n})();"
 }
 
 // opEval handles eval ops.
@@ -532,7 +570,10 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	if op.Bind != "" {
 		if rt.Name() == "java" {
 			imports, expr := splitJavaImports(code)
-			assignLines := append(imports, e.javaPersistentAliasPrefix(nil), runtimeAssign(rt.Name(), op.Bind, expr))
+			javaCaptureNames := append([]string{}, autoInjection.javaCaptureNames...)
+			javaCaptureNames = append(javaCaptureNames, explicitInjection.javaCaptureNames...)
+			expr = lowerJavaCapturedMemberAccess(expr, javaCaptureNames)
+			assignLines := append(imports, javaCaptureAliasCode(javaCaptureNames), e.javaPersistentAliasPrefix(nil), runtimeAssign(rt.Name(), op.Bind, expr))
 			assignCode := strings.Join(assignLines, "\n")
 			execResult := rt.Execute(assignCode)
 			if execResult.Err != nil {
@@ -542,7 +583,9 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 			if snapshotErr != nil {
 				return nil, fmt.Errorf("eval [%s]: %w", rt.Name(), snapshotErr)
 			}
-			ref.TypeName = inferJavaBindType(expr)
+			if ref.TypeName == "" {
+				ref.TypeName = inferJavaBindType(expr)
+			}
 			if ref.TypeName == "" && ref.SnapshotKnown && !ref.Opaque {
 				ref.TypeName = javaPrimitiveTypeName(ref.Value)
 			}
@@ -619,6 +662,7 @@ func runtimeSerializeExpr(rtName, expr string) string {
 type runtimePrimitiveSnapshot struct {
 	Primitive     bool           `json:"primitive"`
 	Value         interface{}    `json:"value"`
+	TypeName      string         `json:"typeName,omitempty"`
 	Callable      bool           `json:"callable,omitempty"`
 	CallableShape *CallableShape `json:"callableShape,omitempty"`
 }
@@ -646,6 +690,7 @@ func (e *Executor) boundRuntimeRefSnapshot(rtName, varName string) (RuntimeRef, 
 		return ref, snapshot.Value, nil
 	}
 	ref.Opaque = true
+	ref.TypeName = snapshot.TypeName
 	ref.CallableKnown = true
 	ref.Callable = snapshot.Callable
 	ref.CallableShape = snapshot.CallableShape
@@ -659,7 +704,7 @@ func runtimePrimitiveSnapshotExpr(rtName, expr string) string {
 	case "python":
 		return fmt.Sprintf(`(lambda __v: (lambda __json, __inspect: __json.dumps({"primitive": True, "value": __v} if isinstance(__v, (type(None), bool, int, float, str)) else (lambda __shape: {"primitive": False, "callable": callable(__v), "callableShape": __shape})(None if not callable(__v) else (lambda __sig: {"acceptsKwargs": any(__p.kind == __inspect.Parameter.VAR_KEYWORD for __p in __sig.parameters.values()), "parameterNames": [__n for __n, __p in __sig.parameters.items() if __p.kind in (__inspect.Parameter.POSITIONAL_ONLY, __inspect.Parameter.POSITIONAL_OR_KEYWORD, __inspect.Parameter.KEYWORD_ONLY)], "arity": sum(1 for __p in __sig.parameters.values() if __p.default is __inspect.Parameter.empty and __p.kind in (__inspect.Parameter.POSITIONAL_ONLY, __inspect.Parameter.POSITIONAL_OR_KEYWORD))})(__inspect.signature(__v)))))(__import__("json"), __import__("inspect")))(%s)`, expr)
 	case "ruby":
-		return fmt.Sprintf(`begin; require 'json'; __v = (begin; %s; end); __text = __v.is_a?(String) && __v.encoding != Encoding::ASCII_8BIT && __v.encoding.ascii_compatible? && __v.valid_encoding?; if __v.nil? || __v == true || __v == false || __v.is_a?(Numeric) || __text; JSON.generate({primitive: true, value: __v}); else; __params = (__v.respond_to?(:parameters) ? __v.parameters : []); __shape = __v.respond_to?(:call) ? {acceptsKwargs: __params.any? { |p| p[0] == :keyrest }, parameterNames: __params.map { |p| p[1] }.compact.map(&:to_s), arity: (__v.respond_to?(:arity) ? __v.arity : nil)} : nil; JSON.generate({primitive: false, callable: __v.respond_to?(:call), callableShape: __shape}); end; end`, expr)
+		return fmt.Sprintf(`begin; require 'json'; __v = (begin; %s; end); __text = false; __text_value = __v; if __v.is_a?(String); __text_value = __v.dup; if __text_value.encoding == Encoding::ASCII_8BIT; __text_value.force_encoding(Encoding::UTF_8); elsif __text_value.encoding != Encoding::UTF_8; begin; __text_value = __text_value.encode(Encoding::UTF_8); rescue; end; end; __text = __text_value.encoding.ascii_compatible? && __text_value.valid_encoding?; end; if __v.nil? || __v == true || __v == false || __v.is_a?(Numeric) || __text; JSON.generate({primitive: true, value: __text ? __text_value : __v}); else; __params = (__v.respond_to?(:parameters) ? __v.parameters : []); __shape = (__v.respond_to?(:call) ? {acceptsKwargs: __params.any? { |p| p[0] == :keyrest }, parameterNames: __params.map { |p| p[1] }.compact.map(&:to_s), arity: (__v.respond_to?(:arity) ? __v.arity : nil)} : nil); JSON.generate({primitive: false, callable: __v.respond_to?(:call), callableShape: __shape}); end; end`, expr)
 	case "java":
 		return fmt.Sprintf("omnivm.OmniVM.primitiveSnapshot(%s)", expr)
 	default:
@@ -963,11 +1008,17 @@ func (e *Executor) opFuncDef(op *Op) (interface{}, error) {
 		}
 	}
 
+	nativeRuntime, err := e.executeNativeFuncSource(op)
+	if err != nil {
+		return nil, err
+	}
+
 	fd := &FuncDef{
-		Name:      op.Name,
-		Params:    op.Params,
-		Body:      op.Body,
-		Generator: op.Generator,
+		Name:          op.Name,
+		Params:        op.Params,
+		Body:          op.Body,
+		Generator:     op.Generator,
+		NativeRuntime: nativeRuntime,
 	}
 	e.funcs[op.Name] = fd
 
@@ -976,6 +1027,87 @@ func (e *Executor) opFuncDef(op *Op) (interface{}, error) {
 		return nil, fmt.Errorf("func_def %q stubs: %w", op.Name, err)
 	}
 	return nil, nil
+}
+
+func (e *Executor) executeNativeFuncSource(op *Op) (string, error) {
+	if op.SourceArtifact == nil {
+		return "", nil
+	}
+	source := strings.TrimSpace(op.SourceArtifact.FunctionSource)
+	if source == "" {
+		return "", nil
+	}
+
+	runtimeName := op.BodyRuntime
+	if runtimeName == "" {
+		runtimeName = op.Runtime
+	}
+	if runtimeName == "" {
+		runtimeName = e.defaultRuntime
+	}
+	if runtimeName == "javascript" {
+		return e.executeJavaScriptNativeFuncSource(op, runtimeName)
+	}
+	if runtimeName != "python" {
+		return "", nil
+	}
+
+	rt, ok := e.runtimes[runtimeName]
+	if !ok {
+		return "", fmt.Errorf("func_def %q sourceArtifact: unknown runtime %q", op.Name, runtimeName)
+	}
+	result := rt.Execute(op.SourceArtifact.FunctionSource)
+	if result.Err != nil {
+		return "", fmt.Errorf("func_def %q sourceArtifact [%s]: %w", op.Name, runtimeName, result.Err)
+	}
+	if op.Async {
+		result = rt.Execute(pythonNativeAsyncWrapperSource(op.Name))
+		if result.Err != nil {
+			return "", fmt.Errorf("func_def %q sourceArtifact async wrapper [%s]: %w", op.Name, runtimeName, result.Err)
+		}
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot(runtimeName, op.Name)
+	if err != nil {
+		return "", fmt.Errorf("func_def %q sourceArtifact [%s] snapshot: %w", op.Name, runtimeName, err)
+	}
+	e.setBinding(op.Name, ref)
+	return runtimeName, nil
+}
+
+func (e *Executor) executeJavaScriptNativeFuncSource(op *Op, runtimeName string) (string, error) {
+	rt, ok := e.runtimes[runtimeName]
+	if !ok {
+		return "", fmt.Errorf("func_def %q sourceArtifact: unknown runtime %q", op.Name, runtimeName)
+	}
+	result := rt.Execute(javascriptNativeFunctionSource(op.SourceArtifact.FunctionSource))
+	if result.Err != nil {
+		return "", fmt.Errorf("func_def %q sourceArtifact [%s]: %w", op.Name, runtimeName, result.Err)
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot(runtimeName, op.Name)
+	if err != nil {
+		return "", fmt.Errorf("func_def %q sourceArtifact [%s] snapshot: %w", op.Name, runtimeName, err)
+	}
+	e.setBinding(op.Name, ref)
+	return runtimeName, nil
+}
+
+func javascriptNativeFunctionSource(source string) string {
+	return regexp.MustCompile(`^(\s*)(async\s+)?\*`).ReplaceAllString(source, `${1}${2}function*`)
+}
+
+func pythonNativeAsyncWrapperSource(name string) string {
+	hidden := "__omnivm_native_async_" + name
+	wrapper := "__omnivm_sync_" + name
+	return fmt.Sprintf(`import asyncio as __omnivm_asyncio
+import functools as __omnivm_functools
+import inspect as __omnivm_inspect
+%s = %s
+def %s(*__omnivm_args, **__omnivm_kwargs):
+  __omnivm_value = %s(*__omnivm_args, **__omnivm_kwargs)
+  if __omnivm_inspect.isawaitable(__omnivm_value):
+    return __omnivm_asyncio.run(__omnivm_value)
+  return __omnivm_value
+%s = __omnivm_functools.wraps(%s)(%s)`, hidden, name, wrapper, hidden, name, hidden, wrapper)
 }
 
 // opReturn evaluates the return value and returns an ErrReturn sentinel.
@@ -1052,6 +1184,12 @@ func (e *Executor) opLoop(op *Op) (interface{}, error) {
 
 		_, err := e.executeOps(op.Body)
 		if err != nil {
+			switch err.(type) {
+			case ErrBreak:
+				return nil, nil
+			case ErrContinue:
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -1068,6 +1206,13 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 		if !ok {
 			// Check if the ref is a function call expression like "crawl(\"/var/data\")" or "os.scandir(root)"
 			if strings.Contains(op.Iterable.Name, "(") {
+				handled, err := e.opLoopForeachNativeGeneratorCall(op)
+				if err != nil {
+					return nil, fmt.Errorf("foreach: %w", err)
+				}
+				if handled {
+					return nil, nil
+				}
 				resolved, err := e.resolveIterableCall(op.Iterable.Name)
 				if err != nil {
 					return nil, fmt.Errorf("foreach: %w", err)
@@ -1125,6 +1270,12 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 		e.setBinding(op.Variable, elem)
 		_, err := e.executeOps(op.Body)
 		if err != nil {
+			switch err.(type) {
+			case ErrBreak:
+				return nil, nil
+			case ErrContinue:
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -1180,6 +1331,15 @@ func (e *Executor) opLoopForeachStreamHandle(op *Op, id handles.ID, label string
 		}
 		e.setBinding(op.Variable, elem)
 		if _, err := e.executeOps(op.Body); err != nil {
+			switch err.(type) {
+			case ErrBreak:
+				if releaseErr := e.ensureHandleTable().ReleaseAllRefs(id); releaseErr != nil {
+					return true, fmt.Errorf("break; additionally failed to close foreach stream: %w", releaseErr)
+				}
+				return true, nil
+			case ErrContinue:
+				continue
+			}
 			if releaseErr := e.ensureHandleTable().ReleaseAllRefs(id); releaseErr != nil {
 				return true, fmt.Errorf("%w; additionally failed to close foreach stream after body error: %w", err, releaseErr)
 			}
@@ -1199,12 +1359,33 @@ func (e *Executor) opLoopForeachGoStreamProxy(op *Op, stream *GoStreamProxy) (bo
 		}
 		e.setBinding(op.Variable, elem)
 		if _, err := e.executeOps(op.Body); err != nil {
+			switch err.(type) {
+			case ErrBreak:
+				if releaseErr := stream.Close(); releaseErr != nil {
+					return true, fmt.Errorf("break; additionally failed to close foreach stream: %w", releaseErr)
+				}
+				return true, nil
+			case ErrContinue:
+				continue
+			}
 			if releaseErr := stream.Close(); releaseErr != nil {
 				return true, fmt.Errorf("%w; additionally failed to close foreach stream after body error: %w", err, releaseErr)
 			}
 			return true, err
 		}
 	}
+}
+
+func (e *Executor) opLoopForeachNativeGeneratorCall(op *Op) (bool, error) {
+	ref, ok, err := e.nativeGeneratorCallRuntimeRef(op.Iterable.Name)
+	if err != nil || !ok {
+		return ok, err
+	}
+	id, err := e.runtimeRefStreamHandle(ref)
+	if err != nil {
+		return true, err
+	}
+	return e.opLoopForeachStreamHandle(op, id, fmt.Sprintf("native generator call %q", op.Iterable.Name))
 }
 
 // opThrow resolves the value and returns an ErrThrow sentinel.
@@ -1231,13 +1412,163 @@ func (e *Executor) opThrow(op *Op) (interface{}, error) {
 	return nil, ErrThrow{Value: val}
 }
 
+func manifestCatchSourceRuntime(ops []*Op, fallback string) string {
+	for _, op := range ops {
+		if op == nil {
+			continue
+		}
+		if op.Runtime != "" {
+			return op.Runtime
+		}
+		if op.From != nil && op.From.Runtime != "" {
+			return op.From.Runtime
+		}
+		for _, child := range op.Body {
+			if child != nil && child.Runtime != "" {
+				return child.Runtime
+			}
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "unknown"
+}
+
+func manifestCatchRuntimeErrorValue(err error, runtimeName string) map[string]interface{} {
+	runtimeName = nonEmpty(runtimeName, "unknown")
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	errorType, message := manifestRuntimeErrorTypeAndMessage(text, runtimeName)
+	stackFrames := manifestRuntimeErrorStackFrames(text)
+	causeChain := []interface{}{}
+	boundaryPath := manifestRuntimeErrorBoundary(text, runtimeName)
+	return map[string]interface{}{
+		"runtime":               runtimeName,
+		"origin_runtime":        runtimeName,
+		"originRuntime":         runtimeName,
+		"type":                  errorType,
+		"name":                  errorType,
+		"message":               message,
+		"traceback":             text,
+		"stack":                 text,
+		"stack_frames":          stackFrames,
+		"stackFrames":           stackFrames,
+		"cause_chain":           causeChain,
+		"causeChain":            causeChain,
+		"boundary_path":         boundaryPath,
+		"boundaryPath":          boundaryPath,
+		"original_error_handle": "",
+		"originalErrorHandle":   "",
+	}
+}
+
+func manifestRuntimeErrorTypeAndMessage(text, runtimeName string) (string, string) {
+	first := text
+	if idx := strings.Index(first, "\n"); idx >= 0 {
+		first = first[:idx]
+	}
+	first = strings.TrimSpace(first)
+	detail := first
+	if marker := "]:"; strings.Contains(detail, marker) {
+		if idx := strings.LastIndex(detail, marker); idx >= 0 {
+			detail = strings.TrimSpace(detail[idx+len(marker):])
+		}
+	}
+	if runtimeName != "" {
+		prefix := runtimeName + ":"
+		if strings.HasPrefix(detail, prefix) {
+			detail = strings.TrimSpace(detail[len(prefix):])
+		}
+	}
+
+	errorType := "RuntimeError"
+	message := detail
+	if candidate, rest, ok := manifestRuntimeErrorFindTypedSegment(detail); ok {
+		errorType = candidate
+		message = rest
+	}
+	if errorType == "RuntimeError" {
+		lines := strings.Split(text, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			if candidate, rest, ok := manifestRuntimeErrorFindTypedSegment(line); ok {
+				errorType = candidate
+				message = rest
+				break
+			}
+		}
+	}
+	if message == "" {
+		message = first
+	}
+	return errorType, message
+}
+
+func manifestRuntimeErrorFindTypedSegment(value string) (string, string, bool) {
+	parts := strings.Split(value, ": ")
+	for i := 0; i < len(parts)-1; i++ {
+		candidate := strings.TrimSpace(parts[i])
+		if manifestRuntimeErrorTypeCandidate(candidate) {
+			return manifestRuntimeErrorNormalizeType(candidate), strings.TrimSpace(strings.Join(parts[i+1:], ": ")), true
+		}
+	}
+	return "", "", false
+}
+
+func manifestRuntimeErrorNormalizeType(value string) string {
+	value = strings.TrimSpace(value)
+	if idx := strings.LastIndex(value, "."); idx >= 0 && idx < len(value)-1 {
+		return value[idx+1:]
+	}
+	return value
+}
+
+func manifestRuntimeErrorTypeCandidate(value string) bool {
+	if value == "" || strings.ContainsAny(value, " \t/\\") {
+		return false
+	}
+	return strings.HasSuffix(value, "Error") ||
+		strings.HasSuffix(value, "Exception") ||
+		value == "TypeError" ||
+		value == "ReferenceError" ||
+		value == "SyntaxError"
+}
+
+func manifestRuntimeErrorStackFrames(text string) []interface{} {
+	frames := []interface{}{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			frames = append(frames, line)
+		}
+	}
+	return frames
+}
+
+func manifestRuntimeErrorBoundary(text, runtimeName string) string {
+	runtimeName = nonEmpty(runtimeName, "unknown")
+	if strings.Contains(text, "exec ["+runtimeName+"]") {
+		return "exec[" + runtimeName + "]"
+	}
+	if strings.Contains(text, "eval ["+runtimeName+"]") {
+		return "eval[" + runtimeName + "]"
+	}
+	return "call[" + runtimeName + "]"
+}
+
 // opTry executes body, catches thrown/runtime errors, and runs finally.
 func (e *Executor) opTry(op *Op) (interface{}, error) {
 	val, bodyErr := e.executeOps(op.Body)
 
 	if bodyErr != nil {
-		// ErrReturn is control flow — never caught, re-propagate
-		if _, ok := bodyErr.(ErrReturn); ok {
+		// Manifest control flow is never caught, but finally still runs.
+		if isManifestControlFlow(bodyErr) {
 			e.runFinally(op.FinallyBody)
 			return nil, bodyErr
 		}
@@ -1252,7 +1583,7 @@ func (e *Executor) opTry(op *Op) (interface{}, error) {
 			if thrown, ok := bodyErr.(ErrThrow); ok {
 				errVal = thrown.Value
 			} else {
-				errVal = bodyErr.Error()
+				errVal = manifestCatchRuntimeErrorValue(bodyErr, manifestCatchSourceRuntime(op.Body, catch.Runtime))
 			}
 			if catch.Param != "" {
 				e.setBinding(catch.Param, errVal)
@@ -1780,6 +2111,16 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 		}
 		ref, ok := val.(*ResourceRef)
 		if !ok {
+			if op.Code != "" {
+				runtime := op.Runtime
+				if runtime == "" {
+					runtime = e.defaultRuntime
+				}
+				if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+					return nil, fmt.Errorf("resource close cleanup: %w", err)
+				}
+				return val, nil
+			}
 			return nil, fmt.Errorf("resource close: %q is not a resource (got %T)", name, val)
 		}
 		if ref.Closed {
@@ -2040,6 +2381,10 @@ func (e *Executor) opYield(op *Op) (interface{}, error) {
 		val = v
 	}
 	// else: bare yield, val = nil
+	val, err := e.freezeYieldValue(val)
+	if err != nil {
+		return nil, err
+	}
 
 	top := len(e.yieldCollectors) - 1
 	if op.Delegate {
@@ -2063,6 +2408,30 @@ func (e *Executor) opYield(op *Op) (interface{}, error) {
 	}
 
 	return nil, nil
+}
+
+func (e *Executor) freezeYieldValue(val interface{}) (interface{}, error) {
+	ref, ok := val.(RuntimeRef)
+	if !ok || ref.VarName != "__yield" {
+		return val, nil
+	}
+	rt, ok := e.runtimes[ref.Runtime]
+	if !ok {
+		return nil, fmt.Errorf("yield freeze: unknown runtime %q", ref.Runtime)
+	}
+	e.nextRuntimeRefID++
+	frozenName := fmt.Sprintf("__yield_%d", e.nextRuntimeRefID)
+	assignCode := runtimeAssign(ref.Runtime, frozenName, runtimeVarRef(ref.Runtime, ref.VarName))
+	result := rt.Execute(assignCode)
+	if result.Err != nil {
+		return nil, fmt.Errorf("yield freeze [%s]: %w", ref.Runtime, result.Err)
+	}
+	frozenRef, frozenVal, err := e.boundRuntimeRefSnapshot(ref.Runtime, frozenName)
+	if err != nil {
+		return nil, fmt.Errorf("yield freeze [%s]: %w", ref.Runtime, err)
+	}
+	e.setBinding(frozenName, frozenRef)
+	return frozenVal, nil
 }
 
 // opAwait executes the inner from op and binds the result.
@@ -2550,6 +2919,43 @@ func (e *Executor) resolveIterableCall(expr string) ([]interface{}, error) {
 	}
 
 	return nil, fmt.Errorf("resolveIterableCall: cannot resolve %q", expr)
+}
+
+func (e *Executor) nativeGeneratorCallRuntimeRef(expr string) (RuntimeRef, bool, error) {
+	parenIdx := strings.Index(expr, "(")
+	if parenIdx <= 0 || !strings.HasSuffix(strings.TrimSpace(expr), ")") {
+		return RuntimeRef{}, false, nil
+	}
+	funcName := strings.TrimSpace(expr[:parenIdx])
+	fd, ok := e.funcs[funcName]
+	if !ok || !fd.Generator || fd.NativeRuntime == "" {
+		return RuntimeRef{}, false, nil
+	}
+	rt, ok := e.runtimes[fd.NativeRuntime]
+	if !ok {
+		return RuntimeRef{}, true, fmt.Errorf("native generator call %q: unknown runtime %q", funcName, fd.NativeRuntime)
+	}
+
+	e.nextRuntimeRefID++
+	varName := fmt.Sprintf("__omnivm_native_generator_%d", e.nextRuntimeRefID)
+	assignCode := runtimeAssign(fd.NativeRuntime, varName, expr)
+	result := rt.Execute(assignCode)
+	if result.Err != nil {
+		return RuntimeRef{}, true, fmt.Errorf("native generator call %q [%s]: %w", funcName, fd.NativeRuntime, result.Err)
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot(fd.NativeRuntime, varName)
+	if err != nil {
+		return RuntimeRef{}, true, fmt.Errorf("native generator call %q [%s]: %w", funcName, fd.NativeRuntime, err)
+	}
+	e.setBinding(varName, ref)
+	stream, err := e.runtimeRefIsStream(ref)
+	if err != nil {
+		return RuntimeRef{}, true, fmt.Errorf("native generator call %q stream probe: %w", funcName, err)
+	}
+	if !stream {
+		return RuntimeRef{}, false, nil
+	}
+	return ref, true, nil
 }
 
 // evalRuntimeIterable evaluates an expression in a source runtime and returns

@@ -9,5 +9,8 @@ fi
 if [ -d /build/pyomnivm ]; then
     export PYTHONPATH="/build/pyomnivm${PYTHONPATH:+:$PYTHONPATH}"
 fi
+if [ -d /usr/local/lib/python3.14/dist-packages ]; then
+    export PYTHONPATH="/usr/local/lib/python3.14/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 exec "${POLYSCRIPT_PYTHON_BIN:-python3}" "$@"

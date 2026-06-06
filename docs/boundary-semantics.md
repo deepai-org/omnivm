@@ -130,6 +130,28 @@ Ruby
 return copies of cleanup failures recorded while preserving the original body
 exception.
 
+The error-fidelity conformance matrix is runtime-neutral:
+
+- **Origin**: every crossed error carries `runtime` and `origin_runtime`.
+  `origin_runtime` defaults to `runtime` only when the source envelope omits it.
+- **Concrete type and message**: native exception class names such as
+  `ValueError`, `TypeError`, `ZodError`, `ActiveRecord::RecordInvalid`, or Java
+  exception class names are preserved separately from the human message.
+- **Debug location**: `traceback` and normalized `stack_frames` survive crossing.
+  Alias inputs such as JavaScript `stack` must populate the normalized fields.
+- **Cause chain**: nested causes keep their own runtime/origin, type, message,
+  stack, boundary path, original error handle, and structured details when the
+  source provides them.
+- **Boundary path**: the route that observed the error, such as
+  `call[python]`, `call[javascript]`, or `execute manifest > exec[python]`, is
+  a structured field and not a string the caller has to parse out of the
+  message.
+- **Structured details**: validation and framework metadata travels as
+  `details` plus synchronized `details_json`/`detailsJson` so callers can log,
+  forward, and compare machine-readable details without mutating the exception.
+- **Cleanup failures**: cleanup errors are attached as copied structured data
+  while preserving the original body exception as the primary error.
+
 ## Automatic Boundary Selection
 
 Compiler lowering and runtime adapters must keep boundary mechanics out of
@@ -209,6 +231,28 @@ different: `handle_release_finalizer` returns `false` for an already released
 handle without queueing work, and `handle_drop_reference` is an idempotent
 no-op when either side of the edge is already gone. This keeps GC/finalizer and
 scope cleanup races quiet without hiding ordinary stale-proxy use.
+
+The runtime-neutral live-proxy lifecycle contract is:
+
+- **open**: owner handle is live, user operations are forwarded to the owning
+  runtime, and generic access counters are recorded by operation kind.
+- **close/cancel/release**: user-initiated close paths call the owner release
+  operation exactly once when possible (`handle_release_explicit` for resources
+  and object proxies, `stream_cancel` for streams, and native-memory release for
+  table/buffer handles).
+- **stale user access**: after owner close, EOF release, cancellation, or native
+  memory release, every user-visible operation reports the owner-side lifecycle
+  diagnostic with the original runtime, kind/format, state, boundary path, and
+  structured details. It must not degrade to an unknown-handle error while the
+  tombstone is still available.
+- **quiet cleanup**: GC finalizers, scope cleanup retries, and reference-edge
+  drops are idempotent. They return `false`/`true` compatibility acknowledgments
+  as appropriate and do not enqueue redundant cleanup or replace the body error
+  that caused cleanup to run.
+- **retryable failures**: if owner release fails, the proxy remains stale but
+  retryable; later user close attempts keep reporting the owner-side error until
+  release/cancel succeeds or the owner tombstone is drained by scope shutdown.
+
 Explicit proxy-close helpers route through the user-initiated
 `handle_release_explicit` operation instead of the quiet finalizer queue: after
 a successful release, Python detaches the
@@ -329,8 +373,9 @@ owner stream before rethrowing the materialization error.
 Python retained manifest stream iterators also attach a quiet iterator-finalizer
 cancel path, so a normal `for` loop that breaks early uses `stream_cancel`
 instead of falling back to the handle finalizer release queue. They also
-separate owner `stream_next` from chunk proxy wrapping, so a failed chunk adopt
-or retain cancels the stream while preserving the wrapping error. Python stream
+separate owner `stream_next` from chunk proxy wrapping, so owner pull errors and
+failed chunk adopt/retain paths cancel the stream while preserving the original
+error and recording any cancellation failure as cleanup detail. Python stream
 proxies also support `async for` with the same early-break `stream_cancel`
 behavior as sync iteration; this is an async-consumption surface, not owner-loop
 dispatch.
@@ -491,6 +536,41 @@ Implementation requirements:
   buffers through the same dtype/format descriptor plus
   memory-space, ownership, and read-only metadata for the duration of the call.
   The rule is based on value shape and element type, not producer package names.
+
+The native-memory lifecycle contract is runtime-neutral:
+
+- **descriptor shape**: every Arrow/table/buffer descriptor carries the same
+  ownership metadata across Python, JavaScript, Java, Ruby, and Go: `ownership`,
+  `memory_space`, read-only/mutability state, dtype/Arrow format, shape,
+  strides, offset, nullability, validity bitmap metadata, and the shared buffer
+  name when a named store entry backs the view.
+- **release ownership**: user-visible release paths use the explicit free
+  callback for owner release, while borrowed views use the borrow-release
+  callback when guest memoryviews, external ArrayBuffers, direct `ByteBuffer`
+  leases, Ruby string views, or Go table parameter borrows are finalized.
+- **status diagnostics**: `buffer_status` reports one lifecycle vocabulary for
+  all runtimes: `live` with `lease_state` `owned` or `borrowed`, `released`,
+  `released_detached` when a named owner is gone but borrowed views still hold
+  the original memory, and `missing` for names with no live entry or tombstone.
+  Status details preserve length, dtype, Arrow format, shape, strides, offset,
+  null counts, validity bitmap metadata, read-only state, ownership,
+  `memory_space`, active-borrow counts, detached-buffer counts, queued named
+  borrows, and producer `release_error` text when release callbacks fail.
+- **stale table access**: after a table handle or backing buffer is released,
+  user operations such as retain, adopt, property access, length, index, call,
+  and explicit release report a `native_memory` lifecycle error with the
+  original runtime, table format, owner lifecycle `released`, table metadata,
+  and the current or tombstoned buffer status. They do not fall back to a
+  generic unknown-handle diagnostic while tombstone metadata is available.
+- **quiet cleanup**: buffer borrow finalizers, table scope cleanup, proxy
+  finalizers, and reference-edge drops are idempotent. Cleanup-only paths stay
+  quiet for already released native memory and must not replace the exception
+  from the body that caused cleanup to run.
+- **unsupported memory spaces**: non-host memory, such as CUDA/device pointers
+  or dataframe interchange buffers whose device hook is not CPU-addressable, is
+  diagnosed as unsupported native memory. It remains a ref or uses an explicit
+  fallback path; OmniVM must not reinterpret device pointers as host zero-copy
+  buffers.
 
 Runtime adapters should target generic protocols instead of named-library
 branches:

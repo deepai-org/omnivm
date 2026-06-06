@@ -29,7 +29,7 @@
     {
       "op": "eval",
       "runtime": "java",
-      "code": "flux.map(s -> s.toUpperCase()).collectList().block()",
+      "code": "reactor.core.publisher.Flux.<String>just(\"alpha\", \"beta\", \"gamma\").map(s -> s.toUpperCase()).collectList().block()",
       "bind": "labels"
     },
     {

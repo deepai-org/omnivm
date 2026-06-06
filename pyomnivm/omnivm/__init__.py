@@ -2204,9 +2204,19 @@ class _ManifestStreamIterator:
                 self._proxy._module_id,
                 {"op": "stream_next", "id": self._proxy.__omnivm_handle_id__},
             )
-        except BaseException:
-            self._detach_finalizer()
-            self._proxy._detach_after_remote_close("owner_lifecycle")
+        except BaseException as err:
+            try:
+                if not self.close():
+                    self._detach_finalizer()
+                    self._proxy._detach_after_remote_close("owner_lifecycle")
+            except BaseException as close_exc:
+                _record_cleanup_error(
+                    err,
+                    close_exc,
+                    f"OmniVM stream close failed during pull error cleanup: {close_exc}",
+                )
+                self._detach_finalizer()
+                self._proxy._detach_after_remote_close("owner_lifecycle")
             raise
         if not isinstance(item, dict) or "done" not in item:
             err = RuntimeError(
@@ -2820,11 +2830,24 @@ def _buffer_status_summary(status):
         return ""
     fields = []
     for key in (
+        "name",
         "state",
         "lease_state",
         "memory_space",
         "live",
         "released",
+        "len",
+        "dtype",
+        "format",
+        "arrow_format",
+        "shape",
+        "strides",
+        "offset",
+        "null_count",
+        "validity_bytes",
+        "validity_bit_offset",
+        "read_only",
+        "ownership",
         "active_borrows",
         "active_borrowed_bytes",
         "active_named_borrows",

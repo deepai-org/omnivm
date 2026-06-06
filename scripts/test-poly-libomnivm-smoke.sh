@@ -6,7 +6,7 @@ POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$ROOT/../polyscript-compiler"}
 PASSENGER_FIXTURE="$ROOT/test/fixtures/passenger-django-polyscript"
 IMAGE="${OMNIVM_IMAGE:-omnivm:latest}"
 PYTHON_BIN="${PYTHON_BIN:-python3.14}"
-RUNNER="${LIBOMNIVM_MANIFEST_RUNNER:-/build/scripts/run-manifest-libomnivm.py}"
+RUNNER="${LIBOMNIVM_MANIFEST_RUNNER:-/usr/local/bin/run-manifest-libomnivm.py}"
 
 if [ ! -d "$POLYSCRIPT_DIR" ]; then
   echo "PolyScript compiler checkout not found at $POLYSCRIPT_DIR; set POLYSCRIPT_DIR=/path/to/polyscript-compiler" >&2
@@ -35,10 +35,22 @@ examples=(
   "cursed-polyglot.poly"
   "python-docs-popular-packages.poly"
   "javascript-docs-popular-packages.poly"
+  "javascript-error-fields.poly"
+  "python-error-js-catch.poly"
+  "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
+  "java-map-collision-docs.poly"
+  "ruby-map-collision-docs.poly"
+  "javascript-map-collision-docs.poly"
+  "native-memory-docs.poly"
+  "python-lifecycle-docs.poly"
+  "python-executor-docs.poly"
+  "python-generator-js-consume.poly"
+  "python-generator-js-cancel.poly"
+  "javascript-generator-python-consume.poly"
   "vertical-order-review-app.poly"
   "compat-python-service.py"
   "compat-go-status.go"
@@ -68,8 +80,56 @@ for example in "${examples[@]}"; do
     echo "expected compat-go-status.go main() output to contain ok:200, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* ]]; then
-    echo "expected vertical order app output, got: $output" >&2
+  if [ "$example" = "java-map-collision-docs.poly" ] && [[ "$output" != *'Java map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
+    echo "expected Java map collision natural access output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "ruby-map-collision-docs.poly" ] && [[ "$output" != *'Ruby map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
+    echo "expected Ruby map collision natural access output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-map-collision-docs.poly" ] && [[ "$output" != *"JavaScript map collision docs py=2:alpha:2:id:field-get:field-close:2:7 ruby=2:alpha:2:id:field-get:field-close:2:7 java=7:2"* ]]; then
+    echo "expected JavaScript-owned map collision natural access output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "native-memory-docs.poly" ] && [[ "$output" != *"Native memory docs py=4:1:4 js=4:97:100 java=4:7:8"* ]]; then
+    echo "expected native memory docs output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-lifecycle-docs.poly" ] && [[ "$output" != *"Lifecycle docs inside alpha:1:2:1:2:field-close"* || "$output" != *"Lifecycle docs closed True events=enter,exit"* ]]; then
+    echo "expected Python lifecycle docs context-manager cleanup output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-executor-docs.poly" ] && [[ "$output" != *"Python executor docs rows alpha:5:row-close|beta:4:row-close"* || "$output" != *"Python executor docs shutdown True"* ]]; then
+    echo "expected Python ThreadPoolExecutor docs output with shutdown, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-generator-js-consume.poly" ] && [[ "$output" != *"Python generator JS consume 0:0:1:row-close|1:1:2:row-close"* ]]; then
+    echo "expected Python generator lazy JS consumption output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-error-fields.poly" ] && [[ "$output" != *"JavaScript error fields Error:field-check:true:exec[javascript]"* ]]; then
+    echo "expected JavaScript native error identity fields, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-error-js-catch.poly" ] && [[ "$output" != *"Python error JS catch python:python:ValueError:bad order:true:exec[python]"* ]]; then
+    echo "expected Python error caught naturally in JavaScript with fidelity fields, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "ruby-java-error-fields.poly" ] && [[ "$output" != *"Ruby Java error fields ruby=ruby:ruby:RuntimeError:bad ruby:true:exec[ruby] java=java:java:IllegalStateException:bad java:true:exec[java]"* ]]; then
+    echo "expected Ruby/Java error fields with concrete Java exception type, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-generator-js-cancel.poly" ] && [[ "$output" != *"Python generator JS cancel 0:break|1:break errors=0:throw|stop-stream"* || "$output" != *"Python generator JS closed ['break', 'throw']"* ]]; then
+    echo "expected Python generator JS cancellation/error release output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-generator-python-consume.poly" ] && [[ "$output" != *"JavaScript generator Python consume 0:break|1:break"* || "$output" != *"JavaScript generator Python closed break"* || "$output" != *"JavaScript generator Python produced 0|1"* ]]; then
+    echo "expected JavaScript generator Python consumption output with stable yielded rows, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* || "$output" != *"ruby=fiber-active"* ]]; then
+    echo "expected vertical order app output with Ruby lifecycle text, got: $output" >&2
     exit 1
   fi
 done

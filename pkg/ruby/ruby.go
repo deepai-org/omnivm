@@ -520,8 +520,6 @@ static void* ruby_init_thread_func(void* arg) {
             return NULL;
         }
 
-        omnivm_ruby_register_bridge();
-
         // Install process-creation guards.
         int state = 0;
         rb_eval_string_protect(
@@ -1031,6 +1029,7 @@ static int omnivm_ruby_init(void) {
     rb_define_singleton_method(rb_cTime, "local", omnivm_ruby_time_new, -1);
     rb_define_singleton_method(rb_cDir, "glob", omnivm_ruby_dir_glob, -1);
     rb_define_singleton_method(rb_cDir, "[]", omnivm_ruby_dir_glob, -1);
+    omnivm_ruby_register_bridge();
 
     // Load internal preludes so core methods like Integer#times exist.
     // Ruby 3.3 defines many core methods in <internal:numeric> etc.
@@ -1648,6 +1647,23 @@ static int omnivm_ruby_init(void) {
         "  end\n"
         "  def self.buffer_status(name)\n"
         "    JSON.parse(buffer_status_json(name.to_s))\n"
+        "  end\n"
+        "  unless singleton_class.method_defined?(:__omnivm_native_release_buffer)\n"
+        "    class << self\n"
+        "      alias __omnivm_native_release_buffer release_buffer\n"
+        "    end\n"
+        "  end\n"
+        "  def self.release_buffer(name)\n"
+        "    __omnivm_native_release_buffer(name)\n"
+        "  rescue ::RuntimeError => error\n"
+        "    raise error if error.is_a?(RuntimeError)\n"
+        "    status = nil\n"
+        "    begin\n"
+        "      status = buffer_status(name)\n"
+        "    rescue Exception\n"
+        "    end\n"
+        "    details = status.is_a?(Hash) ? {\"buffer\" => status} : nil\n"
+        "    raise RuntimeError.new(error.message, runtime: \"ruby\", boundary_path: \"native_memory\", details: details)\n"
         "  end\n"
         "  def self.ruby_threading_status\n"
         "    {\n"
@@ -2654,8 +2670,45 @@ static void omnivm_ruby_register_bridge() {
     rb_define_module_function(mod, "call_typed", rb_omnivm_call_typed, -1);
     rb_define_module_function(mod, "get_buffer", rb_omnivm_get_buffer, 1);
     rb_define_module_function(mod, "set_buffer", rb_omnivm_set_buffer, -1);
+    rb_define_module_function(mod, "__omnivm_native_release_buffer", rb_omnivm_release_buffer, 1);
     rb_define_module_function(mod, "release_buffer", rb_omnivm_release_buffer, 1);
     rb_define_module_function(mod, "buffer_status_json", rb_omnivm_buffer_status_json, 1);
+}
+
+static void* omnivm_ruby_reset_bridge_run(void* raw) {
+    int* rc = (int*)raw;
+    if (rc) *rc = 0;
+    omnivm_ruby_register_bridge();
+    int prelude_rc = omnivm_ruby_eval_bootstrap("runtime bridge reset",
+        "module OmniVM\n"
+        "  def self.release_buffer(name)\n"
+        "    __omnivm_native_release_buffer(name)\n"
+        "  rescue ::RuntimeError => error\n"
+        "    raise error if error.is_a?(RuntimeError)\n"
+        "    status = nil\n"
+        "    begin\n"
+        "      status = buffer_status(name)\n"
+        "    rescue Exception\n"
+        "    end\n"
+        "    details = status.is_a?(Hash) ? {\"buffer\" => status} : nil\n"
+        "    raise RuntimeError.new(error.message, runtime: \"ruby\", boundary_path: \"native_memory\", details: details)\n"
+        "  end\n"
+        "end\n");
+    if (rc) *rc = prelude_rc;
+    return NULL;
+}
+
+static int omnivm_ruby_reset_bridge_safe(void) {
+    if (!ruby_initialized) return -1;
+    int rc = 0;
+    if (tls_holds_gvl) {
+        omnivm_ruby_reset_bridge_run(&rc);
+    } else if (tls_is_ruby_thread) {
+        rb_thread_call_with_gvl(omnivm_ruby_reset_bridge_run, &rc);
+    } else {
+        rb_fproxy_submit_callback(omnivm_ruby_reset_bridge_run, &rc);
+    }
+    return rc;
 }
 
 static void omnivm_ruby_set_bridge_callback(omni_call_fn call_fn, omni_free_fn free_fn) {
@@ -2725,6 +2778,9 @@ func (r *Runtime) Initialize() error {
 	if rubyInitialized {
 		// Ruby VM still alive from previous Runtime — just reattach.
 		// The proxy pthread is still running (shutdown is a no-op).
+		if C.omnivm_ruby_reset_bridge_safe() != 0 {
+			return fmt.Errorf("ruby: bridge reset failed")
+		}
 		r.initialized = true
 		return nil
 	}

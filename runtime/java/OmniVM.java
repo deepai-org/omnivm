@@ -122,7 +122,15 @@ public class OmniVM {
      * Release a named buffer from the shared store.
      */
     public static void releaseBuffer(String name) {
-        nativeReleaseBuffer(name);
+        try {
+            nativeReleaseBuffer(name);
+        } catch (RuntimeError err) {
+            throw err;
+        } catch (RuntimeException err) {
+            Object status = bufferStatusDetails(name);
+            Object details = status instanceof Map<?, ?> ? ownerDispatchMap("buffer", status) : null;
+            throw runtimeError(err.getMessage(), "native_memory", details);
+        }
     }
 
     /**
@@ -301,7 +309,8 @@ public class OmniVM {
         parsed.type = "RuntimeError";
         parsed.message = message;
         parsed.boundaryPath = boundaryPath;
-        parsed.detailsJson = jsonValue(RuntimeError.copyJsonValue(details));
+        parsed.details = RuntimeError.copyJsonValue(details);
+        parsed.detailsJson = jsonValue(parsed.details);
         return new RuntimeError(parsed, null);
     }
 
@@ -398,6 +407,19 @@ public class OmniVM {
         }
         Object state = map.get("state");
         return "released".equals(String.valueOf(state)) || "released_detached".equals(String.valueOf(state));
+    }
+
+    private static Object bufferStatusDetails(String name) {
+        try {
+            String raw = bufferStatus(name);
+            if (raw == null || raw.isEmpty()) {
+                return null;
+            }
+            Object parsed = parseJson(raw);
+            return parsed instanceof Map<?, ?> ? parsed : null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     public static final class BufferOwner implements AutoCloseable {
@@ -505,8 +527,11 @@ public class OmniVM {
             this.causeChain = Collections.unmodifiableList(parsed.causeChain);
             this.boundaryPath = parsed.boundaryPath;
             this.originalErrorHandle = parsed.originalErrorHandle;
-            this.details = copyJsonValue(parseDetailsJson(parsed.detailsJson));
-            this.detailsJson = parsed.detailsJson;
+            Object parsedDetails = parsed.details != null ? parsed.details : parseDetailsJson(parsed.detailsJson);
+            this.details = copyJsonValue(parsedDetails);
+            this.detailsJson = parsed.detailsJson != null
+                ? parsed.detailsJson
+                : (parsedDetails == null ? null : jsonValue(copyJsonValue(parsedDetails)));
         }
 
         public String getRuntime() {
@@ -618,6 +643,7 @@ public class OmniVM {
         List<Map<String, Object>> causeChain = new ArrayList<>();
         String boundaryPath = "";
         String originalErrorHandle;
+        Object details;
         String detailsJson;
     }
 
@@ -792,6 +818,9 @@ public class OmniVM {
             parsed.boundaryPath = nonEmptyJsonString(parsedBoundary, safeString(fallbackBoundary));
         }
         parsed.originalErrorHandle = emptyToNull(jsonString(jsonValue(envelope, "original_error_handle", "originalErrorHandle")));
+        if (envelope.containsKey("details")) {
+            parsed.details = RuntimeError.copyJsonValue(envelope.get("details"));
+        }
         parsed.detailsJson = detailsJsonValue(envelope);
         parsed.stackFrames = stringListJsonValue(jsonValue(envelope, "stack_frames", "stackFrames"), parseStackFrames(parsed.traceback));
         parsed.causeChain = causeChainJsonValue(jsonValue(envelope, "cause_chain", "causeChain"), parsed.runtime);
@@ -799,15 +828,15 @@ public class OmniVM {
     }
 
     private static String detailsJsonValue(Map<?, ?> envelope) {
-        if (envelope.containsKey("details")) {
-            return jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
-        }
         Object rawDetails = jsonValue(envelope, "details_json", "detailsJson");
         if (rawDetails instanceof String text) {
             return text;
         }
         if (rawDetails != null) {
             return jsonValue(RuntimeError.copyJsonValue(rawDetails));
+        }
+        if (envelope.containsKey("details")) {
+            return jsonValue(RuntimeError.copyJsonValue(envelope.get("details")));
         }
         return null;
     }
@@ -1396,6 +1425,7 @@ public class OmniVM {
             snapshot.put("value", value == null ? null : value);
         } else {
             snapshot.put("primitive", false);
+            snapshot.put("typeName", sourceUsableTypeName(value));
             snapshot.put("callable", isCallableTarget(value));
             Map<String, Object> shape = callableShape(value);
             if (shape != null) {
@@ -1403,6 +1433,29 @@ public class OmniVM {
             }
         }
         return jsonValue(snapshot);
+    }
+
+    private static String sourceUsableTypeName(Object value) {
+        if (value == null) {
+            return null;
+        }
+        for (Class<?> type = value.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+            if (java.lang.reflect.Modifier.isPublic(type.getModifiers())) {
+                String name = type.getCanonicalName();
+                if (name != null && !name.isEmpty()) {
+                    return name;
+                }
+            }
+        }
+        for (Class<?> type : value.getClass().getInterfaces()) {
+            if (java.lang.reflect.Modifier.isPublic(type.getModifiers())) {
+                String name = type.getCanonicalName();
+                if (name != null && !name.isEmpty()) {
+                    return name;
+                }
+            }
+        }
+        return null;
     }
 
     public static Object callManifest(String func, Object... args) {
