@@ -528,21 +528,18 @@ Body:   {"fibonacci_50":"12586269025","ruby_reverse":"MVinmO"}
 
 The manifest executor runs structured JSON programs that dispatch ops across all five runtimes. A manifest is the IR target produced by the PolyScript compiler — each op specifies a runtime, code, captures, bindings, and control flow.
 
-JavaScript manifest proxies expose `omnivm.proxyGet(proxy, key)` for explicit
-remote field access, `omnivm.proxySet(proxy, key, value)` for explicit remote
-field mutation, `omnivm.proxyCall(proxy, key, args)` for explicit remote method
-calls, `omnivm.proxyLen(proxy)` for explicit collection length,
-`omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
-`omnivm.proxyItems(proxy)`, and `omnivm.proxyContains(proxy, key)` for explicit
-collection metadata, `omnivm.proxyClose(proxy)` or
-`omnivm.omnivmClose(proxy)` for explicit proxy lease release, and
-`proxy[omnivm.proxyLength]` as a collision-free property form for length when a
-remote object also has a data field named `length`. `toJSON` is reserved for
-proxy serialization; use `omnivm.proxyGet(proxy, "toJSON")` when the owner has
-a real field or method with that name. JavaScript handle and stream proxies
-also expose `Symbol.dispose` and `Symbol.asyncDispose` when available, and
-`omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor those symbols
-through descriptor-safe lookup. Embedded JavaScript also provides
+Manifest proxies are designed so generated `.poly` code can use normal field
+reads, method calls, indexing, iteration, membership, length, and lifecycle
+cleanup even when owner objects have fields named `then`, `items`, `keys`,
+`get`, `close`, `length`, or `count`. Runtime-specific proxy helpers such as
+`omnivm.proxyGet`, Python `proxy_get`, Ruby `omnivm_get`, and Java
+`OmniVM.proxyGet` remain available for diagnostics and extremely rare manual
+escape-hatch debugging, but `.poly` user code should not need them in normal
+use. If it does, treat that as a bug in the automatic proxy/codegen behavior.
+
+JavaScript handle and stream proxies also expose `Symbol.dispose` and
+`Symbol.asyncDispose` when available for generated cleanup paths. Embedded
+JavaScript also provides
 `omnivm.bufferOwner(name[, data], dtype[, callback])` for scoped named-buffer
 ownership with single-active-use entry and idempotent release. Owners expose `status()`, and
 `omnivm.bufferStatus(name)` returns the same per-name lifecycle diagnostics.
@@ -551,34 +548,21 @@ diagnostic-only boundary with `omnivm.ownerDispatchStatus()`,
 `omnivm.ownerDispatchTargetStatus(target)`,
 `omnivm.assertOwnerDispatchSupported(label)`, or
 `omnivm.assertOwnerDispatchTargetSupported(target, label)`.
-JavaScript integrations that may load native-threaded Ruby app servers can
+JavaScript integrations that may load native-threaded Ruby hosts can
 preflight that separate boundary with `omnivm.rubyThreadingStatus()` or
-`omnivm.assertRubyNativeThreadsSupported("puma startup")`.
-Python retained manifest proxies expose the same escape hatches as
-`omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
-`omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
-`omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
-`omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
-`omnivm.omnivm_close(proxy)`. Owner fields named `close` or `dispose` remain
-ordinary fields on retained Python proxies; use `proxy_close()` or
-`omnivm_close()` for lifecycle release. Python retained handle proxies, stream
+`omnivm.assertRubyNativeThreadsSupported("ruby host startup")`.
+Owner fields named `close` or `dispose` remain ordinary fields on retained
+Python proxies; generated cleanup uses the proxy lifecycle path instead of
+treating those names as lifecycle methods. Python retained handle proxies, stream
 iterators, and embedded local stream proxies also support `with` and
 `async with` for deterministic release/cancel, and Python stream proxies support
 `async for` with the same early-break cancellation as sync iteration. For
-ordinary local objects, the same helpers honor descriptor-defined `close()` and
-`dispose()` without
-triggering dynamic attribute lookup; `omnivm.aproxy_close(value)` also awaits
-async close, `aclose()`, and dispose results. Generated Python manifest
-snippets expose the same `proxy_close(value)`/`omnivm_close(value)`
-close-helper pair.
-Ruby manifest proxies expose `proxy.omnivm_get(key)`,
-`proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
-`proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
-`proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
-`proxy.omnivm_close`; generated snippets also provide
-`OmniVM.proxy_close(proxy)`, `OmniVM.omnivm_close(proxy)`, and
-`omnivm_close(proxy)`. Embedded Ruby also
+ordinary local objects, generated lifecycle helpers honor descriptor-defined
+`close()` and `dispose()` without triggering dynamic attribute lookup and await
+async close, `aclose()`, and dispose results when needed.
+Ruby manifest proxies likewise keep owner fields such as `then`, `class`,
+`inspect`, `hash`, `to_s`, `to_h`, `to_a`, `to_json`, `close`, and `dispose`
+as ordinary fields when present. Embedded Ruby also
 provides `OmniVM.buffer_owner(name[, data], dtype: 0)` for scoped named-buffer
 ownership with single-active-use entry and idempotent release. Owners expose
 `status()`, and `OmniVM.buffer_status(name)` returns the same per-name lifecycle
@@ -591,15 +575,9 @@ the diagnostic-only boundary with `OmniVM.owner_dispatch_status`,
 `OmniVM.owner_dispatch_target_status(target)`,
 `OmniVM.assert_owner_dispatch_supported(label)`, or
 `OmniVM.assert_owner_dispatch_target_supported(target, label)`.
-Java manifest proxies can use `OmniVM.proxyGet(proxy, key)`,
-`OmniVM.proxySet(proxy, key, value)`, `OmniVM.proxyCall(proxy, key, args)`, and
-`OmniVM.proxyLen(proxy)`, plus `OmniVM.proxyIter(proxy, mode)` and
-`OmniVM.proxyKeys(proxy)`, `OmniVM.proxyValues(proxy)`,
-`OmniVM.proxyItems(proxy)`, `OmniVM.proxyContains(proxy, key)`, and
-`OmniVM.proxyClose(proxy)` or `OmniVM.omnivmClose(proxy)` to force remote
-get/set/call/length, iteration, membership, and proxy-release operations when a
-remote key collides with Java proxy methods or `Map` methods. Java also
-provides `OmniVM.bufferOwner(name[, data], dtype)` as an `AutoCloseable`
+Generated Java manifest code also treats proxy collisions as automatic owner
+shape decisions rather than a reason for user `.poly` code to call static proxy
+helpers. Java also provides `OmniVM.bufferOwner(name[, data], dtype)` as an `AutoCloseable`
 single-active-use named-buffer owner for try-with-resources cleanup.
 `OmniVM.bufferStatus(name)` and `owner.status()` return JSON lifecycle
 diagnostics from the shared buffer store.

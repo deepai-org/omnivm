@@ -712,85 +712,48 @@ the same `runtime`, `origin_runtime`, `type`, `boundary_path`, `details`, and
 
 JavaScript manifest proxies keep natural `.length` semantics for remote data
 fields on non-indexed objects and collection length for indexed sequence/table
-proxies. When user code needs an unambiguous operation, it can use
-`omnivm.proxyGet(proxy, key)`, `omnivm.proxySet(proxy, key, value)`,
-`omnivm.proxyCall(proxy, key, args)`, `omnivm.proxyLen(proxy)`,
-`omnivm.proxyKeys(proxy)`, `omnivm.proxyValues(proxy)`,
-`omnivm.proxyItems(proxy)`, `omnivm.proxyContains(proxy, key)`,
-`omnivm.proxyClose(proxy)`, `omnivm.omnivmClose(proxy)`, or the
-collision-free symbol property
-`proxy[omnivm.proxyLength]`; data fields remain available through
-`omnivm.proxyGet(proxy, "length")`. `toJSON` is local proxy bookkeeping for
-`JSON.stringify(proxy)`, so a remote field or method named `toJSON` should be
-read with `omnivm.proxyGet(proxy, "toJSON")`. Remote `then` fields are hidden
-from natural property access so proxies never become Promise thenables or trigger
-foreign bridge calls while Promise resolution checks `.then`; use
-`omnivm.proxyGet(proxy, "then")` or `omnivm.proxyCall(proxy, "then", args)` for
-the owner field or method. JavaScript handle and stream proxies also expose
-`Symbol.dispose` and `Symbol.asyncDispose` when the runtime supports them, and
-`omnivm.proxyClose(value)`/`omnivm.omnivmClose(value)` honor both symbols
-before falling back to a descriptor-safe public `close` method. Remote data
-fields named `close` or `dispose` remain ordinary fields on handle proxies;
-lifecycle release uses
-`omnivm.proxyClose(value)`, `omnivm.omnivmClose(value)`, `__omnivm_close`, or
-the disposal symbols instead of calling those remote fields.
-Python retained manifest proxies provide matching helpers:
-`omnivm.proxy_get(proxy, key)`, `omnivm.proxy_set(proxy, key, value)`,
-`omnivm.proxy_call(proxy, key, args=(), kwargs=None)`, and
-`omnivm.proxy_len(proxy)`, plus `omnivm.proxy_keys(proxy)`,
-`omnivm.proxy_values(proxy)`, `omnivm.proxy_items(proxy)`, and
-`omnivm.proxy_contains(proxy, key)`, `omnivm.proxy_close(proxy)`, and
-`omnivm.omnivm_close(proxy)`.
+proxies. Generated `.poly` code should rely on normal field reads, method
+calls, indexing, iteration, membership, length, and cleanup. Internal bridge
+helpers such as `proxyGet`, `proxySet`, `proxyCall`, and their Python/Ruby/Java
+equivalents remain available for diagnostics and extremely rare manual escape
+hatches, but they are not the normal user contract. If ordinary `.poly` code
+must call a helper to access an owner field named `then`, `toJSON`, `close`,
+`dispose`, `items`, `keys`, `get`, `length`, or `count`, that is a bug in the
+automatic proxy/codegen behavior.
+
+Remote `then` fields are hidden from JavaScript Promise assimilation so proxies
+never become accidental thenables or trigger foreign bridge calls while Promise
+resolution checks `.then`; generated user reads/calls should still preserve the
+owner field when the user actually asks for it. JavaScript handle and stream
+proxies also expose `Symbol.dispose` and `Symbol.asyncDispose` when the runtime
+supports them, and generated lifecycle cleanup honors those symbols before
+falling back to descriptor-safe public close methods. Remote data fields named
+`close` or `dispose` remain ordinary fields on handle proxies; lifecycle release
+uses the proxy lifecycle path instead of calling those remote fields.
+
 Local Python protocol attributes such as `__class__` and `__repr__` stay local
-so introspection and debugging remain ordinary; owner fields with those names
-remain available through `omnivm.proxy_get(proxy, "__class__")` and the same
-helper family.
-Generated Python manifest capture code injects the same
-`proxy_close(value)`/`omnivm_close(value)` helper pair so guest Python snippets
-can explicitly release a handle proxy or cancel a stream proxy even when the
-owner object has a real `close` field or method.
+so introspection and debugging remain ordinary, while generated user operations
+against owner fields should still route to owner data/methods automatically.
 For retained handle proxies, natural reads of owner fields named `close` or
-`dispose` still prefer the owner field; lifecycle release uses
-`omnivm.proxy_close(value)`, `omnivm.omnivm_close(value)`, or the generated
-`proxy_close(value)`/`omnivm_close(value)` helpers. Python retained handle
-proxies, stream iterators, and embedded local stream proxies also support
-`with` and `async with`; context exit runs the same explicit release or
-`stream_cancel` path and preserves body exceptions.
-The embedded Python `omnivm` module installs the same collision-safe
-`proxy_close(value)` and `omnivm_close(value)` helpers, so code running directly
-inside the embedded interpreter does not have to rely on proxy finalizers for
-normal lifecycle release. For ordinary local objects, Python `proxy_close` and
-`omnivm_close` honor descriptor-defined `close()` and `dispose()` without
-dynamic attribute lookup; `aproxy_close` and `omnivm_aclose` also await async
-close, dispose, and `aclose()` results.
-Ruby manifest proxies provide `proxy.omnivm_get(key)`,
-`proxy.omnivm_set(key, value)`, `proxy.omnivm_call(key, *args)`, and
-`proxy.omnivm_len`, plus `proxy.omnivm_keys`, `proxy.omnivm_values`,
-`proxy.omnivm_items`, `proxy.omnivm_contains(key)`, and
-`proxy.omnivm_close`; generated snippets also provide
-`OmniVM.proxy_close(proxy)`, `OmniVM.omnivm_close(proxy)`, and
-`omnivm_close(proxy)` as collision-safe close helpers. Natural Ruby reads for
-owner fields named `then`, `class`, `inspect`,
-`hash`, `to_s`, `to_h`, `to_a`, or `to_json` prefer the owner field when it is
-present; handle-proxy owner fields named `close` or `dispose` are also ordinary
-fields, and lifecycle release uses `proxy.omnivm_close`,
-`OmniVM.proxy_close(proxy)`, `OmniVM.omnivm_close(proxy)`, or
-`omnivm_close(proxy)`. The `omnivm_*` helpers remain the explicit escape hatch.
-The close helpers are idempotent. For ordinary handle proxies they release the
-proxy lease; for stream/channel proxies they cancel the lazy stream owner. In
-runtimes with explicit finalizer unregistration, close also detaches the
-fallback GC cleanup hook after the release or cancellation succeeds. A
-user-initiated close/cancel that returns a false release envelope but no error
-does not mark the local proxy closed; callers may retry, and only a true owner
-acknowledgement makes later close calls return the local idempotent `false`.
-Java manifest proxies provide the static helpers
-`OmniVM.proxyGet(proxy, key)`, `OmniVM.proxySet(proxy, key, value)`,
-`OmniVM.proxyCall(proxy, key, args)`, `OmniVM.proxyLen(proxy)`,
-`OmniVM.proxyIter(proxy, mode)`, `OmniVM.proxyKeys(proxy)`,
-`OmniVM.proxyValues(proxy)`, `OmniVM.proxyItems(proxy)`, and
-`OmniVM.proxyContains(proxy, key)`, and `OmniVM.proxyClose(proxy)` or
-`OmniVM.omnivmClose(proxy)` for the same remote get/set/call/length,
-iteration, membership, and proxy-release escape hatches.
+`dispose` still prefer the owner field; lifecycle release uses generated cleanup
+paths. Python retained handle proxies, stream iterators, and embedded local
+stream proxies also support `with` and `async with`; context exit runs the same
+release or `stream_cancel` path and preserves body exceptions. For ordinary
+local objects, generated Python cleanup honors descriptor-defined `close()` and
+`dispose()` without dynamic attribute lookup; async close, dispose, and
+`aclose()` results are awaited when needed.
+
+Natural Ruby reads for owner fields named `then`, `class`, `inspect`, `hash`,
+`to_s`, `to_h`, `to_a`, or `to_json` prefer the owner field when it is present;
+handle-proxy owner fields named `close` or `dispose` are also ordinary fields,
+and lifecycle release uses generated proxy cleanup. The close path is
+idempotent. For ordinary handle proxies it releases the proxy lease; for
+stream/channel proxies it cancels the lazy stream owner. In runtimes with
+explicit finalizer unregistration, close also detaches the fallback GC cleanup
+hook after the release or cancellation succeeds. A user-initiated close/cancel
+that returns a false release envelope but no error does not mark the local proxy
+closed; callers may retry, and only a true owner acknowledgement makes later
+close calls return the local idempotent `false`.
 Go manifest callers can use `manifest.ProxyClose(value)` or the idiomatic alias
 `manifest.OmniVMClose(value)` for the same collision-safe close path. The
 compatibility alias `manifest.OmnivmClose(value)` remains available for
