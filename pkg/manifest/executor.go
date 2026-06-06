@@ -163,6 +163,7 @@ type Executor struct {
 	handleScopes      []handles.ScopeID
 	funcs             map[string]*FuncDef
 	goFuncs           map[string]interface{}
+	goSourceFuncs     map[string]*goSourceFuncDef
 	javaStubFuncs     map[string]*FuncDef
 	channels          map[string]*ChanRef
 	channelsMu        sync.RWMutex
@@ -204,6 +205,7 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		handleScopes:      []handles.ScopeID{table.NewScope()},
 		funcs:             make(map[string]*FuncDef),
 		goFuncs:           make(map[string]interface{}),
+		goSourceFuncs:     make(map[string]*goSourceFuncDef),
 		javaStubFuncs:     make(map[string]*FuncDef),
 		channels:          make(map[string]*ChanRef),
 		resources:         make(map[handles.ID]*ResourceRef),

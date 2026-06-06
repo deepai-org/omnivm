@@ -220,6 +220,68 @@ func BlendScore(a interface{}, b interface{}) interface{} {
 	}
 }
 
+func TestGoCSharedSourceFallbackInitializesRequiredFunction(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+
+	prev := UseGoSourceFallback
+	UseGoSourceFallback = true
+	t.Cleanup(func() { UseGoSourceFallback = prev })
+
+	e := NewExecutor(nil)
+	keyOp := &Op{
+		OpType:      "func_def",
+		Name:        "cache_key",
+		BodyRuntime: "go",
+		Params:      []*Param{{Name: "url"}},
+		Exports:     []string{"CacheKey"},
+		Source: `package polyfunc
+
+func CacheKey(url interface{}) interface{} {
+	return url
+}
+`,
+	}
+	fetchOp := &Op{
+		OpType:      "func_def",
+		Name:        "cache_fetch",
+		BodyRuntime: "go",
+		Params:      []*Param{{Name: "url"}},
+		Exports:     []string{"CacheFetch"},
+		Requires:    []string{"cache_key"},
+		Source: `package polyfunc
+
+var cache_key func(interface{}) interface{}
+
+func Init(deps map[string]interface{}) {
+	if fn, ok := deps["cache_key"].(func(interface{}) interface{}); ok {
+		cache_key = fn
+	}
+}
+
+func CacheFetch(url interface{}) interface{} {
+	return cache_key(url)
+}
+`,
+	}
+
+	if _, err := e.compileGoPlugin(keyOp); err != nil {
+		t.Fatalf("compile required c-shared Go func_def: %v", err)
+	}
+	if _, err := e.compileGoPlugin(fetchOp); err != nil {
+		t.Fatalf("compile dependent c-shared Go func_def: %v", err)
+	}
+
+	got, err := e.callGoFunc("cache_fetch", []interface{}{"https://example.test/articles/poly"}, "")
+	if err != nil {
+		t.Fatalf("call dependent c-shared Go func_def: %v", err)
+	}
+	if got != "https://example.test/articles/poly" {
+		t.Fatalf("cache_fetch = %#v, want input URL", got)
+	}
+}
+
 func TestGoCSharedSourceFallbackSupportsTypedParams(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")

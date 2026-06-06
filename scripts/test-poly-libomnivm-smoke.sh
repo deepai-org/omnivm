@@ -40,6 +40,7 @@ examples=(
   "javascript-error-cause-details.poly"
   "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
+  "beautifulsoup-cheerio-go-cache.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
   "go-http-handler-docs.poly"
@@ -125,6 +126,16 @@ for example in "${examples[@]}"; do
   if [ "$example" = "ruby-java-error-fields.poly" ] && [[ "$output" != *"Ruby Java error fields ruby=ruby:ruby:RuntimeError:bad ruby:true:exec[ruby] java=java:java:IllegalStateException:bad java:true:exec[java]"* ]]; then
     echo "expected Ruby/Java error fields with concrete Java exception type, got: $output" >&2
     exit 1
+  fi
+  if [ "$example" = "beautifulsoup-cheerio-go-cache.poly" ]; then
+    if [[ "$output" != *"BeautifulSoup/Cheerio/Go scrape POLYGLOT RUNTIME links=2 workers=2 key=https://example.test/articles/poly hrefs=/docs,/api"* ]]; then
+      echo "expected BeautifulSoup/Cheerio/Go cache output, got: $output" >&2
+      exit 1
+    fi
+    if [[ "$output" == *"panic"* || "$output" == *"panicked"* ]]; then
+      echo "expected BeautifulSoup/Cheerio/Go cache output without Go plugin panic text, got: $output" >&2
+      exit 1
+    fi
   fi
   if [ "$example" = "python-generator-js-cancel.poly" ] && [[ "$output" != *"Python generator JS cancel 0:break|1:break errors=0:throw|stop-stream"* || "$output" != *"Python generator JS closed ['break', 'throw']"* ]]; then
     echo "expected Python generator JS cancellation/error release output, got: $output" >&2

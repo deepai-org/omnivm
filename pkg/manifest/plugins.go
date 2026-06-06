@@ -25,10 +25,24 @@ var loadedPlugins = map[string]*plugin.Plugin{}
 
 var loadedCSharedPlugins = map[string]cSharedPluginHandle{}
 
+type goSourceFuncDef struct {
+	Name     string
+	Exports  []string
+	Source   string
+	Requires []string
+}
+
+type goCSharedSourceFile struct {
+	Name   string
+	Source string
+}
+
 // compileGoPlugin handles func_def ops with bodyRuntime:"go" and a source field.
 // It compiles the Go source as a plugin, loads exports, and registers them
 // in the executor's goFuncs registry.
 func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
+	e.rememberGoSourceFunc(op)
+
 	if UseGoSourceFallback {
 		if e.registerGoChannelWorkerFallback(op) {
 			return nil, nil
@@ -119,13 +133,14 @@ func (e *Executor) compileGoCSharedPlugin(op *Op) error {
 		}
 	}
 
-	hash := sha256Hash("cshared:" + op.Source + ":" + strings.Join(op.Exports, ","))
+	sourceFiles := e.goCSharedSourceFiles(op)
+	hash := sha256Hash("cshared:" + goCSharedSourceHashMaterial(sourceFiles) + ":" + strings.Join(op.Exports, ","))
 	soPath := filepath.Join(pluginCacheDir, hash+".so")
 
 	handle, alreadyLoaded := loadedCSharedPlugins[soPath]
 	if !alreadyLoaded {
 		if _, err := os.Stat(soPath); os.IsNotExist(err) {
-			if err := compileCSharedPlugin(op, soPath); err != nil {
+			if err := compileCSharedPlugin(op, soPath, sourceFiles); err != nil {
 				return fmt.Errorf("go c-shared plugin compile: %w", err)
 			}
 		}
@@ -175,7 +190,7 @@ func (e *Executor) compileGoCSharedPlugin(op *Op) error {
 	return nil
 }
 
-func compileCSharedPlugin(op *Op, outputPath string) error {
+func compileCSharedPlugin(op *Op, outputPath string, sourceFiles []goCSharedSourceFile) error {
 	if err := os.MkdirAll(pluginCacheDir, 0o755); err != nil {
 		return err
 	}
@@ -186,11 +201,18 @@ func compileCSharedPlugin(op *Op, outputPath string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	pkgRe := regexp.MustCompile(`(?m)^package\s+\w+`)
-	source := pkgRe.ReplaceAllString(op.Source, "package main")
-
-	if err := os.WriteFile(filepath.Join(tmpDir, "plugin.go"), []byte(source), 0o644); err != nil {
-		return err
+	if len(sourceFiles) == 0 {
+		sourceFiles = []goCSharedSourceFile{{Name: "plugin.go", Source: op.Source}}
+	}
+	for i, file := range sourceFiles {
+		name := file.Name
+		if name == "" {
+			name = fmt.Sprintf("source_%d.go", i)
+		}
+		source := rewriteGoSourcePackage(file.Source)
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(source), 0o644); err != nil {
+			return err
+		}
 	}
 	if err := os.WriteFile(filepath.Join(tmpDir, "omnivm_wrappers.go"), []byte(goCSharedWrapperSource(op.Exports)), 0o644); err != nil {
 		return err
@@ -219,6 +241,204 @@ func compileCSharedPlugin(op *Op, outputPath string) error {
 	}
 
 	return nil
+}
+
+func (e *Executor) rememberGoSourceFunc(op *Op) {
+	if op == nil || op.BodyRuntime != "go" || op.Source == "" {
+		return
+	}
+	meta := &goSourceFuncDef{
+		Name:     op.Name,
+		Exports:  append([]string(nil), op.Exports...),
+		Source:   op.Source,
+		Requires: append([]string(nil), op.Requires...),
+	}
+	if op.Name != "" {
+		e.goSourceFuncs[op.Name] = meta
+	}
+	for _, exportName := range op.Exports {
+		if exportName != "" {
+			e.goSourceFuncs[exportName] = meta
+		}
+	}
+}
+
+func (e *Executor) goCSharedSourceFiles(op *Op) []goCSharedSourceFile {
+	files := []goCSharedSourceFile{{
+		Name:   "plugin.go",
+		Source: stripGeneratedGoInit(op.Source),
+	}}
+	seen := map[string]bool{}
+	if op.Name != "" {
+		seen[op.Name] = true
+	}
+	for _, exportName := range op.Exports {
+		if exportName != "" {
+			seen[exportName] = true
+		}
+	}
+
+	assignments := []string{}
+	var addRequired func([]string)
+	addRequired = func(requires []string) {
+		for _, req := range requires {
+			if req == "" || seen[req] {
+				continue
+			}
+			meta, ok := e.goSourceFuncs[req]
+			if !ok || meta == nil || meta.Source == "" {
+				continue
+			}
+			seen[req] = true
+			for _, exportName := range meta.Exports {
+				if exportName != "" {
+					seen[exportName] = true
+				}
+			}
+			addRequired(meta.Requires)
+			files = append(files, goCSharedSourceFile{
+				Name:   goCSharedDependencyFileName(req, len(files)),
+				Source: stripGeneratedGoInit(meta.Source),
+			})
+			if len(meta.Exports) > 0 && goIdentifierRE.MatchString(req) && goIdentifierRE.MatchString(meta.Exports[0]) {
+				assignments = append(assignments, fmt.Sprintf("\t%s = %s", req, meta.Exports[0]))
+			}
+		}
+	}
+	addRequired(op.Requires)
+
+	if len(assignments) > 0 {
+		files = append(files, goCSharedSourceFile{
+			Name: "omnivm_dep_init.go",
+			Source: "package main\n\nfunc init() {\n" +
+				strings.Join(assignments, "\n") +
+				"\n}\n",
+		})
+	}
+	return files
+}
+
+func goCSharedSourceHashMaterial(files []goCSharedSourceFile) string {
+	var b strings.Builder
+	for _, file := range files {
+		b.WriteString(file.Name)
+		b.WriteByte('\n')
+		b.WriteString(file.Source)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func goCSharedDependencyFileName(name string, index int) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r == '_' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	base := b.String()
+	if base == "" {
+		base = "dep"
+	}
+	return fmt.Sprintf("dep_%02d_%s.go", index, base)
+}
+
+func rewriteGoSourcePackage(source string) string {
+	pkgRe := regexp.MustCompile(`(?m)^package\s+\w+`)
+	return pkgRe.ReplaceAllString(source, "package main")
+}
+
+func stripGeneratedGoInit(source string) string {
+	const signature = "func Init(deps map[string]interface{})"
+	idx := strings.Index(source, signature)
+	if idx < 0 {
+		return source
+	}
+	bodySearchStart := idx + len(signature)
+	braceOffset := strings.Index(source[bodySearchStart:], "{")
+	if braceOffset < 0 {
+		return source
+	}
+	startBrace := bodySearchStart + braceOffset
+	end := matchingGoBlockEnd(source, startBrace)
+	if end < 0 {
+		return source
+	}
+	before := strings.TrimRight(source[:idx], " \t\r\n")
+	after := strings.TrimLeft(source[end:], " \t\r\n")
+	if before == "" {
+		return after
+	}
+	if after == "" {
+		return before + "\n"
+	}
+	return before + "\n\n" + after
+}
+
+func matchingGoBlockEnd(source string, startBrace int) int {
+	depth := 0
+	inString := rune(0)
+	escaped := false
+	lineComment := false
+	blockComment := false
+	for i, r := range source[startBrace:] {
+		pos := startBrace + i
+		next := rune(0)
+		if pos+1 < len(source) {
+			next = rune(source[pos+1])
+		}
+		if lineComment {
+			if r == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if r == '*' && next == '/' {
+				blockComment = false
+			}
+			continue
+		}
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if inString != '`' && r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == inString {
+				inString = 0
+			}
+			continue
+		}
+		if r == '/' && next == '/' {
+			lineComment = true
+			continue
+		}
+		if r == '/' && next == '*' {
+			blockComment = true
+			continue
+		}
+		if r == '"' || r == '\'' || r == '`' {
+			inString = r
+			continue
+		}
+		if r == '{' {
+			depth++
+			continue
+		}
+		if r == '}' {
+			depth--
+			if depth == 0 {
+				return pos + 1
+			}
+		}
+	}
+	return -1
 }
 
 func goCSharedWrapperSource(exports []string) string {

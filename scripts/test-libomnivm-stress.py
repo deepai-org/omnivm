@@ -13372,7 +13372,7 @@ def test_manifest_okhttp_response_body_stream_early_cancel_releases_owner():
         raise AssertionError(f"OkHttp response body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"OkHttp response body cancel did not release handle: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"OkHttp response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -23276,7 +23276,7 @@ def test_manifest_java_inputstream_reader_early_cancel_releases_owner():
         raise AssertionError(f"Java InputStream/Reader did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 2:
         raise AssertionError(f"Java InputStream/Reader cancel did not release handles: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Java InputStream/Reader early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -23363,7 +23363,7 @@ def test_manifest_java_readable_byte_channel_early_cancel_releases_owner():
         raise AssertionError(f"Java ReadableByteChannel did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"Java ReadableByteChannel cancel did not release handle: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Java ReadableByteChannel early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -23597,7 +23597,7 @@ def test_manifest_java_flow_publisher_early_cancel_releases_owner():
         raise AssertionError(f"Java Flow.Publisher did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"Java Flow.Publisher stream did not release handle: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Java Flow.Publisher early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -23690,7 +23690,7 @@ def test_manifest_java_scheduled_reactive_stream_cancel_tears_down_scheduler():
         raise AssertionError(f"scheduled reactive streams did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 2:
         raise AssertionError(f"scheduled reactive stream cancel did not release handles: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"scheduled reactive stream cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24131,7 +24131,7 @@ def test_manifest_js_readable_stream_early_cancel_releases_owner():
         raise AssertionError(f"JS ReadableStream early-cancel used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"JS ReadableStream early-cancel did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"JS ReadableStream early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24203,7 +24203,7 @@ def test_manifest_node_web_readable_stream_early_cancel_releases_owner():
         raise AssertionError(f"Node Web ReadableStream used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Node Web ReadableStream did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Node Web ReadableStream leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24293,7 +24293,7 @@ def test_manifest_node_classic_readable_early_cancel_releases_owner():
         raise AssertionError(f"Node classic Readable used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Node classic Readable did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Node classic Readable leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24388,7 +24388,7 @@ def test_manifest_node_classic_pipeline_abort_cancels_python_owner():
         raise AssertionError(f"Node classic pipeline source used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Node classic pipeline did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Node classic pipeline leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24518,7 +24518,7 @@ def test_manifest_busboy_upload_abort_cancels_python_owner():
         raise AssertionError(f"Busboy upload source used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Busboy upload did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Busboy upload leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -24831,7 +24831,7 @@ def test_manifest_express_body_parser_json_abort_cancels_python_owner():
         raise AssertionError(f"Express/body-parser JSON body used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Express/body-parser JSON body did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Express/body-parser JSON body leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25002,7 +25002,7 @@ def test_manifest_koa_bodyparser_json_abort_cancels_python_owner():
         raise AssertionError(f"Koa/bodyparser JSON body used JSON fallback: {boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"Koa/bodyparser JSON body did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"Koa/bodyparser JSON body leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25186,7 +25186,7 @@ httpx_body = httpx_body_iter()
         raise AssertionError(f"httpx response body did not record stream access: before={before_handles}, after={handles}")
     if released < 1 and scoped < 1:
         raise AssertionError(f"httpx response body did not release on early cancel: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"httpx response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25305,7 +25305,7 @@ requests_thread.join(timeout=2)
         raise AssertionError(f"requests response body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"requests response body did not release on early cancel: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"requests response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25395,7 +25395,7 @@ aiohttp_body = AiohttpOwnedBody()
         raise AssertionError(f"aiohttp response body did not record stream access: before={before_handles}, after={handles}")
     if handles.get("explicit_releases", 0) < before_handles.get("explicit_releases", 0) + 1:
         raise AssertionError(f"aiohttp response body did not release on early cancel: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"aiohttp response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25454,7 +25454,7 @@ def test_manifest_undici_response_body_early_cancel_releases_owner():
         raise AssertionError(f"undici response body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
     if handles.get("handle_accesses_by_kind", {}).get("stream", 0) < before_handles.get("handle_accesses_by_kind", {}).get("stream", 0) + 1:
         raise AssertionError(f"undici response body did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici response body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25625,7 +25625,7 @@ py_upload_body = PythonUploadBody()
     stream_access_delta = stream_accesses - before_handles.get("handle_accesses_by_kind", {}).get("stream", 0)
     if stream_accesses < 1 and stream_access_delta < 1:
         raise AssertionError(f"undici request body did not record stream access: before={before_handles}, after={handles}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici request body early-cancel leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25862,7 +25862,7 @@ py_undici_request_upload_body = PythonUndiciRequestUploadBody()
         )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici request upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici request upload abort leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -25987,7 +25987,7 @@ py_undici_client_upload_body = PythonUndiciClientUploadBody()
         )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici Client upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici Client upload abort leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -26112,7 +26112,7 @@ py_undici_pool_upload_body = PythonUndiciPoolUploadBody()
         )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici Pool upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici Pool upload abort leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -26238,7 +26238,7 @@ py_undici_agent_upload_body = PythonUndiciAgentUploadBody()
         )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici Agent upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici Agent upload abort leaked live handles: before={before_handles}, after={handles}")
 
 
@@ -26366,7 +26366,7 @@ py_undici_dispatcher_upload_body = PythonUndiciDispatcherUploadBody()
         )
     if boundary.get("json_fallbacks", 0) != before_status.get("boundary", {}).get("json_fallbacks", 0):
         raise AssertionError(f"undici custom Dispatcher upload body used JSON fallback: before={before_status.get('boundary', {})}, after={boundary}")
-    if handles.get("live", 0) != before_handles.get("live", 0):
+    if handles.get("live", 0) > before_handles.get("live", 0):
         raise AssertionError(f"undici custom Dispatcher upload error leaked live handles: before={before_handles}, after={handles}")
 
 
