@@ -287,6 +287,34 @@ static std::string omnivm_v8_json_stringify_prop(v8::Isolate* isolate,
     return omnivm_v8_json_stringify(isolate, context, value);
 }
 
+static std::string omnivm_v8_json_stringify_json_text(v8::Isolate* isolate,
+                                                      v8::Local<v8::Context> context,
+                                                      const std::string& text) {
+    if (text.empty()) {
+        return "";
+    }
+    v8::Local<v8::String> source;
+    if (!v8::String::NewFromUtf8(
+            isolate,
+            text.c_str(),
+            v8::NewStringType::kNormal,
+            static_cast<int>(text.size())
+        ).ToLocal(&source)) {
+        return "";
+    }
+    v8::Local<v8::Value> parsed;
+    {
+        v8::TryCatch try_catch(isolate);
+        if (!v8::JSON::Parse(context, source).ToLocal(&parsed) || parsed.IsEmpty()) {
+            if (try_catch.HasTerminated()) {
+                isolate->CancelTerminateExecution();
+            }
+            return "";
+        }
+    }
+    return omnivm_v8_json_stringify(isolate, context, parsed);
+}
+
 static bool omnivm_v8_append_json_prop(v8::Isolate* isolate,
                                        v8::Local<v8::Context> context,
                                        v8::Local<v8::Object> object,
@@ -349,7 +377,11 @@ static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
                                                         v8::Local<v8::Context> context,
                                                         v8::Local<v8::Object> object) {
     std::string details = omnivm_v8_json_stringify_prop(isolate, context, object, "details");
-    if (!details.empty()) {
+    if (!details.empty() &&
+        details != "{}" &&
+        details != "[]" &&
+        details != "{\"issues\":[]}" &&
+        details != "{\"errors\":[]}") {
         return details;
     }
     const char* keys[] = {"details_json", "detailsJson"};
@@ -370,12 +402,32 @@ static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
         }
     }
     std::string issues = omnivm_v8_json_stringify_prop(isolate, context, object, "issues");
-    if (!issues.empty()) {
+    if (!issues.empty() && issues != "[]") {
         return "{\"issues\":" + issues + "}";
     }
     std::string errors = omnivm_v8_json_stringify_prop(isolate, context, object, "errors");
-    if (!errors.empty()) {
+    if (!errors.empty() && errors != "[]") {
         return "{\"errors\":" + errors + "}";
+    }
+    std::string type = omnivm_v8_get_string_prop(isolate, context, object, "type");
+    if (type.empty()) {
+        type = omnivm_v8_get_string_prop(isolate, context, object, "name");
+    }
+    if (type.empty()) {
+        type = omnivm_v8_get_string_prop(isolate, context, object, "error_type");
+    }
+    if (type.empty()) {
+        type = omnivm_v8_get_string_prop(isolate, context, object, "errorType");
+    }
+    if (type == "ZodError") {
+        std::string parsed_message = omnivm_v8_json_stringify_json_text(
+            isolate,
+            context,
+            omnivm_v8_get_string_prop(isolate, context, object, "message")
+        );
+        if (!parsed_message.empty() && parsed_message[0] == '[') {
+            return "{\"issues\":" + parsed_message + "}";
+        }
     }
     std::string common = omnivm_v8_common_error_details_json(isolate, context, object);
     if (!common.empty()) {

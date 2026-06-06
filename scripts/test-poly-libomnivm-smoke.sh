@@ -38,6 +38,7 @@ examples=(
   "javascript-error-fields.poly"
   "python-error-js-catch.poly"
   "javascript-error-cause-details.poly"
+  "pydantic-zod-error-fidelity.poly"
   "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
   "beautifulsoup-cheerio-go-cache.poly"
@@ -124,6 +125,16 @@ for example in "${examples[@]}"; do
   if [ "$example" = "javascript-error-cause-details.poly" ] && [[ "$output" != *"JavaScript error Python details javascript:javascript:TypeError:outer type:True:exec[javascript]:E_OUTER:order.id:Error:inner cause"* ]]; then
     echo "expected JavaScript error details and cause caught naturally in Python, got: $output" >&2
     exit 1
+  fi
+  if [ "$example" = "pydantic-zod-error-fidelity.poly" ]; then
+    if [[ "$output" != *"Validation error fidelity pydantic=python:ValidationError:true:1:score:int_parsing"* ]]; then
+      echo "expected Pydantic validation details caught naturally in JavaScript, got: $output" >&2
+      exit 1
+    fi
+    if [[ "$output" != *"Validation error fidelity zod=javascript:ZodError:True:1:age:too_small"* ]]; then
+      echo "expected Zod validation details caught naturally in Python, got: $output" >&2
+      exit 1
+    fi
   fi
   if [ "$example" = "ruby-java-error-fields.poly" ] && [[ "$output" != *"Ruby Java error fields ruby=ruby:ruby:RuntimeError:bad ruby:true:exec[ruby] java=java:java:IllegalStateException:bad java:true:exec[java]"* ]]; then
     echo "expected Ruby/Java error fields with concrete Java exception type, got: $output" >&2
