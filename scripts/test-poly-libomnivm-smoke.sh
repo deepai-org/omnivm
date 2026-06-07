@@ -52,6 +52,7 @@ examples=(
   "javascript-python-dict-enumeration-docs.poly"
   "javascript-python-mapping-methods-docs.poly"
   "javascript-ruby-mapping-methods-docs.poly"
+  "javascript-java-mapping-methods-docs.poly"
   "python-dataframe-js-table-docs.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
@@ -199,6 +200,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-ruby-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Ruby mapping methods docs alpha,beta,close,count,length,then;alpha:first|beta:second|close:field-close|count:7|length:2|then:field-then;2|7|field-close|field-then|first|second;first:fallback:field-close:7;second"* ]]; then
     echo "expected JavaScript object to expose natural Ruby mapping methods, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-java-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Java mapping methods docs [alpha, beta, close, count, length, then];alpha:first|beta:second|close:field-close|count:7|length:2|then:field-then;2|7|field-close|field-then|first|second;first:fallback:field-close:7;second"* ]]; then
+    echo "expected JavaScript object to expose natural Java mapping methods, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "python-dataframe-js-table-docs.poly" ] && [[ "$output" != *"Python DataFrame JS table docs pandas=3:3x2:4x12:1:4:3:6 polars=3:3:1.5:2.5:3.5"* ]]; then

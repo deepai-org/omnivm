@@ -13383,6 +13383,141 @@ public final class ProxyCollisionCheck {
 	}
 }
 
+func TestJavaHandleProxyMappingEnumerationUsesRemoteItems(t *testing.T) {
+	javac, err := exec.LookPath("javac")
+	if err != nil {
+		t.Skip("javac not available")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("java not available")
+	}
+
+	javaRuntimePath := ""
+	var javaRuntimeErr error
+	for _, path := range []string{"../../runtime/java/OmniVM.java", "/tmp/java-src/OmniVM.java"} {
+		if _, err := os.Stat(path); err == nil {
+			javaRuntimePath = path
+			break
+		} else {
+			javaRuntimeErr = err
+		}
+	}
+	if javaRuntimePath == "" {
+		t.Fatalf("read Java runtime helper: %v", javaRuntimeErr)
+	}
+
+	tmp := t.TempDir()
+	runtimeData, err := os.ReadFile(javaRuntimePath)
+	if err != nil {
+		t.Fatalf("read Java runtime helper: %v", err)
+	}
+	runtimeCode := strings.Replace(string(runtimeData),
+		`    public static native String nativeCall(String runtime, String code);`,
+		`    public static String nativeCall(String runtime, String code) {
+        ProxyMappingCheck.calls.add(code);
+        if (!"__manifest".equals(runtime)) {
+            throw new RuntimeException("unexpected runtime " + runtime);
+        }
+        if (code.contains("\"op\":\"handle_retain\"") || code.contains("\"op\":\"handle_adopt\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":true}";
+        }
+        if (code.contains("\"op\":\"handle_access\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":{\"chatty\":false}}";
+        }
+        if (code.contains("\"op\":\"handle_len\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":3}";
+        }
+        if (code.contains("\"op\":\"handle_contains\"")) {
+            boolean present = code.contains("\"alpha\"") || code.contains("\"count\"") || code.contains("\"close\"");
+            return "{\"__omnivm_result__\":true,\"value\":" + present + "}";
+        }
+        if (code.contains("\"op\":\"handle_get\"")) {
+            if (code.contains("\"key\":\"alpha\"")) return "{\"__omnivm_result__\":true,\"value\":\"first\"}";
+            if (code.contains("\"key\":\"count\"")) return "{\"__omnivm_result__\":true,\"value\":7}";
+            if (code.contains("\"key\":\"close\"")) return "{\"__omnivm_result__\":true,\"value\":\"field-close\"}";
+            return "ERR:handle 82 has no property missing";
+        }
+        if (code.contains("\"op\":\"handle_iter\"") && code.contains("\"mode\":\"keys\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":[\"alpha\",\"count\",\"close\"]}";
+        }
+        if (code.contains("\"op\":\"handle_iter\"") && code.contains("\"mode\":\"values\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":[\"first\",7,\"field-close\"]}";
+        }
+        if (code.contains("\"op\":\"handle_iter\"") && code.contains("\"mode\":\"items\"")) {
+            return "{\"__omnivm_result__\":true,\"value\":[[\"alpha\",\"first\"],[\"count\",7],[\"close\",\"field-close\"]]}";
+        }
+        throw new RuntimeException("unexpected manifest op " + code);
+    }`, 1)
+	runtimePath := tmp + "/OmniVM.java"
+	if err := os.WriteFile(runtimePath, []byte(runtimeCode), 0644); err != nil {
+		t.Fatalf("write Java runtime helper: %v", err)
+	}
+	checkPath := tmp + "/ProxyMappingCheck.java"
+	check := `package omnivm;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+public final class ProxyMappingCheck {
+    static final List<String> calls = new ArrayList<>();
+
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new AssertionError(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        OmniVM.HandleProxy proxy = (OmniVM.HandleProxy) OmniVM.materializeJsonCapture("{\"__omnivm_resource__\":true,\"id\":82,\"runtime\":\"javascript\",\"kind\":\"mapping\"}");
+        List<String> keys = new ArrayList<>(proxy.keySet());
+        Collections.sort(keys);
+        require(keys.equals(Arrays.asList("alpha", "close", "count")), "bad keys " + keys);
+
+        List<String> values = new ArrayList<>();
+        for (Object value : proxy.values()) {
+            values.add(String.valueOf(value));
+        }
+        Collections.sort(values);
+        require(values.equals(Arrays.asList("7", "field-close", "first")), "bad values " + values);
+
+        List<String> pairs = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : proxy.entrySet()) {
+            pairs.add(entry.getKey() + ":" + String.valueOf(entry.getValue()));
+        }
+        Collections.sort(pairs);
+        require(pairs.equals(Arrays.asList("alpha:first", "close:field-close", "count:7")), "bad pairs " + pairs);
+
+        require("first".equals(proxy.get("alpha")), "bad get alpha: " + proxy.get("alpha"));
+        require("fallback".equals(proxy.getOrDefault("missing", "fallback")), "bad getOrDefault");
+        require("field-close".equals(proxy.get("close")), "bad close field: " + proxy.get("close"));
+        require(Integer.valueOf(7).equals(((Number) proxy.get("count")).intValue()), "bad count field: " + proxy.get("count"));
+        require(proxy.containsKey("alpha") && !proxy.containsKey("missing"), "bad containsKey");
+
+        int itemIters = 0;
+        boolean sawValues = false;
+        for (String call : calls) {
+            if (call.contains("\"op\":\"handle_iter\"") && call.contains("\"mode\":\"items\"")) itemIters++;
+            if (call.contains("\"op\":\"handle_iter\"") && call.contains("\"mode\":\"values\"")) sawValues = true;
+        }
+        require(itemIters >= 2 && sawValues, "mapping keySet/entrySet should use remote item iteration and values should use value iteration: " + calls);
+    }
+}
+`
+	if err := os.WriteFile(checkPath, []byte(check), 0644); err != nil {
+		t.Fatalf("write Java proxy mapping check: %v", err)
+	}
+	if out, err := exec.Command(javac, "-d", tmp, runtimePath, checkPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile Java proxy mapping check: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(java, "-cp", tmp, "omnivm.ProxyMappingCheck").CombinedOutput(); err != nil {
+		t.Fatalf("run Java proxy mapping check: %v\n%s", err, out)
+	}
+}
+
 func TestJavaHandleProxyClosedOperationsFailLocally(t *testing.T) {
 	javac, err := exec.LookPath("javac")
 	if err != nil {
@@ -15706,7 +15841,7 @@ func TestWrapJavaCapturesClearsTemporaryCaptures(t *testing.T) {
 }
 
 func TestWrapJavaCapturesAliasesAndLowersNaturalMemberAccess(t *testing.T) {
-	code := wrapJavaCaptures(`String out = String.valueOf(payload.count) + ":" + String.valueOf(payload.items.length) + ":" + String.valueOf(payload.items[0]);`, map[string]string{
+	code := wrapJavaCaptures(`String out = String.valueOf(payload.count) + ":" + String.valueOf(payload.items.length) + ":" + String.valueOf(payload.items[0]) + ":" + String.valueOf(payload.get("alpha")) + ":" + String.valueOf(payload.getOrDefault("missing", "fallback")) + ":" + payload.keySet().toString() + ":" + payload.entrySet().toString() + ":" + payload.values().toString();`, map[string]string{
 		"payload": `{"__omnivm_resource__":true,"id":7,"runtime":"javascript","kind":"object","closed":false}`,
 	})
 	if !contains(code, `Object payload = omnivm.OmniVM.getCapture("payload");`) {
@@ -15716,6 +15851,11 @@ func TestWrapJavaCapturesAliasesAndLowersNaturalMemberAccess(t *testing.T) {
 		`String.valueOf(omnivm.OmniVM.proxyGet(payload, "count"))`,
 		`String.valueOf(omnivm.OmniVM.proxyLen(omnivm.OmniVM.proxyGet(payload, "items")))`,
 		`String.valueOf(omnivm.OmniVM.proxyIndex(omnivm.OmniVM.proxyGet(payload, "items"), 0))`,
+		`String.valueOf(omnivm.OmniVM.proxyGet(payload, "alpha"))`,
+		`String.valueOf(omnivm.OmniVM.proxyGetOrDefault(payload, "missing", "fallback"))`,
+		`omnivm.OmniVM.proxyKeySet(payload).toString()`,
+		`omnivm.OmniVM.proxyEntrySet(payload).toString()`,
+		`omnivm.OmniVM.proxyValueCollection(payload).toString()`,
 	} {
 		if !contains(code, want) {
 			t.Fatalf("Java capture wrapper missing lowered access %q in %q", want, code)
@@ -15919,6 +16059,9 @@ func TestResolveRuntimeRefCaptureProxiesComplexValues(t *testing.T) {
 		if code == "JSON.stringify(req)" {
 			serializationProbes++
 			return pkg.Result{Value: `{"path":"/cart","items":["one","two"]}`}
+		}
+		if strings.Contains(code, "path") && strings.Contains(code, " in ") {
+			return pkg.Result{Value: "true"}
 		}
 		if strings.Contains(code, "__omnivm_ref_") {
 			return pkg.Result{Value: `"/cart"`}
@@ -17415,6 +17558,48 @@ func TestRuntimeRefProxyKeepsDescriptorMetadataPrivate(t *testing.T) {
 	env := decodeResultEnvelopeForTest(t, result)
 	if env.Kind != "bool" || env.Value != false {
 		t.Fatalf("metadata contains envelope = %#v, want false", env)
+	}
+}
+
+func TestRuntimeRefProxyJavaScriptMissingPropertyDoesNotMaterializeUndefined(t *testing.T) {
+	e, mocks := makeExecutor("javascript", "java")
+	var assignedMissing bool
+	mocks["javascript"].execFn = func(code string) pkg.Result {
+		if strings.Contains(code, "__omnivm_ref_") && strings.Contains(code, `["missing"]`) {
+			assignedMissing = true
+		}
+		return pkg.Result{}
+	}
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "Object.getPrototypeOf"):
+			return pkg.Result{Value: `"mapping"`}
+		case strings.Contains(code, "missing") && strings.Contains(code, " in "):
+			return pkg.Result{Value: "false"}
+		default:
+			return pkg.Result{Value: "false"}
+		}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "javascript", VarName: "payload", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	_, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"missing"}`)
+	if err == nil || !strings.Contains(err.Error(), `has no property "missing"`) {
+		t.Fatalf("HandleCall missing property error = %v, want missing property", err)
+	}
+	if assignedMissing {
+		t.Fatalf("missing JavaScript property was materialized as a runtime ref")
 	}
 }
 

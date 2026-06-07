@@ -569,6 +569,21 @@ func lowerJavaCapturedMemberAccess(code string, names []string) string {
 			continue
 		}
 		quotedName := regexp.QuoteMeta(name)
+		getOrDefaultCall := regexp.MustCompile(`\b` + quotedName + `\.getOrDefault\(([^,\n]+),\s*([^\)\n]+)\)`)
+		code = getOrDefaultCall.ReplaceAllString(code, `omnivm.OmniVM.proxyGetOrDefault(`+name+`, $1, $2)`)
+
+		getCall := regexp.MustCompile(`\b` + quotedName + `\.get\(([^\)\n]+)\)`)
+		code = getCall.ReplaceAllString(code, `omnivm.OmniVM.proxyGet(`+name+`, $1)`)
+
+		keySetCall := regexp.MustCompile(`\b` + quotedName + `\.keySet\(\)`)
+		code = keySetCall.ReplaceAllString(code, `omnivm.OmniVM.proxyKeySet(`+name+`)`)
+
+		entrySetCall := regexp.MustCompile(`\b` + quotedName + `\.entrySet\(\)`)
+		code = entrySetCall.ReplaceAllString(code, `omnivm.OmniVM.proxyEntrySet(`+name+`)`)
+
+		valuesCall := regexp.MustCompile(`\b` + quotedName + `\.values\(\)`)
+		code = valuesCall.ReplaceAllString(code, `omnivm.OmniVM.proxyValueCollection(`+name+`)`)
+
 		indexedProperty := regexp.MustCompile(`\b` + quotedName + `\.([A-Za-z_$][A-Za-z0-9_$]*)\[([^\]\n]+)\]`)
 		code = indexedProperty.ReplaceAllString(code, `omnivm.OmniVM.proxyIndex(omnivm.OmniVM.proxyGet(`+name+`, "$1"), $2)`)
 

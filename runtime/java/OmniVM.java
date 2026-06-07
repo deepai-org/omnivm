@@ -1692,6 +1692,32 @@ public class OmniVM {
         return proxyIter(target, "items");
     }
 
+    public static Set<Object> proxyKeySet(Object target) {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(proxyKeys(target)));
+    }
+
+    public static Collection<Object> proxyValueCollection(Object target) {
+        return Collections.unmodifiableList(proxyValues(target));
+    }
+
+    public static Set<Map.Entry<Object, Object>> proxyEntrySet(Object target) {
+        LinkedHashSet<Map.Entry<Object, Object>> entries = new LinkedHashSet<>();
+        for (Object item : proxyItems(target)) {
+            if (item instanceof List<?> pair && pair.size() >= 2) {
+                entries.add(new AbstractMap.SimpleImmutableEntry<>(pair.get(0), pair.get(1)));
+            }
+        }
+        return Collections.unmodifiableSet(entries);
+    }
+
+    public static Object proxyGetOrDefault(Object target, Object key, Object fallback) {
+        Object value = proxyGet(target, key);
+        if (value != null || proxyContains(target, key)) {
+            return value;
+        }
+        return fallback;
+    }
+
     public static boolean proxyContains(Object target, Object key) {
         if (target == null) {
             return false;
