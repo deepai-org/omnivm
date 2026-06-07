@@ -58,6 +58,7 @@ examples=(
   "python-generator-js-cancel.poly"
   "javascript-generator-python-consume.poly"
   "python-async-generator-js-consume.poly"
+  "python-async-context-docs.poly"
   "reactive-future-streams.poly"
   "vertical-order-review-app.poly"
   "compat-python-service.py"
@@ -174,6 +175,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "python-async-generator-js-consume.poly" ] && [[ "$output" != *"Python async generator JS consume 0:break|1:break"* || "$output" != *"Python async generator JS closed ['break']"* ]]; then
     echo "expected Python async generator JS consumption output with early cleanup, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-async-context-docs.poly" ] && [[ "$output" != *"Async context docs js=2:1:2:field-close events=session-enter,response-enter,response-exit,session-exit"* ]]; then
+    echo "expected Python async context-manager docs output with async cleanup, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "reactive-future-streams.poly" ] && [[ "$output" != *"Reactive future streams labels=4 first=java-a"* ]]; then

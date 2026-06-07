@@ -2197,7 +2197,7 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 				if runtime == "" {
 					runtime = e.defaultRuntime
 				}
-				if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+				if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code, Async: op.Async}); err != nil {
 					return nil, fmt.Errorf("resource close cleanup: %w", err)
 				}
 				return val, nil
@@ -2215,7 +2215,7 @@ func (e *Executor) opResource(op *Op) (interface{}, error) {
 			if runtime == "" {
 				runtime = e.defaultRuntime
 			}
-			if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code}); err != nil {
+			if _, err := e.opExec(&Op{OpType: "exec", Runtime: runtime, Code: op.Code, Async: op.Async}); err != nil {
 				return nil, fmt.Errorf("resource close cleanup: %w", err)
 			}
 		}

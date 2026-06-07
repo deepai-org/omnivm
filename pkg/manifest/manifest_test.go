@@ -2081,6 +2081,36 @@ func TestResourceCloseExecutesCleanupHookForPlainContextValue(t *testing.T) {
 	}
 }
 
+func TestResourceCloseExecutesAsyncCleanupHookForPlainContextValue(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if code == "__omni_async_done" {
+			return pkg.Result{Value: "True"}
+		}
+		if code == "__omni_async_error" {
+			return pkg.Result{Value: "None"}
+		}
+		return pkg.Result{Value: "mock"}
+	}
+	e.setBinding("session", map[string]interface{}{"closed": false})
+	if _, err := e.executeOp(&Op{
+		OpType:  "resource",
+		Action:  "close",
+		Runtime: "python",
+		Target:  "session",
+		Code:    "await session.__aexit__(None, None, None)",
+		Async:   true,
+	}); err != nil {
+		t.Fatalf("async plain context close: %v", err)
+	}
+	if !containsExecCall(mocks["python"].execCalls, "await session.__aexit__(None, None, None)") {
+		t.Fatalf("async plain context cleanup hook was not executed; calls=%q", mocks["python"].execCalls)
+	}
+	if !containsExecCall(mocks["python"].evalCalls, "__omni_async_done") {
+		t.Fatalf("async cleanup did not pump completion state; eval calls=%q", mocks["python"].evalCalls)
+	}
+}
+
 func TestResourceCloseReleasesRetainedProxyRefs(t *testing.T) {
 	e, _ := makeExecutor("python")
 	value, err := e.executeOp(&Op{
