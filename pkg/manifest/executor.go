@@ -575,6 +575,7 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 			javaCaptureNames := append([]string{}, autoInjection.javaCaptureNames...)
 			javaCaptureNames = append(javaCaptureNames, explicitInjection.javaCaptureNames...)
 			expr = lowerJavaCapturedMemberAccess(expr, javaCaptureNames)
+			expr = normalizeJavaEvalExpression(expr)
 			assignLines := append(imports, javaCaptureAliasCode(javaCaptureNames), e.javaPersistentAliasPrefix(nil), runtimeAssign(rt.Name(), op.Bind, expr))
 			assignCode := strings.Join(assignLines, "\n")
 			execResult := rt.Execute(assignCode)
@@ -2599,6 +2600,21 @@ func inferJavaBindType(expr string) string {
 		return "java.util.List"
 	}
 	return ""
+}
+
+func normalizeJavaEvalExpression(expr string) string {
+	expr = strings.TrimSpace(expr)
+	const marker = ".collectList().block().get("
+	idx := strings.Index(expr, marker)
+	if idx <= 0 {
+		return expr
+	}
+	receiver := strings.TrimSpace(expr[:idx])
+	rest := expr[idx+len(marker):]
+	if receiver == "" || rest == "" {
+		return expr
+	}
+	return fmt.Sprintf("((java.util.List)(%s.collectList().block())).get(%s", receiver, rest)
 }
 
 func javaPrimitiveTypeName(value interface{}) string {

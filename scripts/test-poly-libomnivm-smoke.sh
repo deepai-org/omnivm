@@ -57,6 +57,7 @@ examples=(
   "python-generator-js-cancel.poly"
   "javascript-generator-python-consume.poly"
   "python-async-generator-js-consume.poly"
+  "reactive-future-streams.poly"
   "vertical-order-review-app.poly"
   "compat-python-service.py"
   "compat-go-status.go"
@@ -168,6 +169,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "python-async-generator-js-consume.poly" ] && [[ "$output" != *"Python async generator JS consume 0:break|1:break"* || "$output" != *"Python async generator JS closed ['break']"* ]]; then
     echo "expected Python async generator JS consumption output with early cleanup, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "reactive-future-streams.poly" ] && [[ "$output" != *"Reactive future streams labels=4 first=java-a"* ]]; then
+    echo "expected Reactive/RxJS future stream output, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* || "$output" != *"ruby=fiber-active"* ]]; then

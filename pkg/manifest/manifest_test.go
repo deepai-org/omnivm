@@ -5820,6 +5820,19 @@ func TestOpEvalJavaPreservesSnapshotTypeForStaticFactoryBind(t *testing.T) {
 	}
 }
 
+func TestNormalizeJavaEvalExpressionCastsBlockedCollectedListGet(t *testing.T) {
+	got := normalizeJavaEvalExpression(`flux.map(s -> s.toUpperCase()).collectList().block().get(0)`)
+	want := `((java.util.List)(flux.map(s -> s.toUpperCase()).collectList().block())).get(0)`
+	if got != want {
+		t.Fatalf("normalizeJavaEvalExpression() = %q, want %q", got, want)
+	}
+
+	plain := `future.join()`
+	if got := normalizeJavaEvalExpression(plain); got != plain {
+		t.Fatalf("normalizeJavaEvalExpression() changed unrelated Java expression to %q", got)
+	}
+}
+
 func TestRuntimeRefPythonLenExprSkipsUnsizedObjects(t *testing.T) {
 	expr, ok := runtimeRefLenExpr(RuntimeRef{Runtime: "python", VarName: "row"})
 	if !ok {

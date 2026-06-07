@@ -124,6 +124,7 @@ RUN cd /usr/local/lib && npm install \
       marked@4 \
       react \
       react-dom \
+      rxjs \
       undici \
       busboy \
       multer \
@@ -377,6 +378,7 @@ RUN cd /usr/local/lib && npm install \
       marked@4 \
       react \
       react-dom \
+      rxjs \
       undici \
       busboy \
       multer \
