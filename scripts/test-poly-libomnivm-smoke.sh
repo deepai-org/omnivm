@@ -48,6 +48,7 @@ examples=(
   "go-docs-popular-packages.poly"
   "beautifulsoup-cheerio-go-cache.poly"
   "python-map-collision-docs.poly"
+  "python-object-enumeration-docs.poly"
   "python-dataframe-js-table-docs.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
@@ -179,6 +180,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "python-map-collision-docs.poly" ] && [[ "$output" != *'Python map collision docs object={"then":"called:manual","items":2,"firstItem":"alpha","keys":2,"firstKey":"id","get":"field-get","close":"field-close","length":2,"count":7} dict={"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
     echo "expected Python map collision natural access output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-object-enumeration-docs.poly" ] && [[ "$output" != *'Python object enumeration docs names=close,count,get,items,keys,length,rows,then selected={"items":2,"keys":2,"then":"field-then","get":"field-get","close":"field-close","length":2,"count":7} copied=2:2:field-close values=8 rows=first:1|second:2 has=true'* ]]; then
+    echo "expected Python object enumeration natural Object.keys/Object.entries output, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "python-dataframe-js-table-docs.poly" ] && [[ "$output" != *"Python DataFrame JS table docs pandas=3:3x2:4x12:1:4:3:6 polars=3:3:1.5:2.5:3.5"* ]]; then
