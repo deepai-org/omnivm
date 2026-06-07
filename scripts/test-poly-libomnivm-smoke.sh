@@ -58,6 +58,7 @@ examples=(
   "javascript-python-mapping-methods-docs.poly"
   "javascript-map-mapping-methods-docs.poly"
   "javascript-generator-python-islice-docs.poly"
+  "javascript-generator-python-error.poly"
   "javascript-async-generator-python-consume.poly"
   "javascript-async-generator-python-error.poly"
   "javascript-ruby-mapping-methods-docs.poly"
@@ -223,6 +224,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-generator-python-islice-docs.poly" ] && [[ "$output" != *"JavaScript generator Python islice docs 0:slice:1|1:slice:2"* || "$output" != *"JavaScript generator Python islice closed=slice produced=0|1"* ]]; then
     echo "expected Python itertools.islice to partially consume and close JavaScript generator, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-generator-python-error.poly" ] && [[ "$output" != *"JavaScript generator Python error 0:throw|1:throw|RuntimeError:stop-js-stream"* || "$output" != *"JavaScript generator Python error closed throw"* || "$output" != *"JavaScript generator Python error produced 0|1"* ]]; then
+    echo "expected Python loop body error to close JavaScript generator, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "javascript-async-generator-python-consume.poly" ] && [[ "$output" != *"JavaScript async generator Python consume 0:async:1|1:async:2"* || "$output" != *"JavaScript async generator Python closed=async produced=0|1"* ]]; then
