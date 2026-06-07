@@ -68,6 +68,7 @@ examples=(
   "ruby-map-collision-docs.poly"
   "javascript-map-collision-docs.poly"
   "native-memory-docs.poly"
+  "python-arrow-table-js-inspect-docs.poly"
   "python-lifecycle-docs.poly"
   "python-executor-docs.poly"
   "python-generator-js-consume.poly"
@@ -139,6 +140,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "native-memory-docs.poly" ] && [[ "$output" != *"Native memory docs py=4:1:4 js=4:97:100 java=4:7:8"* ]]; then
     echo "expected native memory docs output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-arrow-table-js-inspect-docs.poly" ] && [[ "$output" != *"Python Arrow table JS inspect docs items|count|close:2:3:2:alpha:1:row-close|beta:2:row-close"* ]]; then
+    echo "expected Python Arrow table docs output with natural JavaScript inspection, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "python-lifecycle-docs.poly" ] && [[ "$output" != *"Lifecycle docs inside alpha:1:2:1:2:field-close"* || "$output" != *"Lifecycle docs closed True events=enter,exit"* ]]; then

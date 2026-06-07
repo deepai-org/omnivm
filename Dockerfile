@@ -89,6 +89,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       "Django>=5,<6" \
       pandas \
       numpy \
+      pyarrow \
       Pillow \
       polars \
       fastapi \

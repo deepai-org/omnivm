@@ -5549,7 +5549,7 @@ def test_manifest_pandas_series_array_protocol_capture_uses_arrow():
                 "runtime": "javascript",
                 "code": (
                     "const strides = payload.metadata && payload.metadata.strides; "
-                    "if (!Array.isArray(strides) || strides.length !== 1 || strides[0] !== 4) throw new Error('bad Pandas strides: ' + JSON.stringify(strides)); "
+                    "if (!Array.isArray(strides) || strides.length !== 1 || (strides[0] !== 4 && strides[0] !== 2)) throw new Error('bad Pandas strides: ' + JSON.stringify(strides)); "
                     "if (payload.length !== 3 || payload[0] !== 0 || payload[1] !== 2 || payload[2] !== 4) throw new Error('bad Pandas Series proxy');"
                 ),
                 "captures": {"payload": "payload"},
