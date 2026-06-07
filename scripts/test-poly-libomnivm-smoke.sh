@@ -52,6 +52,7 @@ examples=(
   "javascript-python-dict-enumeration-docs.poly"
   "javascript-python-mapping-methods-docs.poly"
   "javascript-map-mapping-methods-docs.poly"
+  "javascript-generator-python-islice-docs.poly"
   "javascript-ruby-mapping-methods-docs.poly"
   "javascript-java-mapping-methods-docs.poly"
   "python-dataframe-js-table-docs.poly"
@@ -201,6 +202,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-map-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Map mapping methods docs keys=alpha,beta,close,count pairs=alpha:first|beta:second|close:field-close|count:7 values=7|field-close|first|second selected=first:fallback:field-close:7 copied=second"* ]]; then
     echo "expected JavaScript Map to expose natural Python mapping methods, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-generator-python-islice-docs.poly" ] && [[ "$output" != *"JavaScript generator Python islice docs 0:slice:1|1:slice:2"* || "$output" != *"JavaScript generator Python islice closed=slice produced=0|1"* ]]; then
+    echo "expected Python itertools.islice to partially consume and close JavaScript generator, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "javascript-ruby-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Ruby mapping methods docs alpha,beta,close,count,length,then;alpha:first|beta:second|close:field-close|count:7|length:2|then:field-then;2|7|field-close|field-then|first|second;first:fallback:field-close:7;second"* ]]; then
