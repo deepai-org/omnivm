@@ -17113,6 +17113,12 @@ func TestRuntimeRefProxyReadsLiveRuntimeProperty(t *testing.T) {
 		return pkg.Result{}
 	}
 	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "callable(__o") {
+			return pkg.Result{Value: "false"}
+		}
+		if strings.Contains(code, "path") && strings.Contains(code, "__k in") {
+			return pkg.Result{Value: "true"}
+		}
 		if strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_") {
 			return pkg.Result{Value: `{"primitive":true,"value":"/live"}`}
 		}
@@ -17153,6 +17159,58 @@ func TestRuntimeRefProxyReadsLiveRuntimeProperty(t *testing.T) {
 	}
 	if !strings.Contains(execCode, "req") || strings.Contains(execCode, "/cached") {
 		t.Fatalf("property read should execute against live runtime variable, got %q", execCode)
+	}
+}
+
+func TestRuntimeRefProxyMissingPythonPropertyReportsMissingBeforeEval(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	var propertyEval bool
+	mocks["python"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_") {
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+		if strings.Contains(code, `"missing"`) && strings.Contains(code, "__o.get(__k)") {
+			propertyEval = true
+			return pkg.Result{Value: "null"}
+		}
+		if strings.Contains(code, `"missing"`) {
+			return pkg.Result{Value: "false"}
+		}
+		if strings.Contains(code, "callable(") {
+			return pkg.Result{Value: "false"}
+		}
+		return pkg.Result{Value: `{"items":["cached"],"noneValue":null}`}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{
+		Runtime: "python",
+		VarName: "payload",
+		Value: map[string]interface{}{
+			"items":     []interface{}{"cached"},
+			"noneValue": nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	_, err = e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"missing"}`)
+	if err == nil || !strings.Contains(err.Error(), `has no property "missing"`) {
+		t.Fatalf("HandleCall missing property error = %v, want missing-property diagnostic", err)
+	}
+	if propertyEval {
+		t.Fatal("missing Python property evaluated property expression after contains returned false")
 	}
 }
 
@@ -17255,6 +17313,9 @@ func TestRuntimeRefProxyBufferPropertyExportsAsArrowTable(t *testing.T) {
 		return pkg.Result{}
 	}
 	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "payload") && strings.Contains(code, "model_fields") {
+			return pkg.Result{Value: "true"}
+		}
 		if strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_") {
 			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
 		}

@@ -2772,6 +2772,15 @@ func (e *Executor) runtimeRefProperty(parent handles.ID, ref RuntimeRef, key str
 	if runtimeRefDescriptorMetadataKey(key) {
 		return nil, false, nil
 	}
+	if ref.Runtime == "python" {
+		containsOK, found, err := e.runtimeRefContains(ref, key)
+		if err != nil {
+			return nil, false, err
+		}
+		if containsOK && !found {
+			return nil, false, nil
+		}
+	}
 	if ref.Runtime == "java" && runtimeRefPropertyShouldConfirmPresence(key) {
 		containsOK, found, err := e.runtimeRefContains(ref, key)
 		if err != nil {
