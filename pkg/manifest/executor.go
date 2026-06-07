@@ -185,7 +185,10 @@ type Executor struct {
 	boundaryStats     BoundaryStats
 	boundaryStatsMu   sync.Mutex
 	spawnWG           sync.WaitGroup
+	awaitFromDepth    int
 }
+
+var pythonDirectCallExprRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
 
 // NewExecutor creates an Executor with the given runtimes.
 func NewExecutor(runtimes map[string]pkg.Runtime) *Executor {
@@ -540,6 +543,9 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	}
 
 	code := op.Code
+	if rt.Name() == "python" {
+		code = e.rewritePythonDirectAsyncSourceCall(code)
+	}
 
 	// Ruby: captures and prior same-runtime values are stored as $globals.
 	// Create local aliases so user code can reference variables normally.
@@ -1069,7 +1075,11 @@ func (e *Executor) executeNativeFuncSource(op *Op) (string, error) {
 			return "", fmt.Errorf("func_def %q sourceArtifact async wrapper [%s]: %w", op.Name, runtimeName, result.Err)
 		}
 	}
-	ref, _, err := e.boundRuntimeRefSnapshot(runtimeName, op.Name)
+	snapshotName := op.Name
+	if op.Async {
+		snapshotName = pythonNativeAsyncWrapperName(op.Name)
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot(runtimeName, snapshotName)
 	if err != nil {
 		return "", fmt.Errorf("func_def %q sourceArtifact [%s] snapshot: %w", op.Name, runtimeName, err)
 	}
@@ -1100,7 +1110,7 @@ func javascriptNativeFunctionSource(source string) string {
 
 func pythonNativeAsyncWrapperSource(name string) string {
 	hidden := "__omnivm_native_async_" + name
-	wrapper := "__omnivm_sync_" + name
+	wrapper := pythonNativeAsyncWrapperName(name)
 	return fmt.Sprintf(`import asyncio as __omnivm_asyncio
 import functools as __omnivm_functools
 import inspect as __omnivm_inspect
@@ -1110,7 +1120,31 @@ def %s(*__omnivm_args, **__omnivm_kwargs):
   if __omnivm_inspect.isawaitable(__omnivm_value):
     return __omnivm_asyncio.run(__omnivm_value)
   return __omnivm_value
-%s = __omnivm_functools.wraps(%s)(%s)`, hidden, name, wrapper, hidden, name, hidden, wrapper)
+%s = __omnivm_functools.wraps(%s)(%s)`, hidden, name, wrapper, hidden, wrapper, hidden, wrapper)
+}
+
+func pythonNativeAsyncWrapperName(name string) string {
+	return "__omnivm_sync_" + name
+}
+
+func (e *Executor) rewritePythonDirectAsyncSourceCall(code string) string {
+	if e.awaitFromDepth > 0 {
+		return code
+	}
+	match := pythonDirectCallExprRe.FindStringSubmatchIndex(code)
+	if match == nil {
+		return code
+	}
+	name := code[match[2]:match[3]]
+	got, ok := e.getBinding(name)
+	if !ok {
+		return code
+	}
+	ref, ok := got.(RuntimeRef)
+	if !ok || ref.Runtime != "python" || ref.VarName != pythonNativeAsyncWrapperName(name) {
+		return code
+	}
+	return code[:match[2]] + ref.VarName + code[match[3]:]
 }
 
 // opReturn evaluates the return value and returns an ErrReturn sentinel.
@@ -2541,12 +2575,19 @@ func (e *Executor) opAwait(op *Op) (interface{}, error) {
 	if op.From == nil {
 		return nil, nil
 	}
+	e.awaitFromDepth++
 	val, err := e.executeOp(op.From)
+	e.awaitFromDepth--
 	if err != nil {
 		return nil, err
 	}
-	if ref, ok := val.(RuntimeRef); ok && ref.Runtime == "javascript" {
-		return e.awaitJavaScriptRuntimeRef(ref, op.Bind)
+	if ref, ok := val.(RuntimeRef); ok {
+		switch ref.Runtime {
+		case "javascript":
+			return e.awaitJavaScriptRuntimeRef(ref, op.Bind)
+		case "python":
+			return e.awaitPythonRuntimeRef(ref, op.Bind)
+		}
 	}
 	if op.Bind != "" {
 		e.setBinding(op.Bind, val)

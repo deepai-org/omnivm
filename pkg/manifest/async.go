@@ -321,6 +321,64 @@ Promise.resolve(%s).then(function(v) {
 	return val, nil
 }
 
+func (e *Executor) awaitPythonRuntimeRef(ref RuntimeRef, bind string) (interface{}, error) {
+	rt, ok := e.runtimes["python"]
+	if !ok {
+		return nil, fmt.Errorf("await [python]: runtime not found")
+	}
+
+	e.nextRuntimeRefID++
+	id := e.nextRuntimeRefID
+	doneVar := fmt.Sprintf("__omnivm_await_%d_done", id)
+	errorVar := fmt.Sprintf("__omnivm_await_%d_error", id)
+	resultVar := bind
+	if resultVar == "" {
+		resultVar = fmt.Sprintf("__omnivm_await_%d_result", id)
+	}
+
+	wrapper := fmt.Sprintf(`
+import asyncio as __aio
+globals()[%s] = False
+globals()[%s] = None
+async def __omnivm_await_%d_task():
+    try:
+        globals()[%s] = await %s
+    except BaseException as e:
+        globals()[%s] = type(e).__name__ + ": " + str(e)
+    finally:
+        globals()[%s] = True
+try:
+    __omnivm_loop = __aio.get_event_loop()
+except RuntimeError:
+    __omnivm_loop = __aio.new_event_loop()
+    __aio.set_event_loop(__omnivm_loop)
+__aio.ensure_future(__omnivm_await_%d_task(), loop=__omnivm_loop)
+`, strconv.Quote(doneVar), strconv.Quote(errorVar), id, strconv.Quote(resultVar), runtimeVarRef("python", ref.VarName), strconv.Quote(errorVar), strconv.Quote(doneVar), id)
+
+	result := rt.Execute(wrapper)
+	if result.Err != nil {
+		return nil, fmt.Errorf("await [python]: %w", result.Err)
+	}
+	if err := e.pumpUntilDone(func() bool {
+		check := rt.Eval(runtimeVarRef("python", doneVar))
+		return check.Value != nil && fmt.Sprintf("%v", check.Value) == "True"
+	}); err != nil {
+		return nil, fmt.Errorf("await [python]: %w", err)
+	}
+	if err := e.asyncPythonError(rt, runtimeVarRef("python", errorVar)); err != nil {
+		return nil, fmt.Errorf("await [python]: %w", err)
+	}
+
+	resolvedRef, val, err := e.boundRuntimeRefSnapshot("python", resultVar)
+	if err != nil {
+		return nil, fmt.Errorf("await [python]: %w", err)
+	}
+	if bind != "" {
+		e.setBinding(bind, resolvedRef)
+	}
+	return val, nil
+}
+
 // opParallel executes branches cooperatively.
 // Async-capable runtimes (Python, JS) start tasks as futures/promises,
 // then we pump until all complete. Sync runtimes execute sequentially.

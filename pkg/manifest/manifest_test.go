@@ -1182,8 +1182,14 @@ func TestFuncDefWrapsAsyncPythonSourceArtifactForSameRuntimeCalls(t *testing.T) 
 	}
 	if !strings.Contains(calls[1], "__omnivm_native_async_submit_order = submit_order") ||
 		!strings.Contains(calls[1], "asyncio.run") ||
-		!strings.Contains(calls[1], "submit_order = __omnivm_functools.wraps(__omnivm_native_async_submit_order)(__omnivm_sync_submit_order)") {
+		!strings.Contains(calls[1], "__omnivm_sync_submit_order = __omnivm_functools.wraps(__omnivm_native_async_submit_order)(__omnivm_sync_submit_order)") ||
+		strings.Contains(calls[1], "\nsubmit_order = __omnivm_functools.wraps") {
 		t.Fatalf("second Python Execute call = %q, want async source wrapper", calls[1])
+	}
+	got, _ := e.getBinding("submit_order")
+	ref, ok := got.(RuntimeRef)
+	if !ok || ref.Runtime != "python" || ref.VarName != "__omnivm_sync_submit_order" {
+		t.Fatalf("submit_order binding = %#v, want hidden sync Python wrapper RuntimeRef", got)
 	}
 }
 
@@ -1288,6 +1294,90 @@ func TestAwaitResolvesJavaScriptRuntimeRefPromise(t *testing.T) {
 	if !strings.Contains(js.execCalls[1], `Promise.resolve(globalThis["answer"])`) ||
 		!strings.Contains(js.execCalls[1], `globalThis["answer"] = v`) {
 		t.Fatalf("await wrapper did not await and rebind answer: %s", js.execCalls[1])
+	}
+}
+
+func TestAwaitResolvesPythonRuntimeRefAwaitable(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	e.setBinding("fetch_docs", RuntimeRef{Runtime: "python", VarName: "__omnivm_sync_fetch_docs", Opaque: true})
+	py := mocks["python"]
+	snapshotCalls := 0
+	py.evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "__omnivm_await_") && strings.Contains(code, "_done"):
+			return pkg.Result{Value: "True"}
+		case strings.Contains(code, "__omnivm_await_") && strings.Contains(code, "_error"):
+			return pkg.Result{Value: nil}
+		case strings.Contains(code, "answer"):
+			snapshotCalls++
+			if snapshotCalls == 1 {
+				return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+			}
+			return pkg.Result{Value: `{"primitive":true,"value":"done"}`}
+		default:
+			return pkg.Result{Value: nil}
+		}
+	}
+
+	val, err := e.executeOp(&Op{
+		OpType:  "await",
+		Runtime: "python",
+		Bind:    "answer",
+		From: &Op{
+			OpType:  "eval",
+			Runtime: "python",
+			Bind:    "answer",
+			Code:    "fetch_docs()",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != "done" {
+		t.Fatalf("await value = %#v, want done", val)
+	}
+	got, _ := e.getBinding("answer")
+	ref, ok := got.(RuntimeRef)
+	if !ok || ref.Runtime != "python" || ref.VarName != "answer" || !ref.SnapshotKnown || ref.Value != "done" {
+		t.Fatalf("await binding = %#v, want resolved Python RuntimeRef snapshot", got)
+	}
+	if len(py.execCalls) != 2 {
+		t.Fatalf("Python exec calls = %d, want eval assignment and await wrapper: %#v", len(py.execCalls), py.execCalls)
+	}
+	if !strings.Contains(py.execCalls[0], "answer = fetch_docs()") || strings.Contains(py.execCalls[0], "__omnivm_sync_fetch_docs") {
+		t.Fatalf("awaited Python eval call = %q, want native coroutine call", py.execCalls[0])
+	}
+	if !strings.Contains(py.execCalls[1], "await answer") ||
+		!strings.Contains(py.execCalls[1], `globals()["answer"]`) {
+		t.Fatalf("await wrapper did not await and rebind answer: %s", py.execCalls[1])
+	}
+}
+
+func TestPythonAsyncSourceDirectEvalUsesSyncWrapper(t *testing.T) {
+	e, mocks := makeExecutor("python")
+	e.setBinding("submit_order", RuntimeRef{Runtime: "python", VarName: "__omnivm_sync_submit_order", Opaque: true})
+	py := mocks["python"]
+	py.evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "intake") {
+			return pkg.Result{Value: `{"primitive":true,"value":{"order_id":"ord-42"}}`}
+		}
+		return pkg.Result{Value: nil}
+	}
+
+	val, err := e.executeOp(&Op{
+		OpType:  "eval",
+		Runtime: "python",
+		Bind:    "intake",
+		Code:    "submit_order()",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := val.(map[string]interface{}); !ok || got["order_id"] != "ord-42" {
+		t.Fatalf("eval value = %#v, want order payload", val)
+	}
+	if len(py.execCalls) != 1 || !strings.Contains(py.execCalls[0], "intake = __omnivm_sync_submit_order()") {
+		t.Fatalf("Python eval exec calls = %#v, want direct call rewritten to hidden sync wrapper", py.execCalls)
 	}
 }
 

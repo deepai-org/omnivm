@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$ROOT/../polyscript-compiler"}}"
+DEFAULT_POLYSCRIPT_DIR="$ROOT/../polyscript-compiler"
+if [ -d "$ROOT/../garbage" ]; then
+  DEFAULT_POLYSCRIPT_DIR="$ROOT/../garbage"
+fi
+POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$DEFAULT_POLYSCRIPT_DIR"}}"
 PASSENGER_FIXTURE="$ROOT/test/fixtures/passenger-django-polyscript"
 IMAGE="${OMNIVM_IMAGE:-omnivm:latest}"
 PYTHON_BIN="${PYTHON_BIN:-python3.14}"
@@ -53,6 +57,7 @@ examples=(
   "javascript-python-mapping-methods-docs.poly"
   "javascript-map-mapping-methods-docs.poly"
   "javascript-generator-python-islice-docs.poly"
+  "javascript-async-generator-python-consume.poly"
   "javascript-ruby-mapping-methods-docs.poly"
   "javascript-java-mapping-methods-docs.poly"
   "python-dataframe-js-table-docs.poly"
@@ -206,6 +211,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-generator-python-islice-docs.poly" ] && [[ "$output" != *"JavaScript generator Python islice docs 0:slice:1|1:slice:2"* || "$output" != *"JavaScript generator Python islice closed=slice produced=0|1"* ]]; then
     echo "expected Python itertools.islice to partially consume and close JavaScript generator, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-async-generator-python-consume.poly" ] && [[ "$output" != *"JavaScript async generator Python consume 0:async:1|1:async:2"* || "$output" != *"JavaScript async generator Python closed=async produced=0|1"* ]]; then
+    echo "expected Python async for to partially consume and close JavaScript async generator, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "javascript-ruby-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Ruby mapping methods docs alpha,beta,close,count,length,then;alpha:first|beta:second|close:field-close|count:7|length:2|then:field-then;2|7|field-close|field-then|first|second;first:fallback:field-close:7;second"* ]]; then
