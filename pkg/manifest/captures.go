@@ -1370,6 +1370,12 @@ class __OmniVMHandleProxy:
                 return self._local_value(key)
             except KeyError:
                 pass
+        if self._is_proxy_method_key(key):
+            try:
+                if not self._bridge_contains(key):
+                    raise AttributeError(key)
+            except _OmniVMBridgeMissing:
+                pass
         try:
             return self._bridge_get(key)
         except _OmniVMBridgeMissing:

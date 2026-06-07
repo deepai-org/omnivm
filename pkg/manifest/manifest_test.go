@@ -7783,6 +7783,11 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 	if !contains(code, "def __getattribute__(self, key)") || !contains(code, `object.__getattribute__(self, "__getattr__")(key)`) {
 		t.Fatalf("Python materializer should route public proxy method-name collisions through remote lookup first, got %q", code)
 	}
+	if !contains(code, `if self._is_proxy_method_key(key):`) ||
+		!contains(code, `if not self._bridge_contains(key):`) ||
+		!contains(code, `raise AttributeError(key)`) {
+		t.Fatalf("Python mapping proxy should keep proxy methods natural over runtime prototype methods, got %q", code)
+	}
 	if !contains(code, "def _is_internal_descriptor_key(self, key)") ||
 		!contains(code, `self._value.get("__omnivm_resource__") is True`) ||
 		!contains(code, `or self._value.get("__omnivm_table__") is True`) ||
@@ -17603,6 +17608,53 @@ func TestRuntimeRefProxyJavaScriptMissingPropertyDoesNotMaterializeUndefined(t *
 	}
 }
 
+func TestRuntimeRefProxyJavaScriptMapPrototypePropertyUsesPropertyPresence(t *testing.T) {
+	e, mocks := makeExecutor("javascript", "python")
+	mocks["javascript"].execFn = func(code string) pkg.Result {
+		if strings.Contains(code, "__omnivm_ref_") && strings.Contains(code, `["size"]`) {
+			return pkg.Result{}
+		}
+		return pkg.Result{}
+	}
+	mocks["javascript"].evalFn = func(code string) pkg.Result {
+		switch {
+		case strings.Contains(code, "Object.getPrototypeOf"):
+			return pkg.Result{Value: `"mapping"`}
+		case strings.Contains(code, "Object(__o)") && strings.Contains(code, "size"):
+			return pkg.Result{Value: "true"}
+		case strings.Contains(code, `typeof (globalThis["payload"])["size"] === 'function'`):
+			return pkg.Result{Value: "false"}
+		case strings.Contains(code, ".has(\"size\")") && !strings.Contains(code, "Object(__o)"):
+			t.Fatalf("Map prototype property should not be rejected by mapping-key containment: %q", code)
+		case strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_"):
+			return pkg.Result{Value: `{"primitive":true,"value":2}`}
+		}
+		return pkg.Result{Value: "false"}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{Runtime: "javascript", VarName: "payload", Value: nil})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	result, err := e.HandleCall(`{"op":"handle_get","id":` + strconv.FormatUint(uint64(id), 10) + `,"key":"size"}`)
+	if err != nil {
+		t.Fatalf("HandleCall size property: %v", err)
+	}
+	env := decodeResultEnvelopeForTest(t, result)
+	if env.Kind != "number" || env.Value != float64(2) {
+		t.Fatalf("size property envelope = %#v, want number 2", env)
+	}
+}
+
 func TestRuntimeRefProxyBufferPropertyExportsAsArrowTable(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	payload := []byte("abcdef")
@@ -18268,10 +18320,12 @@ func TestRuntimeRefPythonCallMaterializesJSByteArrayArgAsBytes(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	before := arrow.GlobalStore().Stats()
 	payload := []byte("late")
+	exportedName := ""
 	mocks["javascript"].exportFn = func(name, expr string) (pkg.ExportedBuffer, bool, error) {
 		if expr != `globalThis.__omnivm_arg_refs["arg_1"]` {
 			t.Fatalf("ExportBuffer expr = %q", expr)
 		}
+		exportedName = name
 		if _, err := arrow.GlobalStore().SetWithMetadata(name, payload, arrow.BufferMetadata{
 			Dtype:     arrow.DtypeU8,
 			Format:    "C",
@@ -18316,9 +18370,15 @@ func TestRuntimeRefPythonCallMaterializesJSByteArrayArgAsBytes(t *testing.T) {
 	if err := e.releaseAllHandleScopes(); err != nil {
 		t.Fatalf("releaseAllHandleScopes: %v", err)
 	}
+	if exportedName == "" {
+		t.Fatalf("ExportBuffer did not receive a buffer name")
+	}
+	if _, err := arrow.GlobalStore().Get(exportedName); err == nil {
+		t.Fatalf("runtime-ref byte arg buffer %q is still live after releaseAllHandleScopes", exportedName)
+	}
 	released := arrow.GlobalStore().Stats()
-	if released.LiveBuffers != before.LiveBuffers {
-		t.Fatalf("runtime-ref byte arg buffer was not released: before=%+v after=%+v", before, released)
+	if released.LiveBuffers > before.LiveBuffers {
+		t.Fatalf("runtime-ref byte arg leaked a live buffer: before=%+v after=%+v", before, released)
 	}
 }
 
@@ -19201,6 +19261,82 @@ func TestRuntimeRefLookupPrefersMappingKeysBeforeMethods(t *testing.T) {
 	}
 	if !strings.Contains(rubyCall, "(__o.respond_to?(:key?) && __o.key?(__k)) ? __o[__k].call") {
 		t.Fatalf("ruby call lookup should call mapping values before methods, got %q", rubyCall)
+	}
+}
+
+func TestRuntimeRefJavaScriptMapUsesMappingSemantics(t *testing.T) {
+	ref := RuntimeRef{Runtime: "javascript", VarName: "payload"}
+
+	propertyExpr, ok, err := runtimeRefPropertyExpr(ref, "close")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefPropertyExpr javascript: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(propertyExpr, "instanceof Map") || !strings.Contains(propertyExpr, ".has(") || !strings.Contains(propertyExpr, ".get(") {
+		t.Fatalf("javascript property lookup should prefer Map keys before object properties, got %q", propertyExpr)
+	}
+
+	propertyPresenceExpr, ok, err := runtimeRefPropertyPresenceExpr(ref, "size")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefPropertyPresenceExpr javascript: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(propertyPresenceExpr, "instanceof Map") || !strings.Contains(propertyPresenceExpr, ".has(") || !strings.Contains(propertyPresenceExpr, "in Object") {
+		t.Fatalf("javascript property presence should allow Map keys and prototype properties, got %q", propertyPresenceExpr)
+	}
+
+	indexExpr, ok, err := runtimeRefIndexExpr(ref, "alpha")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIndexExpr javascript: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(indexExpr, "instanceof Map") || !strings.Contains(indexExpr, ".get(") {
+		t.Fatalf("javascript index lookup should read Map entries, got %q", indexExpr)
+	}
+
+	lenExpr, ok := runtimeRefLenExpr(ref)
+	if !ok {
+		t.Fatalf("runtimeRefLenExpr javascript: ok=%v", ok)
+	}
+	if !strings.Contains(lenExpr, "instanceof Map") || !strings.Contains(lenExpr, "instanceof Set") || !strings.Contains(lenExpr, ".size") {
+		t.Fatalf("javascript len should use Map/Set size before length, got %q", lenExpr)
+	}
+
+	itemsExpr, ok, err := runtimeRefIterExpr(ref, "items")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr javascript items: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(itemsExpr, "instanceof Map") || !strings.Contains(itemsExpr, ".entries()") {
+		t.Fatalf("javascript item iteration should use Map entries, got %q", itemsExpr)
+	}
+
+	keysExpr, ok, err := runtimeRefIterExpr(ref, "keys")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr javascript keys: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(keysExpr, "instanceof Map") || !strings.Contains(keysExpr, ".keys()") {
+		t.Fatalf("javascript key iteration should use Map keys, got %q", keysExpr)
+	}
+
+	valuesExpr, ok, err := runtimeRefIterExpr(ref, "values")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefIterExpr javascript values: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(valuesExpr, "instanceof Map") || !strings.Contains(valuesExpr, ".values()") || !strings.Contains(valuesExpr, "instanceof Set") {
+		t.Fatalf("javascript value iteration should use Map values and Set iteration, got %q", valuesExpr)
+	}
+
+	containsExpr, ok, err := runtimeRefContainsExpr(ref, "missing")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefContainsExpr javascript: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(containsExpr, "instanceof Map") || !strings.Contains(containsExpr, "instanceof Set") || !strings.Contains(containsExpr, ".has(") {
+		t.Fatalf("javascript contains should use Map/Set has(), got %q", containsExpr)
+	}
+
+	setCode, ok, err := runtimeRefSetCode(ref, "alpha", "updated")
+	if err != nil || !ok {
+		t.Fatalf("runtimeRefSetCode javascript: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(setCode, "instanceof Map") || !strings.Contains(setCode, ".set(") || !strings.Contains(setCode, "else") {
+		t.Fatalf("javascript set should write Map entries before object properties, got %q", setCode)
 	}
 }
 

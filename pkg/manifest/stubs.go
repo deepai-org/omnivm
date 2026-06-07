@@ -2773,7 +2773,7 @@ func (e *Executor) runtimeRefProperty(parent handles.ID, ref RuntimeRef, key str
 		return nil, false, nil
 	}
 	if ref.Runtime == "javascript" {
-		containsOK, found, err := e.runtimeRefContains(ref, key)
+		containsOK, found, err := e.runtimeRefPropertyPresent(ref, key)
 		if err != nil {
 			return nil, false, err
 		}
@@ -2827,7 +2827,13 @@ func (e *Executor) runtimeRefProperty(parent handles.ID, ref RuntimeRef, key str
 		return nil, false, nil
 	}
 	if runtimeRefPropertyShouldConfirmPresence(key) {
-		containsOK, found, err := e.runtimeRefContains(ref, key)
+		var containsOK, found bool
+		var err error
+		if ref.Runtime == "javascript" {
+			containsOK, found, err = e.runtimeRefPropertyPresent(ref, key)
+		} else {
+			containsOK, found, err = e.runtimeRefContains(ref, key)
+		}
 		if err != nil {
 			return nil, false, err
 		}
@@ -2842,12 +2848,39 @@ func (e *Executor) runtimeRefProperty(parent handles.ID, ref RuntimeRef, key str
 	return e.runtimeRefEvalExpr(ref, runtimeRefStableVar(parent, "prop", key), expr)
 }
 
+func (e *Executor) runtimeRefPropertyPresent(ref RuntimeRef, key string) (bool, bool, error) {
+	expr, ok, err := runtimeRefPropertyPresenceExpr(ref, key)
+	if err != nil || !ok {
+		return ok, false, err
+	}
+	value, err := e.runtimeRefEvalPrimitive(ref, expr)
+	if err != nil {
+		return true, false, err
+	}
+	found, ok := value.(bool)
+	return ok, found, nil
+}
+
 func runtimeRefPropertyShouldConfirmPresence(key string) bool {
 	switch key {
 	case "then", "items", "keys", "values", "entries", "get", "set", "close", "length", "count", "size", "copy", "update", "to_json":
 		return true
 	default:
 		return false
+	}
+}
+
+func runtimeRefPropertyPresenceExpr(ref RuntimeRef, key string) (string, bool, error) {
+	base := runtimeVarRef(ref.Runtime, ref.VarName)
+	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
+	if err != nil {
+		return "", false, err
+	}
+	switch ref.Runtime {
+	case "javascript":
+		return fmt.Sprintf("(function(__o, __k){ if (__o == null) return false; if (typeof Map !== 'undefined' && __o instanceof Map) return __o.has(__k) || ((typeof __k === 'string' || typeof __k === 'number' || typeof __k === 'symbol') && (__k in Object(__o))); if (typeof Set !== 'undefined' && __o instanceof Set) return __o.has(__k) || ((typeof __k === 'string' || typeof __k === 'number' || typeof __k === 'symbol') && (__k in Object(__o))); return (Array.isArray(__o) && __o.includes(__k)) || ((typeof __k === 'string' || typeof __k === 'number' || typeof __k === 'symbol') && (__k in Object(__o))); })(%s, %s)", base, keyLit), true, nil
+	default:
+		return "", false, nil
 	}
 }
 
@@ -3526,7 +3559,7 @@ func runtimeRefPropertyExpr(ref RuntimeRef, key string) (string, bool, error) {
 	}
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
+		return fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map && (%s).has(%s)) ? (%s).get(%s) : (%s)[%s])", base, base, keyLit, base, keyLit, base, keyLit), true, nil
 	case "python":
 		return pythonRuntimeRefLookupExpr(base, keyLit, pythonRuntimeRefPreferHTTPAttribute(key)), true, nil
 	case "ruby":
@@ -3546,6 +3579,9 @@ func runtimeRefIndexExpr(ref RuntimeRef, key interface{}) (string, bool, error) 
 	}
 	switch ref.Runtime {
 	case "javascript", "ruby":
+		if ref.Runtime == "javascript" {
+			return fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map) ? (%s).get(%s) : (%s)[%s])", base, base, keyLit, base, keyLit), true, nil
+		}
 		return fmt.Sprintf("(%s)[%s]", base, keyLit), true, nil
 	case "python":
 		return pythonRuntimeRefLookupExpr(base, keyLit, false), true, nil
@@ -3570,6 +3606,10 @@ func runtimeRefIndexExprWithBuilder(ref RuntimeRef, key interface{}, builder *ru
 	var expr string
 	switch ref.Runtime {
 	case "javascript", "ruby":
+		if ref.Runtime == "javascript" {
+			expr = fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map) ? (%s).get(%s) : (%s)[%s])", base, base, keyLit, base, keyLit)
+			break
+		}
 		expr = fmt.Sprintf("(%s)[%s]", base, keyLit)
 	case "python":
 		expr = pythonRuntimeRefLookupExpr(base, keyLit, pythonRuntimeRefPreferHTTPAttribute(key))
@@ -4165,6 +4205,10 @@ func javaRuntimeRefSetCode(base, keyLit, valueLit string) string {
 	return fmt.Sprintf("{ String __omnivm_set_key = String.valueOf(%s); if (!omnivm.OmniVM.proxySet(%s, __omnivm_set_key, %s)) throw new IllegalArgumentException(\"OmniVM Java proxy rejected set for key \" + __omnivm_set_key); }", keyLit, base, valueLit)
 }
 
+func javascriptRuntimeRefSetCode(base, keyLit, valueLit string) string {
+	return fmt.Sprintf("if (typeof Map !== 'undefined' && (%s) instanceof Map) { (%s).set(%s, %s); } else { (%s)[%s] = %s; }", base, base, keyLit, valueLit, base, keyLit, valueLit)
+}
+
 func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, bool, error) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
@@ -4177,7 +4221,7 @@ func runtimeRefSetCode(ref RuntimeRef, key string, value interface{}) (string, b
 	}
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit), true, nil
+		return javascriptRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	case "python":
 		return pythonRuntimeRefSetCode(base, keyLit, valueLit), true, nil
 	case "ruby":
@@ -4203,7 +4247,7 @@ func (e *Executor) runtimeRefSetCode(ref RuntimeRef, key string, value interface
 	var code string
 	switch ref.Runtime {
 	case "javascript":
-		code = fmt.Sprintf("(%s)[%s] = %s;", base, keyLit, valueLit)
+		code = javascriptRuntimeRefSetCode(base, keyLit, valueLit)
 	case "python":
 		code = pythonRuntimeRefSetCode(base, keyLit, valueLit)
 	case "ruby":
@@ -4220,7 +4264,7 @@ func runtimeRefLenExpr(ref RuntimeRef) (string, bool) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("(%s).length", base), true
+		return fmt.Sprintf("(((typeof Map !== 'undefined' && (%s) instanceof Map) || (typeof Set !== 'undefined' && (%s) instanceof Set)) ? (%s).size : (%s).length)", base, base, base, base), true
 	case "python":
 		return fmt.Sprintf("(lambda __o: (len(__o) if hasattr(__o, '__len__') else None))(%s)", base), true
 	case "ruby":
@@ -4238,11 +4282,11 @@ func runtimeRefIterExpr(ref RuntimeRef, mode string) (string, bool, error) {
 	case "javascript":
 		switch mode {
 		case "items":
-			return fmt.Sprintf("(Array.isArray(%s) ? (%s).map(function(v, i){ return [i, v]; }) : Object.entries(%s))", base, base, base), true, nil
+			return fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map) ? Array.from((%s).entries()) : (Array.isArray(%s) ? (%s).map(function(v, i){ return [i, v]; }) : Object.entries(%s)))", base, base, base, base, base), true, nil
 		case "keys":
-			return fmt.Sprintf("(Array.isArray(%s) ? (%s).map(function(_, i){ return i; }) : Object.keys(%s))", base, base, base), true, nil
+			return fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map) ? Array.from((%s).keys()) : (Array.isArray(%s) ? (%s).map(function(_, i){ return i; }) : Object.keys(%s)))", base, base, base, base, base), true, nil
 		default:
-			return fmt.Sprintf("(Array.isArray(%s) ? Array.from(%s) : Object.values(%s))", base, base, base), true, nil
+			return fmt.Sprintf("((typeof Map !== 'undefined' && (%s) instanceof Map) ? Array.from((%s).values()) : (Array.isArray(%s) || (typeof Set !== 'undefined' && (%s) instanceof Set) ? Array.from(%s) : Object.values(%s)))", base, base, base, base, base, base), true, nil
 		}
 	case "python":
 		switch mode {
@@ -4269,6 +4313,10 @@ func runtimeRefIterExpr(ref RuntimeRef, mode string) (string, bool, error) {
 	}
 }
 
+func javascriptRuntimeRefContainsExpr(base, keyLit string) string {
+	return fmt.Sprintf("(((typeof Map !== 'undefined' && (%s) instanceof Map) || (typeof Set !== 'undefined' && (%s) instanceof Set)) ? (%s).has(%s) : ((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s)))", base, base, base, keyLit, base, base, keyLit, keyLit, base)
+}
+
 func runtimeRefContainsExpr(ref RuntimeRef, key interface{}) (string, bool, error) {
 	base := runtimeVarRef(ref.Runtime, ref.VarName)
 	keyLit, err := runtimeValueLiteral(ref.Runtime, key)
@@ -4277,7 +4325,7 @@ func runtimeRefContainsExpr(ref RuntimeRef, key interface{}) (string, bool, erro
 	}
 	switch ref.Runtime {
 	case "javascript":
-		return fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base), true, nil
+		return javascriptRuntimeRefContainsExpr(base, keyLit), true, nil
 	case "python":
 		return fmt.Sprintf("(lambda __o, __k: (lambda __m: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__m, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __m) or %s or %s or %s or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s))(%s, %s)", pythonRuntimeRefStaticGetMethodContainsExpr("__o", "__k"), pythonRuntimeRefFrameworkFieldContainsExpr("__o", "__k"), pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKnownProxyContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), pythonRuntimeRefStaticMappingViewExpr("__o"), base, keyLit), true, nil
 	case "ruby":
@@ -4303,7 +4351,7 @@ func runtimeRefContainsExprWithBuilder(ref RuntimeRef, key interface{}, builder 
 	var expr string
 	switch ref.Runtime {
 	case "javascript":
-		expr = fmt.Sprintf("((Array.isArray(%s) && (%s).includes(%s)) || (%s in %s))", base, base, keyLit, keyLit, base)
+		expr = javascriptRuntimeRefContainsExpr(base, keyLit)
 	case "python":
 		expr = fmt.Sprintf("(lambda __o, __k: (lambda __m: (((isinstance(__k, int) or (isinstance(__k, str) and __k.isdigit())) and hasattr(__o, '__len__') and hasattr(__o, '__getitem__') and not isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and int(__k) >= 0 and int(__k) < len(__o)) or (isinstance(__o, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __o) or (isinstance(__m, __import__('collections.abc', fromlist=['Mapping']).Mapping) and __k in __m) or %s or %s or %s or %s or (isinstance(__o, __import__('collections.abc', fromlist=['Set']).Set) and __k in __o) or %s))(%s))(%s, %s)", pythonRuntimeRefStaticGetMethodContainsExpr("__o", "__k"), pythonRuntimeRefFrameworkFieldContainsExpr("__o", "__k"), pythonRuntimeRefStaticAttributeContainsExpr("__o", "__k"), pythonRuntimeRefKnownProxyContainsExpr("__o", "__k"), pythonRuntimeRefKeyAddressableContainsExpr("__o", "__k", "__getitem__"), pythonRuntimeRefStaticMappingViewExpr("__o"), base, keyLit)
 	case "ruby":
