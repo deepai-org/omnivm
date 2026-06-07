@@ -17214,6 +17214,55 @@ func TestRuntimeRefProxyMissingPythonPropertyReportsMissingBeforeEval(t *testing
 	}
 }
 
+func TestRuntimeRefProxyMissingPythonIndexReportsMissingBeforeEval(t *testing.T) {
+	e, mocks := makeExecutor("python", "javascript")
+	var indexEval bool
+	mocks["python"].execFn = func(code string) pkg.Result {
+		return pkg.Result{}
+	}
+	mocks["python"].evalFn = func(code string) pkg.Result {
+		if strings.Contains(code, "primitive") && strings.Contains(code, "__omnivm_ref_") {
+			return pkg.Result{Value: `{"primitive":false,"callable":false}`}
+		}
+		if strings.Contains(code, "int(__k) < len(__o)") {
+			return pkg.Result{Value: "false"}
+		}
+		if strings.Contains(code, "__o[int(__k)]") {
+			indexEval = true
+			return pkg.Result{Value: "null"}
+		}
+		if strings.Contains(code, "callable(") {
+			return pkg.Result{Value: "false"}
+		}
+		return pkg.Result{Value: `[]`}
+	}
+
+	jsonVal, err := e.runtimeRefProxyCaptureJSON(RuntimeRef{
+		Runtime: "python",
+		VarName: "rows",
+		Value:   []interface{}{},
+	})
+	if err != nil {
+		t.Fatalf("runtimeRefProxyCaptureJSON: %v", err)
+	}
+	var descriptor map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonVal), &descriptor); err != nil {
+		t.Fatalf("descriptor JSON: %v", err)
+	}
+	id, err := bridgeHandleID(descriptor["id"])
+	if err != nil {
+		t.Fatalf("descriptor id: %v", err)
+	}
+
+	_, err = e.HandleCall(`{"op":"handle_index","id":` + strconv.FormatUint(uint64(id), 10) + `,"value":0}`)
+	if err == nil || !strings.Contains(err.Error(), "has no index 0") {
+		t.Fatalf("HandleCall missing index error = %v, want missing-index diagnostic", err)
+	}
+	if indexEval {
+		t.Fatal("missing Python index evaluated index expression after contains returned false")
+	}
+}
+
 func TestRuntimeRefProxyComplexPropertyStaysProxied(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	mocks["python"].execFn = func(code string) pkg.Result {

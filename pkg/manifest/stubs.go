@@ -2924,6 +2924,15 @@ func (e *Executor) runtimeRefTargetCallable(ref RuntimeRef) (bool, error) {
 }
 
 func (e *Executor) runtimeRefIndex(parent handles.ID, ref RuntimeRef, key interface{}) (interface{}, bool, error) {
+	if ref.Runtime == "python" {
+		containsOK, found, err := e.runtimeRefContains(ref, key)
+		if err != nil {
+			return nil, false, err
+		}
+		if containsOK && !found {
+			return nil, false, nil
+		}
+	}
 	builder := &runtimeExprBuilder{executor: e, targetRuntime: ref.Runtime}
 	expr, ok, err := runtimeRefIndexExprWithBuilder(ref, key, builder)
 	if err != nil || !ok {

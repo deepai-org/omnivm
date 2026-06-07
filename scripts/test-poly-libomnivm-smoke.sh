@@ -37,6 +37,8 @@ examples=(
   "javascript-docs-popular-packages.poly"
   "javascript-map-set-docs.poly"
   "javascript-destructuring-spread-docs.poly"
+  "javascript-rest-destructuring-docs.poly"
+  "javascript-array-destructuring-docs.poly"
   "javascript-error-fields.poly"
   "python-error-js-catch.poly"
   "javascript-error-cause-details.poly"
@@ -96,6 +98,14 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-destructuring-spread-docs.poly" ] && [[ "$output" != *"JavaScript destructuring spread docs 2:1:2:field-close:fallback:alpha:2:1"* ]]; then
     echo "expected JavaScript destructuring/spread natural proxy output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-rest-destructuring-docs.poly" ] && [[ "$output" != *"JavaScript rest destructuring docs alpha:nested-items:9:2:field-close:close,count,keys"* ]]; then
+    echo "expected JavaScript rest destructuring natural proxy output, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-array-destructuring-docs.poly" ] && [[ "$output" != *"JavaScript array destructuring docs alpha:1:beta:fallback:1:gamma"* ]]; then
+    echo "expected JavaScript array destructuring natural proxy output, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "java-map-collision-docs.poly" ] && [[ "$output" != *'Java map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
