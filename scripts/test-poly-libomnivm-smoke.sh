@@ -59,6 +59,7 @@ examples=(
   "javascript-map-mapping-methods-docs.poly"
   "javascript-generator-python-islice-docs.poly"
   "javascript-async-generator-python-consume.poly"
+  "javascript-async-generator-python-error.poly"
   "javascript-ruby-mapping-methods-docs.poly"
   "javascript-java-mapping-methods-docs.poly"
   "python-dataframe-js-table-docs.poly"
@@ -226,6 +227,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-async-generator-python-consume.poly" ] && [[ "$output" != *"JavaScript async generator Python consume 0:async:1|1:async:2"* || "$output" != *"JavaScript async generator Python closed=async produced=0|1"* ]]; then
     echo "expected Python async for to partially consume and close JavaScript async generator, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-async-generator-python-error.poly" ] && [[ "$output" != *"JavaScript async generator Python error 0:throw:1|1:throw:2|RuntimeError:stop-js-async-stream"* || "$output" != *"JavaScript async generator Python error closed=throw produced=0|1"* ]]; then
+    echo "expected Python async for body error to close JavaScript async generator, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "javascript-ruby-mapping-methods-docs.poly" ] && [[ "$output" != *"JavaScript Ruby mapping methods docs alpha,beta,close,count,length,then;alpha:first|beta:second|close:field-close|count:7|length:2|then:field-then;2|7|field-close|field-then|first|second;first:fallback:field-close:7;second"* ]]; then
