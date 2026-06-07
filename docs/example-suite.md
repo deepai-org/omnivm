@@ -17,6 +17,7 @@ manual JSON encode/decode glue for runtime boundaries.
 | --- | --- |
 | `python-fastapi-sqlalchemy-polars-docs.json` | Python framework, ORM, and dataframe-style shapes |
 | `javascript-react-jsx-docs.json` | JavaScript package usage and React/JSX output shape |
+| `javascript-jsx-factory-docs.poly` | JavaScript JSX lowered through a non-React local factory/fragment pair |
 | `java-jackson-reactor-docs.json` | Java object mapping and reactive-style value flow |
 | `ruby-activerecord-docs.json` | Ruby ORM-style class and record shapes |
 | `go-http-handler-docs.json` | Go `http.HandlerFunc`-style callable shape |
@@ -66,8 +67,26 @@ docker run --rm \
 Expected app output:
 
 ```text
-Vertical order app order=ord-42 routes=5 django=200 react=71 java=priority ruby=fiber-active workers=2 adjustment=7
+Vertical order app order=ord-42 routes=6 django=200 react=71 java=priority ruby=review-active workers=2 adjustment=7
 ```
+
+## Docker package availability
+
+The Docker image includes the runtime packages needed by the checked-in
+manifest examples and the selected sibling `.poly` smoke examples. Package
+coverage is intentionally environment-level: PolyScript decides runtime
+ownership from source syntax, while Docker/OmniVM supplies the packages.
+
+| Runtime | Docker/package coverage used by examples |
+| --- | --- |
+| Python | `Django`, `pandas`, `numpy`, `pyarrow`, `Pillow`, `polars`, `fastapi`, `uvicorn`, `Flask`, `beautifulsoup4`, `pydantic`, `marshmallow`, `jsonschema`, `jax`, `SQLAlchemy`, `psycopg[binary]`, `asyncpg`, `boto3`, `google-api-core`, `redis`, `pymongo`, `mockupdb`, `Jinja2`, `Markdown`, `httpx`, `aiohttp`, `requests`, and `pytest` are installed in `/opt/omnivm-python` and exposed through `PYTHONPATH`. |
+| JavaScript | `express`, `fastify`, `zod`, `cheerio`, `lodash`, `d3-shape`, `marked`, `react`, `react-dom`, `rxjs`, `undici`, `busboy`, `multer`, `body-parser`, `koa`, `koa-bodyparser`, `prisma`, `@prisma/client`, `@prisma/adapter-pg`, and `pg` are installed under `/usr/local/lib/node_modules` and exposed through `NODE_PATH`. Prisma generation runs during image build and links the generated client into the parent `node_modules/.prisma` location that `@prisma/client` resolves. The non-React JSX factory smoke uses a local factory and does not require `preact` or another JSX package. |
+| Ruby | Debian packages provide `nokogiri` and `rack`; gems install `activerecord`, `sqlite3`, `pg`, `puma`, `async`, and `actionpack`, with supporting gems linked into Ruby's site directory for embedded runtime loading. |
+| Java | The image downloads jars for Gson, Apache Commons CSV, jsoup, OkHttp/Okio, Jackson, Reactor, reactive-streams, RxJava, Guava/failureaccess, Kotlin stdlib/coroutines, and H2 into `/omnivm/libs`. |
+| Go | Go examples use the Go toolchain plus standard-library imports. Generated Go plugin/c-shared paths use the repo's build scripts and fixtures inside the image. |
+
+If a new example imports a package outside this table, update the Dockerfile
+and add a smoke assertion before relying on it in docs.
 
 For the real-library gap matrix behind the next ecosystem fixtures, see
 [`ecosystem-gap-assessment.md`](ecosystem-gap-assessment.md).

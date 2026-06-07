@@ -66,6 +66,7 @@ examples=(
   "python-dataframe-js-table-docs.poly"
   "python-fastapi-sqlalchemy-polars-docs.poly"
   "javascript-react-jsx-docs.poly"
+  "javascript-jsx-factory-docs.poly"
   "go-http-handler-docs.poly"
   "java-map-collision-docs.poly"
   "ruby-map-collision-docs.poly"
@@ -187,6 +188,10 @@ for example in "${examples[@]}"; do
       echo "expected Zod validation details caught naturally in Python, got: $output" >&2
       exit 1
     fi
+  fi
+  if [ "$example" = "javascript-jsx-factory-docs.poly" ] && [[ "$output" != *"JSX factory docs fragment=true first=component children=2"* ]]; then
+    echo "expected non-React JSX factory output, got: $output" >&2
+    exit 1
   fi
   if [ "$example" = "ruby-java-error-fields.poly" ] && [[ "$output" != *"Ruby Java error fields ruby=ruby:ruby:RuntimeError:bad ruby:true:exec[ruby] java=java:java:IllegalStateException:bad java:true:exec[java]"* ]]; then
     echo "expected Ruby/Java error fields with concrete Java exception type, got: $output" >&2

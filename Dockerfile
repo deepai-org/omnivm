@@ -181,7 +181,9 @@ RUN mkdir -p /omnivm/prisma && \
     cp test/fixtures/prisma/schema.prisma /omnivm/prisma/schema.prisma && \
     ln -s /usr/local/lib/node_modules /omnivm/prisma/node_modules && \
     cd /omnivm/prisma && \
-    /usr/local/lib/node_modules/.bin/prisma generate --schema schema.prisma
+    /usr/local/lib/node_modules/.bin/prisma generate --schema schema.prisma && \
+    rm -rf /usr/local/lib/node_modules/.prisma && \
+    ln -s /omnivm/prisma/generated /usr/local/lib/node_modules/.prisma
 
 # ---- Prepare Docker-specific source files ----
 # Replace the JS package with the Docker-compatible version (no C++)
@@ -392,6 +394,9 @@ RUN cd /usr/local/lib && npm install \
       pg \
       2>&1 | tail -1
 ENV NODE_PATH=/usr/local/lib/node_modules
+COPY --from=builder /omnivm/prisma /omnivm/prisma
+RUN rm -rf /usr/local/lib/node_modules/.prisma && \
+    ln -s /omnivm/prisma/generated /usr/local/lib/node_modules/.prisma
 
 # Ensure libjvm is findable at runtime
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit 2>/dev/null) && \
