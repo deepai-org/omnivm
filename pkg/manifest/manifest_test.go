@@ -685,6 +685,33 @@ func TestOpTryBindsRuntimeErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestManifestRuntimeErrorTypeIgnoresCauseLinesForTopLevelPythonError(t *testing.T) {
+	text := "exec [python]: Traceback (most recent call last):\n" +
+		"  File \"<string>\", line 3, in fail_checkout\n" +
+		"ValueError: bad sku\n" +
+		"\n" +
+		"The above exception was the direct cause of the following exception:\n" +
+		"\n" +
+		"Traceback (most recent call last):\n" +
+		"  File \"<string>\", line 8, in <module>\n" +
+		"  File \"<string>\", line 5, in fail_checkout\n" +
+		"RuntimeError: checkout failed\n" +
+		"Caused by: ValueError: bad sku"
+
+	errorType, message := manifestRuntimeErrorTypeAndMessage(text, "python")
+	if errorType != "RuntimeError" || message != "checkout failed" {
+		t.Fatalf("top-level error = %s:%s, want RuntimeError:checkout failed", errorType, message)
+	}
+	causes := manifestRuntimeErrorCauseChain(text, "python")
+	if len(causes) != 1 {
+		t.Fatalf("cause_chain = %#v, want one cause", causes)
+	}
+	cause, ok := causes[0].(map[string]interface{})
+	if !ok || cause["type"] != "ValueError" || cause["message"] != "bad sku" {
+		t.Fatalf("cause = %#v, want ValueError:bad sku", causes[0])
+	}
+}
+
 func TestOpTryBindsThrownRuntimeNotCatchRuntime(t *testing.T) {
 	e, mocks := makeExecutor("python", "javascript")
 	e.defaultRuntime = "javascript"

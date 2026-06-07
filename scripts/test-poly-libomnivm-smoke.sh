@@ -47,6 +47,7 @@ examples=(
   "javascript-error-fields.poly"
   "python-error-js-catch.poly"
   "javascript-error-cause-details.poly"
+  "python-error-cause-js-catch.poly"
   "pydantic-zod-error-fidelity.poly"
   "ruby-java-error-fields.poly"
   "go-docs-popular-packages.poly"
@@ -168,6 +169,10 @@ for example in "${examples[@]}"; do
   fi
   if [ "$example" = "javascript-error-cause-details.poly" ] && [[ "$output" != *"JavaScript error Python details javascript:javascript:TypeError:outer type:True:exec[javascript]:E_OUTER:order.id:Error:inner cause"* ]]; then
     echo "expected JavaScript error details and cause caught naturally in Python, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "python-error-cause-js-catch.poly" ] && [[ "$output" != *"Python error cause JS catch python:python:RuntimeError:checkout failed:true:exec[python]:ValueError:bad sku"* ]]; then
+    echo "expected Python cause chain caught naturally in JavaScript, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "pydantic-zod-error-fidelity.poly" ]; then

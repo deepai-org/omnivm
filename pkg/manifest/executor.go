@@ -1559,6 +1559,9 @@ func manifestRuntimeErrorTypeAndMessage(text, runtimeName string) (string, strin
 			if line == "" {
 				continue
 			}
+			if strings.HasPrefix(strings.ToLower(line), "caused by:") {
+				continue
+			}
 			if candidate, rest, ok := manifestRuntimeErrorFindTypedSegment(line); ok {
 				errorType = candidate
 				message = rest
