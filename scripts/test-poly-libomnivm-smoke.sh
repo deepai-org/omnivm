@@ -35,6 +35,7 @@ examples=(
   "cursed-polyglot.poly"
   "python-docs-popular-packages.poly"
   "javascript-docs-popular-packages.poly"
+  "javascript-map-set-docs.poly"
   "javascript-error-fields.poly"
   "python-error-js-catch.poly"
   "javascript-error-cause-details.poly"
@@ -85,6 +86,10 @@ for example in "${examples[@]}"; do
   printf '%s\n' "$output"
   if [ "$example" = "compat-go-status.go" ] && [[ "$output" != *"ok:200"* ]]; then
     echo "expected compat-go-status.go main() output to contain ok:200, got: $output" >&2
+    exit 1
+  fi
+  if [ "$example" = "javascript-map-set-docs.poly" ] && [[ "$output" != *"JavaScript Map/Set docs py=a:2:True js=g:3:true"* ]]; then
+    echo "expected JavaScript Map/Set natural proxy output, got: $output" >&2
     exit 1
   fi
   if [ "$example" = "java-map-collision-docs.poly" ] && [[ "$output" != *'Java map collision docs {"items":2,"firstItem":"alpha","keys":2,"firstKey":"id","then":"field-then","get":"field-get","close":"field-close","length":2,"count":7}'* ]]; then
