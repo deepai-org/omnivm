@@ -4243,8 +4243,9 @@ class OmniVMHandleProxy
   def each(&block)
     __omnivm_ensure_open("iterate")
     return __omnivm_data_key_value("each") if !block_given? && __omnivm_data_key?("each")
+    mode = @value["kind"] == "mapping" ? "items" : "values"
     begin
-      raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: "values"}))
+      raw = OmniVM.call("__manifest", JSON.generate({op: "handle_iter", id: @value["id"], mode: mode}))
       env = JSON.parse(raw)
       if env.is_a?(Hash) && env["__omnivm_result__"] == true && env["value"].is_a?(Array)
         return __omnivm_materialize_bridge_value(env["value"]).each(&block)
@@ -4345,6 +4346,9 @@ class OmniVMHandleProxy
 
   def to_h
     return __omnivm_data_key_value("to_h") if __omnivm_data_key?("to_h")
+    if @value["kind"] == "mapping"
+      return Hash[omnivm_items]
+    end
     @value.dup
   end
 

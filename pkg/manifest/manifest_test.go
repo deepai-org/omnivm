@@ -11909,6 +11909,69 @@ end
 	}
 }
 
+func TestRubyHandleProxyMappingEnumerationUsesRemoteItems(t *testing.T) {
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		t.Skip("ruby not available")
+	}
+	code := injectRubyCaptures(nil)
+	script := `
+require 'json'
+class OmniVM
+  @@requests = []
+  @@fields = {
+    "alpha" => "first",
+    "count" => 7,
+    "close" => "field-close"
+  }
+  def self.requests
+    @@requests
+  end
+  def self.call(runtime, payload)
+    raise "unexpected runtime #{runtime}" unless runtime == "__manifest"
+    req = JSON.parse(payload)
+    @@requests << req
+    return JSON.generate({"__omnivm_result__" => true, "value" => {"chatty" => false}}) if req["op"] == "handle_access"
+    return JSON.generate({"__omnivm_result__" => true, "value" => true}) if req["op"] == "handle_retain"
+    return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.key?(req["value"])}) if req["op"] == "handle_contains"
+    if req["op"] == "handle_get" && @@fields.key?(req["key"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["key"]]})
+    end
+    if req["op"] == "handle_index" && @@fields.key?(req["value"])
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields[req["value"]]})
+    end
+    if req["op"] == "handle_iter" && req["mode"] == "keys"
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.keys})
+    end
+    if req["op"] == "handle_iter" && req["mode"] == "values"
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.values})
+    end
+    if req["op"] == "handle_iter" && req["mode"] == "items"
+      return JSON.generate({"__omnivm_result__" => true, "value" => @@fields.map { |key, value| [key, value] }})
+    end
+    raise "unexpected manifest op #{req["op"]}"
+  end
+end
+` + code + `
+proxy = __omnivm_materialize_capture({"__omnivm_resource__" => true, "id" => 82, "runtime" => "javascript", "kind" => "mapping"})
+raise "bad keys #{proxy.keys.inspect}" unless proxy.keys == ["alpha", "count", "close"]
+raise "bad values #{proxy.values.inspect}" unless proxy.values == ["first", 7, "field-close"]
+seen = []
+proxy.each { |key, value| seen << "#{key}:#{value}" }
+raise "each did not yield remote key/value pairs: #{seen.inspect}" unless seen == ["alpha:first", "count:7", "close:field-close"]
+enum_seen = proxy.each.map { |key, value| "#{key}=#{value}" }
+raise "each enumerator did not yield pairs: #{enum_seen.inspect}" unless enum_seen == ["alpha=first", "count=7", "close=field-close"]
+raise "bad fetch" unless proxy.fetch("alpha") == "first" && proxy.fetch("missing", "fallback") == "fallback"
+raise "bad to_h #{proxy.to_h.inspect}" unless proxy.to_h == {"alpha" => "first", "count" => 7, "close" => "field-close"}
+modes = OmniVM.requests.select { |req| req["op"] == "handle_iter" }.map { |req| req["mode"] }
+raise "mapping each/to_h should use remote item iteration: #{modes.inspect}" unless modes.count("items") >= 3 && modes.include?("keys") && modes.include?("values")
+`
+	out, err := exec.Command(ruby, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ruby mapping enumeration check failed: %v\n%s", err, out)
+	}
+}
+
 func TestRubyHandleProxyCallableThenCollisionIsNatural(t *testing.T) {
 	ruby, err := exec.LookPath("ruby")
 	if err != nil {
