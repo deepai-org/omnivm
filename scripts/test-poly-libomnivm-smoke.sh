@@ -182,7 +182,7 @@ for example in "${examples[@]}"; do
     echo "expected Python map collision natural access output, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "python-object-enumeration-docs.poly" ] && [[ "$output" != *'Python object enumeration docs names=close,count,get,items,keys,length,rows,then selected={"items":2,"keys":2,"then":"field-then","get":"field-get","close":"field-close","length":2,"count":7} copied=2:2:field-close values=8 rows=first:1|second:2 has=true'* ]]; then
+  if [ "$example" = "python-object-enumeration-docs.poly" ] && [[ "$output" != *'Python object enumeration docs names=close,count,get,items,keys,length,rows,then loop=close,count,get,items,keys,length,rows,then selected={"items":2,"keys":2,"then":"field-then","get":"field-get","close":"field-close","length":2,"count":7} copied=2:2:field-close assigned=2:2:field-close values=8 rows=first:1|second:2 has=true'* ]]; then
     echo "expected Python object enumeration natural Object.keys/Object.entries output, got: $output" >&2
     exit 1
   fi
