@@ -1203,6 +1203,7 @@ func (e *Executor) opLoop(op *Op) (interface{}, error) {
 func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 	// Resolve the iterable
 	var collection []interface{}
+	iterationMode := foreachIterationMode(op.IterationMode)
 	switch op.Iterable.Kind {
 	case "ref":
 		val, ok := e.getBinding(op.Iterable.Name)
@@ -1235,7 +1236,11 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 					return nil, nil
 				}
 			}
-			items, iterOK, err := e.runtimeRefIter(0, ref, "values")
+			mode := iterationMode
+			if mode == "auto" {
+				mode = e.runtimeRefAutoIterationMode(ref)
+			}
+			items, iterOK, err := e.runtimeRefIter(0, ref, mode)
 			if err != nil {
 				return nil, fmt.Errorf("foreach: runtime ref iterable %q: %w", op.Iterable.Name, err)
 			}
@@ -1283,6 +1288,22 @@ func (e *Executor) opLoopForeach(op *Op) (interface{}, error) {
 		}
 	}
 	return nil, nil
+}
+
+func foreachIterationMode(mode string) string {
+	switch mode {
+	case "keys", "values", "auto":
+		return mode
+	default:
+		return "values"
+	}
+}
+
+func (e *Executor) runtimeRefAutoIterationMode(ref RuntimeRef) string {
+	if kind, ok := e.runtimeRefCollectionKind(ref); ok && kind == "mapping" {
+		return "keys"
+	}
+	return "values"
 }
 
 func (e *Executor) opLoopForeachRuntimeRefStream(op *Op, ref RuntimeRef) (bool, error) {

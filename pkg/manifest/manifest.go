@@ -126,11 +126,12 @@ type Op struct {
 	ElseBody []*Op    `json:"elseBody,omitempty"`
 
 	// loop
-	Mode     string     `json:"mode,omitempty"`
-	Await    bool       `json:"await,omitempty"`
-	Test     *CondExpr  `json:"test,omitempty"`
-	Variable string     `json:"variable,omitempty"` // foreach loop variable
-	Iterable *ValueExpr `json:"iterable,omitempty"` // foreach iterable
+	Mode          string     `json:"mode,omitempty"`
+	Await         bool       `json:"await,omitempty"`
+	Test          *CondExpr  `json:"test,omitempty"`
+	Variable      string     `json:"variable,omitempty"`      // foreach loop variable
+	Iterable      *ValueExpr `json:"iterable,omitempty"`      // foreach iterable
+	IterationMode string     `json:"iterationMode,omitempty"` // foreach iteration mode: values, keys, or auto
 
 	// try
 	Catches     []*CatchClause `json:"catches,omitempty"`     // try catches
