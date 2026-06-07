@@ -274,7 +274,7 @@ for example in "${examples[@]}"; do
     echo "expected Reactive/RxJS future stream output, got: $output" >&2
     exit 1
   fi
-  if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* || "$output" != *"ruby=fiber-active"* ]]; then
+  if [ "$example" = "vertical-order-review-app.poly" ] && [[ "$output" != *"Vertical order app order=ord-42"* || "$output" != *"ruby=review-active"* ]]; then
     echo "expected vertical order app output with Ruby lifecycle text, got: $output" >&2
     exit 1
   fi
