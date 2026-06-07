@@ -1617,7 +1617,7 @@ class ManifestProxy:
     def __omnivm_handle_id__(self):
         return self._handle_id
 
-    def _remote_lifecycle_named_field(self, key, missing):
+    def _remote_collision_named_field(self, key, missing):
         if object.__getattribute__(self, "_closed"):
             return missing
         if _lib is not object.__getattribute__(self, "_lib_token"):
@@ -1699,9 +1699,9 @@ class ManifestProxy:
         return f"<omnivm.ManifestProxy {runtime}:{kind}#{self._handle_id}>"
 
     def __getattribute__(self, key):
-        if key in ("close", "dispose"):
+        if key in ("close", "dispose", "get", "items", "keys", "values"):
             missing = object()
-            value = object.__getattribute__(self, "_remote_lifecycle_named_field")(key, missing)
+            value = object.__getattribute__(self, "_remote_collision_named_field")(key, missing)
             if value is not missing:
                 return value
         return object.__getattribute__(self, key)
@@ -1773,6 +1773,31 @@ class ManifestProxy:
         retained_keys = []
         try:
             return bool(self._op({"op": "handle_contains", "id": self._handle_id, "value": self._arg(value, retained_keys)}))
+        finally:
+            _release_manifest_args(retained_keys)
+
+    def keys(self):
+        self._ensure_open("keys")
+        return self._op({"op": "handle_iter", "id": self._handle_id, "mode": "keys"})
+
+    def values(self):
+        self._ensure_open("values")
+        return self._op({"op": "handle_iter", "id": self._handle_id, "mode": "values"})
+
+    def items(self):
+        self._ensure_open("items")
+        return self._op({"op": "handle_iter", "id": self._handle_id, "mode": "items"})
+
+    def get(self, key, default=None):
+        self._ensure_open("get")
+        retained_keys = []
+        try:
+            encoded_key = self._arg(key, retained_keys)
+            if not bool(self._op({"op": "handle_contains", "id": self._handle_id, "value": encoded_key})):
+                return default
+            if isinstance(key, str):
+                return self._op({"op": "handle_get", "id": self._handle_id, "key": key})
+            return self._op({"op": "handle_index", "id": self._handle_id, "value": encoded_key})
         finally:
             _release_manifest_args(retained_keys)
 

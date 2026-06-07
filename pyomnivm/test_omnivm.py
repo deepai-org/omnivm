@@ -1570,6 +1570,8 @@ class TestCallWithMockLib(unittest.TestCase):
                 return envelope(True, "bool")
             if request.get("op") == "handle_get" and request.get("key") == "path":
                 return envelope("/orders")
+            if request.get("op") == "handle_contains" and request.get("value") == "items":
+                return envelope(True, "bool")
             if request.get("op") == "handle_get" and request.get("key") == "items":
                 return envelope({"__omnivm_callable__": True, "key": "items"})
             if request.get("op") == "handle_call" and request.get("key") == "items":
@@ -1588,14 +1590,118 @@ class TestCallWithMockLib(unittest.TestCase):
         proxy._omnivm_close()
         assert requests[0] == {"func": "request", "args": []}
         assert requests[1] == {"op": "handle_adopt", "id": 42}
-        assert requests[4] == {
+        assert {
             "op": "handle_call",
             "id": 42,
             "key": "items",
             "args": ["open"],
             "kwargs": {"limit": 2},
-        }
+        } in requests
         assert requests[-1] == {"op": "handle_release_explicit", "id": 42}
+
+    def test_manifest_proxy_mapping_methods_are_natural_without_remote_collisions(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        fields = {
+            "alpha": "first",
+            "count": 2,
+            "close": "field-close",
+        }
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "payload":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 44,
+                    "runtime": "javascript",
+                    "kind": "mapping",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_contains":
+                return envelope(request["value"] in fields, "bool")
+            if request.get("op") == "handle_get":
+                return envelope(fields[request["key"]])
+            if request.get("op") == "handle_index":
+                return envelope(fields[request["value"]])
+            if request.get("op") == "handle_iter" and request.get("mode") == "keys":
+                return envelope(list(fields.keys()))
+            if request.get("op") == "handle_iter" and request.get("mode") == "values":
+                return envelope(list(fields.values()))
+            if request.get("op") == "handle_iter" and request.get("mode") == "items":
+                return envelope([[key, value] for key, value in fields.items()])
+            if request.get("op") == "handle_release_explicit":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        proxy = omnivm_mod.manifest_call("demo", "payload")
+
+        assert proxy.close == "field-close"
+        assert proxy.keys() == ["alpha", "count", "close"]
+        assert proxy.values() == ["first", 2, "field-close"]
+        assert proxy.items() == [["alpha", "first"], ["count", 2], ["close", "field-close"]]
+        assert proxy.get("alpha") == "first"
+        assert proxy.get("missing", "fallback") == "fallback"
+        assert dict(proxy) == {"alpha": "first", "count": 2, "close": "field-close"}
+        assert proxy._omnivm_close() is True
+
+    def test_manifest_proxy_mapping_method_names_still_prefer_remote_fields(self):
+        def envelope(value, kind="json"):
+            return ("OK:" + json.dumps({"__omnivm_result__": True, "kind": kind, "value": value})).encode("utf-8")
+
+        requests = []
+        fields = {
+            "items": "field-items",
+            "keys": "field-keys",
+            "values": "field-values",
+            "get": "field-get",
+        }
+
+        def manifest_call(_module_id, payload):
+            request = json.loads(payload.decode("utf-8"))
+            requests.append(request)
+            if request.get("func") == "payload":
+                return envelope({
+                    "__omnivm_resource__": True,
+                    "id": 45,
+                    "runtime": "javascript",
+                    "kind": "mapping",
+                    "transfer": True,
+                })
+            if request.get("op") == "handle_adopt":
+                return envelope(True, "bool")
+            if request.get("op") == "handle_contains":
+                return envelope(request["value"] in fields, "bool")
+            if request.get("op") == "handle_get":
+                return envelope(fields[request["key"]])
+            if request.get("op") == "handle_iter" and request.get("mode") == "items":
+                return envelope([[key, value] for key, value in fields.items()])
+            if request.get("op") == "handle_release_explicit":
+                return envelope(True, "bool")
+            raise AssertionError(request)
+
+        self.mock_lib.OmniManifestCall.side_effect = manifest_call
+
+        proxy = omnivm_mod.manifest_call("demo", "payload")
+
+        assert proxy.items == "field-items"
+        assert proxy.keys == "field-keys"
+        assert proxy.values == "field-values"
+        assert proxy.get == "field-get"
+        assert omnivm_mod.proxy_items(proxy) == [
+            ["items", "field-items"],
+            ["keys", "field-keys"],
+            ["values", "field-values"],
+            ["get", "field-get"],
+        ]
+        assert proxy._omnivm_close() is True
 
     def test_manifest_proxy_helpers_bypass_local_method_collisions(self):
         def envelope(value, kind="json"):
