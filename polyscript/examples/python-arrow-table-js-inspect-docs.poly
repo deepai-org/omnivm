@@ -1,0 +1,22 @@
+import pandas as pd
+import pyarrow as pa
+import polars as pl
+
+const arrow_table = pa.table({
+  "items": ["alpha", "beta"],
+  "count": [1, 2],
+  "close": ["row-close", "row-close"]
+})
+
+const pandas_rows = arrow_table.to_pandas().to_dict("records")
+const polars_frame = pl.from_arrow(arrow_table)
+const schema_names = arrow_table.schema.names
+
+function inspectArrowTable(table, frame, rows, names) {
+  const labels = Array.from(rows).map(row => `${row.items}:${row.count}:${row.close}`)
+  return `${Array.from(names).join("|")}:${table.num_rows}:${table.num_columns}:${frame.height}:${labels.join("|")}`
+}
+
+const summary = inspectArrowTable(arrow_table, polars_frame, pandas_rows, schema_names)
+
+console.log(`Python Arrow table JS inspect docs ${summary}`)

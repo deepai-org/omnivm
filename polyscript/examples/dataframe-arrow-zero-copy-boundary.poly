@@ -1,0 +1,20 @@
+// Edge case: columnar tables should cross as buffers/schema, not row JSON by default.
+
+import pandas
+import pyarrow as pa
+import polars as pl
+import duckdb from "duckdb"
+
+const frame = pandas.DataFrame([
+  {"region": "west", "amount": 12},
+  {"region": "west", "amount": 18},
+  {"region": "east", "amount": 9}
+])
+const arrow_table = pa.Table.from_pandas(frame)
+const polars_frame = pl.from_arrow(arrow_table)
+const schema_names = arrow_table.schema.names
+const js_query = duckdb
+const summary_rows = frame.groupby("region")["amount"].sum().reset_index().to_dict("records")
+const labels = summary_rows.map(row => `${row.region}:${row.amount}`)
+
+print(f"DataFrame/Arrow boundary columns={len(schema_names)} groups={len(labels)}")

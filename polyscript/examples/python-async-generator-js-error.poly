@@ -1,0 +1,30 @@
+import asyncio
+
+closed = []
+
+async def row_stream(label):
+  try:
+    for value in range(4):
+      await asyncio.sleep(0)
+      yield {"items": value, "close": label}
+  finally:
+    closed.append(label)
+
+async function collect_rows() {
+  const labels = []
+  try {
+    for await (const row of row_stream("throw")) {
+      labels.push(`${row.items}:${row.close}`)
+      if (labels.length === 2) {
+        throw new Error("stop-async-stream")
+      }
+    }
+  } catch (err) {
+    labels.push(`${err.name}:${err.message}`)
+  }
+  return labels.join("|")
+}
+
+const label_summary = await collect_rows()
+console.log(`Python async generator JS error ${label_summary}`)
+print(f"Python async generator JS error closed {closed}")

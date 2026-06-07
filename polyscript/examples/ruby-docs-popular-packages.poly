@@ -1,0 +1,11 @@
+// Docs-style Ruby package usage: Nokogiri HTML parsing and Rack response
+// construction.
+
+import Nokogiri from "nokogiri"
+import Rack from "rack"
+
+const title = Nokogiri::HTML("<html><body><h1>Poly</h1><a href=\"/docs\">Docs</a></body></html>").css("h1").first.text
+const href = Nokogiri::HTML("<html><body><h1>Poly</h1><a href=\"/docs\">Docs</a></body></html>").css("a").first["href"]
+const response = Rack::Response.new("hello", 200, {"content-type": "text/plain"}).finish
+
+print(f"Ruby docs packages {title} {href} {response[0]}")

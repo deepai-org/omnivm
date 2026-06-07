@@ -1,0 +1,30 @@
+{
+  "name": "polyscript",
+  "version": "0.1.0",
+  "description": "PolyScript language implementation",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "jest",
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "transpile": "ts-node src/cli-transpile.ts",
+    "polyc": "ts-node src/cli-manifest.ts",
+    "repl": "node repl.js"
+  },
+  "bin": {
+    "polyscript-transpile": "./dist/cli-transpile.js",
+    "polyc": "./dist/cli-manifest.js"
+  },
+  "keywords": ["polyscript", "language", "compiler"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {}
+}

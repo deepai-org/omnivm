@@ -1,0 +1,35 @@
+// Cursed Polyglot Pipeline
+// Python data shaping and JavaScript collection transforms intentionally
+// ping-pong between runtimes so the resolver has to follow syntax evidence.
+
+import os
+import re
+
+// [python] seed data from a Python-owned source
+const entries = os.listdir("/var/data")
+
+// [js] arrow function forces JavaScript
+const stems = entries.map(e => e.replace(/\.[^.]+$/, ""))
+
+// [python] list comprehension keeps this step in Python
+const matched = [name for name in stems if re.match(r"^[a-z]", name)]
+
+// [js] strict equality and arrow keep this step in JavaScript
+const unique = matched.filter((name, index) => matched.indexOf(name) === index)
+
+// [python] sorted is a Python builtin
+const ordered = sorted(unique)
+
+// [js] arrow/object mapping returns records
+const records = ordered.map((name, index) => ({name: name, rank: index}))
+
+// [python] list comprehension crosses the JS record array without manual serialization
+const wire = [row.name for row in records]
+
+// [python] len is a Python builtin
+const survived = len(ordered)
+
+// [js] template literal and arrow make this JavaScript
+const status = records.map(r => `${r.rank}:${r.name}`).join(",")
+
+print(f"Pipeline complete: {survived} records -> {wire} ({status})")

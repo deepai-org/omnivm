@@ -1,0 +1,52 @@
+// Source-level app flow: ORM metadata/session-shaped values, model rows,
+// validators, dataframe views, and Java HTTP client objects.
+
+import sqlalchemy
+import pandas
+import { z } from "zod"
+import { PrismaClient } from "@prisma/client"
+
+const metadata = sqlalchemy.MetaData()
+const users = sqlalchemy.Table(
+  "users",
+  metadata,
+  sqlalchemy.Column("id", sqlalchemy.Integer),
+  sqlalchemy.Column("email", sqlalchemy.String),
+  sqlalchemy.Column("active", sqlalchemy.Boolean)
+)
+const active_users_query = sqlalchemy.select(users).where(users.c.active == true)
+const rows = [
+  {"id": 1, "email": "ada@example.test", "active": true},
+  {"id": 2, "email": "grace@example.test", "active": true}
+]
+const session_view = {
+  "statement": str(active_users_query),
+  "rows": pandas.DataFrame(rows).to_dict("records")
+}
+
+const prisma = new PrismaClient()
+const prisma_lookup = {
+  "model": "user",
+  "where": {"active": true},
+  "take": session_view.rows.length
+}
+
+const UserSchema = z.object({
+  "id": z.number(),
+  "email": z.string().email(),
+  "active": z.boolean()
+})
+const valid_users = session_view.rows.filter(row => UserSchema.safeParse(row).success)
+const downstream_request = new okhttp3.Request.Builder()
+  .url("https://api.example.test/users/" + valid_users[0].id)
+  .header("x-model", prisma_lookup.model)
+  .build()
+
+const orm_summary = {
+  "users": len(valid_users),
+  "host": downstream_request.url().host(),
+  "sql": "users" in session_view.statement,
+  "take": prisma_lookup.take
+}
+
+print(f"ORM model flow users={orm_summary['users']} host={orm_summary['host']} sql={str(orm_summary['sql']).lower()}")

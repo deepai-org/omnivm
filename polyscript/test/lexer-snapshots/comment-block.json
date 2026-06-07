@@ -1,0 +1,16 @@
+{
+  "name": "comment-block",
+  "input": "/* block */",
+  "tokens": [
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 11,
+      "end": 11,
+      "line": 1,
+      "column": 12,
+      "indentCol": 0,
+      "newline": true
+    }
+  ]
+}

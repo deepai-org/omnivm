@@ -1,0 +1,32 @@
+// Syntactic Dominance: the runtime resolver infers language from syntax, not just provenance.
+// Arrow functions (=>) are impossible in Python, so their presence flips the call to JS —
+// even when the object came from a Python import.
+
+import os
+
+// Python: grab files from disk
+const files = os.listdir("/var/data")
+
+// JS: arrow function forces this to JS despite `files` being Python-sourced
+const loud = files.map(f => f.toUpperCase())
+
+// JS: filter with strict equality — two syntax signals (=> and !==)
+const valid = loud.filter(f => f !== "THUMBS.DB" && f !== ".DS_STORE")
+
+// Python: no arrows, no JS syntax — provenance wins, stays Python
+const count = len(valid)
+
+// JS: regex literal is JS-exclusive syntax
+const logs = valid.filter(f => /\.log$/i.test(f))
+
+// Python: sorted() is a Python builtin, no JS syntax in args
+const ordered = sorted(logs)
+
+// Python: list() keeps the structured value in normal language syntax
+const payload = list(ordered)
+
+// JS: reduce with arrow — one last flip back to JS
+const summary = ordered.reduce((acc, f) => acc + "\n" + f, "=== LOG FILES ===")
+
+print(summary)
+print(payload)

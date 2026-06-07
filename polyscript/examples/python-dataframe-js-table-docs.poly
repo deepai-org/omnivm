@@ -1,0 +1,23 @@
+import pandas as pd
+import numpy as np
+import polars as pl
+
+const pandas_frame = pd.DataFrame({
+  "a": np.array([1, 2, 3], dtype=np.int32),
+  "b": np.array([4, 5, 6], dtype=np.int32)
+})
+
+const polars_scores = pl.DataFrame({"score": [1.5, 2.5, 3.5]})
+
+const summarize_tables = (pandas_table, polars_table) => {
+  const pandas_shape = pandas_table.metadata.shape.join("x")
+  const pandas_strides = pandas_table.metadata.strides.join("x")
+  const pandas_first = pandas_table[0].join(":")
+  const pandas_last = pandas_table[2].join(":")
+  const polars_shape = polars_table.metadata.shape.join("x")
+  const polars_values = [polars_table[0], polars_table[1], polars_table[2]].join(":")
+  return `pandas=${pandas_table.length}:${pandas_shape}:${pandas_strides}:${pandas_first}:${pandas_last} polars=${polars_table.length}:${polars_shape}:${polars_values}`
+}
+
+const summary = summarize_tables(pandas_frame, polars_scores)
+console.log(`Python DataFrame JS table docs ${summary}`)

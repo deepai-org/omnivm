@@ -1,0 +1,36 @@
+def make_payload():
+  return {
+    "items": ["alpha", "beta"],
+    "keys": ["id", "name"],
+    "then": "field-then",
+    "get": "field-get",
+    "close": "field-close",
+    "length": 2,
+    "count": 7,
+    "rows": [
+      {"items": "first", "count": 1},
+      {"items": "second", "count": 2}
+    ]
+  }
+
+payload = make_payload()
+
+const names = Object.keys(payload).sort()
+const pairs = Object.entries(payload)
+const selected = Object.fromEntries(
+  pairs
+    .filter(([key]) => ["items", "keys", "then", "get", "close", "length", "count"].includes(key))
+    .map(([key, value]) => [key, Array.isArray(value) ? value.length : value])
+)
+const copied = {...payload}
+const assigned = Object.assign({}, payload)
+const values_count = Object.values(payload).length
+const row_summary = payload.rows.map(row => `${row.items}:${row.count}`).join("|")
+const has_items = Object.prototype.hasOwnProperty.call(payload, "items")
+const loop_names = []
+for (const key in payload) {
+  loop_names.push(key)
+}
+loop_names.sort()
+
+console.log(`Python object enumeration docs names=${names.join(",")} loop=${loop_names.join(",")} selected=${JSON.stringify(selected)} copied=${copied.items.length}:${copied.keys.length}:${copied.close} assigned=${assigned.items.length}:${assigned.keys.length}:${assigned.close} values=${values_count} rows=${row_summary} has=${has_items}`)

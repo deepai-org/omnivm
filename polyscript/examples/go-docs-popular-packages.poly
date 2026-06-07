@@ -1,0 +1,12 @@
+// Docs-style Go package usage: net/http request construction and encoding/json
+// marshaling through a normal Go function body.
+
+func docs_request() {
+  req, _ := http.NewRequest("GET", "https://example.com/docs", nil)
+  payload, _ := json.Marshal(map[string]string{"method": req.Method, "path": req.URL.Path})
+  return string(payload)
+}
+
+const encoded = docs_request()
+
+print(f"Go docs packages {encoded}")

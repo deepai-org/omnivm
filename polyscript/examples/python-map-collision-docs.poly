@@ -1,0 +1,51 @@
+class CollisionPayload:
+  def __init__(self):
+    self.items = ["alpha", "beta"]
+    self.keys = ["id", "name"]
+    self.get = "field-get"
+    self.close = "field-close"
+    self.length = 2
+    self.count = 7
+
+  def then(self, value):
+    return f"called:{value}"
+
+def make_payload():
+  return CollisionPayload()
+
+payload = make_payload()
+dict_payload = {
+  "items": ["alpha", "beta"],
+  "keys": ["id", "name"],
+  "then": "field-then",
+  "get": "field-get",
+  "close": "field-close",
+  "length": 2,
+  "count": 7,
+}
+
+const object_summary = JSON.stringify({
+  "then": payload.then("manual"),
+  "items": payload.items.length,
+  "firstItem": payload.items[0],
+  "keys": payload.keys.length,
+  "firstKey": payload.keys[0],
+  "get": payload.get,
+  "close": payload.close,
+  "length": payload.length,
+  "count": payload.count
+})
+
+const dict_summary = JSON.stringify({
+  "items": dict_payload.items.length,
+  "firstItem": dict_payload.items[0],
+  "keys": dict_payload.keys.length,
+  "firstKey": dict_payload.keys[0],
+  "then": dict_payload.then,
+  "get": dict_payload.get,
+  "close": dict_payload.close,
+  "length": dict_payload.length,
+  "count": dict_payload.count
+})
+
+console.log(`Python map collision docs object=${object_summary} dict=${dict_summary}`)

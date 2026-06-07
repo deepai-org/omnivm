@@ -1,0 +1,21 @@
+import itertools
+
+closed = []
+produced = []
+
+function* js_rows(label) {
+  try {
+    for (const value of [0, 1, 2, 3]) {
+      produced.push(value)
+      yield {"items": value, "close": label, "count": value + 1}
+    }
+  } finally {
+    closed.push(label)
+  }
+}
+
+first_rows = list(itertools.islice(js_rows("slice"), 2))
+labels = [f"{row.items}:{row.close}:{row.count}" for row in first_rows]
+
+print(f"JavaScript generator Python islice docs {'|'.join(labels)}")
+console.log(`JavaScript generator Python islice closed=${closed.join("|")} produced=${produced.join("|")}`)

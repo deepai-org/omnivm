@@ -1,0 +1,8 @@
+def fail_py():
+  raise ValueError("bad order")
+
+try {
+  fail_py()
+} catch (err) {
+  console.log(`Python error JS catch ${err.runtime}:${err.originRuntime}:${err.type}:${err.message}:${err.stackFrames.length > 0}:${err.boundaryPath}`)
+}

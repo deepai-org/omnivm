@@ -1,0 +1,14 @@
+const payload = new Map([
+  ["alpha", "first"],
+  ["beta", "second"],
+  ["close", "field-close"],
+  ["count", 7]
+])
+
+keys = sorted(payload.keys())
+pairs = sorted([f"{key}:{value}" for key, value in payload.items()])
+values = sorted([str(value) for value in payload.values()])
+selected = f"{payload.get('alpha')}:{payload.get('missing', 'fallback')}:{payload.get('close')}:{payload.get('count')}"
+copied = dict(payload)
+
+console.log(`JavaScript Map mapping methods docs keys=${keys.join(',')} pairs=${pairs.join('|')} values=${values.join('|')} selected=${selected} copied=${copied['beta']}`)

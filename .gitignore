@@ -5,3 +5,6 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+polyscript/node_modules/
+polyscript/dist/
+polyscript/coverage/

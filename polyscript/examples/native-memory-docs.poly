@@ -1,0 +1,16 @@
+py_view = memoryview(bytearray([97, 98, 99, 100]))
+
+const js_bytes = new Uint8Array([1, 2, 3, 4])
+
+const java_buffer = java.nio.ByteBuffer.allocateDirect(4)
+java_buffer.put(0, java.lang.Byte.valueOf("7"))
+java_buffer.put(1, java.lang.Byte.valueOf("8"))
+
+def summarize_js_bytes(payload):
+  return f"{len(payload)}:{payload[0]}:{payload[3]}"
+
+py_from_js = summarize_js_bytes(js_bytes)
+const js_from_py = `${py_view.length}:${py_view[0]}:${py_view[3]}`
+const js_from_java = `${java_buffer.length}:${java_buffer[0]}:${java_buffer[1]}`
+
+console.log(`Native memory docs py=${py_from_js} js=${js_from_py} java=${js_from_java}`)

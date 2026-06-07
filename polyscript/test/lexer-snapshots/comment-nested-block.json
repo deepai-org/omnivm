@@ -1,0 +1,40 @@
+{
+  "name": "comment-nested-block",
+  "input": "/* outer /* inner */ end */",
+  "tokens": [
+    {
+      "type": "Keyword",
+      "value": "end",
+      "start": 21,
+      "end": 24,
+      "line": 1,
+      "column": 22,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Operator",
+      "value": "*",
+      "start": 25,
+      "end": 26,
+      "line": 1,
+      "column": 26
+    },
+    {
+      "type": "RegexLiteral",
+      "value": "/",
+      "start": 26,
+      "end": 27,
+      "line": 1,
+      "column": 27
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 27,
+      "end": 27,
+      "line": 1,
+      "column": 28
+    }
+  ]
+}

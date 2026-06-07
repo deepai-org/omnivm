@@ -1,0 +1,23 @@
+// Docs-style JavaScript package usage: Express routing, Zod validation,
+// Lodash collection transforms, Cheerio selection, and Marked rendering.
+
+import express from "express"
+import { z } from "zod"
+import lodash from "lodash"
+import cheerio from "cheerio"
+import marked from "marked"
+
+const app = express()
+app.get("/", (req, res) => res.send("Hello World!"))
+
+const User = z.object({
+  "username": z.string(),
+  "age": z.number()
+})
+const user = User.parse({"username": "ada", "age": 37})
+const chunks = lodash.chunk(["a", "b", "c", "d"], 2)
+const dom = cheerio.load("<ul><li>one</li><li>two</li></ul>")
+const first = dom("li").first().text()
+const html = marked.parse("# Poly")
+
+console.log(`JavaScript docs packages ${user.username} ${chunks.length} ${first} ${html.includes("<h1")}`)

@@ -1,0 +1,20 @@
+// Edge case: futures, observables, Flux, and async generators need one stream contract.
+
+import asyncio
+import rxjs from "rxjs"
+import java.util.concurrent.CompletableFuture
+import reactor.core.publisher.Flux
+
+async def py_events():
+  await asyncio.sleep(0)
+  return ["py-a", "py-b"]
+
+const java_future = java.util.concurrent.CompletableFuture.completedFuture("java-a")
+const java_flux = reactor.core.publisher.Flux.just("java-b", "java-c")
+const js_observable = rxjs.from(["js-a", "js-b"]).pipe(rxjs.map(item => item.toUpperCase()))
+const future_value = java_future.join()
+const flux_label = java_flux.collectList().block().get(0)
+const js_labels = ["js-a", "js-b"].map(item => item.toUpperCase())
+const all_labels = Array.from([future_value, flux_label]).concat(js_labels)
+
+print(f"Reactive future streams labels={len(all_labels)} first={future_value}")

@@ -1,0 +1,17 @@
+import csv
+import io
+import pydantic
+
+func batch_label(name) {
+  return name
+}
+
+const csv_text = "sku,qty\nA,2\nB,3\nC,5"
+const java_records = org.apache.commons.csv.CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build().parse(new java.io.StringReader("sku,qty\nA,2\nB,3\nC,5")).getRecords().size()
+const rows = list(csv.DictReader(io.StringIO(str(csv_text).replace("\\n", chr(10)))))
+const validated = pydantic.TypeAdapter(list[dict]).validate_python(rows)
+const b1 = go batch_label("inventory")
+const b2 = go batch_label("reorder")
+const batches = wait(b1, b2)
+
+print(f"Java/CommonsCSV/Pydantic/Go rows={len(validated)} javaRecords={java_records} batches={len(batches)}")

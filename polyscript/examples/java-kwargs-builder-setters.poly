@@ -1,0 +1,6 @@
+// Java builder setter adapter shape.
+// SearchOptionsBuilder is expected to expose query(...), limit(...), and build().
+
+const java_builder_kwargs_demo = new com.example.SearchOptionsBuilder().query("ada").limit(2).build()
+
+print(f"Java builder kwargs adapter demo {java_builder_kwargs_demo}")

@@ -1,0 +1,32 @@
+// Edge library fixture: Go handler, context, database, logging, and CLI callback shapes.
+
+import http from "net/http"
+import context from "context"
+import sql from "database/sql"
+import slog from "log/slog"
+import cobra from "github.com/spf13/cobra"
+import zap from "go.uber.org/zap"
+
+func handle_request(path) {
+  ctx := context.Background()
+  _ = ctx
+  db, _ := sql.Open("sqlite3", ":memory:")
+  _ = db
+  logger := zap.NewExample()
+  logger.Info("poly request")
+  slog.Info("poly request", "path", path)
+  status := http.StatusOK
+  return fmt.Sprintf("%s:%d", path, status)
+}
+
+func run_command(args) {
+  cmd := cobra.Command{}
+  _ = cmd
+  return handle_request(args[0])
+}
+
+const response_key = run_command(["/cli"])
+const response_parts = response_key.split(":")
+const route = response_parts[0]
+
+print(f"Go HTTP/Cobra/Zap/Slog route={route}")

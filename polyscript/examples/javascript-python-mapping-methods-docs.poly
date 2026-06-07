@@ -1,0 +1,16 @@
+const payload = Object.freeze({
+  "alpha": "first",
+  "beta": "second",
+  "then": "field-then",
+  "close": "field-close",
+  "length": 2,
+  "count": 7
+})
+
+keys = sorted(payload.keys())
+pairs = sorted([f"{key}:{value}" for key, value in payload.items()])
+values = sorted([str(value) for value in payload.values()])
+selected = f"{payload.get('alpha')}:{payload.get('missing', 'fallback')}:{payload.close}:{payload.count}"
+copied = dict(payload)
+
+print(f"JavaScript Python mapping methods docs keys={','.join(keys)} pairs={'|'.join(pairs)} values={'|'.join(values)} selected={selected} copied={copied['beta']}")

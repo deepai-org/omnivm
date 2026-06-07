@@ -1,0 +1,32 @@
+// Edge library fixture: ORM/client/session handles stay local; records cross materialized.
+
+import sqlalchemy
+import { PrismaClient } from "@prisma/client"
+import ActiveRecord from "active_record"
+import lodash from "lodash"
+
+const engine = sqlalchemy.create_engine("sqlite://")
+const statement = sqlalchemy.text("select id, email, active from users where active = true")
+const query_text = str(statement)
+const session_rows = [
+  {"id": 1, "email": "ada@example.test", "active": true},
+  {"id": 2, "email": "grace@example.test", "active": true}
+]
+
+const prisma = new PrismaClient()
+const prisma_request = {
+  "model": "user",
+  "where": {"active": true},
+  "take": session_rows.length
+}
+
+const active_record_table = ActiveRecord::Base.connection.quote_table_name("users")
+const materialized = lodash.map(session_rows, row => ({
+  "id": row.id,
+  "email": row.email.toLowerCase(),
+  "source": active_record_table
+}))
+const row_count = len(materialized)
+const query_ok = "users" in query_text
+
+print(f"ORM boundary rows={row_count} prisma_take={prisma_request.take} sql={str(query_ok).lower()}")

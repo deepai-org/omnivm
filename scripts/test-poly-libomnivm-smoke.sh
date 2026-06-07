@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_POLYSCRIPT_DIR="$ROOT/../polyscript-compiler"
-if [ -d "$ROOT/../garbage" ]; then
+DEFAULT_POLYSCRIPT_DIR="$ROOT/polyscript"
+if [ ! -d "$DEFAULT_POLYSCRIPT_DIR" ] && [ -d "$ROOT/../garbage" ]; then
   DEFAULT_POLYSCRIPT_DIR="$ROOT/../garbage"
+elif [ ! -d "$DEFAULT_POLYSCRIPT_DIR" ] && [ -d "$ROOT/../polyscript-compiler" ]; then
+  DEFAULT_POLYSCRIPT_DIR="$ROOT/../polyscript-compiler"
 fi
 POLYSCRIPT_DIR="${POLYSCRIPT_DIR:-${GARBAGE_DIR:-"$DEFAULT_POLYSCRIPT_DIR"}}"
 PASSENGER_FIXTURE="$ROOT/test/fixtures/passenger-django-polyscript"
@@ -13,12 +15,24 @@ PYTHON_BIN="${PYTHON_BIN:-python3.14}"
 RUNNER="${LIBOMNIVM_MANIFEST_RUNNER:-/usr/local/bin/run-manifest-libomnivm.py}"
 
 if [ ! -d "$POLYSCRIPT_DIR" ]; then
-  echo "PolyScript compiler checkout not found at $POLYSCRIPT_DIR; set POLYSCRIPT_DIR=/path/to/polyscript-compiler" >&2
+  echo "PolyScript compiler package not found at $POLYSCRIPT_DIR; set POLYSCRIPT_DIR=/path/to/polyscript" >&2
+  exit 2
+fi
+if [ ! -f "$POLYSCRIPT_DIR/package.json" ]; then
+  echo "PolyScript package.json not found at $POLYSCRIPT_DIR/package.json" >&2
+  exit 2
+fi
+if [ ! -x "$POLYSCRIPT_DIR/node_modules/.bin/ts-node" ]; then
+  echo "PolyScript dependencies missing; run 'make polyscript-deps' or '(cd $POLYSCRIPT_DIR && npm ci)'" >&2
   exit 2
 fi
 if [ ! -d "$PASSENGER_FIXTURE" ]; then
   echo "Passenger/Django fixture not found at $PASSENGER_FIXTURE" >&2
   exit 2
+fi
+if [ ! -f "$POLYSCRIPT_DIR/dist/cli-manifest.js" ]; then
+  echo "build PolyScript compiler"
+  (cd "$POLYSCRIPT_DIR" && npm run build >/dev/null)
 fi
 
 TMP="$(mktemp -d)"
@@ -292,10 +306,10 @@ echo "run Passenger-style Django .poly import fixture across fresh workers"
 for worker in 1 2 3; do
   docker run --rm \
     --entrypoint python3-polyscript \
-    -e POLYSCRIPT_COMPILER="node /polyscript-compiler/dist/cli-manifest.js" \
+    -e POLYSCRIPT_COMPILER="node /polyscript/dist/cli-manifest.js" \
     -e POLYSCRIPT_CACHE_DIR=/tmp/polyscript-cache \
     -v "$fixture":/tmp/passenger-django:ro \
-    -v "$POLYSCRIPT_DIR":/polyscript-compiler:ro \
+    -v "$POLYSCRIPT_DIR":/polyscript:ro \
     "$IMAGE" \
     -c 'import io, sys
 sys.path.insert(0, "/tmp/passenger-django")

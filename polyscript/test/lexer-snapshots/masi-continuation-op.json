@@ -1,0 +1,42 @@
+{
+  "name": "masi-continuation-op",
+  "input": "a +\nb",
+  "tokens": [
+    {
+      "type": "Identifier",
+      "value": "a",
+      "start": 0,
+      "end": 1,
+      "line": 1,
+      "column": 1,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Operator",
+      "value": "+",
+      "start": 2,
+      "end": 3,
+      "line": 1,
+      "column": 3
+    },
+    {
+      "type": "Identifier",
+      "value": "b",
+      "start": 4,
+      "end": 5,
+      "line": 2,
+      "column": 0,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 5,
+      "end": 5,
+      "line": 2,
+      "column": 1
+    }
+  ]
+}

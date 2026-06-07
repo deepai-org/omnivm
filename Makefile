@@ -1,7 +1,9 @@
-.PHONY: build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-all run clean
+.PHONY: build polyscript-deps polyscript-build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-polyscript test-poly-libomnivm-smoke test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
+POLYSCRIPT_DIR := polyscript
+POLYSCRIPT_NPM_STAMP := $(POLYSCRIPT_DIR)/node_modules/.package-lock.json
 
 # Build the Docker image
 build:
@@ -11,6 +13,19 @@ build:
 test-local:
 	go test -race -v ./pkg/dispatcher/ ./pkg/signals/ ./pkg/arrow/ ./pkg/handles/ ./pkg/cli/ ./pkg/errmsg/
 	go test -v -count=1 ./pkg/golang/ ./pkg/manifest/ ./pkg/jvm/
+
+$(POLYSCRIPT_NPM_STAMP): $(POLYSCRIPT_DIR)/package.json $(POLYSCRIPT_DIR)/package-lock.json
+	cd $(POLYSCRIPT_DIR) && npm ci
+
+polyscript-deps: $(POLYSCRIPT_NPM_STAMP)
+
+polyscript-build: $(POLYSCRIPT_NPM_STAMP)
+	cd $(POLYSCRIPT_DIR) && npm run build
+
+test-polyscript: $(POLYSCRIPT_NPM_STAMP)
+	cd $(POLYSCRIPT_DIR) && npm test -- --runInBand
+	cd $(POLYSCRIPT_DIR) && npm run build
+	cd $(POLYSCRIPT_DIR) && node scripts/audit-manifests.js
 
 # Run Python package tests against the checked-out pyomnivm package.
 test-python:
@@ -41,7 +56,7 @@ test-libomnivm-manifests: build
 test-libomnivm-stress: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-libomnivm-stress.sh $(STRESS_ARGS)
 
-test-poly-libomnivm-smoke: build
+test-poly-libomnivm-smoke: build polyscript-build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-poly-libomnivm-smoke.sh
 
 # Run manifest tests in quick mode (skip Express/pastebin)
@@ -56,8 +71,8 @@ test-stress: build
 test: test-all
 
 # Run everything: local unit checks, Docker unit/integration tests, smoke tests,
-# CLI/stress/manifest suites, CPython-hosted libomnivm, and sibling PolyScript examples.
-test-all: test-local test-python test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke
+# CLI/stress/manifest suites, CPython-hosted libomnivm, and in-repo PolyScript examples.
+test-all: test-local test-python test-polyscript test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke
 
 # Start the REPL
 run: build

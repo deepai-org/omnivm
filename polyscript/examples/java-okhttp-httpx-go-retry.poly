@@ -1,0 +1,37 @@
+import httpx
+
+const retry_in = make(4)
+const retry_out = make(4)
+
+func retry_worker(id) {
+  while true {
+    item := recv("retry_in")
+    if item == nil {
+      return id
+    }
+    send("retry_out", item)
+  }
+  return id
+}
+
+func retry_backoff(attempts) {
+  if attempts == nil {
+    return 0
+  }
+  return 75
+}
+
+const okhttp_host = new okhttp3.Request.Builder().url("https://api.example.test/v1/items?b=2&a=1").build().url().host()
+const okhttp_path = new okhttp3.Request.Builder().url("https://api.example.test/v1/items?b=2&a=1").build().url().encodedPath()
+status = httpx.Response(200).status_code
+const w1 = go retry_worker(1)
+const w2 = go retry_worker(2)
+retry_in <- status
+retry_in <- 503
+close(retry_in)
+const workers = wait(w1, w2)
+close(retry_out)
+const attempts = Array.from(retry_out)
+const backoff = retry_backoff(2)
+
+print(f"Java/OkHttp/HTTPX/Go host={okhttp_host} path={okhttp_path} attempts={len(attempts)} workers={len(workers)} backoff={backoff}ms")

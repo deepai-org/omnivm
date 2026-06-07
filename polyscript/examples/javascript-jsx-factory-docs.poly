@@ -1,0 +1,25 @@
+/** @jsx h */
+/** @jsxFrag Fragment */
+
+// Docs-style JSX using a local factory so the example is not tied to React.
+
+const Fragment = Symbol("fragment")
+
+function h(type, props, ...children) {
+  return { type, props: props || {}, children }
+}
+
+function Badge(props) {
+  return <span className="badge">{props.label}</span>
+}
+
+const tree = <>
+  <Badge label="Poly" />
+  <button className="primary">Ship</button>
+</>
+
+const child_count = tree.children.length
+const first_kind = tree.children[0].type === Badge ? "component" : "host"
+const fragment_ok = tree.type === Fragment
+
+console.log(`JSX factory docs fragment=${fragment_ok} first=${first_kind} children=${child_count}`)

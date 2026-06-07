@@ -1,0 +1,22 @@
+import sqlalchemy
+import lodash from "lodash"
+
+func batch_label(name) {
+  return name
+}
+
+const users_table = sqlalchemy.table("users", sqlalchemy.column("id"), sqlalchemy.column("role"), sqlalchemy.column("active"))
+const query = str(sqlalchemy.select(users_table).where(users_table.c.active == True))
+const rows = lodash.concat([], [
+  {"id": 1, "role": "admin", "active": true},
+  {"id": 2, "role": "editor", "active": true},
+  {"id": 3, "role": "admin", "active": true}
+])
+const b1 = go batch_label("admin")
+const b2 = go batch_label("editor")
+const batches = wait(b1, b2)
+const grouped = lodash.mapValues(lodash.groupBy(rows, "role"), items => items.length)
+const role_count = Object.keys(grouped).length
+query_has_users = "users" in query
+
+print(f"SQLAlchemy/Lodash/Go admin endpoint roles={role_count} batches=2 sql={str(query_has_users).lower()}")

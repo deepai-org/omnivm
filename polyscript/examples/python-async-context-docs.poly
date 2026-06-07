@@ -1,0 +1,52 @@
+import asyncio
+
+events = []
+
+class AsyncDocsResponse:
+  def __init__(self, url):
+    self.url = url
+    self.items = ["alpha", "beta"]
+    self.keys = ["id"]
+    self.count = 2
+    self.close = "field-close"
+
+  async def __aenter__(self):
+    await asyncio.sleep(0)
+    events.append("response-enter")
+    return self
+
+  async def __aexit__(self, exc_type, exc, tb):
+    await asyncio.sleep(0)
+    events.append("response-exit")
+
+  async def json(self):
+    await asyncio.sleep(0)
+    return {
+      "items": self.items,
+      "keys": self.keys,
+      "count": self.count,
+      "close": self.close,
+    }
+
+class AsyncDocsSession:
+  async def __aenter__(self):
+    await asyncio.sleep(0)
+    events.append("session-enter")
+    return self
+
+  async def __aexit__(self, exc_type, exc, tb):
+    await asyncio.sleep(0)
+    events.append("session-exit")
+
+  def get(self, url):
+    return AsyncDocsResponse(url)
+
+async def fetch_docs(url):
+  async with AsyncDocsSession() as session:
+    async with session.get(url) as response:
+      return await response.json()
+
+const result = await fetch_docs("https://example.test/docs")
+const js_summary = `${result.items.length}:${result.keys.length}:${result.count}:${result.close}`
+
+print(f"Async context docs js={js_summary} events={','.join(events)}")

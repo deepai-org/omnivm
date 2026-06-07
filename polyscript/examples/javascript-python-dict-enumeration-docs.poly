@@ -1,0 +1,29 @@
+const payload = Object.freeze({
+  "items": ["alpha", "beta"],
+  "keys": ["id", "name"],
+  "then": "field-then",
+  "get": "field-get",
+  "close": "field-close",
+  "length": 2,
+  "count": 7,
+  "rows": [
+    {"items": "first", "count": 1},
+    {"items": "second", "count": 2}
+  ]
+})
+
+names = []
+for key in payload:
+  names.append(key)
+names = sorted(names)
+
+selected_parts = []
+for key in ["then", "get", "close", "length", "count"]:
+  selected_parts.append(f"{key}={payload[key]}")
+
+rows = payload.rows
+row_labels = []
+for row in rows:
+  row_labels.append(f"{row.items}:{row.count}")
+
+print(f"JavaScript Python dict enumeration docs names={','.join(names)} selected={'|'.join(selected_parts)} rows={'|'.join(row_labels)}")

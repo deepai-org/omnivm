@@ -1,0 +1,22 @@
+def callable_then(value=None):
+  return f"called:{value}"
+
+def make_payload(include_then):
+  payload = {
+    "items": ["alpha", "beta"],
+    "keys": ["id"],
+    "count": 2,
+    "close": "field-close"
+  }
+  if include_then:
+    payload["then"] = callable_then
+  return payload
+
+const payload = make_payload(True)
+const missing_payload = make_payload(False)
+const called = payload.then?.("manual") ?? "missing"
+const missing_called = missing_payload.then?.("manual") ?? "missing"
+const item_count = missing_payload.items?.length ?? 0
+const missing_count = missing_payload.missing?.length ?? 0
+const summary = `${called}:${missing_called}:${item_count}:${missing_count}:${payload.close}`
+console.log(`JavaScript optional call docs ${summary}`)

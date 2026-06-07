@@ -1,0 +1,40 @@
+import django
+from django.conf import settings
+from django.http import JsonResponse
+from django.test import RequestFactory
+import zod from "zod"
+
+func verify_session(token, signature) {
+  token_string := token.(string)
+  signature_string := signature.(string)
+  secret_string := "poly-secret"
+  mac := hmac.New(sha256.New, []byte(secret_string))
+  mac.Write([]byte(token_string))
+  expected := hex.EncodeToString(mac.Sum(nil))
+  if hmac.Equal([]byte(signature_string), []byte(expected)) {
+    return "user-42"
+  }
+  return ""
+}
+
+function validate_response(payload) {
+  const Schema = zod.z.object({
+    "ok": zod.z.boolean(),
+    "path": zod.z.string(),
+    "user": zod.z.string()
+  })
+  return Schema.parse(payload)
+}
+
+settings.configure(SECRET_KEY="poly", DEFAULT_CHARSET="utf-8", ALLOWED_HOSTS=["*"])
+django.setup()
+
+request = RequestFactory().get("/secure/orders", HTTP_X_SESSION="session:poly")
+request_path = request.path
+session_token = request.headers.get("X-Session")
+const signature = "a9bc7561581d6a3681924dc0839e3b91806ed7e7ba4e0c66c0247087043b582f"
+const user_id = verify_session(session_token, signature)
+const dto = validate_response({"ok": true, "path": request_path, "user": user_id})
+response = JsonResponse(dto)
+
+print(f"Django/Zod/Go secure endpoint {response.status_code} {dto['user']} {dto['path']}")

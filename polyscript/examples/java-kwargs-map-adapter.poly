@@ -1,0 +1,7 @@
+// Java Map<String,Object> kwargs adapter shape.
+// A Python caller can pass keyword arguments that OmniVM adapts to this
+// terminal Map argument when runtime shape probing or descriptor metadata proves it.
+
+const java_map_kwargs_demo = new com.example.SearchHandler().accept(java.util.Map.of("query", "ada", "limit", 2))
+
+print(f"Java map kwargs adapter demo {java_map_kwargs_demo}")

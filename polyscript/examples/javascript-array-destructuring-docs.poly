@@ -1,0 +1,15 @@
+def make_rows():
+  return [
+    {"items": "alpha", "count": 1, "close": "row-close"},
+    {"items": "beta", "count": 2, "close": "row-close"},
+    {"items": "gamma", "count": 3, "close": "row-close"}
+  ]
+
+def empty_rows():
+  return []
+
+const [first, second, ...rest] = make_rows()
+const [fallback = {"items": "fallback", "count": 0}] = empty_rows()
+const { items: first_items, count: first_count } = first
+const summary = `${first_items}:${first_count}:${second.items}:${fallback.items}:${rest.length}:${rest[0].items}`
+console.log(`JavaScript array destructuring docs ${summary}`)

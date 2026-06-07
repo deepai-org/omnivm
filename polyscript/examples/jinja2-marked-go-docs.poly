@@ -1,0 +1,17 @@
+import jinja2
+import marked from "marked"
+
+func content_key(slug, html) {
+  slug_string := slug.(string)
+  html_string := html.(string)
+  sanitized := strings.ReplaceAll(html_string, "<script", "&lt;script")
+  sum := sha256.Sum256([]byte(slug_string + ":" + sanitized))
+  prefix := fmt.Sprintf("%.6x", sum)
+  return slug_string + "-" + prefix
+}
+
+markdown_source = jinja2.Template("# Poly Docs\n\nThis page is rendered through multiple runtimes.").render()
+const html = marked.parse(markdown_source)
+const key = content_key("poly-docs", html)
+
+print(f"Jinja2/Marked/Go docs key={key} length={len(html)}")

@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "defaultRuntime": "javascript",
+  "ops": [
+    {
+      "op": "declare",
+      "bind": "payload",
+      "mutable": false,
+      "value": {
+        "kind": "literal",
+        "value": "ada:receipt"
+      }
+    },
+    {
+      "op": "eval",
+      "runtime": "python",
+      "code": "len(payload)",
+      "bind": "py_marker",
+      "captures": {
+        "payload": "payload"
+      }
+    },
+    {
+      "op": "resource",
+      "action": "open",
+      "runtime": "python",
+      "bind": "tx",
+      "kind": "sqlalchemy.transaction",
+      "disposer": "rollback",
+      "value": {
+        "kind": "ref",
+        "name": "payload"
+      }
+    },
+    {
+      "op": "job",
+      "action": "enqueue",
+      "runtime": "ruby",
+      "bind": "receipt",
+      "kind": "sidekiq",
+      "payload": {
+        "kind": "ref",
+        "name": "payload"
+      }
+    },
+    {
+      "op": "job",
+      "action": "complete",
+      "target": "receipt",
+      "value": {
+        "kind": "literal",
+        "value": "receipt-ok"
+      }
+    },
+    {
+      "op": "job",
+      "action": "wait",
+      "target": "receipt",
+      "bind": "job_result"
+    },
+    {
+      "op": "resource",
+      "action": "close",
+      "target": "tx",
+      "code": "cleanup_log = globals().setdefault('cleanup_log', []); cleanup_log.append('rollback')"
+    },
+    {
+      "op": "exec",
+      "runtime": "javascript",
+      "code": "console.log(\"resource/job boundary result\", job_result)"
+    }
+  ],
+  "typeSummary": {
+    "crossings": 1,
+    "safe": 1,
+    "coerce": 0,
+    "check": 0,
+    "errors": 0
+  },
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "runtime-boundary-capture",
+      "message": "Inserted capture boundary for 'payload' from javascript to python. Source binding: javascript (fallback; fallback: neutral declaration literal). Target expression: python (inferred; builtin: builtin: len).",
+      "span": {
+        "start": 260,
+        "end": 290,
+        "line": 6,
+        "column": 1
+      }
+    }
+  ]
+}

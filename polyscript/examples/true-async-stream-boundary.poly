@@ -1,0 +1,36 @@
+// Edge case: a live HTTP stream must cross as a stream proxy, not a JSON blob.
+
+import asyncio
+import httpx
+import rxjs from "rxjs"
+import context from "context"
+
+const stream_chunks = make(8)
+
+async def read_http_lines(url):
+  async with httpx.AsyncClient() as client:
+    async with client.stream("GET", url) as response:
+      await asyncio.sleep(0)
+      return response.text.splitlines()
+
+func consume_stream(name) {
+  ctx := context.Background()
+  _ = ctx
+  item := recv("stream_chunks")
+  if item == nil {
+    return name
+  }
+  send("stream_chunks", item)
+  return name
+}
+
+const worker = go consume_stream("go-consumer")
+stream_chunks <- "first"
+stream_chunks <- "second"
+close(stream_chunks)
+const worker_result = wait(worker)
+const js_stream = Array.from(stream_chunks)
+const observed = rxjs.from(js_stream).pipe(rxjs.map(chunk => chunk.toUpperCase()), rxjs.toArray())
+const labels = js_stream.map(chunk => `stream:${chunk}`)
+
+print(f"True async stream boundary chunks={len(labels)} worker={worker_result}")

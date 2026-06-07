@@ -1,0 +1,21 @@
+// Edge case: rendered HTML crosses as a value; component/template closures do not.
+
+import jinja2
+import React from "react"
+import { renderToString } from "react-dom/server"
+import Rack from "rack"
+import org.springframework.ui.ModelMap
+
+const template = jinja2.Template("<main>{{ title }}</main>")
+const py_html = template.render(title="Poly")
+
+function component_html(title) {
+  return renderToString(React.createElement("main", {"data-runtime": "react"}, title))
+}
+
+const react_html = component_html("Poly")
+const rack_response = Rack::Response.new(react_html, 200, {"content-type": "text/html"}).finish
+const model = new org.springframework.ui.ModelMap().addAttribute("title", "Poly")
+const html_lengths = [len(py_html), react_html.length, len(rack_response)]
+
+print(f"Template/component rendering outputs={len(html_lengths)}")

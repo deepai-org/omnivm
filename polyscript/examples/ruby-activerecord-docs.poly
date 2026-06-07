@@ -1,0 +1,10 @@
+// Docs-style Ruby package usage: ActiveRecord metadata and type casting.
+
+import ActiveRecord from "active_record"
+
+const version = ActiveRecord::VERSION::STRING
+const model_name = ActiveRecord::Base.model_name.name
+const score = ActiveRecord::Type::Integer.new.cast("12")
+const label = model_name + ":" + score.to_s
+
+print(f"Ruby ActiveRecord docs {label}")

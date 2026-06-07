@@ -1,0 +1,40 @@
+import httpx
+import url from "url"
+
+const retry_in = make(4)
+const retry_out = make(4)
+
+func retry_worker(id) {
+  while true {
+    item := recv("retry_in")
+    if item == nil {
+      return id
+    }
+    send("retry_out", item)
+  }
+  return id
+}
+
+func retry_backoff(attempt) {
+  if attempt == nil {
+    return 0
+  }
+  return 50
+}
+
+const endpoint = "https://api.example.test/v1/items?b=2&a=1"
+status = httpx.Response(200).status_code
+const parsed = url.parse(endpoint)
+const resource = "/v1/items"
+const normalized = parsed.protocol + "//" + parsed.host + resource
+const h1 = go retry_worker(1)
+const h2 = go retry_worker(2)
+retry_in <- status
+retry_in <- 202
+close(retry_in)
+const joined = wait(h1, h2)
+close(retry_out)
+const attempts = Array.from(retry_out)
+const backoff = retry_backoff(attempts.length)
+
+print(f"HTTPX/URL/Go aggregator endpoint={normalized} attempts={len(attempts)} workers={len(joined)} backoff={backoff}ms")

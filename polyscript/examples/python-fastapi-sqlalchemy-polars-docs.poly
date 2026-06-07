@@ -1,0 +1,28 @@
+// Docs-style Python package usage: FastAPI route decorators, SQLAlchemy ORM
+// declarative models, and Polars lazy frames.
+
+import fastapi
+import sqlalchemy
+from sqlalchemy.orm import declarative_base
+import polars as pl
+
+const api = fastapi.FastAPI()
+const Base = declarative_base()
+
+@api.get("/users/{user_id}")
+def read_user(user_id):
+  return {"user_id": user_id, "active": true}
+
+const route = api.get("/users/{user_id}")(read_user)
+const User = type("User", (Base,), {
+  "__tablename__": "users",
+  "id": sqlalchemy.Column(sqlalchemy.Integer, primary_key=True),
+  "name": sqlalchemy.Column(sqlalchemy.String)
+})
+
+const user_columns = len(User.__table__.columns)
+const lazy = pl.DataFrame({"name": ["Ada", "Grace"], "score": [10, 12]}).lazy()
+const top = lazy.filter(pl.col("score") > 10).collect().to_dicts()[0]["name"]
+const route_count = len(api.routes)
+
+print(f"Python FastAPI/SQLAlchemy/Polars docs routes={route_count} columns={user_columns} top={top}")

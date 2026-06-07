@@ -1,0 +1,26 @@
+// Edge case: queued work returns job handles, not immediate function results.
+
+import celery
+import Sidekiq from "sidekiq"
+import { Queue } from "bullmq"
+import context from "context"
+
+func go_pool_job(name) {
+  ctx := context.Background()
+  _ = ctx
+  return name
+}
+
+const celery_task = celery.Celery("poly").signature("receipt.send", kwargs={"user": "ada"})
+const sidekiq_job = {"class": "ReceiptJob", "args": ["ada"], "queue": "mailers"}
+const bull_queue = new Queue("receipts")
+const go_job = go go_pool_job("go-receipt")
+const go_result = wait(go_job)
+const job_shapes = [
+  {"runtime": "python", "kind": celery_task.name},
+  {"runtime": "ruby", "kind": sidekiq_job["class"]},
+  {"runtime": "javascript", "kind": bull_queue.name},
+  {"runtime": "go", "kind": go_result}
+]
+
+print(f"Cross-runtime job queue jobs={len(job_shapes)} go={go_result}")

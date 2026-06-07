@@ -1,0 +1,31 @@
+closed = []
+
+def row_stream(label):
+  try:
+    for value in range(4):
+      yield {"items": value, "close": label}
+  finally:
+    closed.append(label)
+
+const seen = []
+for (const row of row_stream("break")) {
+  seen.push(`${row.items}:${row.close}`)
+  if (seen.length === 2) {
+    break
+  }
+}
+
+const errors = []
+try {
+  for (const row of row_stream("throw")) {
+    errors.push(`${row.items}:${row.close}`)
+    if (errors.length === 1) {
+      throw new Error("stop-stream")
+    }
+  }
+} catch (err) {
+  errors.push(err.message)
+}
+
+console.log(`Python generator JS cancel ${seen.join("|")} errors=${errors.join("|")}`)
+print(f"Python generator JS closed {closed}")

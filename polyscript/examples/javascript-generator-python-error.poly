@@ -1,0 +1,30 @@
+closed = []
+produced = []
+
+function* js_rows(label) {
+  try {
+    for (const value of [0, 1, 2, 3]) {
+      produced.push(value)
+      yield {"items": value, "close": label}
+    }
+  } finally {
+    closed.push(label)
+  }
+}
+
+def collect_rows():
+  labels = []
+  try:
+    for row in js_rows("throw"):
+      labels.append(f"{row.items}:{row.close}")
+      if len(labels) == 2:
+        raise RuntimeError("stop-js-stream")
+  except RuntimeError as err:
+    labels.append(f"{type(err).__name__}:{err}")
+  return labels
+
+labels = collect_rows()
+
+print(f"JavaScript generator Python error {'|'.join(labels)}")
+console.log(`JavaScript generator Python error closed ${closed.join("|")}`)
+console.log(`JavaScript generator Python error produced ${produced.join("|")}`)

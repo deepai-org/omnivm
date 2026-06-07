@@ -1,0 +1,31 @@
+// Edge case: request/response objects are live opaque handles with callbacks.
+
+import fastapi
+import express from "express"
+import Rack from "rack"
+import http from "net/http"
+
+const api = fastapi.FastAPI()
+const app = express()
+
+func go_status(path) {
+  status := http.StatusOK
+  return fmt.Sprintf("%s:%d", path, status)
+}
+
+function express_middleware(req, res, next) {
+  req.polyTrace = ["express"]
+  next()
+}
+
+@api.get("/edge/live")
+def fastapi_handler(request):
+  return {"path": request.url.path, "go": go_status(request.url.path)}
+
+app.use(express_middleware)
+app.get("/edge/live", (req, res) => res.json({"path": req.path, "go": go_status(req.path)}))
+
+const rack_app = lambda env: [200, {"content-type": "text/plain"}, [`rack:${env["PATH_INFO"]}`]]
+const rack_response = Rack::MockRequest.new(rack_app).get("/edge/live")
+
+print(f"Live middleware handles rack={rack_response.status}")

@@ -1,0 +1,23 @@
+const ruby_payload = {
+  "items" => ["alpha", "beta"],
+  "keys" => ["id", "name"],
+  "then" => "field-then",
+  "get" => "field-get",
+  "close" => "field-close",
+  "length" => 2,
+  "count" => 7
+}
+
+const summary = JSON.stringify({
+  "items": ruby_payload.items.length,
+  "firstItem": ruby_payload.items[0],
+  "keys": ruby_payload.keys.length,
+  "firstKey": ruby_payload.keys[0],
+  "then": ruby_payload.then,
+  "get": ruby_payload.get,
+  "close": ruby_payload.close,
+  "length": ruby_payload.length,
+  "count": ruby_payload.count
+})
+
+console.log(`Ruby map collision docs ${summary}`)

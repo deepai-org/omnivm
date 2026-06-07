@@ -1,0 +1,7 @@
+// Runnable table-handle contract: no JSON rows, just an inferred Arrow handle.
+// Runtime comes from Python syntax; the Table annotation only marks boundary kind.
+
+import numpy as np
+
+const orders: Table = np.array([1, 2, 3])
+console.log("zero-copy table boundary", orders)

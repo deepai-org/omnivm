@@ -1,0 +1,36 @@
+// Docs-style validation failures retain structured error details across runtimes.
+
+import pydantic
+import zod from "zod"
+
+def validate_score_row(payload):
+  return pydantic.TypeAdapter(dict[str, int]).validate_python(payload)
+
+try {
+  validate_score_row({"score": "bad"})
+} catch (err) {
+  const details = err.details || {}
+  const errors = Array.isArray(details) ? details : (details.errors || details.issues || [])
+  const first = errors[0] || {}
+  const path = Array.isArray(first.loc)
+    ? first.loc.join(".")
+    : (Array.isArray(first.path) ? first.path.join(".") : "none")
+  const kind = first.type || first.code || "none"
+  console.log(`Validation error fidelity pydantic=${err.originRuntime}:${err.type}:${err.stackFrames.length > 0}:${errors.length}:${path}:${kind}`)
+}
+
+function validate_account(payload) {
+  const Account = zod.z.object({
+    "age": zod.z.number().min(0)
+  })
+  Account.parse(payload)
+}
+
+try:
+  validate_account({"age": -1})
+except RuntimeError as err:
+  issues = err.details["issues"]
+  first = issues[0]
+  path = ".".join(str(part) for part in first["path"])
+  code = first["code"]
+  print(f"Validation error fidelity zod={err.origin_runtime}:{err.type}:{len(err.stack_frames) > 0}:{len(issues)}:{path}:{code}")

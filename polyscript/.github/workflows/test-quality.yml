@@ -1,0 +1,89 @@
+name: Test Quality Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build project
+      run: npm run build
+    
+    - name: Run tests
+      run: npm test
+      continue-on-error: true
+    
+    - name: Check test quality
+      id: quality
+      run: |
+        node test-quality-checker.js > quality-report.txt 2>&1
+        QUALITY_SCORE=$(grep "Average Quality Score:" quality-report.txt | grep -oE '[0-9]+\.[0-9]+')
+        echo "quality_score=$QUALITY_SCORE" >> $GITHUB_OUTPUT
+        echo "## Test Quality Report" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat quality-report.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        
+        # Fail if quality is below threshold
+        if (( $(echo "$QUALITY_SCORE < 70" | bc -l) )); then
+          echo "❌ Test quality score ($QUALITY_SCORE%) is below threshold (70%)" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          echo "✅ Test quality score ($QUALITY_SCORE%) meets threshold" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Upload quality report
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-quality-report
+        path: |
+          quality-report.txt
+          test-quality-report.json
+    
+    - name: Comment PR with quality report
+      if: github.event_name == 'pull_request' && always()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('quality-report.txt', 'utf8');
+          const score = '${{ steps.quality.outputs.quality_score }}';
+          
+          const comment = `## 📊 Test Quality Report
+          
+          **Quality Score: ${score}%** ${parseFloat(score) >= 70 ? '✅' : '❌'}
+          
+          <details>
+          <summary>Full Report</summary>
+          
+          \`\`\`
+          ${report.substring(0, 3000)}
+          \`\`\`
+          </details>
+          
+          ${parseFloat(score) < 70 ? '⚠️ **Action Required**: Please improve test quality before merging.' : '✅ Test quality meets standards.'}
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });

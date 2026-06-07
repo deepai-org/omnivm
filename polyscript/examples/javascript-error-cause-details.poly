@@ -1,0 +1,13 @@
+function raise_js_error() {
+  const inner = new Error("inner cause")
+  const outer = new TypeError("outer type", {"cause": inner})
+  outer.details = {"code": "E_OUTER", "path": ["order", "id"]}
+  throw outer
+}
+
+try:
+  raise_js_error()
+except RuntimeError as err:
+  cause = err.cause_chain[0]
+  detail_path = ".".join(err.details["path"])
+  print(f"JavaScript error Python details {err.runtime}:{err.origin_runtime}:{err.type}:{err.message}:{len(err.stack_frames) > 0}:{err.boundary_path}:{err.details['code']}:{detail_path}:{cause['type']}:{cause['message']}")

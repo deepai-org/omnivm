@@ -1,0 +1,20 @@
+import express from "express"
+import numpy
+
+func allow_request(route, bucket) {
+  if route == "/predict" && bucket != nil {
+    return true
+  }
+  return false
+}
+
+const app = express()
+const features = numpy.array([0.2, 0.4, 0.9])
+const weights = numpy.array([1.0, 0.5, 2.0])
+const score = float(features.dot(weights))
+const bucket = 3
+const allowed = allow_request("/predict", bucket)
+const prediction = {"route": "/predict", "allowed": allowed, "score": score}
+
+app.post("/predict", (req, res) => res.json(prediction))
+print(f"Express/NumPy/Go scoring allowed={str(prediction['allowed']).lower()} bucket={bucket} score={prediction['score']}")

@@ -1,0 +1,21 @@
+// Edge library fixture: Java async/resource APIs become values before Python analysis.
+
+import io
+import pandas
+import httpx
+
+const request = new okhttp3.Request.Builder().url("https://api.example.test/events").build()
+const host_future = java.util.concurrent.CompletableFuture.completedFuture(request.url().host())
+const jdbc_url = "jdbc:h2:mem:events"
+const jdbc_ready = jdbc_url.startsWith("jdbc:")
+const mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+const payload = mapper.writeValueAsString(java.util.List.of(
+  java.util.Map.of("host", host_future.join(), "status", 200),
+  java.util.Map.of("host", host_future.join(), "status", 503)
+))
+const status = httpx.Response(200).status_code
+const rows = pandas.read_json(io.StringIO(payload)).to_dict("records")
+const ok_rows = [row for row in rows if row["status"] == status]
+const ok_count = len(ok_rows)
+
+print(f"Java CompletableFuture/JDBC/OkHttp/Jackson rows={len(rows)} ok={ok_count} jdbc={str(jdbc_ready).lower()}")

@@ -1,0 +1,58 @@
+{
+  "name": "masi-indent-continuation",
+  "input": "obj\n  .method()",
+  "tokens": [
+    {
+      "type": "Identifier",
+      "value": "obj",
+      "start": 0,
+      "end": 3,
+      "line": 1,
+      "column": 1,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Operator",
+      "value": ".",
+      "start": 6,
+      "end": 7,
+      "line": 2,
+      "column": 2,
+      "indentCol": 2,
+      "newline": true
+    },
+    {
+      "type": "Identifier",
+      "value": "method",
+      "start": 7,
+      "end": 13,
+      "line": 2,
+      "column": 3
+    },
+    {
+      "type": "Operator",
+      "value": "(",
+      "start": 13,
+      "end": 14,
+      "line": 2,
+      "column": 9
+    },
+    {
+      "type": "Operator",
+      "value": ")",
+      "start": 14,
+      "end": 15,
+      "line": 2,
+      "column": 10
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 15,
+      "end": 15,
+      "line": 2,
+      "column": 11
+    }
+  ]
+}

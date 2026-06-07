@@ -81,7 +81,7 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Framework dependencies used by manifest-runner examples and cross-repo tests.
+# Framework dependencies used by manifest-runner examples and PolyScript smoke tests.
 # Debian disables ensurepip for system Python, so keep Python packages isolated
 # while exposing them to the embedded interpreter via PYTHONPATH.
 RUN python3.14 -m venv /opt/omnivm-python && \
@@ -157,14 +157,24 @@ RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
 # ---- Copy source (ordered by change frequency for cache efficiency) ----
 WORKDIR /build
 
-# 1. go.mod + dep download (almost never changes)
+# 1. PolyScript compiler package (cache npm install separately from source)
+COPY polyscript/package*.json polyscript/
+RUN cd polyscript && npm ci
+COPY polyscript/ polyscript/
+RUN cd polyscript && npm run build && \
+    mkdir -p /opt/polyscript && \
+    cp -R dist package.json /opt/polyscript/ && \
+    printf '#!/usr/bin/env sh\nexec node /opt/polyscript/dist/cli-manifest.js "$@"\n' > /usr/local/bin/polyc && \
+    chmod +x /usr/local/bin/polyc
+
+# 2. go.mod + dep download (almost never changes)
 COPY go.mod ./
 RUN go mod download
 
-# 2. Scripts + build infrastructure (rarely changes)
+# 3. Scripts + build infrastructure (rarely changes)
 COPY scripts/ scripts/
 
-# 3. Source code (frequently changes — cache-bust point for build)
+# 4. Source code (frequently changes — cache-bust point for build)
 COPY pkg/ pkg/
 COPY cmd/ cmd/
 COPY runtime/java/ runtime/java/
@@ -444,6 +454,11 @@ COPY --from=builder /build/scripts/python3-polyscript /usr/local/bin/python3-pol
 COPY --from=builder /build/scripts/run-manifest-libomnivm.py /usr/local/bin/run-manifest-libomnivm.py
 RUN chmod +x /usr/local/bin/python3-polyscript /usr/local/bin/run-manifest-libomnivm.py
 ENV POLYSCRIPT_PYTHON_BIN=python3.14
+
+# PolyScript compiler CLI used by python3-polyscript's default POLYSCRIPT_COMPILER.
+COPY --from=builder /opt/polyscript/ /opt/polyscript/
+RUN printf '#!/usr/bin/env sh\nexec node /opt/polyscript/dist/cli-manifest.js "$@"\n' > /usr/local/bin/polyc && \
+    chmod +x /usr/local/bin/polyc
 
 # libomnivm.so — c-shared library for pip-installable Python package.
 # Loaded via ctypes.CDLL post-fork in Gunicorn workers.

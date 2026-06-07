@@ -1,0 +1,16 @@
+{
+  "name": "comment-hash",
+  "input": "# hash",
+  "tokens": [
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 6,
+      "end": 6,
+      "line": 1,
+      "column": 7,
+      "indentCol": 0,
+      "newline": true
+    }
+  ]
+}

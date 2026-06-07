@@ -1,0 +1,29 @@
+import asyncio
+
+closed = []
+produced = []
+
+async function* js_async_rows(label) {
+  try {
+    for (const value of [0, 1, 2, 3]) {
+      produced.push(value)
+      await Promise.resolve()
+      yield {"items": value, "close": label, "count": value + 1}
+    }
+  } finally {
+    closed.push(label)
+  }
+}
+
+async def collect_rows():
+  labels = []
+  async for row in js_async_rows("async"):
+    labels.append(f"{row.items}:{row.close}:{row.count}")
+    if len(labels) == 2:
+      break
+  return labels
+
+labels = asyncio.run(collect_rows())
+
+print(f"JavaScript async generator Python consume {'|'.join(labels)}")
+console.log(`JavaScript async generator Python closed=${closed.join("|")} produced=${produced.join("|")}`)

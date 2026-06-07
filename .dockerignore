@@ -1,3 +1,7 @@
 .git
 .gitignore
 .dockerignore
+polyscript/node_modules
+polyscript/dist
+polyscript/coverage
+polyscript/.jest-cache

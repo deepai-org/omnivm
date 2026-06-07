@@ -1,0 +1,9 @@
+const fields = []
+
+try {
+  throw new Error("field-check")
+} catch (err) {
+  fields.push(`${err.name}:${err.message}:${String(err.stack).includes("field-check")}:${err.boundary_path}`)
+}
+
+console.log(`JavaScript error fields ${fields.join("|")}`)

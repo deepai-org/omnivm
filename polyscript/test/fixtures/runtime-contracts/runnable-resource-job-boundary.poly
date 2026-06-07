@@ -1,0 +1,14 @@
+// Runnable end-to-end manifest contract: .poly -> Garbage manifest -> OmniVM.
+// It exercises manifest-owned resource handles, job handles, cleanup hooks,
+// and a final JavaScript consumer without relying on external services.
+
+const payload = "ada:receipt"
+const py_marker = len(payload)
+const tx = resource.open("python", "sqlalchemy.transaction", "rollback", payload)
+const receipt = job.enqueue("ruby", "sidekiq", payload)
+
+job.complete(receipt, "receipt-ok")
+const job_result = job.wait(receipt)
+
+resource.close(tx, "cleanup_log = globals().setdefault('cleanup_log', []); cleanup_log.append('rollback')")
+console.log("resource/job boundary result", job_result)

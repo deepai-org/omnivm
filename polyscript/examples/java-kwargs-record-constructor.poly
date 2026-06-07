@@ -1,0 +1,6 @@
+// Java record constructor adapter shape.
+// SearchOptions is expected to be a Java record with components query and limit.
+
+const java_record_kwargs_demo = new com.example.SearchOptions("ada", 2)
+
+print(f"Java record kwargs adapter demo {java_record_kwargs_demo}")

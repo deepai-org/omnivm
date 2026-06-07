@@ -1,0 +1,28 @@
+import express from "express"
+import io
+import pandas
+import lodash from "lodash"
+
+func enrich_region(region) {
+  return region
+}
+
+const app = express()
+csv_upload = "region,amount\n west ,32\n east ,18\n west ,8\n north ,12"
+orders = pandas.read_csv(io.StringIO(str(csv_upload).replace("\n", chr(10))))
+orders["region"] = orders["region"].str.strip()
+
+summary = orders.groupby("region")["amount"].sum().reset_index().to_dict("records")
+const w1 = go enrich_region("west")
+const w2 = go enrich_region("east")
+const workers = wait(w1, w2)
+const ranked = lodash.orderBy(summary, ["amount"], ["desc"])
+const response = {
+  "route": "/reports/orders",
+  "regions": ranked.length,
+  "workers": workers.length,
+  "top": ranked[0].region
+}
+
+app.get("/reports/orders", (req, res) => res.json(response))
+console.log(`Express/Pandas/Go report ${response.regions} regions top=${response.top} workers=${response.workers}`)

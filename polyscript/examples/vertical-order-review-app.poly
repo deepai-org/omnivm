@@ -1,0 +1,86 @@
+// One coherent app workflow across popular framework/library shapes:
+// Django/FastAPI/Pydantic intake, Express/Zod routing, React server rendering,
+// Java service enrichment, Ruby ActiveRecord/Fiber normalization, and Go workers.
+
+import asyncio
+import json
+import django
+from django.http import JsonResponse
+import fastapi
+import pydantic
+import express from "express"
+import { z } from "zod"
+import React from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import ActiveRecord from "active_record"
+
+const api = fastapi.FastAPI()
+
+@api.post("/orders/review")
+async def submit_order():
+  await asyncio.sleep(0)
+  return pydantic.TypeAdapter(dict).validate_python({
+    "order_id": "ord-42",
+    "customer": "Ada",
+    "total": 42.5,
+    "region": "west"
+  })
+
+const fastapi_route = api.post("/orders/review")(submit_order)
+const intake = submit_order()
+const route_count = len(api.routes)
+django.conf.settings.configure(DEFAULT_CHARSET="utf-8", SECRET_KEY="poly-vertical")
+
+const express_app = express()
+const OrderSchema = z.object({
+  "order_id": z.string(),
+  "customer": z.string(),
+  "total": z.number(),
+  "region": z.string()
+})
+const checked = OrderSchema.parse(intake)
+const order_id = checked.order_id
+const customer = checked.customer
+const region = checked.region
+const total = checked.total
+
+const card_html = renderToStaticMarkup(React.createElement(
+  "article",
+  {"data-order": order_id, "data-region": region},
+  `${customer}:${region}:${total}`
+))
+express_app.post("/orders/review", (req, res) => res.json({
+  "order_id": order_id,
+  "html": card_html.length
+}))
+
+const enrichment_service = new com.fasterxml.jackson.databind.ObjectMapper()
+const enrichment_json = enrichment_service.writeValueAsString(java.util.concurrent.CompletableFuture.completedFuture(java.util.Map.of("order_id", "ord-42", "sla", "priority", "adjustment", 7)).join())
+const enrichment = json.loads(enrichment_json)
+const adjustment_value = enrichment["adjustment"]
+
+const cast_adjustment = ActiveRecord::Type::Integer.new.cast(adjustment_value.to_s)
+const lifecycle_stage = ActiveRecord::Type::String.new.cast("review-active")
+
+func score_worker(label) {
+  return label
+}
+
+const fraud_worker = go score_worker("fraud")
+const inventory_worker = go score_worker("inventory")
+const worker_results = wait(fraud_worker, inventory_worker)
+const django_response = JsonResponse({"order_id": order_id, "status": "queued"})
+const django_status = django_response.status_code
+
+const response = {
+  "order_id": order_id,
+  "route_count": route_count,
+  "django_status": django_status,
+  "react_html": len(card_html),
+  "java_sla": enrichment["sla"],
+  "ruby_stage": lifecycle_stage,
+  "workers": len(worker_results),
+  "adjustment": cast_adjustment
+}
+
+print(f"Vertical order app order={response['order_id']} routes={response['route_count']} django={response['django_status']} react={response['react_html']} java={response['java_sla']} ruby={response['ruby_stage']} workers={response['workers']} adjustment={response['adjustment']}")

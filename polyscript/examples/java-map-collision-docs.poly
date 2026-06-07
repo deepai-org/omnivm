@@ -1,0 +1,22 @@
+const java_payload = new java.util.HashMap()
+java_payload.put("items", ["alpha", "beta"])
+java_payload.put("keys", ["id", "name"])
+java_payload.put("then", "field-then")
+java_payload.put("get", "field-get")
+java_payload.put("close", "field-close")
+java_payload.put("length", 2)
+java_payload.put("count", 7)
+
+const summary = JSON.stringify({
+  "items": java_payload.items.length,
+  "firstItem": java_payload.items[0],
+  "keys": java_payload.keys.length,
+  "firstKey": java_payload.keys[0],
+  "then": java_payload.then,
+  "get": java_payload.get,
+  "close": java_payload.close,
+  "length": java_payload.length,
+  "count": java_payload.count
+})
+
+console.log(`Java map collision docs ${summary}`)

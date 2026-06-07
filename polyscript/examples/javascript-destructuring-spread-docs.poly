@@ -1,0 +1,14 @@
+def make_payload():
+  return {
+    "items": ["alpha", "beta"],
+    "keys": ["id"],
+    "count": 2,
+    "close": "field-close"
+  }
+
+const payload = make_payload()
+const { items, keys: field_keys, count, close, missing = "fallback" } = payload
+const spread_items = [...items]
+const copy = { ...payload }
+const summary = `${items.length}:${field_keys.length}:${count}:${close}:${missing}:${spread_items[0]}:${copy.items.length}:${copy.keys.length}`
+console.log(`JavaScript destructuring spread docs ${summary}`)

@@ -90,7 +90,7 @@ docker run --rm --entrypoint python3-polyscript omnivm \
   -c "import polyscript, sys; print(polyscript.is_enabled(), sys.version)"
 ```
 
-The hook compiles `.poly` files with `POLYSCRIPT_COMPILER` (default: `polyc`). Under `python3-polyscript`, imported `.poly` modules run the generated manifest in-process through CPython-hosted `libomnivm` by default; setting `POLYSCRIPT_MANIFEST_RUNNER` explicitly switches back to an external manifest runner. Existing Python imports keep using CPython; only `.poly` files enter PolyScript. This keeps `python3-polyscript` suitable for Passenger/Gunicorn: the master remains ordinary CPython and each worker loads `libomnivm.so` lazily after it has forked.
+The hook compiles `.poly` files with `POLYSCRIPT_COMPILER` (default: `polyc`). The Docker image includes `polyc` from the in-repo `polyscript/` compiler package. Under `python3-polyscript`, imported `.poly` modules run the generated manifest in-process through CPython-hosted `libomnivm` by default; setting `POLYSCRIPT_MANIFEST_RUNNER` explicitly switches back to an external manifest runner. Existing Python imports keep using CPython; only `.poly` files enter PolyScript. This keeps `python3-polyscript` suitable for Passenger/Gunicorn: the master remains ordinary CPython and each worker loads `libomnivm.so` lazily after it has forked.
 
 ```bash
 export POLYSCRIPT_COMPILER="polyc"
@@ -934,7 +934,8 @@ scripts/
   test-manifests.sh    Manifest test suite runner
   test-cli.sh          CLI integration tests (29 tests)
   test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
-  test-poly-libomnivm-smoke.sh  Compile sibling PolyScript examples and run via CPython + libomnivm
+  test-poly-libomnivm-smoke.sh  Compile PolyScript examples and run via CPython + libomnivm
+polyscript/          PolyScript lexer/parser/compiler, examples, and compiler tests
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
 examples/            Manifest JSON files and sample scripts
@@ -970,23 +971,22 @@ make test-manifests       # Run manifest examples and edge contract fixtures
 make test-libomnivm-manifests # Run all example JSON manifests via CPython + libomnivm
 make test-libomnivm-stress    # Run CPython-hosted libomnivm stress checks
 make test-libomnivm-stress STRESS_ARGS="--category proxy --name materializes" # Filter stress checks
+make test-polyscript     # Run PolyScript compiler tests, build, and manifest audit
 make test-poly-libomnivm-smoke # Compile selected PolyScript examples, then run via CPython + libomnivm
 make test-stress          # Run 71 stress tests
 ```
 
-The cross-repo `.poly` smoke expects a sibling PolyScript compiler checkout at `../polyscript-compiler` by default. Prefer `POLYSCRIPT_DIR` for explicit paths; the older `GARBAGE_DIR` variable remains accepted for existing scripts:
+The `.poly` smoke uses the in-repo PolyScript compiler package at `polyscript/` by default. Prefer `POLYSCRIPT_DIR` for explicit alternate paths; the older `GARBAGE_DIR` variable remains accepted for existing scripts:
 
 ```bash
-POLYSCRIPT_DIR=/path/to/polyscript-compiler make test-poly-libomnivm-smoke
+POLYSCRIPT_DIR=/path/to/polyscript make test-poly-libomnivm-smoke
 ```
 
 The README-level CI parity sequence is:
 
 ```bash
-# PolyScript compiler checkout
-npm test -- --runInBand
-npm run build
-node scripts/audit-manifests.js
+# PolyScript compiler package
+make test-polyscript
 
 # omnivm
 make test-all

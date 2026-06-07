@@ -1,0 +1,32 @@
+class LifecycleSession:
+  def __init__(self):
+    self.events = []
+    self.items = ["alpha", "beta"]
+    self.keys = ["id"]
+    self.count = 2
+    self.close = "field-close"
+    self.closed = False
+
+  def __enter__(self):
+    self.events.append("enter")
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    self.events.append("exit")
+    self.closed = True
+
+  def execute(self):
+    return iter([
+      {"items": "alpha", "count": 1, "close": "row-close"},
+      {"items": "beta", "count": 2, "close": "row-close"},
+    ])
+
+def open_session():
+  return LifecycleSession()
+
+with open_session() as session:
+  const rows = Array.from(session.execute()).slice(0, 1)
+  const label = `${rows[0].items}:${rows[0].count}:${session.items.length}:${session.keys.length}:${session.count}:${session.close}`
+  console.log(`Lifecycle docs inside ${label}`)
+
+print(f"Lifecycle docs closed {session.closed} events={','.join(session.events)}")

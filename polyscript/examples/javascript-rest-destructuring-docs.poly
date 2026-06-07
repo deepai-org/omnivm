@@ -1,0 +1,14 @@
+def make_payload():
+  return {
+    "items": ["alpha", "beta"],
+    "keys": ["id", "name"],
+    "count": 2,
+    "close": "field-close",
+    "meta": {"items": "nested-items", "count": 9}
+  }
+
+const payload = make_payload()
+const { items: [first_item], meta: { items: meta_items, count: meta_count }, ...rest } = payload
+const rest_keys = Object.keys(rest).sort()
+const summary = `${first_item}:${meta_items}:${meta_count}:${rest.count}:${rest.close}:${rest_keys.join(",")}`
+console.log(`JavaScript rest destructuring docs ${summary}`)

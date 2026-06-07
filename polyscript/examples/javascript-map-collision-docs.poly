@@ -1,0 +1,25 @@
+const js_payload = Object.freeze({
+  "items": ["alpha", "beta"],
+  "keys": ["id", "name"],
+  "then": "field-then",
+  "get": "field-get",
+  "close": "field-close",
+  "length": 2,
+  "count": 7
+})
+
+def summarize_py(payload):
+  return f"{len(payload.items)}:{payload.items[0]}:{len(payload.keys)}:{payload.keys[0]}:{payload.then}:{payload.get}:{payload.close}:{payload.length}:{payload.count}"
+
+const py_summary = summarize_py(js_payload)
+
+class JsPayloadRubySummary
+  def self.summarize(payload)
+    [payload.items.length, payload.items[0], payload.keys.length, payload.keys[0], payload.then, payload.get, payload.close, payload.length, payload.count].join(":")
+  end
+end
+
+const ruby_summary = JsPayloadRubySummary.summarize(js_payload)
+const java_summary = java.util.List.of(js_payload.count, js_payload.length, js_payload.then).stream().map(value -> value.toString()).collect(java.util.stream.Collectors.joining(":"))
+
+console.log(`JavaScript map collision docs py=${py_summary} ruby=${ruby_summary} java=${java_summary}`)

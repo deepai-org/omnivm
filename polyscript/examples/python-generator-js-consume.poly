@@ -1,0 +1,7 @@
+def row_stream():
+  for value in range(4):
+    yield {"items": value, "keys": str(value), "count": value + 1, "close": "row-close"}
+
+const first_rows = Array.from(row_stream()).slice(0, 2)
+const labels = first_rows.map(row => `${row.items}:${row.keys}:${row.count}:${row.close}`)
+console.log(`Python generator JS consume ${labels.join("|")}`)

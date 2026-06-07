@@ -1,0 +1,11 @@
+// Docs-style JavaScript package usage: React components, JSX lowering, and
+// server rendering.
+
+import React from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+
+const Badge = (props) => React.createElement("span", {"className": "badge"}, props.label)
+const html = renderToStaticMarkup(<Badge label="Poly" />)
+const has_badge = html.includes("badge")
+
+console.log(`React JSX docs html=${html.length} badge=${has_badge}`)

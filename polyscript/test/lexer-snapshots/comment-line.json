@@ -1,0 +1,16 @@
+{
+  "name": "comment-line",
+  "input": "// line",
+  "tokens": [
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 7,
+      "end": 7,
+      "line": 1,
+      "column": 8,
+      "indentCol": 0,
+      "newline": true
+    }
+  ]
+}

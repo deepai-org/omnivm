@@ -1,0 +1,30 @@
+// Edge library fixture: framework decorators, middleware chains, and server rendering.
+
+import fastapi
+import express from "express"
+import React from "react"
+import { renderToString } from "react-dom/server"
+import Rack from "rack"
+
+const api = fastapi.FastAPI()
+
+@api.get("/dashboard")
+def dashboard(request):
+  return {"path": request.url.path, "html": render_page({"title": request.url.path})}
+
+function render_page(model) {
+  return renderToString(React.createElement("main", {"data-runtime": "poly"}, model.title))
+}
+
+const app = express()
+const attach_context = (req, res, next) => {
+  req.poly = true
+  next()
+}
+app.use(attach_context)
+app.get("/dashboard", (req, res) => res.send(render_page({"title": req.path})))
+
+const rack_response = Rack::Response.new(render_page({"title": "/rack"}), 200, {"content-type": "text/html"}).finish
+const html = render_page({"title": "/poly"})
+
+print(f"FastAPI/Express/React/Rack html={len(html)} rack={len(rack_response)}")

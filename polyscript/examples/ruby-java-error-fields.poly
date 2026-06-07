@@ -1,0 +1,21 @@
+class RubyFailure
+  def self.fail
+    raise RuntimeError, "bad ruby"
+  end
+end
+
+const error_summaries = []
+
+try {
+  RubyFailure.fail
+} catch (err) {
+  error_summaries.push(`ruby=${err.runtime}:${err.originRuntime}:${err.type}:${err.message}:${err.stackFrames.length > 0}:${err.boundaryPath}`)
+}
+
+try {
+  throw new java.lang.IllegalStateException("bad java")
+} catch (err) {
+  error_summaries.push(`java=${err.runtime}:${err.originRuntime}:${err.type}:${err.message}:${err.stackFrames.length > 0}:${err.boundaryPath}`)
+}
+
+console.log(`Ruby Java error fields ${error_summaries.join(" ")}`)

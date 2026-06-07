@@ -1,0 +1,80 @@
+{
+  "name": "regex-after-if",
+  "input": "if (x) /pattern/g",
+  "tokens": [
+    {
+      "type": "Keyword",
+      "value": "if",
+      "start": 0,
+      "end": 2,
+      "line": 1,
+      "column": 1,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Operator",
+      "value": "(",
+      "start": 3,
+      "end": 4,
+      "line": 1,
+      "column": 4
+    },
+    {
+      "type": "Identifier",
+      "value": "x",
+      "start": 4,
+      "end": 5,
+      "line": 1,
+      "column": 5
+    },
+    {
+      "type": "Operator",
+      "value": ")",
+      "start": 5,
+      "end": 6,
+      "line": 1,
+      "column": 6
+    },
+    {
+      "type": "Operator",
+      "value": "/",
+      "start": 7,
+      "end": 8,
+      "line": 1,
+      "column": 8
+    },
+    {
+      "type": "Identifier",
+      "value": "pattern",
+      "start": 8,
+      "end": 15,
+      "line": 1,
+      "column": 9
+    },
+    {
+      "type": "Operator",
+      "value": "/",
+      "start": 15,
+      "end": 16,
+      "line": 1,
+      "column": 16
+    },
+    {
+      "type": "Identifier",
+      "value": "g",
+      "start": 16,
+      "end": 17,
+      "line": 1,
+      "column": 17
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 17,
+      "end": 17,
+      "line": 1,
+      "column": 18
+    }
+  ]
+}

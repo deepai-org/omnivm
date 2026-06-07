@@ -1,0 +1,33 @@
+import numpy
+import pandas
+import d3_shape from "d3-shape"
+
+const metric_in = make(8)
+const metric_out = make(8)
+
+func chart_worker(id) {
+  while true {
+    item := recv("metric_in")
+    if item == nil {
+      return id
+    }
+    send("metric_out", item)
+  }
+  return id
+}
+
+series = pandas.Series(numpy.array([3, 5, 8, 13])).rolling(2).mean().fillna(0).tolist()
+series_count = len(series)
+const w1 = go chart_worker(1)
+const w2 = go chart_worker(2)
+metric_in <- 0
+metric_in <- 4
+metric_in <- 6.5
+metric_in <- 10.5
+close(metric_in)
+const joined = wait(w1, w2)
+close(metric_out)
+const chart_points = Array.from(metric_out).map(y => y)
+const chart_path = d3_shape.line().x((d, i) => i).y(d => d)(chart_points)
+
+print(f"NumPy/Pandas/D3/Go chart points={len(chart_points)} series={series_count} workers={len(joined)} path={chart_path}")

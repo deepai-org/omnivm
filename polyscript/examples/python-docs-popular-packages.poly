@@ -1,0 +1,22 @@
+// Docs-style Python package usage: Pandas/NumPy data work, Pydantic validation,
+// Jinja2 rendering, and BeautifulSoup parsing.
+
+import pandas as pd
+import numpy as np
+import pydantic
+from jinja2 import Template
+from bs4 import BeautifulSoup
+
+const df = pd.DataFrame({
+  "name": ["Ada", "Grace", "Linus"],
+  "age": [37, 41, 52]
+})
+const adults = df[df["age"] > 40]
+const values = np.array([1, 2, 3])
+const doubled = values * 2
+const adapter = pydantic.TypeAdapter(list[dict])
+const validated = adapter.validate_python(df.to_dict("records"))
+const soup = BeautifulSoup("<h1>Poly</h1>", "html.parser")
+const page = Template("Hello {{ name }}").render(name=soup.h1.string)
+
+print(f"Python docs packages rows={len(validated)} adults={len(adults)} sum={doubled.sum()} page={page}")

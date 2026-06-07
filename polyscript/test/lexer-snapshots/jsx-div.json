@@ -1,0 +1,80 @@
+{
+  "name": "jsx-div",
+  "input": "<div>hello</div>",
+  "tokens": [
+    {
+      "type": "JSXTagStart",
+      "value": "<",
+      "start": 0,
+      "end": 1,
+      "line": 1,
+      "column": 1,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Identifier",
+      "value": "div",
+      "start": 1,
+      "end": 4,
+      "line": 1,
+      "column": 2
+    },
+    {
+      "type": "Operator",
+      "value": ">",
+      "start": 4,
+      "end": 5,
+      "line": 1,
+      "column": 5
+    },
+    {
+      "type": "Identifier",
+      "value": "hello",
+      "start": 5,
+      "end": 10,
+      "line": 1,
+      "column": 6
+    },
+    {
+      "type": "JSXTagStart",
+      "value": "<",
+      "start": 10,
+      "end": 11,
+      "line": 1,
+      "column": 11
+    },
+    {
+      "type": "Operator",
+      "value": "/",
+      "start": 11,
+      "end": 12,
+      "line": 1,
+      "column": 12
+    },
+    {
+      "type": "Identifier",
+      "value": "div",
+      "start": 12,
+      "end": 15,
+      "line": 1,
+      "column": 13
+    },
+    {
+      "type": "Operator",
+      "value": ">",
+      "start": 15,
+      "end": 16,
+      "line": 1,
+      "column": 16
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 16,
+      "end": 16,
+      "line": 1,
+      "column": 17
+    }
+  ]
+}

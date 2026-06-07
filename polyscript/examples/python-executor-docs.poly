@@ -1,0 +1,11 @@
+import concurrent.futures as futures
+
+def build_record(name):
+  return {"items": name, "count": len(name), "close": "row-close"}
+
+with futures.ThreadPoolExecutor(max_workers=2) as pool:
+  const rows = Array.from(pool.map(build_record, ["alpha", "beta"]))
+  const labels = rows.map(row => `${row.items}:${row.count}:${row.close}`)
+  console.log(`Python executor docs rows ${labels.join("|")}`)
+
+print(f"Python executor docs shutdown {pool._shutdown}")

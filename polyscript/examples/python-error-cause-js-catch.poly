@@ -1,0 +1,12 @@
+def fail_checkout():
+  try:
+    raise ValueError("bad sku")
+  except ValueError as cause:
+    raise RuntimeError("checkout failed") from cause
+
+try {
+  fail_checkout()
+} catch (err) {
+  const cause = err.causeChain[0]
+  console.log(`Python error cause JS catch ${err.runtime}:${err.originRuntime}:${err.type}:${err.message}:${err.stackFrames.length > 0}:${err.boundaryPath}:${cause.type}:${cause.message}`)
+}

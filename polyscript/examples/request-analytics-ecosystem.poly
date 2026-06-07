@@ -1,0 +1,53 @@
+// Source-level app flow: request objects, JS validation, Java client objects,
+// and Python analytical tables cross without manifest helper syntax.
+
+import pandas
+import numpy as np
+import polars as pl
+from django.test import RequestFactory
+import express from "express"
+import { z } from "zod"
+
+const factory = RequestFactory()
+const django_request = factory.get("/orders?region=west", {"HTTP_X_TRACE_ID": "req-7"})
+const raw_orders = [
+  {"id": 1, "region": "west", "amount": 12},
+  {"id": 2, "region": "west", "amount": 18},
+  {"id": 3, "region": "east", "amount": 9}
+]
+
+const amounts = np.array([12, 18, 9])
+const order_frame = pandas.DataFrame(raw_orders)
+const totals = order_frame.groupby("region")["amount"].sum().reset_index().to_dict("records")
+const polars_total = pl.DataFrame(totals).select(pl.col("amount").sum()).to_dicts()
+
+function validate_order(payload) {
+  const Schema = z.object({
+    "id": z.number(),
+    "region": z.string(),
+    "amount": z.number()
+  })
+  return Schema.safeParse(payload)
+}
+
+const express_app = express()
+const validation = validate_order(raw_orders[0])
+express_app.get("/orders", (req, res) => res.json({
+  "ok": validation.success,
+  "path": req.path
+}))
+
+const java_request = new okhttp3.Request.Builder()
+  .url("https://api.example.test" + django_request.path)
+  .header("x-trace-id", django_request.headers["X-Trace-Id"])
+  .build()
+
+const summary = {
+  "path": django_request.path,
+  "host": java_request.url().host(),
+  "amounts": amounts.sum(),
+  "regions": len(totals),
+  "polars": len(polars_total)
+}
+
+print(f"Request analytics path={summary['path']} host={summary['host']} regions={summary['regions']}")

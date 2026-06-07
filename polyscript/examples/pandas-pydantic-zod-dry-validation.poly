@@ -1,0 +1,34 @@
+// Edge library fixture: nested validation errors and DataFrame windows cross as values.
+
+import pandas
+import pydantic
+import zod from "zod"
+import Dry from "dry/validation"
+
+const raw_orders = [
+  {"region": "west", "customer": {"email": "ada@example.test"}, "amount": 12},
+  {"region": "west", "customer": {"email": "grace@example.test"}, "amount": 18},
+  {"region": "east", "customer": {"email": "linus@example.test"}, "amount": 9}
+]
+
+const checked_orders = pydantic.TypeAdapter(list[dict]).validate_python(raw_orders)
+const window_rows = pandas.DataFrame(checked_orders).groupby("region")["amount"].rolling(2).sum().reset_index().to_dict("records")
+
+function zod_issue_paths(payload) {
+  const Schema = zod.z.object({
+    "region": zod.z.string(),
+    "customer": zod.z.object({
+      "email": zod.z.string().email()
+    }),
+    "amount": zod.z.number()
+  })
+  const result = Schema.safeParse(payload)
+  return result.success ? [] : result.error.issues.map(issue => issue.path.join("."))
+}
+
+const issue_paths = zod_issue_paths(checked_orders[0])
+const dry_contract = Dry::Validation.Contract
+const dry_shape = {"required": ["region", "customer.email", "amount"], "contract": dry_contract.to_s}
+const window_count = len(window_rows)
+
+print(f"Pandas/Pydantic/Zod/dry-validation windows={window_count} zod_errors={len(issue_paths)} dry={dry_shape['required'][0]}")

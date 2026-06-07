@@ -1,0 +1,80 @@
+// Cursed Concurrency Contract Fixture
+// Exercises the long-term manifest contract:
+// - manifest-owned channels created with make/close/send
+// - Go workers spawned with bindable handles
+// - selective wait(handle...) joins before channel capture
+// - JavaScript snapshot iteration over a closed output channel
+// - Python aggregation after cross-runtime capture
+
+import os
+
+// Contract: channels are manifest values. Go workers access them by binding name.
+const inbox = make(16)
+const outbox = make(16)
+
+// Python discovers data that will be sent through a manifest channel.
+const discovered = [
+  {"name": entry.name, "size": os.path.getsize(entry.path)}
+  for entry in os.scandir("/var/data")
+  if entry.is_file()
+]
+
+// JavaScript transformer; arrow/map usage keeps this path JS-owned.
+function process(item) {
+  return {
+    "name": item.name,
+    "size": item.size,
+    "label": `${item.name}:${item.size}`
+  }
+}
+
+// Go worker function: compiled as an OmniVM plugin and connected to manifest
+// channels through recv/send helper functions.
+func worker(id) {
+  while true {
+    item := recv("inbox")
+    if item == nil {
+      return id
+    }
+    send("outbox", item)
+  }
+  return id
+}
+
+// Python produces work; channel send syntax lowers to manifest chan/send ops.
+for item in discovered:
+  inbox <- item
+close(inbox)
+
+// Contract: each go spawn returns a handle that can be joined explicitly.
+// Work is queued before spawning so runtimes with nonblocking channel receive
+// semantics drain the same deterministic snapshot as libomnivm.
+const w1 = go worker(1)
+const w2 = go worker(2)
+const w3 = go worker(3)
+const w4 = go worker(4)
+
+// Contract: close the output only after the selected worker handles complete.
+const joined = wait(w1, w2, w3, w4)
+const worker_count = len(joined)
+close(outbox)
+
+// Contract: channel capture into JS is a closed-channel snapshot/iterable.
+const rows = Array.from(outbox).map(r => r)
+const raw = rows.map(item => process(item))
+const names = raw.map(r => r.name.toUpperCase())
+const deduped = names.filter((n, i) => names.indexOf(n) === i)
+
+// Python takes over for final analysis after JS has produced a plain value.
+const ranked = sorted(deduped)
+const total = len(ranked)
+const report = ranked
+
+// Contract: a second channel proves non-Go runtimes can receive captured channel data.
+const done = make(1)
+done <- report
+close(done)
+const final_report = list(done)
+const delivered = len(final_report)
+
+print(f"Processed {total} items across 3 runtimes; workers {worker_count}; delivered {delivered} report")

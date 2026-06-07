@@ -1,0 +1,11 @@
+// Docs-style Java package usage: Jackson object mapping and Reactor streams.
+
+const mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+const json = mapper.writeValueAsString(java.util.Map.of("name", "Ada", "score", 12))
+const parsed = mapper.readValue(json, java.util.Map.class)
+
+const flux = reactor.core.publisher.Flux.just("alpha", "beta", "gamma")
+const labels = flux.map(s -> s.toUpperCase()).collectList().block()
+const first = labels.get(0)
+
+print(f"Java Jackson/Reactor docs name={parsed.get('name')} labels={labels.size()} first={first}")

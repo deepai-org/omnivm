@@ -1,0 +1,24 @@
+from bs4 import BeautifulSoup
+import cheerio from "cheerio"
+
+func cache_key(url) {
+  return url
+}
+
+func cache_fetch(url) {
+  return cache_key(url)
+}
+
+const url = "https://example.test/articles/poly"
+const html = "<html><body><article><h1>Polyglot Runtime</h1><a href='/docs'>Docs</a><a href='/api'>API</a></article></body></html>"
+const c1 = go cache_fetch(url)
+const c2 = go cache_fetch("https://example.test/sitemap")
+const cache_workers = wait(c1, c2)
+const key = url
+const soup = BeautifulSoup(html, "html.parser")
+const links = [{"text": a.get_text(), "href": a.get("href")} for a in soup.select("a")]
+const dom = cheerio.load(html)
+const title = dom("article h1").text().toUpperCase()
+const hrefs = links.map(l => l.href).join(",")
+
+console.log(`BeautifulSoup/Cheerio/Go scrape ${title} links=${links.length} workers=${cache_workers.length} key=${key} hrefs=${hrefs}`)

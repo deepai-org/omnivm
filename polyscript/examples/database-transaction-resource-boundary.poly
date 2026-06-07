@@ -1,0 +1,24 @@
+// Edge case: transactions are opaque resources; rows are materialized values.
+
+import sqlalchemy
+import { PrismaClient } from "@prisma/client"
+import ActiveRecord from "active_record"
+import java.sql.DriverManager
+
+const engine = sqlalchemy.create_engine("sqlite://")
+const statement = sqlalchemy.text("select id, total from orders where paid = true")
+const prisma = new PrismaClient()
+const active_table = ActiveRecord::Base.connection.quote_table_name("orders")
+const jdbc_url = "jdbc:h2:mem:orders"
+
+const materialized_rows = [
+  {"id": 1, "total": 20, "source": active_table},
+  {"id": 2, "total": 22, "source": active_table}
+]
+
+const totals = materialized_rows.map(row => row.total)
+const grand_total = sum(totals)
+const sql_text = str(statement)
+const query_ok = "orders" in sql_text
+
+print(f"Database transaction boundary rows={len(materialized_rows)} total={grand_total} sql={str(query_ok).lower()} jdbc={jdbc_url}")

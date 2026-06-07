@@ -1,0 +1,16 @@
+import Nokogiri from "nokogiri"
+import pandas
+
+const feed = "<root><item><name>Ada</name><qty>2</qty></item><item><name>Grace</name><qty>3</qty></item></root>"
+const first_name = Nokogiri::XML(feed).at_xpath("//item[1]/name").text
+const first_qty = Nokogiri::XML(feed).at_xpath("//item[1]/qty").text.to_i
+const second_name = Nokogiri::XML(feed).at_xpath("//item[2]/name").text
+const second_qty = Nokogiri::XML(feed).at_xpath("//item[2]/qty").text.to_i
+const totals = pandas.DataFrame([
+  {"name": first_name, "qty": first_qty},
+  {"name": second_name, "qty": second_qty}
+]).to_dict("records")
+const formatted = totals.map(row => `${row.name}:${row.qty}`).join("|")
+const output = "Nokogiri/Pandas/JS legacy feed " + formatted
+
+print(output)

@@ -1,0 +1,26 @@
+import django
+from django.conf import settings
+from django.http import JsonResponse
+from django.test import RequestFactory
+
+func go_view(path) {
+  return path
+}
+
+function ts_view(path: string) {
+  return {
+    "runtime": "typescript",
+    "path": path,
+    "ok": true
+  }
+}
+
+settings.configure(SECRET_KEY="poly", DEFAULT_CHARSET="utf-8", ALLOWED_HOSTS=["*"])
+django.setup()
+
+django_view = lambda request: JsonResponse({"framework": "django", "go": go_view(request.path), "ts": ts_view(request.path), "path": request.path})
+request = RequestFactory().get("/poly/django")
+response = django_view(request)
+
+print(response.status_code)
+print(response.content.decode("utf-8"))

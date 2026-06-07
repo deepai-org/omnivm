@@ -1,0 +1,96 @@
+{
+  "name": "jsx-array-type",
+  "input": "const x: Array<string> = []",
+  "tokens": [
+    {
+      "type": "Keyword",
+      "value": "const",
+      "start": 0,
+      "end": 5,
+      "line": 1,
+      "column": 1,
+      "indentCol": 0,
+      "newline": true
+    },
+    {
+      "type": "Identifier",
+      "value": "x",
+      "start": 6,
+      "end": 7,
+      "line": 1,
+      "column": 7
+    },
+    {
+      "type": "Operator",
+      "value": ":",
+      "start": 7,
+      "end": 8,
+      "line": 1,
+      "column": 8
+    },
+    {
+      "type": "Identifier",
+      "value": "Array",
+      "start": 9,
+      "end": 14,
+      "line": 1,
+      "column": 10
+    },
+    {
+      "type": "Operator",
+      "value": "<",
+      "start": 14,
+      "end": 15,
+      "line": 1,
+      "column": 15
+    },
+    {
+      "type": "Identifier",
+      "value": "string",
+      "start": 15,
+      "end": 21,
+      "line": 1,
+      "column": 16
+    },
+    {
+      "type": "Operator",
+      "value": ">",
+      "start": 21,
+      "end": 22,
+      "line": 1,
+      "column": 22
+    },
+    {
+      "type": "Operator",
+      "value": "=",
+      "start": 23,
+      "end": 24,
+      "line": 1,
+      "column": 24
+    },
+    {
+      "type": "Operator",
+      "value": "[",
+      "start": 25,
+      "end": 26,
+      "line": 1,
+      "column": 26
+    },
+    {
+      "type": "Operator",
+      "value": "]",
+      "start": 26,
+      "end": 27,
+      "line": 1,
+      "column": 27
+    },
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 27,
+      "end": 27,
+      "line": 1,
+      "column": 28
+    }
+  ]
+}

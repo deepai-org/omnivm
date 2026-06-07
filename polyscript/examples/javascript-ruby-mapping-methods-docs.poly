@@ -1,0 +1,23 @@
+const payload = Object.freeze({
+  "alpha": "first",
+  "beta": "second",
+  "then": "field-then",
+  "close": "field-close",
+  "length": 2,
+  "count": 7
+})
+
+class PayloadSummary
+  def self.summarize(payload)
+    ruby_keys = payload.keys.sort
+    ruby_pairs = payload.each.map { |key, value| "#{key}:#{value}" }.sort
+    ruby_values = payload.values.map { |value| value.to_s }.sort
+    ruby_selected = "#{payload.fetch('alpha')}:#{payload.fetch('missing', 'fallback')}:#{payload.close}:#{payload.count}"
+    ruby_copied = payload.to_h
+    [ruby_keys.join(","), ruby_pairs.join("|"), ruby_values.join("|"), ruby_selected, ruby_copied["beta"]].join(";")
+  end
+end
+
+const summary = PayloadSummary.summarize(payload)
+
+console.log(`JavaScript Ruby mapping methods docs ${summary}`)

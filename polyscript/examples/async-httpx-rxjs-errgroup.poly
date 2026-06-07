@@ -1,0 +1,42 @@
+// Edge library fixture: async HTTP streams should materialize before they cross.
+
+import asyncio
+import httpx
+import rxjs from "rxjs"
+import context from "context"
+import errgroup from "golang.org/x/sync/errgroup"
+
+const chunks = make(8)
+
+async def fetch_chunks(url):
+  response = await httpx.AsyncClient().get(url)
+  await asyncio.sleep(0)
+  return response.text.splitlines()
+
+func stream_worker(id) {
+  ctx := context.Background()
+  g, ctx := errgroup.WithContext(ctx)
+  _ = g
+  item := recv("chunks")
+  if item == nil {
+    return id
+  }
+  send("chunks", item)
+  return id
+}
+
+const w1 = go stream_worker(1)
+const w2 = go stream_worker(2)
+chunks <- "alpha"
+chunks <- "beta"
+close(chunks)
+const joined = wait(w1, w2)
+const stream_snapshot = Array.from(chunks)
+const observable = rxjs.from(stream_snapshot).pipe(
+  rxjs.map(chunk => chunk.toUpperCase()),
+  rxjs.toArray()
+)
+const labels = stream_snapshot.map(chunk => `chunk:${chunk}`)
+const worker_count = len(joined)
+
+print(f"Async HTTPX/RxJS stream labels={len(labels)} workers={worker_count}")

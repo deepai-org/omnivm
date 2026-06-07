@@ -1,0 +1,16 @@
+{
+  "name": "comment-html",
+  "input": "<!-- html -->",
+  "tokens": [
+    {
+      "type": "EOF",
+      "value": "",
+      "start": 13,
+      "end": 13,
+      "line": 1,
+      "column": 14,
+      "indentCol": 0,
+      "newline": true
+    }
+  ]
+}

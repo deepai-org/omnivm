@@ -1,0 +1,29 @@
+// Edge case: validation errors are typed structured data, not plain strings.
+
+import pydantic
+import zod from "zod"
+import Dry from "dry/validation"
+import javax.validation.Validation
+
+const bad_user = {"email": "not-an-email", "profile": {"age": -1}}
+const py_result = pydantic.TypeAdapter(dict).validate_python(bad_user)
+
+function zod_errors(payload) {
+  const Schema = zod.z.object({
+    "email": zod.z.string().email(),
+    "profile": zod.z.object({"age": zod.z.number().min(0)})
+  })
+  const parsed = Schema.safeParse(payload)
+  return parsed.success ? [] : parsed.error.issues.map(issue => ({
+    "path": issue.path.join("."),
+    "code": issue.code,
+    "message": issue.message
+  }))
+}
+
+const dry_contract = Dry::Validation.Contract
+const bean_validator = javax.validation.Validation.buildDefaultValidatorFactory().getValidator()
+const zod_issues = zod_errors(bad_user)
+const normalized = zod_issues.map(issue => `${issue.path}:${issue.code}`)
+
+print(f"Typed validation errors issues={len(normalized)} dry={dry_contract.to_s.length} java={bean_validator.toString().length}")

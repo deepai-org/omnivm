@@ -1,0 +1,17 @@
+import pandas
+import io
+import express from "express"
+import zod from "zod"
+
+const orders_json = new com.google.gson.Gson().toJson(java.util.List.of(java.util.Map.of("region", "west", "amount", 32), java.util.Map.of("region", "east", "amount", 18), java.util.Map.of("region", "west", "amount", 8)))
+const orders = pandas.read_json(io.StringIO(orders_json))
+const summary = orders.groupby("region")["amount"].sum().reset_index().to_dict("records")
+const app = express()
+const SummarySchema = zod.z.array(zod.z.object({
+  "region": zod.z.string(),
+  "amount": zod.z.number()
+}))
+const checked = SummarySchema.parse(summary)
+app.get("/orders/summary", (req, res) => res.json({"regions": checked.length, "top": checked[1].region}))
+
+print(f"Java/Gson/Pandas/Zod/Express regions={len(checked)} top={checked[1]['region']} amount={checked[1]['amount']}")

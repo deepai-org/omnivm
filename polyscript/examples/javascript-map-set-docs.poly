@@ -1,0 +1,17 @@
+const registry = new Map([
+  ["alpha", {"items": ["a", "b"], "count": 2, "close": "field-close"}],
+  ["beta", {"items": ["c"], "count": 1, "close": "field-close"}],
+])
+
+const tags = new Set(["urgent", "open", "urgent"])
+
+def summarize_from_python(registry, tags):
+  return f"{registry.get('alpha').items[0]}:{registry.size}:{tags.has('open')}"
+
+const py_label = summarize_from_python(registry, tags)
+registry.set("gamma", {"items": ["g"], "count": 1, "close": "field-close"})
+tags.add("closed")
+
+const js_label = `${registry.get("gamma").items[0]}:${registry.size}:${tags.has("closed")}`
+
+console.log(`JavaScript Map/Set docs py=${py_label} js=${js_label}`)
