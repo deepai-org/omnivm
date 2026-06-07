@@ -409,24 +409,17 @@ static std::string omnivm_v8_details_json_prop_fallback(v8::Isolate* isolate,
     if (!errors.empty() && errors != "[]") {
         return "{\"errors\":" + errors + "}";
     }
-    std::string type = omnivm_v8_get_string_prop(isolate, context, object, "type");
-    if (type.empty()) {
-        type = omnivm_v8_get_string_prop(isolate, context, object, "name");
-    }
-    if (type.empty()) {
-        type = omnivm_v8_get_string_prop(isolate, context, object, "error_type");
-    }
-    if (type.empty()) {
-        type = omnivm_v8_get_string_prop(isolate, context, object, "errorType");
-    }
-    if (type == "ZodError") {
-        std::string parsed_message = omnivm_v8_json_stringify_json_text(
-            isolate,
-            context,
-            omnivm_v8_get_string_prop(isolate, context, object, "message")
-        );
-        if (!parsed_message.empty() && parsed_message[0] == '[') {
+    std::string parsed_message = omnivm_v8_json_stringify_json_text(
+        isolate,
+        context,
+        omnivm_v8_get_string_prop(isolate, context, object, "message")
+    );
+    if (!parsed_message.empty()) {
+        if (parsed_message[0] == '[') {
             return "{\"issues\":" + parsed_message + "}";
+        }
+        if (parsed_message[0] == '{') {
+            return parsed_message;
         }
     }
     std::string common = omnivm_v8_common_error_details_json(isolate, context, object);

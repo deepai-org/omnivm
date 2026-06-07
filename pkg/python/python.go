@@ -3139,7 +3139,7 @@ static PyObject* omnivm_py_details_from_json_messages(PyObject* value) {
     return details;
 }
 
-static PyObject* omnivm_py_details_from_jsonschema_error(PyObject* value) {
+static PyObject* omnivm_py_details_from_validator_path_error(PyObject* value) {
     if (!PyObject_HasAttrString(value, "validator") || !PyObject_HasAttrString(value, "schema_path")) {
         return NULL;
     }
@@ -3465,7 +3465,7 @@ static PyObject* omnivm_py_get_validation_details(PyObject* value) {
     details = omnivm_py_call_noarg_method(value, "normalized_messages");
     if (details) return details;
 
-    details = omnivm_py_details_from_jsonschema_error(value);
+    details = omnivm_py_details_from_validator_path_error(value);
     if (details) return details;
 
     details = omnivm_py_details_from_db_error(value);
