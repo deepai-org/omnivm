@@ -1,0 +1,89 @@
+// Rust Review Service — NORTH-STAR GOAL, NOT YET COMPILABLE.
+// This is the acceptance target for Rust runtime support
+// (docs/rust-runtime-design.md). It must compile and run unchanged once
+// steps 1-4 of the design land. Do not add it to the e2e test list until
+// Rust support ships; do use it to keep the design honest.
+//
+// What it exercises, by boundary:
+// - [rust] `use`, `fn`, `#[derive]`, `format!`, `.await?`, `match` arms — all
+//   definite Rust evidence; no @rs tags anywhere.
+// - heavy_stats(df): pandas DataFrame -> Arrow C Data -> polars, zero-copy
+//   both directions.
+// - classify(...): serde value codec (no JSON text round-trip), rayon
+//   parallelism off the golden thread.
+// - Verdict enum: #[serde(tag = "type")] -> discriminated union in JS
+//   (`v.type === "Flagged"`).
+// - Client::new(): stateful handle in the handle table; connection pool
+//   reused across requests.
+// - await enrich(...): JS Promise wrapping a tokio future; golden thread
+//   parks in tokio's select! loop while libuv keeps Express serving.
+// - Errors: reqwest::Error via `?` -> structured envelope with cause_chain;
+//   a Rust panic -> catchable RuntimeError, never a dead worker.
+
+import pandas as pd
+import express from "express"
+use polars::prelude::*;
+use reqwest::Client;
+use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct Review {
+  user_id: i64,
+  text: String,
+  score: f64,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum Verdict {
+  Approved { score: f64 },
+  Flagged { reason: String },
+  NeedsHuman,
+}
+
+const http = Client::new()
+
+async fn enrich(user_id: i64) -> Result<String, reqwest::Error> {
+  let body = http.get(format!("https://api.internal/users/{user_id}"))
+    .send().await?
+    .text().await?;
+  Ok(body)
+}
+
+fn classify(reviews: Vec<Review>) -> Vec<Verdict> {
+  reviews.par_iter().map(|r| match r.score {
+    s if s > 0.9 => Verdict::Approved { score: s },
+    s if s < 0.2 => Verdict::Flagged { reason: format!("score {s}") },
+    _            => Verdict::NeedsHuman,
+  }).collect()
+}
+
+fn heavy_stats(frame: DataFrame) -> DataFrame {
+  frame.lazy()
+    .group_by([col("user_id")])
+    .agg([col("score").mean().alias("avg_score")])
+    .collect().unwrap()
+}
+
+// [python] data loading stays pandas
+df = pd.read_parquet("/data/reviews.parquet")
+df = df[df.text.str.len() > 0]
+
+const stats = heavy_stats(df)
+const verdicts = classify(df.to_dict("records"))
+
+// [js] Express owns the HTTP surface
+const app = express()
+app.get("/review/:id", async (req, res) => {
+  const v = verdicts[req.params.id]
+  const profile = await enrich(parseInt(req.params.id))
+  res.json({
+    verdict: v,
+    escalate: v.type === "Flagged",
+    profile: JSON.parse(profile),
+  })
+})
+app.listen(3000)
+
+print(f"serving {len(verdicts)} verdicts; stats rows: {stats.height}")

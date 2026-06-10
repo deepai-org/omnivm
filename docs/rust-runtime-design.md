@@ -474,6 +474,17 @@ Popular crates work because their values expose ordinary protocols.
    the `table` op, DLPack tensor interchange, object-proxy
    producer/consumer support, `log`/`metrics` facade bridges.
 
+## North-Star Example
+
+[`polyscript/examples/rust-review-service.poly`](../polyscript/examples/rust-review-service.poly)
+is the acceptance target: a four-language review service where Python loads
+data with pandas, Rust does zero-copy polars aggregation and rayon-parallel
+serde-typed classification, and Express serves tagged-enum verdicts while
+awaiting a tokio/reqwest future through a shared `Client` handle — with no
+runtime annotations anywhere. The design is done when that file compiles and
+runs unchanged under both the binary and `libomnivm.so`. It is deliberately
+not in the e2e test list yet; add it there as the final step.
+
 ## Required Tests
 
 - Assert `Handle::try_current().is_err()` at every bridge entry (the
