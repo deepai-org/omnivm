@@ -1,6 +1,6 @@
 # OmniVM
 
-A single Go binary that embeds Python (CPython), JavaScript (Node.js/V8), Java (JVM/JNI), Ruby (MRI), and Go (plugins) — five peer runtimes in one process.
+A single Go binary that embeds Python (CPython), JavaScript (Node.js/V8), Java (JVM/JNI), Ruby (MRI), Go (plugins), and Rust (cdylibs) — six peer runtimes in one process.
 
 ```bash
 $ omnivm run hello.py
@@ -14,6 +14,9 @@ server started on :8080
 
 $ omnivm run main.go --flag value
 args: [--flag value]
+
+$ omnivm run main.rs
+hello from rust
 
 $ cat data.csv | omnivm run process.py
 processed 1000 rows
@@ -40,6 +43,9 @@ docker run --rm omnivm run /omnivm/examples/GsonDemo.java hello world
 # Run Go programs (compiled as plugins, loaded in-process)
 docker run --rm -v $(pwd)/main.go:/app/main.go omnivm run /app/main.go
 
+# Run Rust programs (compiled as cdylibs, loaded in-process via dlopen)
+docker run --rm -v $(pwd)/main.rs:/app/main.rs omnivm run /app/main.rs
+
 # Pass arguments (all runtimes — goes to main(String[] args), sys.argv, etc.)
 docker run --rm omnivm run /omnivm/examples/hello.py arg1 arg2
 
@@ -59,6 +65,7 @@ docker run --rm omnivm -js "console.log('hello')"
 docker run --rm omnivm -java 'System.out.println("hello");'
 docker run --rm omnivm -ruby "puts 'hello'"
 docker run --rm omnivm -go 'fmt.Println("hello")'
+docker run --rm omnivm -rust 'println!("hello");'
 ```
 
 ## Python Interpreter Mode
@@ -409,7 +416,7 @@ $ omnivm run exit42.py; echo $?
 
 ## Architecture
 
-All five runtimes are equal peers orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go is the host only because its runtime was the pickiest about embedding — not because it has special status. Java files are compiled in-memory via `javax.tools.JavaCompiler` and executed on the embedded JVM — supporting `.java`, `.class`, and `.jar` files with auto-detected classpath. Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and can call other runtimes via the bridge.
+All six runtimes are equal peers orchestrated by a **Golden Thread** dispatcher on the main OS thread. Cross-runtime calls happen synchronously on the same call stack. Go is the host only because its runtime was the pickiest about embedding — not because it has special status. Java files are compiled in-memory via `javax.tools.JavaCompiler` and executed on the embedded JVM — supporting `.java`, `.class`, and `.jar` files with auto-detected classpath. Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and can call other runtimes via the bridge. Rust files are compiled as cdylibs against a pinned toolchain, loaded via `dlopen` under `RTLD_LOCAL`, and follow the same compiled-peer contract — one artifact works in both the binary and `libomnivm.so` deployments.
 
 ```
 Go main goroutine (runtime.LockOSThread)
@@ -418,7 +425,8 @@ Go main goroutine (runtime.LockOSThread)
        ├─ JavaScript (Node.js 22 / V8) — v8::Locker, TerminateExecution
        ├─ Java (JVM 21 / JNI)   — AttachCurrentThreadAsDaemon
        ├─ Ruby (MRI 3.3)        — single VM thread, native Thread.new disabled
-       └─ Go (plugins)          — compiled as .so, loaded via plugin.Open
+       ├─ Go (plugins)          — compiled as .so, loaded via plugin.Open
+       └─ Rust (cdylibs)        — dlopen + versioned C ABI, lazy current-thread tokio
 
 C pthread watchdog (independent of Go scheduler)
   └─ Temporal signal routing: active_runtime → per-runtime interrupt
@@ -451,6 +459,17 @@ Ruby VM execution lane:
   Native Ruby Thread.new/Thread.start/Thread.fork are diagnostic-only
   Puma-style in-process native thread ownership must run out of process
 
+Rust execution lane:
+  Synchronous Rust runs ON the Golden Thread — a plain C call into the
+  dlopen'd cdylib, same OS thread, same call stack, zero new threads.
+  The tokio runtime is lazy and current-thread: it is never even created
+  until async Rust is used, and when it is, the Golden Thread itself
+  parks in tokio's reactor during awaits (no worker threads). Threads
+  appear only as explicit escalations: `go expr` on a sync fn (lazy
+  blocking pool), `executor = "multi"`, or crates that spawn internally
+  (rayon's pool, DNS resolvers). Pinned by a regression test
+  (TestSyncCallsStayOnGoldenThreadZeroTokio).
+
 Foreign threads (JVM threads, Python threads, Go goroutines):
   In binary bridge mode, can call runtimes through thread-safe bridge entry points
   In c-shared Python-hosted mode, runtime entrypoints stay pinned to the host worker thread
@@ -465,6 +484,93 @@ The C pthread watchdog (`pkg/watchdog/`) runs independently of Go's scheduler us
 2. If the task exceeds the timeout, the watchdog fires the runtime-specific interrupt
 3. The interrupt fires once for the timed-out task; callers re-arm the watchdog for the next task
 4. A generation counter prevents stale timeouts after rapid arm/disarm cycles
+
+## Rust Runtime
+
+Rust slots in next to Go as a **compiled peer**: source compiles to a cdylib
+against the image's pinned toolchain, loads in-process via `dlopen`
+(`RTLD_LOCAL`, versioned bridge ABI, SHA256 artifact cache), and calls other
+runtimes through the same bridge. With a warm cache a call is a `dlopen`;
+cold, it is a cargo build against a pre-compiled prelude (top crates baked
+into the image: tokio, serde, reqwest with rustls, polars, rayon, sqlx, axum,
+anyhow, chrono, itertools, regex, ...). Design doc:
+`docs/rust-runtime-design.md`.
+
+```rust
+// hello.rs — omnivm run hello.rs
+fn main() {
+    let big = omnivm::call("python", "2 ** 100").unwrap();
+    println!("python says {big}");
+}
+```
+
+**Golden-thread-first.** Rust is the only guest without a GIL/GVL — the easy
+mistake would be giving it background threads by default. It doesn't get any:
+
+- **Sync Rust = zero threads, zero tokio.** A synchronous call runs on the
+  Golden Thread as a plain C function call — same stack as every other
+  runtime. The tokio runtime is never constructed for call-stack-only code.
+- **Async Rust = still zero threads.** First async use lazily creates a
+  *current-thread* tokio runtime; a manifest `await` is a re-park loop where
+  the Golden Thread itself parks in tokio's reactor, with select arms for the
+  heartbeat (pumping libuv/asyncio between parks), the dispatcher's task
+  eventfd (so parked awaits never starve dispatcher work), and the async
+  bridge hop (outbound calls exit the park before running — deep
+  cross-runtime recursion stays sequential, never nested).
+- **Threads are explicit escalations**: `go expr` on a sync fn uses tokio's
+  lazy blocking pool; `executor = "multi"` (env `OMNIVM_RUST_EXECUTOR=multi`)
+  opts into a multi-thread runtime with completions delivered to the
+  dispatcher via eventfd and a `rust_executor` owner-dispatch target; rayon's
+  pool initializes on first `par_iter` (the "GIL released, CPU-bound"
+  escalation).
+
+**Boundary semantics.** serde is the codec: any `Serialize`/`Deserialize`
+type crosses by its author-declared shape — `#[serde(tag = "type")]` enums
+arrive in JS as discriminated unions, in Python as tagged dicts.
+`Result<T, E>` at the boundary becomes the structured error envelope (anyhow
+context chains surface in `err.message`); panics are caught at every entry
+point and become catchable `RuntimeError`s, never dead workers (aborts taint
+the worker — same recycle path as a Go plugin deadline). Exported fns take
+owned, concrete params (`&str`/`&[T]` get mechanical owned-data adapters;
+generic fns stay internal — call them through a concrete wrapper). Stateful
+objects (`reqwest::Client`, pools, compiled regexes) persist across calls as
+unit statics or as handle-table proxies.
+
+**Arrow-native tabular crossing.** DataFrames cross via Arrow: pandas/pyarrow
+→ polars arguments use the **C Data Interface pointer handoff** — zero-copy,
+asserted by pointer identity in the test corpus (the buffer address Python
+exports is the address the Rust DataFrame reads). Rust fns just declare
+`fn heavy_stats(frame: DataFrame) -> DataFrame` — no adapter code.
+
+**PolyScript mixing.** Rust mixes with the other runtimes in `.poly` files
+with no annotations — `fn`, macros (`format!(`), `.await`, `use` paths, and
+`match` arms are definite Rust evidence, and whole items (with lifetimes,
+generics, where-clauses, attributes) are sliced verbatim by a Rust-aware item
+scanner, so real existing Rust drops in unchanged:
+
+```python
+import pandas as pd
+use polars::prelude::*;
+use rayon::prelude::*;
+
+fn heavy_stats(frame: DataFrame) -> DataFrame {
+  frame.lazy().group_by([col("user_id")])
+    .agg([col("score").mean().alias("avg_score")]).collect().unwrap()
+}
+
+df = pd.read_parquet("/data/reviews.parquet")     # python
+const stats = heavy_stats(df)                     # rust, zero-copy Arrow
+print(f"rows: {stats.height}")                    # python again
+```
+
+The acceptance example (`polyscript/examples/rust-review-service.poly`, a
+four-language review service) and a nine-file ecosystem corpus
+(tokio/reqwest, axum, sqlx, regex, chrono, anyhow/thiserror, itertools,
+rayon, Arrow C-Data) run end-to-end in CI under both the binary and
+`libomnivm.so` hosts (`scripts/test-rust-corpus.sh`, four-state ratchet), and
+a round-trip oracle asserts real crate source files slice byte-identically
+through the compiler. Prefork-safe (children initialize Rust post-fork;
+covered by `scripts/test-prefork-rust.py`).
 
 ## Cross-Runtime Calls
 
@@ -487,6 +593,10 @@ String result = omnivm.OmniVM.call("python", "2 ** 100");
 
 # Go calling Python (via plugin bridge)
 result := OmniVM.Call("python", "2 ** 100")
+
+# Rust calling Python (sync; from async use omnivm::call_async — it hops
+# out of the tokio park so re-entry stays sequential)
+let result = omnivm::call("python", "2 ** 100")?;
 ```
 
 All calls execute synchronously — no marshalling, no IPC, no serialization.
@@ -503,6 +613,7 @@ work onto an owner loop.
 :java, :jvm        Switch to Java
 :ruby, :rb         Switch to Ruby
 :go                Switch to Go
+:rust, :rs         Switch to Rust
 :status            Show runtime status
 :quit, :q          Exit
 ```
@@ -920,6 +1031,7 @@ pkg/
   cli/               CLI parsing, language detection, shebang handling
   errmsg/            Error enhancement (hints, traceback formatting)
   golang/            Go runtime (plugin-based, in-process compilation + execution)
+  rust/              Rust runtime (cdylib compile/cache/dlopen, bridge ABI, tokio drive loop)
   python/            CPython embedding via cgo
   javascript/        Node.js/V8 embedding via cgo
   jvm/               JVM embedding via JNI/cgo
@@ -935,9 +1047,12 @@ scripts/
   test-cli.sh          CLI integration tests (29 tests)
   test-libomnivm-*.sh  CPython-hosted libomnivm manifest/stress tests
   test-poly-libomnivm-smoke.sh  Compile PolyScript examples and run via CPython + libomnivm
+  test-rust-corpus.sh  Rust ecosystem corpus (four-state classification, ratcheted in CI)
+  test-prefork-rust.py Prefork fork-safety check for the Rust runtime
 polyscript/          PolyScript lexer/parser/compiler, examples, and compiler tests
 runtime/
   java/              OmniVMRunner.java (in-memory compilation, file/jar/class execution)
+  rust/              Cargo workspace: omnivm support dylib (bridge/serde/tokio/Arrow), prelude warm-build
 examples/            Manifest JSON files and sample scripts
 docs/                Manifest contracts and design notes
 ```
@@ -1000,6 +1115,7 @@ make test-libomnivm-stress
 - **Lazy runtime initialization**: Only the runtime needed for the target file is started. `omnivm run main.go` skips all embedded runtimes. `omnivm run script.py` only starts CPython.
 - **Java file execution**: `omnivm run App.java` compiles in-memory via `javax.tools.JavaCompiler` and runs on the embedded JVM with real `main(String[] args)` and direct stdout/stderr. Supports `.class` and `.jar` files. Classpath auto-detects Maven (`target/dependency/`), Gradle (`build/libs/`), and `lib/`/`libs/` directories — downloaded JARs just work.
 - **Go as equal peer**: Go files are compiled as plugins (`-buildmode=plugin`), loaded in-process, and executed — not via subprocess. `func main()` is transformed to an exported `func Main()` via the Go AST, compiled, and called via `plugin.Open`/`Lookup`. Go plugins can call other runtimes through the bridge (`OmniVM.Call("python", "...")`) and participate in the REPL and inline execution (`omnivm -go 'code'`). Go is the host because its runtime was the pickiest about embedding, not because it has special status.
+- **Rust as compiled peer, golden-thread-first**: Rust always compiles to a cdylib (one artifact for binary and c-shared modes — no plugin/c-shared split), loaded via `dlopen` with a **versioned bridge ABI** (`omnivm_set_bridge_v1`; the ABI revision is baked into artifacts and into the cache key, so stale artifacts are refused with a structured error, never loaded silently). One tokio runtime per process lives in a support dylib all units link dynamically; everything Rust builds inside one cargo workspace with one lockfile (cargo derives symbol hashes from workspace, package selection, and flags — the build invariants are documented in `pkg/rust/toolchain.go`). Sync Rust adds zero threads and never initializes tokio; async parks the Golden Thread in the reactor; threads are explicit escalations only.
 - **Bridge gateway affinity**: The OmniVM binary bridge supports foreign-thread calls by entering the target runtime through the appropriate lock: `PyGILState_Ensure` (Python), `v8::Locker` (V8), the Ruby VM execution lane, or `AttachCurrentThreadAsDaemon` (JVM). In c-shared Python-hosted mode, CPython owns the worker thread state, so runtime, manifest, plugin, and typed-call entrypoints reject non-host threads with structured `thread_affinity` diagnostics instead of attempting universal owner-loop dispatch.
 - **Ruby single-VM-thread boundary**: Ruby runs through one OmniVM-owned VM execution lane. Ruby 3.3's M:N threading breaks `Thread.new` and `rb_thread_call_without_gvl` in this embedded shape, so native Ruby thread creation raises an explicit diagnostic instead of hanging. Ruby `fork`, `Kernel.fork`, `Process.fork`, `Process.daemon`, `Process.spawn`, `Kernel.spawn`, `Kernel.system`, `Kernel.exec`, backticks, and `IO.popen` also raise explicit diagnostics after OmniVM initializes; Ruby code that needs preforking, daemonization, or subprocess launch must do so before loading OmniVM or run that component out of process. `omnivm.status()["ruby_threading"]` and `omnivm.ruby_threading_status()` report this boundary (`mode=single_vm_thread`, native threads unsupported), and `omnivm.assert_ruby_native_threads_supported(label)` is the fail-fast guard for host apps that need an out-of-process Puma deployment before loading a threaded Ruby app server.
 - **Epoll dispatcher (Linux)**: eventfd for task wakeup, timerfd for heartbeat, libuv backend fd for V8 I/O. Replaces the 1ms polling ticker with event-driven wakeups — zero CPU when idle.
