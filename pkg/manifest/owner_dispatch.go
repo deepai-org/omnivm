@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -211,9 +212,44 @@ func ownerDispatchTargetName(target string) string {
 		return "java_executor"
 	case "ruby", "fiber", "thread", "ruby_fiber", "ruby_thread":
 		return "ruby_fiber_thread"
+	case "rust", "tokio", "rust_tokio", "rust_runtime":
+		// Named for the concept, not the library (consistent with
+		// java_executor / javascript_event_loop) — swapping the reactor
+		// implementation never changes a public API string.
+		return "rust_executor"
 	default:
 		return normalized
 	}
+}
+
+// rustExecutorTargetStatus reports the rust_executor owner-dispatch target.
+// On the default pumped current-thread executor it is diagnostic-only like
+// every other guest; under `executor = "multi"` it can genuinely report
+// supported: tokio Wakers are Send + Sync and Handle::spawn works from any
+// thread, with completions delivered into the dispatcher epoll via eventfd.
+func rustExecutorTargetStatus() map[string]interface{} {
+	multi := rustExecutorIsMulti()
+	status := map[string]interface{}{
+		"supported":           multi,
+		"owner_kind":          "rust_executor",
+		"required_capability": "spawn task on the owning Rust async executor",
+		"executor":            "current_thread",
+	}
+	if multi {
+		status["executor"] = "multi"
+		status["current_behavior"] = "multi-thread tokio executor: tasks spawn from any thread; completions are delivered to the dispatcher via the completion eventfd"
+		status["diagnostic"] = "rust_executor dispatch is available under executor = \"multi\""
+	} else {
+		status["current_behavior"] = "futures are driven inline on the golden thread by the re-park loop; tasks only progress during parks and pump ticks"
+		status["diagnostic"] = "the default executor is golden-thread pumped; set runtime.rust.executor = \"multi\" (OMNIVM_RUST_EXECUTOR=multi) for owner dispatch"
+	}
+	return status
+}
+
+// rustExecutorIsMulti is overridable for tests; it reflects the load-time
+// executor knob.
+var rustExecutorIsMulti = func() bool {
+	return os.Getenv("OMNIVM_RUST_EXECUTOR") == "multi"
 }
 
 func ownerDispatchContract() map[string]interface{} {
@@ -253,6 +289,7 @@ func ownerDispatchContract() map[string]interface{} {
 				"current_behavior":    "Ruby runs on the single VM thread with native Ruby thread scheduling disabled",
 				"diagnostic":          "Ruby runs on the single VM thread; native Ruby thread scheduling and in-process native thread ownership remain unsupported",
 			},
+			"rust_executor": rustExecutorTargetStatus(),
 		},
 	}
 }

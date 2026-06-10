@@ -54,6 +54,13 @@ export interface PrefixHost {
 }
 
 export function parsePrimary(host: PrefixHost, ): AST.Expr {
+  // Rust closures: |x| expr, |x, y| { ... }, or empty || closures.
+  // An expression cannot otherwise begin with `|`, so this is additive.
+  if (host.check("|") || host.check("||")) {
+    const closure = tryParseRustClosure(host);
+    if (closure) return closure;
+  }
+
   // Handle function expressions (including async)
   // But not when func() looks like a function call (no body follows the parens)
   if ((host.peek().value === "function" || host.peek().value === "func") &&
@@ -319,10 +326,16 @@ export function parsePrimary(host: PrefixHost, ): AST.Expr {
   // Handle prefix operators
   if (host.isUnaryOp(host.peek())) {
     const op = host.advance();
+    // Rust mutable borrow: &mut expr
+    let opValue = op.value;
+    if (opValue === "&" && host.check("mut") && host.peekNext()?.type === TokenType.Identifier) {
+      host.advance(); // consume 'mut'
+      opValue = "&mut";
+    }
     const argument = parsePrimary(host);
     return {
       kind: "Unary",
-      op: op.value,
+      op: opValue,
       argument,
       prefix: true,
       span: host.createSpan(host.current - 1, host.current)
@@ -377,9 +390,9 @@ export function parsePrimary(host: PrefixHost, ): AST.Expr {
     return host.parsePostfix(id);
   }
   
-  // Runtime tag expressions: @py(expr), @js(expr), @go(expr), @rb(expr), @java(expr)
+  // Runtime tag expressions: @py(expr), @js(expr), @go(expr), @rb(expr), @java(expr), @rs(expr)
   if (host.check("@")) {
-    const runtimeNames = ["py", "js", "go", "rb", "java"];
+    const runtimeNames = ["py", "js", "go", "rb", "java", "rs"];
     const nextToken = host.peekNext();
     if (nextToken && runtimeNames.includes(nextToken.value)) {
       const runtimeTag = host.attempt(() => {
@@ -676,6 +689,69 @@ export function parsePrimary(host: PrefixHost, ): AST.Expr {
   }
 
   throw host.error(host.peek(), "Unexpected token in expression");
+}
+
+
+/**
+ * Try to parse a Rust closure starting at `|` or `||`.
+ * Returns null (without consuming tokens) when the pipes do not look like
+ * a closure parameter list.
+ */
+function tryParseRustClosure(host: PrefixHost): AST.Expr | null {
+  const start = host.current;
+  const params: AST.Param[] = [];
+
+  if (host.check("||")) {
+    host.advance(); // consume || (empty parameter list)
+  } else {
+    // Scan ahead: the opening `|` must be closed by another `|` with only
+    // parameter-list tokens in between (identifiers, commas, simple types).
+    let scan = host.current + 1;
+    let sawCloser = false;
+    let guard = 0;
+    while (scan < host.tokens.length && guard++ < 64) {
+      const t = host.tokens[scan];
+      if (t.value === "|") { sawCloser = true; break; }
+      if (t.virtualSemi || t.type === TokenType.EOF) break;
+      const isWordLike = t.type === TokenType.Identifier || t.type === TokenType.Keyword;
+      const isParamPunct = [",", ":", "&", "<", ">", "[", "]", "(", ")"].includes(t.value);
+      if (!isWordLike && !isParamPunct) break;
+      scan++;
+    }
+    if (!sawCloser) return null;
+
+    host.advance(); // consume opening |
+    if (!host.check("|")) {
+      do {
+        params.push(Functions.parseParameter(host as any));
+      } while (host.match(","));
+    }
+    if (!host.match("|")) {
+      host.current = start;
+      return null;
+    }
+  }
+
+  // Optional Rust return type: |x| -> T { ... }
+  let returnType: AST.TypeNode | undefined;
+  if (host.check("->")) {
+    host.advance();
+    returnType = host.parseType();
+  }
+
+  const body = host.check("{")
+    ? Blocks.parseBlock(host as any)
+    : host.parseAssignmentExpression();
+
+  const lambda: AST.Lambda = {
+    kind: "Lambda",
+    params,
+    returnType,
+    body,
+    span: host.createSpan(start, host.current - 1)
+  };
+  (lambda as any).rustClosure = true;
+  return lambda;
 }
 
 export function parseGoCompositeLiteral(host: PrefixHost, ): AST.Expr {

@@ -1,0 +1,43 @@
+// Corpus: tokio + reqwest — timers, join!, and a pooled Client whose request
+// builders are exercised without touching the network (deterministic CI).
+
+use std::sync::LazyLock;
+use reqwest::Client;
+use tokio::time::{sleep, Duration};
+
+static HTTP: LazyLock<Client> = LazyLock::new(|| Client::new());
+
+async fn staged_sum(a: i64, b: i64) -> i64 {
+  let (left, right) = tokio::join!(
+    async {
+      sleep(Duration::from_millis(15)).await;
+      a * 2
+    },
+    async {
+      sleep(Duration::from_millis(5)).await;
+      b * 3
+    }
+  );
+  left + right
+}
+
+fn planned_urls(ids: Vec<i64>) -> Vec<String> {
+  ids
+    .iter()
+    .map(|id| {
+      let req = HTTP
+        .get(format!("https://api.internal/users/{id}"))
+        .header("x-trace", "corpus")
+        .build()
+        .unwrap();
+      req.url().to_string()
+    })
+    .collect()
+}
+
+const total = staged_sum(10, 4)
+const urls = planned_urls([7, 11])
+
+const tail = urls.map(u => u.split("/").pop()).join("+")
+
+print(f"total={total} tail={tail}")

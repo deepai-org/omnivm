@@ -20,6 +20,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	"github.com/omnivm/omnivm/pkg/rust"
 	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
@@ -171,6 +172,28 @@ func (e *Engine) StartDispatcher() {
 		}
 	}
 
+	// Rust parked awaits watch the dispatcher task eventfd (edge-observed,
+	// no reads) and pump JS at uv_backend_timeout() cadence; multi-executor
+	// background completions wake the dispatcher through their eventfd; the
+	// per-await deadline follows the dispatcher task timeout instead of a
+	// fixed constant.
+	if rt, ok := e.Runtimes["rust"]; ok {
+		if rustRT, ok := rt.(*rust.Runtime); ok {
+			rustRT.TaskFDFn = e.Disp.TaskFD
+			if e.Disp.TaskTimeout > 0 {
+				rust.DriveTimeout = e.Disp.TaskTimeout
+			}
+			if support := rustRT.Support(); support != nil {
+				e.Disp.WatchFD(support.CompletionFD())
+			}
+			if jsrt, hasJS := e.Runtimes["javascript"]; hasJS {
+				if uv, hasTimeout := jsrt.(interface{ GetUVBackendTimeout() int }); hasTimeout {
+					rustRT.UVDeadline = uv.GetUVBackendTimeout
+				}
+			}
+		}
+	}
+
 	e.dispatcherStarted = true
 	go e.Disp.RunEpoll(e.ctx, uvFD)
 }
@@ -188,6 +211,8 @@ func RuntimeID(lang string) int {
 		return watchdog.RuntimeJVM
 	case "go":
 		return watchdog.RuntimeGo
+	case "rust":
+		return watchdog.RuntimeRust
 	default:
 		return watchdog.RuntimeNone
 	}
@@ -342,8 +367,8 @@ func (e *Engine) Shutdown() {
 
 	watchdog.Shutdown()
 
-	// Reverse initialization order: Go, Ruby, Java, JavaScript, Python
-	for _, name := range []string{"go", "ruby", "java", "javascript", "python"} {
+	// Reverse initialization order: Rust, Go, Ruby, Java, JavaScript, Python
+	for _, name := range []string{"rust", "go", "ruby", "java", "javascript", "python"} {
 		if r, ok := e.Runtimes[name]; ok {
 			r.Shutdown()
 			delete(e.Runtimes, name)

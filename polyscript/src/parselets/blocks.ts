@@ -1130,8 +1130,27 @@ export function parseMatchCaseBody(host: BlockHost, ): AST.Block {
 
   // Parse single expression but not comma operator at this level
   // In match cases, comma separates cases, not expressions
-  const expr = host.parseAssignmentExpression();
-  
+  let expr = host.parseAssignmentExpression();
+
+  // Rust struct-literal arm body: `Verdict::Approved { score: s }`.
+  // The path expression stops before `{`; absorb the `{ field: value }`
+  // initializer when it directly follows a path/identifier expression.
+  if (host.check("{") &&
+      (expr.kind === "Member" || expr.kind === "Identifier") &&
+      host.peekAt(1)?.type === TokenType.Identifier &&
+      (host.peekAt(2)?.value === ":" || host.peekAt(2)?.value === "," || host.peekAt(2)?.value === "}")) {
+    host.advance(); // consume {
+    const initializer = Literals.parseObjectLiteral(host as any);
+    const structLit: AST.Call = {
+      kind: "Call",
+      callee: expr,
+      args: [initializer],
+      span: { ...expr.span, end: host.previous()!.end }
+    } as any;
+    (structLit as any).structLiteral = true;
+    expr = structLit;
+  }
+
   // Check for comma (next case) but don't consume it
   // The main loop will handle advancing past the comma
   if (host.check(",")) {

@@ -811,4 +811,58 @@ describe("Example files: end-to-end pipeline", () => {
       expect(registration?.runtime).toBe("javascript");
     });
   });
+
+  // The Rust support acceptance target (docs/rust-runtime-design.md): a
+  // four-language review service with no runtime annotations anywhere. It
+  // runs unchanged under both the binary and libomnivm.so hosts; this e2e
+  // entry pins the compiled shape.
+  describe("rust-review-service.poly", () => {
+    const { manifest, runtimes } = compile(
+      path.join(examplesDir, "rust-review-service.poly")
+    );
+
+    it("has no unknown runtimes", () => {
+      expect(runtimes).not.toContain("unknown");
+    });
+
+    it("emits one shared Rust unit across all three func_defs", () => {
+      const rustDefs = manifest.ops.filter(
+        (o: any) => o.op === "func_def" && o.bodyRuntime === "rust"
+      ) as any[];
+      expect(rustDefs.map((d) => d.name).sort()).toEqual([
+        "classify",
+        "enrich",
+        "heavy_stats",
+      ]);
+      const sources = new Set(rustDefs.map((d) => d.source));
+      expect(sources.size).toBe(1);
+      for (const def of rustDefs) {
+        expect(def.exports).toEqual(["enrich", "classify", "heavy_stats"]);
+      }
+      const enrich = rustDefs.find((d) => d.name === "enrich");
+      expect(enrich.async).toBe(true);
+      expect(enrich.source).toContain("omnivm::export_async_fn!(OmniVMCall_enrich, enrich, 1);");
+      expect(enrich.source).toContain("omnivm::export_fn!(OmniVMCall_classify, classify, 1);");
+      expect(enrich.source).toContain('#[serde(tag = "type")]');
+    });
+
+    it("routes data loading through python and the HTTP surface through javascript", () => {
+      const pythonEvals = manifest.ops.filter(
+        (o: any) => o.op === "eval" && o.runtime === "python"
+      ) as any[];
+      expect(pythonEvals.some((o) => String(o.code).includes("read_parquet"))).toBe(true);
+
+      const rustEvals = manifest.ops.filter(
+        (o: any) => (o.op === "eval" || o.op === "exec") && o.runtime === "rust"
+      ) as any[];
+      expect(rustEvals.some((o) => String(o.code).startsWith("heavy_stats("))).toBe(true);
+      expect(rustEvals.some((o) => String(o.code).startsWith("classify("))).toBe(true);
+
+      const handler = manifest.ops.find(
+        (o: any) => o.op === "exec" && String(o.code).includes("app.get")
+      ) as any;
+      expect(handler?.runtime).toBe("javascript");
+      expect(String(handler?.code)).toContain("await enrich(");
+    });
+  });
 });

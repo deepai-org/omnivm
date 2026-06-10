@@ -1,0 +1,28 @@
+// Corpus: Arrow C Data Interface — the zero-copy claim, asserted by pointer
+// identity: the buffer address Python exports is the buffer address the Rust
+// DataFrame reads.
+
+use polars::prelude::*;
+
+fn column_addr(frame: DataFrame) -> u64 {
+  omnivm::cdata::column_buffer_address(&frame, "score").unwrap()
+}
+
+fn row_total(frame: DataFrame) -> f64 {
+  frame
+    .column("score")
+    .unwrap()
+    .f64()
+    .unwrap()
+    .into_no_null_iter()
+    .sum()
+}
+
+import pyarrow as pa
+table = pa.table({"score": pa.array([1.5, 2.5, 4.0], type=pa.float64())})
+py_addr = table.combine_chunks().column("score").chunk(0).buffers()[1].address
+
+const rust_addr = column_addr(table)
+const total = row_total(table)
+
+print(f"pointer_identity={int(rust_addr) == py_addr} total={total}")

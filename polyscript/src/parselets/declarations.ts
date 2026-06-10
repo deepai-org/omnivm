@@ -449,6 +449,65 @@ export function parseTypeDecl(host: DeclHost): AST.TypeDecl {
   };
 }
 
+/**
+ * Rust-style struct declaration: `struct Name { field: Type, ... }`,
+ * `struct Name<T> { ... }`, tuple struct `struct Name(T, U);`, or unit
+ * struct `struct Name;`. The body tokens are skipped — the node's span
+ * preserves the raw source for verbatim Rust reconstruction.
+ * The `struct` keyword has already been consumed by the caller.
+ */
+export function parseStructDecl(host: DeclHost): AST.TypeDecl {
+  const start = host.current - 1;
+  const name = host.parseIdentifier();
+
+  let genericParams: AST.Identifier[] | undefined;
+  if (host.match("<")) {
+    genericParams = [];
+    do {
+      // Tolerate lifetimes ('a) and bounds by skipping non-identifier tokens
+      if (host.peek().type === TokenType.Identifier) {
+        genericParams.push(host.parseIdentifier());
+      } else {
+        host.advance();
+      }
+    } while (host.match(","));
+    host.consume(">", "Expected '>' after generic parameters");
+  }
+
+  const skipBalanced = (open: string, close: string) => {
+    host.advance(); // consume opening delimiter
+    let depth = 1;
+    while (depth > 0 && !host.isAtEnd()) {
+      if (host.check(open)) depth++;
+      else if (host.check(close)) depth--;
+      host.advance();
+    }
+  };
+
+  if (host.check("{")) {
+    skipBalanced("{", "}");
+  } else if (host.check("(")) {
+    skipBalanced("(", ")");
+    host.consumeSemicolon();
+  } else {
+    host.consumeSemicolon();
+  }
+
+  const span = host.createSpan(start, host.current - 1);
+  return {
+    kind: "TypeDecl",
+    name,
+    genericParams,
+    definition: {
+      kind: "SimpleType",
+      id: { kind: "Identifier", name: "struct", span },
+      span,
+    } as AST.TypeNode,
+    structDecl: true,
+    span,
+  };
+}
+
 export function parsePackageDecl(host: DeclHost): AST.PackageDecl {
   const start = host.current - 1;
   const nameToken = host.peek().type === TokenType.Identifier ?

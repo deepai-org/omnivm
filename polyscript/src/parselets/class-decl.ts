@@ -1458,6 +1458,7 @@ export function parseEnumDecl(host: ClassHost): AST.EnumDecl {
 
   host.consume("{", "Expected '{' before enum body");
   const members: AST.EnumMember[] = [];
+  let hasPayloadVariants = false;
 
   while (!host.check("}") && !host.isAtEnd()) {
     // Skip virtual semicolons in enum body
@@ -1473,7 +1474,20 @@ export function parseEnumDecl(host: ClassHost): AST.EnumDecl {
     const memberName = host.parseIdentifier();
     let value: AST.Expr | undefined;
 
-    if (host.match("=")) {
+    // Rust data-carrying variants: Name { field: Type, ... } or Name(Type, ...)
+    // Payload tokens are skipped; the enum span preserves the raw source.
+    if (host.check("{") || host.check("(")) {
+      const open = host.peek().value;
+      const close = open === "{" ? "}" : ")";
+      host.advance(); // consume opening delimiter
+      let depth = 1;
+      while (depth > 0 && !host.isAtEnd()) {
+        if (host.check(open)) depth++;
+        else if (host.check(close)) depth--;
+        host.advance();
+      }
+      hasPayloadVariants = true;
+    } else if (host.match("=")) {
       value = host.parseAssignmentExpression();
     }
 
@@ -1499,6 +1513,7 @@ export function parseEnumDecl(host: ClassHost): AST.EnumDecl {
     kind: "EnumDecl",
     name,
     members,
+    ...(hasPayloadVariants ? { payloadVariants: true } : {}),
     span: host.createSpan(start, host.current - 1)
   };
 }

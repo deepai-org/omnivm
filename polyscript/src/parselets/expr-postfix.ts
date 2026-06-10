@@ -162,7 +162,12 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
         // Clean up the temporary storage
         delete (expr as any)._genericArgs;
       }
-      
+      // Rust turbofish spelling marks the call as definite Rust.
+      if ((expr as any)._turbofish) {
+        callExpr.turbofish = true;
+        delete (expr as any)._turbofish;
+      }
+
       expr = callExpr;
       
       // Check for Ruby block after function call
@@ -415,6 +420,15 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
     
     // Scope resolution operator (C++/Rust style)
     if (host.match("::")) {
+      // Rust turbofish: `expr::<T, U>(args)` — type args spelled after `::`.
+      if (host.check("<")) {
+        const turbofishArgs = host.tryParseGenericArgs();
+        if (turbofishArgs) {
+          (expr as any)._genericArgs = turbofishArgs;
+          (expr as any)._turbofish = true;
+          continue;
+        }
+      }
       // After ::, keywords can be used as identifiers
       const next = host.peek();
       let property: AST.Identifier;
@@ -619,6 +633,7 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
                        next.value === "]" ||
                        next.value === "}" ||
                        next.value === "," ||
+                       next.value === "." ||
                        next.virtualSemi ||
                        (host.isBinaryOp(next) && next.value !== ":" && next.value !== "<") ||
                        (next.type === TokenType.Keyword && host.isStatementKeyword(next.value));
@@ -632,6 +647,12 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
           prefix: false,
           span: host.createSpanFrom(expr)
         };
+        // Rust try-then-chain across lines: `.send().await?\n  .text()`.
+        // MASI inserts a vsemi after `?` (following `)`/`]`); skip it when
+        // the next line continues the member chain with `.`.
+        if (host.peek().type === TokenType.VirtualSemi && host.peekNext()?.value === ".") {
+          host.advance(); // skip virtual semicolon
+        }
         continue;
       }
     }

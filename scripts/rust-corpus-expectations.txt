@@ -1,0 +1,12 @@
+# file expected-state [expected-stdout-substring]
+# Ratcheted 2026-06-10 after the two-regime front end + export-set analysis
+# + Arrow C-Data landed: the whole corpus passes end-to-end.
+rust-anyhow-thiserror-errors.poly pass is frozen
+rust-arrow-cdata-pointer.poly pass pointer_identity=True
+rust-axum-router.poly pass status=ok checks=3
+rust-chrono-schedule.poly pass minutes=1800
+rust-itertools-windows.poly pass range=16
+rust-rayon-stats.poly pass buckets=
+rust-regex-pipeline.poly pass codes=jira-101,jira-204,jira-7 named=3
+rust-sqlx-sqlite.poly pass n=2 total=65
+rust-tokio-reqwest-fanout.poly pass total=32 tail=7+11

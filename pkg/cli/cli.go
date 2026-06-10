@@ -31,6 +31,7 @@ var extToLang = map[string]string{
 	".jar":   "java",
 	".rb":    "ruby",
 	".go":    "go",
+	".rs":    "rust",
 }
 
 var legacyFlags = map[string]string{
@@ -39,6 +40,7 @@ var legacyFlags = map[string]string{
 	"-java":   "java",
 	"-ruby":   "ruby",
 	"-go":     "go",
+	"-rust":   "rust",
 }
 
 func DetectLanguage(filename string) (string, error) {

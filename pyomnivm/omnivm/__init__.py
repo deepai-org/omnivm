@@ -1020,7 +1020,7 @@ def init_runtimes(runtimes):
     from the worker thread that will own direct OmniVM runtime calls.
 
     Args:
-        runtimes: List of runtime names, e.g. ["go", "javascript"]
+        runtimes: List of runtime names, e.g. ["go", "javascript", "rust"]
 
     Raises:
         RuntimeError: If initialization fails.

@@ -597,13 +597,14 @@ export function parseSimpleType(host: TypeHost): AST.TypeNode {
     id = host.parseIdentifier();
   }
 
-  // Handle qualified type names
+  // Handle qualified type names (dotted, or Rust/C++ `::` paths)
   let qualifiedId = id;
-  while (host.match(".")) {
+  while (host.match(".") || host.match("::")) {
+    const sep = host.previous()!.value;
     const member = host.parseIdentifier();
     qualifiedId = {
       kind: "Identifier",
-      name: `${qualifiedId.name}.${member.name}`,
+      name: `${qualifiedId.name}${sep}${member.name}`,
       span: host.createSpanFrom(qualifiedId)
     };
   }

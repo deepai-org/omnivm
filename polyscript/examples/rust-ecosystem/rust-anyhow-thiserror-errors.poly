@@ -1,0 +1,32 @@
+// Corpus: anyhow + thiserror — typed error enums and context chains that
+// must surface as catchable Python RuntimeErrors, never dead workers.
+
+use anyhow::{Context, Result};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+enum LedgerError {
+  #[error("account {0} is frozen")]
+  Frozen(String),
+  #[error("insufficient funds: need {need}, have {have}")]
+  Insufficient { need: i64, have: i64 },
+}
+
+fn withdraw(account: String, balance: i64, amount: i64) -> Result<i64> {
+  if account.starts_with("frozen") {
+    return Err(LedgerError::Frozen(account)).context("withdrawal rejected");
+  }
+  if amount > balance {
+    return Err(LedgerError::Insufficient { need: amount, have: balance })
+      .context("withdrawal rejected");
+  }
+  Ok(balance - amount)
+}
+
+const remaining = withdraw("acct-9", 100, 30)
+
+try:
+    withdraw("frozen-1", 100, 1)
+    print("withdraw unexpectedly succeeded")
+except RuntimeError as e:
+    print(f"remaining={remaining} caught={e.message}")

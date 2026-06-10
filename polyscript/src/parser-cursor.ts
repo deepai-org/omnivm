@@ -52,7 +52,11 @@ export class ParserCursor {
   protected nextStmtGenericMode: "on" | "off" | "auto" = "auto";
   protected fileRuntimeDirective?: string;
 
+  /** Raw source text, when provided — used by the Rust item raw scanner. */
+  protected sourceText?: string;
+
   constructor(tokens: Token[], source?: string) {
+    this.sourceText = source;
     // Scan raw source text for runtime directive (comments are skipped by lexer)
     if (source) {
       const match = source.match(/\/\/\s*@runtime\s+(\S+)/);

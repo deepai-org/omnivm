@@ -67,6 +67,10 @@ import { lowerType } from '../type-system/lowering';
 import * as C from '../type-system/canonical';
 import { lowerAnnotatedProgram } from './lowering';
 import { LoweredDefineFunc, LoweredManifestIR, LoweredManifestNode } from './lowering-ir';
+import { extractRustFnSignatures } from '../rust-item-scanner';
+
+/** Fn signature shape shared by raw-scanned RustItems and Rust FuncDecls. */
+type RustExportSig = AST.RustItem["fns"][number];
 
 type BindingKind = "value" | "channel" | "stream" | "resource" | "table" | "job_handle" | "spawn_handle" | "function";
 
@@ -103,6 +107,27 @@ export class ManifestCodeGenerator {
   private loweredNodesBySource: Map<AST.Program | AST.Decl | AST.Stmt | AST.Expr, LoweredManifestNode[]> = new Map();
   /** Go functions declared in the current source file, used to keep main() self-contained. */
   private goFuncDecls: Map<string, AST.FuncDecl> = new Map();
+  /**
+   * The single shared Rust compilation unit for this program: every Rust
+   * top-level item (use statements, structs, enums, impls, lowered statics)
+   * plus all Rust fns and one export shim macro line per EXPORTED fn.
+   * Every Rust func_def op carries this same source so the host compiles
+   * and caches exactly one cdylib.
+   *
+   * A fn is exported only when it is referenced from OUTSIDE the unit
+   * (other-runtime expressions, top-level poly statements, spawn ops,
+   * stubs). Internal helpers — called only from other Rust items, or not
+   * at all — stay in the unit source verbatim but get no shim, no entry in
+   * `exports`, and no func_def op.
+   */
+  private rustUnit?: {
+    source: string;
+    exports: string[];
+    /** Module-level Rust nodes absorbed into the unit (emit no standalone ops). */
+    absorbed: Set<AST.Decl | AST.Stmt>;
+    /** Fns proven internal-only (or generic, unexportable): no func_def ops. */
+    internalFns: Set<string>;
+  };
 
   /**
    * Generate a dispatch manifest from an annotated program.
@@ -125,6 +150,8 @@ export class ManifestCodeGenerator {
     this.explicitBridgeOps = [];
     this.usingCounter = 0;
     this.goFuncDecls = this.indexGoFuncDecls(annotated.program.body);
+    this.rustUnit = undefined;
+    this.collectRustUnit(annotated.program.body);
     this.loweredIR = lowerAnnotatedProgram(annotated);
     this.loweredNodesBySource = this.indexLoweredNodes(this.loweredIR);
 
@@ -1715,10 +1742,34 @@ export class ManifestCodeGenerator {
   }
 
   private emitCompiledBlock(block: RuntimeBlock): ManifestOp[] {
-    const lang = block.runtime === OmniRuntime.Rust ? "rust" : "c";
+    if (block.runtime === OmniRuntime.Rust) {
+      const ops: ManifestOp[] = [];
+      for (const node of block.nodes) {
+        // Module-level Rust items (use/struct/enum/impl/static) live in the
+        // shared unit source, not in exec ops.
+        if (this.rustUnit?.absorbed.has(node as AST.Decl | AST.Stmt)) {
+          continue;
+        }
+        if (node.kind === "FuncDecl") {
+          ops.push(...this.emitRustFuncDef(node));
+          continue;
+        }
+        if (node.kind === "RustItem") {
+          // fn items become func_def ops; any other unabsorbed item is
+          // unit-only and emits nothing.
+          if (node.fns.length > 0) ops.push(...this.emitRustItemFuncDefs(node));
+          continue;
+        }
+        // Orchestration-level Rust statements (e.g. calls into exported Rust
+        // fns with cross-runtime arguments) go through the generic emitters.
+        ops.push(...this.emitNode(node as AST.Decl | AST.Stmt, block.runtime));
+      }
+      return ops;
+    }
+
     return block.nodes.map(node => ({
       op: "exec_compiled" as const,
-      lang,
+      lang: "c",
       code: nodeToSourceCode(node, this.source),
     }));
   }
@@ -2965,6 +3016,11 @@ export class ManifestCodeGenerator {
       return this.emitGoFuncDef(node);
     }
 
+    // Rust func_def: every Rust fn carries the shared compilation unit.
+    if (funcRuntime === OmniRuntime.Rust || node.declKeyword === "fn") {
+      return this.emitRustFuncDef(node);
+    }
+
     const paramNames = new Set<string>();
     const params: ParamDef[] = node.params.map(p => {
       const def = this.paramDef(p);
@@ -3038,6 +3094,8 @@ export class ManifestCodeGenerator {
         return OmniRuntime.JavaScript;
       case "func":
         return OmniRuntime.Go;
+      case "fn":
+        return OmniRuntime.Rust;
       default:
         return undefined;
     }
@@ -3285,6 +3343,500 @@ export class ManifestCodeGenerator {
     return name.includes('_')
       ? name.split('_').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('')
       : name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  // ─── Rust Function Definitions ──────────────────────────────────
+
+  /**
+   * Emit a Rust func_def op. The per-op `name`/`params`/`async` describe the
+   * individual fn so stubs register correctly; `source` is the complete
+   * shared Rust compilation unit and `exports` lists ALL exported Rust fn
+   * names, identical across every Rust func_def in the program, so the host
+   * compiles and caches exactly one cdylib.
+   */
+  private emitRustFuncDef(node: AST.FuncDecl): ManifestOp[] {
+    const name = node.name.name;
+    // Internal-only fns (and generic unexportables) live in the unit source
+    // verbatim but emit no func_def op.
+    if (this.rustUnit?.internalFns.has(name)) return [];
+    this.recordBinding(name, OmniRuntime.Rust, "function");
+
+    const params: ParamDef[] = node.params.map(p => ({
+      name: p.name.kind === "Identifier" ? p.name.name : "/* pattern */",
+      ...(p.spread ? { spread: true } : {}),
+    }));
+
+    const funcDef: FuncDefOp = {
+      op: "func_def",
+      name,
+      params,
+      body: [],
+      bodyRuntime: OmniRuntime.Rust,
+      ...(node.async ? { async: true } : {}),
+      ...(this.rustUnit
+        ? { source: this.rustUnit.source, exports: this.rustUnit.exports }
+        : { source: this.rustItemSource(node, node.async ? "async " : ""), exports: [name] }),
+    };
+
+    return [funcDef];
+  }
+
+  /**
+   * Emit func_def ops for an opaque raw-scanned Rust `fn` item. Same contract
+   * as emitRustFuncDef: per-fn name/params/async extracted from the verbatim
+   * signature; every op carries the SAME full unit source and export list.
+   */
+  private emitRustItemFuncDefs(node: AST.RustItem): ManifestOp[] {
+    const ops: ManifestOp[] = [];
+    for (const sig of node.fns) {
+      // Internal-only fns (and generic unexportables) live in the unit
+      // source verbatim but emit no func_def op and no manifest binding.
+      if (this.rustUnit?.internalFns.has(sig.name)) continue;
+      this.recordBinding(sig.name, OmniRuntime.Rust, "function");
+      const params: ParamDef[] = sig.params.map(name => ({ name }));
+      const funcDef: FuncDefOp = {
+        op: "func_def",
+        name: sig.name,
+        params,
+        body: [],
+        bodyRuntime: OmniRuntime.Rust,
+        ...(sig.async ? { async: true } : {}),
+        ...(this.rustUnit
+          ? { source: this.rustUnit.source, exports: this.rustUnit.exports }
+          : { source: node.text, exports: [sig.name] }),
+      };
+      ops.push(funcDef);
+    }
+    return ops;
+  }
+
+  /**
+   * Collect the shared Rust compilation unit from the program's top level:
+   * use statements, structs/enums/traits/impls, module-level `const x = expr`
+   * bindings lowered to `std::sync::LazyLock` statics, all Rust fns, and one
+   * generated export shim macro line per EXPORTED fn (fns referenced from
+   * outside the unit — see the export-set analysis below).
+   */
+  private collectRustUnit(nodes: Array<AST.Decl | AST.Stmt>): void {
+    if (!this.source) return;
+
+    const useItems: string[] = [];
+    const typeItems: string[] = [];
+    const staticItems: string[] = [];
+    const fnItems: string[] = [];
+    const shims: string[] = [];
+    const exports: string[] = [];
+    const absorbed = new Set<AST.Decl | AST.Stmt>();
+    /** Source extents of nodes that live INSIDE the unit; masked out of the
+     *  export-set analysis so intra-unit calls don't force exports. */
+    const unitSpans: Array<{ start: number; end: number }> = [];
+    /** Top-level Rust fn signatures pending export-set analysis, decl order. */
+    const pendingFns: Array<{ sig: RustExportSig; node: AST.Decl | AST.Stmt }> = [];
+
+    // Names usable inside the unit without crossing the bridge: use-import
+    // bindings, Rust type names, and previously lowered statics.
+    const moduleBindings = new Set<string>();
+    // Exported Rust fns are manifest stubs — a const whose value calls one is
+    // orchestration, not a module-level Rust item.
+    const rustFnNames = new Set<string>();
+
+    const isRustNode = (node: AST.Decl | AST.Stmt): boolean =>
+      this.affinityMap.get(node)?.runtime === OmniRuntime.Rust;
+
+    const isRustFn = (node: AST.Decl | AST.Stmt): node is AST.FuncDecl =>
+      node.kind === "FuncDecl" && (node.declKeyword === "fn" || isRustNode(node));
+
+    for (const node of nodes) {
+      if (isRustFn(node)) rustFnNames.add(node.name.name);
+      if (node.kind === "RustItem") {
+        for (const sig of node.fns) rustFnNames.add(sig.name);
+      }
+    }
+
+    for (const node of nodes) {
+      switch (node.kind) {
+        // Opaque items from the raw scanner flow into the unit VERBATIM.
+        case "RustItem": {
+          unitSpans.push({ start: node.span.start, end: node.span.end });
+          switch (node.itemKind) {
+            case "use":
+              useItems.push(node.text);
+              absorbed.add(node);
+              for (const bound of node.bindings) moduleBindings.add(bound);
+              break;
+            case "fn":
+              // Not absorbed: emitCompiledBlock emits func_def ops for the
+              // exported subset after the export-set analysis below.
+              fnItems.push(node.text);
+              for (const sig of node.fns) pendingFns.push({ sig, node });
+              break;
+            case "static":
+            case "const":
+              staticItems.push(node.text);
+              absorbed.add(node);
+              if (node.name) {
+                moduleBindings.add(node.name);
+                this.recordBinding(node.name, OmniRuntime.Rust, "value", node);
+              }
+              break;
+            default: // struct/enum/union/trait/impl/mod/type/macro/extern
+              typeItems.push(node.text);
+              absorbed.add(node);
+              if (node.name) moduleBindings.add(node.name);
+              break;
+          }
+          break;
+        }
+
+        case "Import": {
+          if (!isRustNode(node)) break;
+          const raw = this.rustUseItemSource(node);
+          if (!raw) break;
+          useItems.push(raw);
+          absorbed.add(node);
+          unitSpans.push({ start: node.span.start, end: node.span.end });
+          const segments = node.path.split("::");
+          if (segments[0]) moduleBindings.add(segments[0]);
+          const last = segments[segments.length - 1];
+          if (last && last !== "*") moduleBindings.add(last);
+          break;
+        }
+
+        case "ImportDecl": {
+          if (!isRustNode(node)) break;
+          const raw = this.rustUseItemSource(node);
+          if (!raw) break;
+          useItems.push(raw);
+          absorbed.add(node);
+          unitSpans.push({ start: node.span.start, end: node.span.end });
+          const root = node.path.split("::")[0];
+          if (root) moduleBindings.add(root);
+          for (const spec of node.specifiers || []) moduleBindings.add(spec.local);
+          break;
+        }
+
+        case "TypeDecl":
+          if (isRustNode(node) && node.structDecl) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+            unitSpans.push({ start: node.span.start, end: node.span.end });
+            moduleBindings.add(node.name.name);
+          } else if (isRustNode(node)) {
+            // Rust type alias `type A = B;` parsed by the union grammar.
+            const raw = this.rustItemSource(node);
+            if (/^\s*(?:#\[[^\n]*\]\s*\n|\/\/\/[^\n]*\s*\n)*\s*(?:pub(?:\([^)]*\))?\s+)?type\s+[A-Za-z_]/.test(raw)) {
+              typeItems.push(raw.trimEnd().endsWith(";") ? raw : `${raw};`);
+              absorbed.add(node);
+              unitSpans.push({ start: node.span.start, end: node.span.end });
+              moduleBindings.add(node.name.name);
+            }
+          }
+          break;
+
+        case "EnumDecl":
+          if (isRustNode(node)) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+            unitSpans.push({ start: node.span.start, end: node.span.end });
+            moduleBindings.add(node.name.name);
+          }
+          break;
+
+        case "InterfaceDecl":
+        case "ImplDecl":
+          if (isRustNode(node)) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+            unitSpans.push({ start: node.span.start, end: node.span.end });
+          }
+          break;
+
+        case "FuncDecl": {
+          if (!isRustFn(node)) break;
+          unitSpans.push({ start: node.span.start, end: node.span.end });
+          const itemSource = this.rustItemSource(node, node.async ? "async " : "");
+          fnItems.push(itemSource);
+          // Re-scan the reconstructed item so the export-set analysis sees
+          // the same raw type texts as raw-scanned fn items; fall back to
+          // AST-derived facts when the signature scan finds nothing.
+          const scanned = extractRustFnSignatures(itemSource)
+            .find(sig => sig.name === node.name.name);
+          const sig: RustExportSig = scanned ?? {
+            name: node.name.name,
+            async: Boolean(node.async),
+            paramCount: node.params.length,
+            params: node.params.map(p => p.name.kind === "Identifier" ? p.name.name : "arg"),
+          };
+          pendingFns.push({ sig, node });
+          break;
+        }
+
+        case "ConstDecl":
+        case "VarDecl": {
+          if (node.names.length !== 1 || !node.values || node.values.length !== 1) break;
+          const value = node.values[0];
+          const valueAff = this.affinityMap.get(value) || this.affinityMap.get(node);
+          if (valueAff?.runtime !== OmniRuntime.Rust) break;
+          // Absorb only when every referenced root identifier resolves inside
+          // the unit (imports/types/earlier statics) — calls into exported
+          // Rust fns or other-runtime bindings stay orchestration ops.
+          const roots = new Set<string>();
+          this.collectExprRootIdents(value, roots);
+          const allLocal = [...roots].every(r => moduleBindings.has(r) && !rustFnNames.has(r));
+          if (roots.size === 0 || !allLocal) break;
+
+          const bindName = node.names[0].name;
+          staticItems.push(this.rustStaticItem(bindName, node, value));
+          absorbed.add(node);
+          unitSpans.push({ start: node.span.start, end: node.span.end });
+          moduleBindings.add(bindName);
+          this.recordBinding(bindName, OmniRuntime.Rust, "value", node);
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    // ── Export-set analysis ─────────────────────────────────────────
+    // A fn is exported only when its name is referenced OUTSIDE the unit:
+    // mask every unit-resident extent out of the source and look for the
+    // bare identifier in what remains (other-runtime expressions, top-level
+    // poly statements, spawn ops, stubs). This is deliberately conservative:
+    // any appearance of the name in non-unit text — even in a comment —
+    // keeps the fn exported; only fns whose names appear nowhere outside
+    // the unit are proven internal-only.
+    const outsideText = this.maskedOutsideText(unitSpans);
+    const internalFns = new Set<string>();
+    for (const { sig, node } of pendingFns) {
+      const referencedOutside = new RegExp(`\\b${sig.name}\\b`).test(outsideText);
+      if (!referencedOutside) {
+        internalFns.add(sig.name);
+        continue;
+      }
+      if (sig.typeGenerics) {
+        // A generic fn cannot be monomorphized behind a serde shim. Skip the
+        // shim AND the export so the unit still compiles — the call site
+        // fails at runtime with unknown-function, which is the accurate
+        // error.
+        this.addDiagnostic(
+          "warning",
+          "rust-generic-export",
+          `Rust fn '${sig.name}' is generic and cannot be exported; ` +
+            `call it through a concrete wrapper fn instead ` +
+            `(e.g. fn ${sig.name}_concrete(...) { ${sig.name}(...) })`,
+          node,
+        );
+        internalFns.add(sig.name);
+        continue;
+      }
+      shims.push(this.rustExportShim(sig, node));
+      exports.push(sig.name);
+    }
+
+    if (exports.length === 0 && absorbed.size === 0 && fnItems.length === 0) return;
+
+    const sections = [
+      useItems.join("\n"),
+      ...typeItems,
+      ...staticItems,
+      ...fnItems,
+      shims.join("\n"),
+    ].filter(section => section.length > 0);
+
+    this.rustUnit = {
+      source: sections.join("\n\n"),
+      exports,
+      absorbed,
+      internalFns,
+    };
+  }
+
+  /**
+   * The program source with every unit-resident extent blanked out — the
+   * text the export-set analysis scans for outside references to Rust fns.
+   */
+  private maskedOutsideText(spans: Array<{ start: number; end: number }>): string {
+    const src = this.source!;
+    const sorted = [...spans].sort((a, b) => a.start - b.start);
+    let out = "";
+    let pos = 0;
+    for (const span of sorted) {
+      if (span.start > pos) out += src.slice(pos, span.start);
+      pos = Math.max(pos, span.end);
+    }
+    if (pos < src.length) out += src.slice(pos);
+    return out;
+  }
+
+  /**
+   * Build the export shim for one exported Rust fn. When the signature has
+   * borrowed params (`&str`, `&[T]`) — and, where applicable, a borrowed
+   * `&str`-shaped return — generate a concrete owned-data adapter fn in the
+   * unit and shim THAT instead. The exported symbol stays
+   * `OmniVMCall_<original name>`: the host's call contract is by original
+   * name.
+   *
+   * Adaptation is strictly mechanical:
+   *   params:  `&str` -> String (pass `&x`); `&[T]` -> Vec<T> (pass `&x`);
+   *            everything else passes through unchanged.
+   *   return:  `&str` -> String via .to_string();
+   *            `Vec<&str>` -> Vec<String>; `Option<&str>` -> Option<String>.
+   * A return type with any OTHER borrow cannot be adapted: emit a warning
+   * diagnostic and fall back to the direct shim (rustc reports the rest).
+   */
+  private rustExportShim(sig: RustExportSig, node: AST.Decl | AST.Stmt): string {
+    const macroName = sig.async ? "export_async_fn" : "export_fn";
+    // DataFrame params use the typed-kind macro form so the Arrow C-Data
+    // pointer handoff stays zero-copy (the json kind goes through serde).
+    const kindList = rustShimKinds(sig);
+    const arityOrKinds = kindList ?? `${sig.paramCount}`;
+    const directShim =
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${sig.name}, ${arityOrKinds});`;
+
+    const paramTypes = sig.paramTypes ?? [];
+    const params = sig.params.map((name, i) => adaptRustParamType(name, paramTypes[i] ?? ""));
+    const ret = adaptRustReturnType(sig.returnType ?? "");
+
+    if (ret.kind === "unadaptable") {
+      this.addDiagnostic(
+        "warning",
+        "rust-borrowed-return",
+        `Exported Rust fn '${sig.name}' returns borrowed data ` +
+          `(${sig.returnType}); exported fns must return owned data`,
+        node,
+      );
+      return directShim;
+    }
+
+    const needsAdapter = params.some(p => p.adapted) || ret.kind === "mapped";
+    if (!needsAdapter) return directShim;
+    // An adapter must restate every param type; bail to the direct shim when
+    // any passthrough type text is unavailable (pattern params etc.).
+    if (params.some(p => p.ownedType.length === 0)) return directShim;
+
+    const adapterName = `__omnivm_export_${sig.name}`;
+    const paramList = params.map(p => `${p.name}: ${p.ownedType}`).join(", ");
+    const args = params.map(p => (p.adapted ? `&${p.name}` : p.name)).join(", ");
+    const retClause = ret.ownedType.length > 0 ? ` -> ${ret.ownedType}` : "";
+    const body = `${sig.name}(${args})${sig.async ? ".await" : ""}${ret.mapExpr}`;
+    const fnIntro = sig.async ? "async fn" : "fn";
+    return [
+      `${fnIntro} ${adapterName}(${paramList})${retClause} {`,
+      `    ${body}`,
+      `}`,
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${adapterName}, ${rustShimKinds(sig) ?? sig.paramCount});`,
+    ].join("\n");
+  }
+
+  /**
+   * Lower a module-level Rust `const name = expr` binding to a lazily
+   * initialized static (`std::sync::LazyLock`), preserving the author's name
+   * so fn bodies referencing it verbatim keep working.
+   */
+  private rustStaticItem(name: string, node: AST.ConstDecl | AST.VarDecl, value: AST.Expr): string {
+    const valueSource = this.sliceSource(value) || exprToCode(value, this.source);
+    let typeName: string | undefined;
+    if (node.type) {
+      typeName = this.sliceSource(node.type as unknown as { span: AST.Span });
+    }
+    if (!typeName && value.kind === "Call" && value.callee.kind === "Member" &&
+        value.callee.property.kind === "Identifier" && value.callee.property.name === "new") {
+      typeName = this.sliceSource(value.callee.object)?.replace(/\./g, "::");
+    }
+    if (!typeName) typeName = "omnivm::Value";
+    return [
+      "#[allow(non_upper_case_globals)]",
+      `static ${name}: std::sync::LazyLock<${typeName}> = std::sync::LazyLock::new(|| ${valueSource});`,
+    ].join("\n");
+  }
+
+  /**
+   * Verbatim source for a union-parsed `use` import absorbed into the Rust
+   * unit, including preceding attribute lines (`#[cfg(...)]`) and a trailing
+   * semicolon. Returns undefined when the import is not a Rust `use`.
+   */
+  private rustUseItemSource(node: { span: AST.Span }): string | undefined {
+    const raw = this.rustItemSource(node);
+    if (!raw || !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s/.test(raw)) return undefined;
+    return raw.trimEnd().endsWith(";") ? raw : `${raw};`;
+  }
+
+  /**
+   * Slice a Rust item's raw source, expanding backwards to include preceding
+   * attribute lines (#[derive(...)], #[serde(tag = "type")]) which the lexer
+   * treats as comments and the node span excludes. `prefix` re-attaches
+   * modifiers the parser consumed before the span start (e.g. `async `).
+   */
+  private rustItemSource(node: { span: AST.Span }, prefix = ""): string {
+    const src = this.source;
+    if (!src) return "";
+
+    // When the parser consumed leading modifiers (pub/async/unsafe/const)
+    // before the node span, the line residue restores them verbatim.
+    const residueLineStart = src.lastIndexOf("\n", node.span.start - 1) + 1;
+    const residue = src.slice(residueLineStart, node.span.start);
+    let text: string;
+    if (residue.trim().length > 0 &&
+        /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|unsafe\s+|const\s+)*$/.test(residue)) {
+      text = src.slice(residueLineStart, node.span.end);
+    } else {
+      const body = src.slice(node.span.start, node.span.end);
+      text = prefix && !body.startsWith(prefix.trim()) ? prefix + body : body;
+    }
+
+    // Walk back over immediately preceding attribute lines.
+    let lineStart = residueLineStart;
+    let attrStart = lineStart;
+    while (attrStart > 0) {
+      const prevEnd = attrStart - 1;
+      const prevStart = src.lastIndexOf("\n", prevEnd - 1) + 1;
+      const prevLine = src.slice(prevStart, prevEnd);
+      // Attribute lines AND doc-comment lines belong to the item (same rule
+      // as the raw item scanner's walk-back).
+      if (/^\s*#\[[^\n]*\]\s*$/.test(prevLine) || /^\s*\/\/\/(?:[^\n]*)?$/.test(prevLine)) {
+        attrStart = prevStart;
+      } else {
+        break;
+      }
+    }
+    if (attrStart < lineStart) {
+      return src.slice(attrStart, lineStart) + text;
+    }
+    return text;
+  }
+
+  /**
+   * Collect root identifier names referenced by an expression: bare
+   * identifiers and the left-most objects of member chains (property names
+   * are skipped — `Client::new()` references only `Client`).
+   */
+  private collectExprRootIdents(node: unknown, out: Set<string>): void {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) this.collectExprRootIdents(item, out);
+      return;
+    }
+    const n = node as any;
+    if (n.kind === "Identifier") {
+      out.add(n.name);
+      return;
+    }
+    if (n.kind === "Member") {
+      this.collectExprRootIdents(n.object, out);
+      return;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === "span") continue;
+      this.collectExprRootIdents(value, out);
+    }
+  }
+
+  /** Raw source slice for a node, when source text and a real span exist. */
+  private sliceSource(node: { span?: AST.Span } | undefined): string | undefined {
+    if (!node || !this.source || !node.span || node.span.end <= node.span.start) return undefined;
+    return this.source.slice(node.span.start, node.span.end);
   }
 
   // ─── Go Source Reconstruction ──────────────────────────────────
@@ -3883,4 +4435,91 @@ export class ManifestCodeGenerator {
       segments,
     };
   }
+}
+
+// ─── Rust export adapter helpers ──────────────────────────────────────
+
+/** Strip lifetime annotations and collapse whitespace for type matching. */
+function stripRustLifetimes(typeText: string): string {
+  return typeText.replace(/'\w+\s*/g, "").replace(/\s+/g, " ").trim();
+}
+
+interface AdaptedRustParam {
+  name: string;
+  /** Owned type text for the adapter signature ("" when unknown). */
+  ownedType: string;
+  /** True when the adapter must re-borrow (`&x`) at the call site. */
+  adapted: boolean;
+}
+
+/**
+ * Owned-data adaptation for one exported-fn parameter:
+ * `&str` -> String, `&[T]` -> Vec<T>; anything else passes through with the
+ * author's type text unchanged.
+ */
+/**
+ * Per-param extraction kinds for the export shim: `(df, json, ...)` when any
+ * param is DataFrame-typed (zero-copy Arrow import), else null (arity form).
+ */
+function rustShimKinds(sig: RustExportSig): string | null {
+  const paramTypes = sig.paramTypes ?? [];
+  if (sig.paramCount === 0 || sig.paramCount > 4) return null;
+  const kinds: string[] = [];
+  let sawDf = false;
+  for (let i = 0; i < sig.paramCount; i++) {
+    const t = stripRustLifetimes(paramTypes[i] ?? "").trim();
+    if (t === "DataFrame" || t === "polars::prelude::DataFrame" || t === "prelude::DataFrame") {
+      kinds.push("df");
+      sawDf = true;
+    } else {
+      kinds.push("json");
+    }
+  }
+  return sawDf ? `(${kinds.join(", ")})` : null;
+}
+
+function adaptRustParamType(name: string, typeText: string): AdaptedRustParam {
+  const t = stripRustLifetimes(typeText);
+  if (/^&\s*str$/.test(t)) {
+    return { name, ownedType: "String", adapted: true };
+  }
+  const slice = /^&\s*\[\s*(.+?)\s*\]$/.exec(t);
+  if (slice && !slice[1].includes("&")) {
+    return { name, ownedType: `Vec<${slice[1]}>`, adapted: true };
+  }
+  return { name, ownedType: typeText.trim(), adapted: false };
+}
+
+interface AdaptedRustReturn {
+  kind: "none" | "passthrough" | "mapped" | "unadaptable";
+  /** Owned return type text for the adapter signature ("" when fn returns ()). */
+  ownedType: string;
+  /** Postfix expression mapping the borrowed result to owned data. */
+  mapExpr: string;
+}
+
+/**
+ * Owned-data adaptation for an exported fn's return type. Only `&str`-shaped
+ * borrows are mapped (`&str`, `Vec<&str>`, `Option<&str>`); any other borrow
+ * is unadaptable and keeps the direct shim (plus a warning diagnostic).
+ */
+function adaptRustReturnType(returnText: string): AdaptedRustReturn {
+  const raw = returnText.trim();
+  if (raw.length === 0) return { kind: "none", ownedType: "", mapExpr: "" };
+  const t = stripRustLifetimes(raw);
+  if (!t.includes("&")) return { kind: "passthrough", ownedType: raw, mapExpr: "" };
+  if (/^&\s*str$/.test(t)) {
+    return { kind: "mapped", ownedType: "String", mapExpr: ".to_string()" };
+  }
+  if (/^Vec\s*<\s*&\s*str\s*>$/.test(t)) {
+    return {
+      kind: "mapped",
+      ownedType: "Vec<String>",
+      mapExpr: ".into_iter().map(|v| v.to_string()).collect()",
+    };
+  }
+  if (/^Option\s*<\s*&\s*str\s*>$/.test(t)) {
+    return { kind: "mapped", ownedType: "Option<String>", mapExpr: ".map(|v| v.to_string())" };
+  }
+  return { kind: "unadaptable", ownedType: raw, mapExpr: "" };
 }

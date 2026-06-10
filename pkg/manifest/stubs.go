@@ -2224,6 +2224,17 @@ func (e *Executor) handleStreamNext(id handles.ID) (interface{}, bool, bool, err
 		return nil, false, false, err
 	}
 	switch v := entry.Value.(type) {
+	case *RustStreamRef:
+		value, done, err := v.next()
+		if err != nil {
+			return nil, false, true, err
+		}
+		if done {
+			if relErr := e.ensureHandleTable().ReleaseAllRefs(id); relErr != nil {
+				return nil, false, true, relErr
+			}
+		}
+		return value, done, true, nil
 	case *ChanRef:
 		value, done := v.recvStreamValue()
 		if done {

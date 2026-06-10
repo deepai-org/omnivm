@@ -182,6 +182,8 @@ export interface Call {
   callee: Expr;
   args: Expr[];
   typeArgs?: TypeNode[];
+  /** Type args were spelled with Rust turbofish syntax (`::<T, U>`). */
+  turbofish?: boolean;
   optional?: boolean;
   span: Span;
 }
@@ -571,7 +573,7 @@ export interface JSXSpreadChild {
 
 export interface RuntimeTag {
   kind: "RuntimeTag";
-  runtime: "py" | "js" | "go" | "rb" | "java";
+  runtime: "py" | "js" | "go" | "rb" | "java" | "rs";
   expr: Expr;
   span: Span;
 }
@@ -603,7 +605,8 @@ export type Decl =
   | EnumDecl
   | PackageDecl
   | ExportDecl
-  | ImplDecl;
+  | ImplDecl
+  | RustItem;
 
 export interface Import {
   kind: "Import";
@@ -712,6 +715,8 @@ export interface TypeDecl {
   name: Identifier;
   genericParams?: Identifier[];
   definition: TypeNode;
+  /** True for Rust-style `struct Name { ... }` declarations. */
+  structDecl?: boolean;
   span: Span;
 }
 
@@ -783,6 +788,8 @@ export interface EnumDecl {
   kind: "EnumDecl";
   name: Identifier;
   members: EnumMember[];
+  /** True when any variant carries a payload (Rust `Name { .. }` / `Name(..)`). */
+  payloadVariants?: boolean;
   span: Span;
 }
 
@@ -830,6 +837,38 @@ export interface ExportDecl {
 export interface ExportSpecifier {
   local: Identifier;
   exported?: Identifier;
+  span: Span;
+}
+
+/**
+ * One opaque Rust item captured verbatim by the raw item scanner
+ * (src/rust-item-scanner.ts). The compiler never looks inside `text` except
+ * to extract fn signatures; the slice flows verbatim into the shared Rust
+ * compilation unit.
+ */
+export interface RustItem {
+  kind: "RustItem";
+  itemKind: "fn" | "struct" | "enum" | "union" | "trait" | "impl" | "mod"
+    | "use" | "static" | "const" | "type" | "macro" | "extern";
+  /** Verbatim source slice, including preceding #[...] / /// lines. */
+  text: string;
+  /** Primary declared name, when extractable. */
+  name?: string;
+  /** Top-level fn signatures (exactly one when itemKind === "fn"). */
+  fns: Array<{
+    name: string;
+    async: boolean;
+    paramCount: number;
+    params: string[];
+    /** Raw parameter type texts, parallel to `params` ("" when unknown). */
+    paramTypes?: string[];
+    /** Raw return type text after `->` ("" when none). */
+    returnType?: string;
+    /** True when the fn declares non-lifetime generic parameters. */
+    typeGenerics?: boolean;
+  }>;
+  /** Names this item binds at module scope. */
+  bindings: string[];
   span: Span;
 }
 

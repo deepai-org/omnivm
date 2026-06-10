@@ -144,6 +144,18 @@ export const METHOD_AFFINITY: Record<string, OmniRuntime> = {
   collect_: OmniRuntime.Java, // disambiguated from Ruby
   synchronized_: OmniRuntime.Java,
 
+  // Rust methods
+  unwrap: OmniRuntime.Rust,
+  expect: OmniRuntime.Rust,
+  unwrap_or: OmniRuntime.Rust,
+  unwrap_or_else: OmniRuntime.Rust,
+  unwrap_or_default: OmniRuntime.Rust,
+  par_iter: OmniRuntime.Rust,
+  into_par_iter: OmniRuntime.Rust,
+  iter_mut: OmniRuntime.Rust,
+  as_str: OmniRuntime.Rust,
+  to_owned: OmniRuntime.Rust,
+
   // Go methods (less common as method names, but some standard patterns)
   Println: OmniRuntime.Go,
   Printf: OmniRuntime.Go,
@@ -277,6 +289,13 @@ export const BUILTIN_AFFINITY: Record<string, OmniRuntime> = {
   wait: OmniRuntime.Go,
   fmt: OmniRuntime.Go,
 
+  // Rust builtins. `Some(x)`, `Ok(v)`, `Err(e)` only exist as call forms in
+  // Rust among the donor languages. Bare `None` is deliberately NOT mapped:
+  // it collides with Python's None.
+  Some: OmniRuntime.Rust,
+  Ok: OmniRuntime.Rust,
+  Err: OmniRuntime.Rust,
+
   // Ruby builtins
   puts: OmniRuntime.Ruby,
   gets: OmniRuntime.Ruby,
@@ -360,6 +379,16 @@ export const GLOBAL_AFFINITY: Record<string, OmniRuntime> = {
 
   // Go package-like roots commonly used without an import in examples.
   fmt: OmniRuntime.Go,
+
+  // Rust globals: result/option constructors, Vec, and crate roots that are
+  // meaningful without an explicit `use` (tokio::spawn, serde_json::json!).
+  Some: OmniRuntime.Rust,
+  Ok: OmniRuntime.Rust,
+  Err: OmniRuntime.Rust,
+  Vec: OmniRuntime.Rust,
+  tokio: OmniRuntime.Rust,
+  serde_json: OmniRuntime.Rust,
+  serde: OmniRuntime.Rust,
 
   // Ruby core class roots.
   Fiber: OmniRuntime.Ruby,

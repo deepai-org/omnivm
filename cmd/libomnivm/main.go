@@ -162,6 +162,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	rustrt "github.com/omnivm/omnivm/pkg/rust"
 	"github.com/omnivm/omnivm/pkg/watchdog"
 )
 
@@ -271,6 +272,7 @@ func OmniInit(cList *C.char) *C.char {
 		"javascript": func() pkg.Runtime { return javascript.New() },
 		"java":       func() pkg.Runtime { return jvm.New() },
 		"ruby":       func() pkg.Runtime { return ruby.New() },
+		"rust":       func() pkg.Runtime { return rustrt.New() },
 	}
 
 	for _, name := range names {
@@ -617,7 +619,7 @@ func OmniHostThreadID() C.long {
 
 //export OmniWatchdogCapabilities
 func OmniWatchdogCapabilities() *C.char {
-	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline")
+	return C.CString("python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline,rust=await-cancel+deadline")
 }
 
 func threadAffinityStatus(hostThreadID int64) map[string]interface{} {
@@ -709,7 +711,7 @@ func OmniStatus() *C.char {
 		"go_deadline_count":           goDeadlineCount.Load(),
 		"lifecycle_errors":            lifecycleErrors.Load(),
 		"shutdown_while_active_count": shutdownWhileActiveCount.Load(),
-		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline",
+		"watchdog_capabilities":       "python=host-interrupt,javascript=watchdog,ruby=watchdog,java=interrupt,go=deadline,rust=await-cancel+deadline",
 		"thread_affinity":             threadAffinityStatus(int64(C.get_thread_id())),
 		"ruby_threading": map[string]interface{}{
 			"mode":                     "single_vm_thread",
@@ -1323,6 +1325,8 @@ func runtimeNameForWatchdog(runtimeID int) string {
 		return "java"
 	case watchdog.RuntimeGo:
 		return "go"
+	case watchdog.RuntimeRust:
+		return "rust"
 	default:
 		return "none"
 	}

@@ -666,6 +666,14 @@ export class Pass2Propagation {
 
     // Async infection: await propagates async flag
     if (node.op === "await") {
+      const existingAwait = this.affinityMap.get(node);
+      if (!node.prefix && existingAwait?.confidence === "definite") {
+        // Rust postfix `.await` — definite Pass 1 syntax evidence wins over
+        // argument propagation (JS `await` is prefix-only).
+        existingAwait.async = true;
+        this.affinityMap.set(node, existingAwait);
+        return existingAwait;
+      }
       if (argAff.confidence !== "fallback") {
         this.affinityMap.set(node, { ...argAff });
       } else if (!this.affinityMap.has(node)) {

@@ -205,6 +205,17 @@ func (r *Runtime) GetUVBackendFD() int {
 	return int(C.omnivm_v8_get_uv_backend_fd(r.context))
 }
 
+// GetUVBackendTimeout returns ms until libuv's next timer deadline (0 = work
+// ready now, -1 = no pending deadline), via the public uv_backend_timeout()
+// API. Used for deadline-aware pumping while the golden thread is parked in
+// another reactor.
+func (r *Runtime) GetUVBackendTimeout() int {
+	if r.context == nil {
+		return -1
+	}
+	return int(C.omnivm_v8_get_uv_backend_timeout(r.context))
+}
+
 // TerminateExecution triggers V8's thread-safe execution termination.
 // Safe to call from any thread (e.g. watchdog pthread).
 func (r *Runtime) TerminateExecution() {
