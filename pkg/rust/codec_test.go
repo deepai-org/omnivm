@@ -131,3 +131,47 @@ func logRecords(t *testing.T, r *Runtime) float64 {
 	n, _ := stats["log_records_forwarded"].(float64)
 	return n
 }
+
+// TestSyncCallsStayOnGoldenThreadZeroTokio pins the golden-thread invariant:
+// normal call-stack Rust (sync fns, sync bridge calls) runs on the caller's
+// OS thread with the tokio runtime never even initialized. Runs in a fresh
+// subprocess so other tests' async usage cannot contaminate the OnceLock.
+func TestSyncCallsStayOnGoldenThreadZeroTokio(t *testing.T) {
+	if os.Getenv("OMNIVM_RUST_SYNC_CHILD") == "1" {
+		r := requireToolchain(t)
+		callerTID := syscall.Gettid()
+		var bridgeTID int
+		r.BridgeFn = func(runtime, code string) string {
+			bridgeTID = syscall.Gettid()
+			return "pong"
+		}
+		r.installBridge()
+		result := r.Execute(`
+let answer = omnivm::call("probe", "ping").unwrap();
+println!("bridge said {answer}; sum {}", (1..=4i64).product::<i64>());
+`)
+		if result.Err != nil {
+			t.Fatalf("Execute: %v", result.Err)
+		}
+		if bridgeTID != callerTID {
+			t.Fatalf("bridge callback ran on OS thread %d, caller is %d — sync chains must share one stack", bridgeTID, callerTID)
+		}
+		var stats map[string]interface{}
+		if err := json.Unmarshal([]byte(r.Support().Stats()), &stats); err != nil {
+			t.Fatalf("stats: %v", err)
+		}
+		if stats["runtime_initialized"] != false {
+			t.Fatalf("tokio was initialized by purely synchronous calls: %v", stats)
+		}
+		return
+	}
+	if _, err := GetToolchain(); err != nil {
+		t.Skipf("rust toolchain unavailable: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "TestSyncCallsStayOnGoldenThreadZeroTokio$", "-test.v")
+	cmd.Env = append(os.Environ(), "OMNIVM_RUST_SYNC_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS") {
+		t.Fatalf("sync golden-thread invariant violated: %v\n%.600s", err, out)
+	}
+}
