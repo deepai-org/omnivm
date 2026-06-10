@@ -162,7 +162,12 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
         // Clean up the temporary storage
         delete (expr as any)._genericArgs;
       }
-      
+      // Rust turbofish spelling marks the call as definite Rust.
+      if ((expr as any)._turbofish) {
+        callExpr.turbofish = true;
+        delete (expr as any)._turbofish;
+      }
+
       expr = callExpr;
       
       // Check for Ruby block after function call
@@ -415,6 +420,15 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
     
     // Scope resolution operator (C++/Rust style)
     if (host.match("::")) {
+      // Rust turbofish: `expr::<T, U>(args)` — type args spelled after `::`.
+      if (host.check("<")) {
+        const turbofishArgs = host.tryParseGenericArgs();
+        if (turbofishArgs) {
+          (expr as any)._genericArgs = turbofishArgs;
+          (expr as any)._turbofish = true;
+          continue;
+        }
+      }
       // After ::, keywords can be used as identifiers
       const next = host.peek();
       let property: AST.Identifier;

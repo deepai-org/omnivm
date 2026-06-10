@@ -19,6 +19,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "m
 # Arrow tabular interchange (the `table` lane): IPC + serde projection so
 # user fns take/return plain polars DataFrames across the boundary.
 polars = { version = "0.46", features = ["lazy", "serde", "ipc", "ipc_streaming"] }
+# C Data Interface pointer crossing (Tier-2 zero-copy tabular lane)
+polars-arrow = "0.46"
 base64 = "0.22"
-# log facade bridge: ecosystem crates logging through `log` stay visible
+# log facade bridge: ecosystem crates logging through `log` stay visible;
+# tracing's "log" feature mirrors tracing events into the same facade when no
+# subscriber is installed (the tracing-log bridge from the design).
 log = "0.4"
+tracing = { version = "0.1", features = ["log"] }

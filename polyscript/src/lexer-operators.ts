@@ -65,7 +65,9 @@ export function scanOperator(h: ScanHost, htmlTags: Set<string>): void {
               return;
             }
           }
-        } else {
+        } else if (charAfterIdentifier !== ',') {
+          // `<I,` is a generic parameter list (`fn new<I, S>`), never JSX —
+          // a JSX tag name is never directly followed by a comma.
           h.addTokenEx(TokenType.JSXTagStart, '<', start, h.position, startLine, startColumn);
           LS.enterJSX(h.state);
           return;

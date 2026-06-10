@@ -251,6 +251,11 @@ pub fn parse_args(args_json: *mut c_char) -> Result<Vec<serde_json::Value>, Omni
 /// transparently.
 pub fn arg<T: serde::de::DeserializeOwned>(args: &[serde_json::Value], index: usize) -> Result<T, OmniError> {
     let value = args.get(index).cloned().unwrap_or(serde_json::Value::Null);
+    if let Some(decoded) = crate::cdata::decode_cdata_marker(&value) {
+        let table_value = decoded.map_err(OmniError::msg)?;
+        return serde_json::from_value(table_value)
+            .map_err(|e| OmniError::msg(format!("argument {index} (arrow cdata): {e}")));
+    }
     if let Some(decoded) = crate::table::decode_ipc_marker(&value) {
         let table_value = decoded.map_err(OmniError::msg)?;
         return serde_json::from_value(table_value)
@@ -258,6 +263,31 @@ pub fn arg<T: serde::de::DeserializeOwned>(args: &[serde_json::Value], index: us
     }
     serde_json::from_value(value)
         .map_err(|e| OmniError::msg(format!("argument {index}: {e}")))
+}
+
+/// Direct DataFrame extraction for `df`-kind params: Arrow C-Data markers
+/// import by pointer (zero-copy), IPC markers decode without the serde
+/// projection, plain values fall back to serde.
+pub fn arg_dataframe(args: &[serde_json::Value], index: usize) -> Result<polars::prelude::DataFrame, OmniError> {
+    let value = args.get(index).cloned().unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = value.as_object() {
+        if obj.get(crate::cdata::ARROW_CDATA_KEY) == Some(&serde_json::Value::Bool(true)) {
+            let parse = |key: &str| -> Option<u64> {
+                obj.get(key).and_then(|v| {
+                    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
+            };
+            let (Some(schema_ptr), Some(array_ptr)) = (parse("schema"), parse("array")) else {
+                return Err(OmniError::msg("arrow cdata marker missing pointers"));
+            };
+            return crate::cdata::import_dataframe_cdata(schema_ptr, array_ptr).map_err(OmniError::msg);
+        }
+        if obj.contains_key(crate::table::ARROW_IPC_KEY) {
+            return crate::table::decode_ipc_dataframe(&value).map_err(OmniError::msg);
+        }
+    }
+    serde_json::from_value(value)
+        .map_err(|e| OmniError::msg(format!("argument {index} (dataframe): {e}")))
 }
 
 /// Runs an export body under catch_unwind, encoding the outcome as the

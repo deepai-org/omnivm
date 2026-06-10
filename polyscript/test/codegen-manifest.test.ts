@@ -187,7 +187,9 @@ describe('FuncDefOp', () => {
   });
 
   test('Rust fn generates func_def with compiled block', () => {
-    const m = parseAndManifest('fn compute(x: i32) -> i32 { x * 2 }');
+    // The call site keeps `compute` in the export set — fns never referenced
+    // outside the Rust unit are internal-only and emit no func_def op.
+    const m = parseAndManifest('fn compute(x: i32) -> i32 { x * 2 }\nconst doubled = compute(4)');
     // Rust is compiled — should be exec_compiled or func_def
     const hasCompiled = m.ops.some(op =>
       op.op === 'exec_compiled' ||

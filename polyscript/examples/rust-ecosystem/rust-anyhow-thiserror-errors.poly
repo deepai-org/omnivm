@@ -25,10 +25,8 @@ fn withdraw(account: String, balance: i64, amount: i64) -> Result<i64> {
 
 const remaining = withdraw("acct-9", 100, 30)
 
-caught = ""
 try:
     withdraw("frozen-1", 100, 1)
+    print("withdraw unexpectedly succeeded")
 except RuntimeError as e:
-    caught = str(e)
-
-print(f"remaining={remaining} caught_frozen={'frozen' in caught}")
+    print(f"remaining={remaining} caught={e.message}")

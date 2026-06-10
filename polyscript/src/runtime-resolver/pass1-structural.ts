@@ -133,6 +133,32 @@ export class Pass1Structural {
         break;
 
       // --- Definite Rust ---
+      case "RustItem": {
+        // Opaque Rust item sliced verbatim by the raw item scanner — the
+        // strongest possible Rust evidence.
+        this.assign(node, OmniRuntime.Rust, "definite", {
+          type: "syntax",
+          detail: `Rust item (raw-scanned): ${node.itemKind}`,
+        });
+        const itemAffinity = this.getAffinity(node)!;
+        for (const sig of node.fns) {
+          this.symbolTable.define(sig.name, {
+            name: sig.name,
+            affinity: itemAffinity,
+            declNode: node,
+          });
+        }
+        for (const bound of node.bindings) {
+          if (node.fns.some(sig => sig.name === bound)) continue;
+          this.symbolTable.define(bound, {
+            name: bound,
+            affinity: itemAffinity,
+            declNode: node,
+          });
+        }
+        break;
+      }
+
       case "TypeDecl":
         // Rust `struct Name { ... }` (Go spells it `type Name struct`).
         if (node.structDecl) {
@@ -751,6 +777,15 @@ export class Pass1Structural {
   }
 
   private visitCall(node: AST.Call): void {
+    // Rust turbofish: `expr::<T, U>(args)` — no other donor language spells
+    // type arguments after `::`.
+    if (node.turbofish) {
+      this.assign(node, OmniRuntime.Rust, "definite", {
+        type: "syntax",
+        detail: "Rust turbofish call: ::<...>(",
+      });
+    }
+
     // Rust macro invocation: `ident!(...)` — println!, vec!, format!, json!,
     // panic!. The parser represents the macro bang as a postfix `!` unary on
     // the macro name. No other donor language has this form (bare `panic(`
@@ -1131,6 +1166,9 @@ export class Pass1Structural {
           const rawString = this.nodeSource(expr)?.trim();
           if (expr.delimiter === "`") {
             this.assign(expr, OmniRuntime.JavaScript, "definite", { type: "syntax", detail: "JavaScript template literal" });
+          } else if (expr.flags?.format) {
+            // f-string in expression position is Python-only syntax.
+            this.assign(expr, OmniRuntime.Python, "definite", { type: "syntax", detail: "Python f-string" });
           }
           if (rawString && this.isRubyStabbyLambdaSource(rawString)) {
             this.assign(expr, OmniRuntime.Ruby, "definite", { type: "syntax", detail: "Ruby stabby lambda ->" });

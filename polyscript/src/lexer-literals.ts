@@ -121,6 +121,13 @@ export function scanNumber(h: ScanHost): void {
   const startColumn = h.column - 1;
   let value = h.source[start];
 
+  // Rust tuple indexing (`pair.0`): the numeric literal consumes the
+  // MemberAccess mode the `.` opened, so the NEXT identifier-like token is
+  // not demoted from keyword to identifier.
+  if (h.state.memberAccess) {
+    h.state.memberAccess = false;
+  }
+
   // Check for hex, octal, binary
   if (value === '0') {
     const next = h.peek();

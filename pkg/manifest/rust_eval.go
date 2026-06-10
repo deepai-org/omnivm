@@ -37,10 +37,27 @@ func (e *Executor) evalRustCode(op *Op) (interface{}, error) {
 	}
 
 	value, err := e.callGoFunc(funcName, args, "")
+	e.cleanupRustCDataExports()
 	if err != nil {
 		return nil, err
 	}
 	return e.bindRustResult(op.Bind, value)
+}
+
+// cleanupRustCDataExports releases python-side C-Data shells after the Rust
+// call completes (moved arrays are no-ops; never-imported exports release
+// their buffers here — the failure path the C Data spec requires).
+func (e *Executor) cleanupRustCDataExports() {
+	pyRT, ok := e.runtimes["python"]
+	if !ok {
+		return
+	}
+	_ = pyRT.Execute(`
+try:
+    __omnivm_cdata_cleanup()
+except NameError:
+    pass
+`)
 }
 
 // bindRustResult stores the result; Arrow IPC table results materialize as a
@@ -173,19 +190,69 @@ func (e *Executor) evalForeignRustArg(rtName, expr string) (interface{}, error) 
 	var wrapped string
 	switch rtName {
 	case "python":
-		wrapped = fmt.Sprintf(`(lambda __omnivm_v: __import__("json").dumps({%q: __import__("base64").b64encode(__omnivm_arrow_ipc(__omnivm_v)).decode()}) if (hasattr(__omnivm_v, "to_arrow") or hasattr(__omnivm_v, "to_parquet")) else __import__("json").dumps(__omnivm_v))(%s)`, arrowIPCMarkerKey, expr)
+		wrapped = "__omnivm_rust_arg(" + expr + ")"
 		setup := `
+def __omnivm_arrow_table(__omnivm_df):
+    import pyarrow as __pa
+    if isinstance(__omnivm_df, __pa.Table):
+        return __omnivm_df
+    if hasattr(__omnivm_df, "to_arrow"):
+        return __omnivm_df.to_arrow()
+    if hasattr(__omnivm_df, "__arrow_c_stream__"):
+        return __pa.table(__omnivm_df)
+    return __pa.Table.from_pandas(__omnivm_df, preserve_index=False)
+
 def __omnivm_arrow_ipc(__omnivm_df):
     import io as __io, pyarrow as __pa
-    if hasattr(__omnivm_df, "to_arrow"):
-        __tbl = __omnivm_df.to_arrow()
-    else:
-        __tbl = __pa.Table.from_pandas(__omnivm_df, preserve_index=False)
+    __tbl = __omnivm_arrow_table(__omnivm_df)
     __sink = __io.BytesIO()
     with __pa.ipc.new_stream(__sink, __tbl.schema) as __w:
         __w.write_table(__tbl)
     return __sink.getvalue()
+
+__omnivm_cdata_registry = []
+
+def __omnivm_arrow_cdata(__omnivm_df):
+    # Arrow C Data pointer handoff (zero-copy): the importer takes the
+    # array; the schema shell is released by __omnivm_cdata_cleanup.
+    import pyarrow as __pa
+    from pyarrow.cffi import ffi as __pf
+    __tbl = __omnivm_arrow_table(__omnivm_df).combine_chunks()
+    __batches = __tbl.to_batches(max_chunksize=max(__tbl.num_rows, 1))
+    __batch = __batches[0] if __batches else __pa.record_batch([], schema=__tbl.schema)
+    __c_schema = __pf.new("struct ArrowSchema*")
+    __c_array = __pf.new("struct ArrowArray*")
+    __batch._export_to_c(int(__pf.cast("uintptr_t", __c_array)), int(__pf.cast("uintptr_t", __c_schema)))
+    __omnivm_cdata_registry.append((__c_schema, __c_array))
+    return {
+        "__omnivm_arrow_cdata__": True,
+        "schema": str(int(__pf.cast("uintptr_t", __c_schema))),
+        "array": str(int(__pf.cast("uintptr_t", __c_array))),
+    }
+
+def __omnivm_cdata_cleanup():
+    from pyarrow.cffi import ffi as __pf
+    global __omnivm_cdata_registry
+    for __c_schema, __c_array in __omnivm_cdata_registry:
+        if __c_array.release != __pf.NULL:
+            __c_array.release(__c_array)
+        if __c_schema.release != __pf.NULL:
+            __c_schema.release(__c_schema)
+    __omnivm_cdata_registry = []
+
+def __omnivm_rust_arg(__omnivm_v):
+    import json as __json, os as __os
+    if hasattr(__omnivm_v, "to_arrow") or hasattr(__omnivm_v, "to_parquet") or hasattr(__omnivm_v, "__arrow_c_stream__"):
+        if __os.environ.get("OMNIVM_ARROW_CDATA", "1") != "0":
+            try:
+                return __json.dumps(__omnivm_arrow_cdata(__omnivm_v))
+            except Exception:
+                pass
+        import base64 as __b64
+        return __json.dumps({%q: __b64.b64encode(__omnivm_arrow_ipc(__omnivm_v)).decode()})
+    return __json.dumps(__omnivm_v)
 `
+		setup = fmt.Sprintf(setup, arrowIPCMarkerKey)
 		if result := rt.Execute(setup); result.Err != nil {
 			return nil, fmt.Errorf("python arrow helper: %w", result.Err)
 		}

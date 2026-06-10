@@ -27,6 +27,21 @@ pub fn decode_ipc_marker(value: &serde_json::Value) -> Option<Result<serde_json:
     Some(decode_ipc_payload(payload))
 }
 
+/// Decodes an IPC marker straight to a DataFrame (no serde projection).
+pub fn decode_ipc_dataframe(value: &serde_json::Value) -> Result<DataFrame, String> {
+    let payload = value
+        .as_object()
+        .and_then(|o| o.get(ARROW_IPC_KEY))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "not an arrow ipc marker".to_string())?;
+    let bytes = b64()
+        .decode(payload)
+        .map_err(|e| format!("arrow ipc: base64 decode: {e}"))?;
+    IpcStreamReader::new(Cursor::new(bytes))
+        .finish()
+        .map_err(|e| format!("arrow ipc: read: {e}"))
+}
+
 fn decode_ipc_payload(payload: &str) -> Result<serde_json::Value, String> {
     let bytes = b64()
         .decode(payload)

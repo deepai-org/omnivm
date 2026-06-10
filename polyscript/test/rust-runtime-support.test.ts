@@ -334,8 +334,10 @@ describe('@rs runtime tag', () => {
 // ─── Codegen: emitRustFuncDef and the north-star example ───────────
 
 describe('emitRustFuncDef', () => {
-  test('a single Rust fn emits a func_def with the full unit and shim', () => {
-    const m = compileManifest('fn add(a: i64, b: i64) -> i64 {\n  a + b\n}');
+  // The fns below carry a poly call site: only fns referenced from OUTSIDE
+  // the Rust unit are exported (shim + `exports` entry + func_def op).
+  test('a Rust fn called from poly emits a func_def with the full unit and shim', () => {
+    const m = compileManifest('fn add(a: i64, b: i64) -> i64 {\n  a + b\n}\nconst total = add(2, 3)\nprint(total)');
     const funcDefs = m.ops.filter(op => op.op === 'func_def') as FuncDefOp[];
     expect(funcDefs).toHaveLength(1);
     const def = funcDefs[0];
@@ -349,11 +351,16 @@ describe('emitRustFuncDef', () => {
   });
 
   test('async fn emits async func_def with export_async_fn shim', () => {
-    const m = compileManifest('async fn ping(url: String) -> String {\n  url\n}');
+    const m = compileManifest('async fn ping(url: String) -> String {\n  url\n}\nconst pong = ping("hi")\nprint(pong)');
     const def = m.ops.find(op => op.op === 'func_def') as FuncDefOp;
     expect(def.async).toBe(true);
     expect(def.source).toContain('async fn ping');
     expect(def.source).toContain('omnivm::export_async_fn!(OmniVMCall_ping, ping, 1);');
+  });
+
+  test('a Rust fn with no outside references is internal-only: no func_def, no shim', () => {
+    const m = compileManifest('fn helper(a: i64) -> i64 {\n  a * 2\n}\nprint("done")');
+    expect(m.ops.filter(op => op.op === 'func_def')).toEqual([]);
   });
 });
 
@@ -415,7 +422,7 @@ describe('north-star example: rust-review-service.poly', () => {
     // export shims, one per fn, async vs sync
     expect(unit).toContain('omnivm::export_async_fn!(OmniVMCall_enrich, enrich, 1);');
     expect(unit).toContain('omnivm::export_fn!(OmniVMCall_classify, classify, 1);');
-    expect(unit).toContain('omnivm::export_fn!(OmniVMCall_heavy_stats, heavy_stats, 1);');
+    expect(unit).toContain('omnivm::export_fn!(OmniVMCall_heavy_stats, heavy_stats, (df));');
   });
 
   test('module-level Rust items emit no standalone exec ops', () => {

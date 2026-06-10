@@ -17,6 +17,7 @@
 //! ```
 
 pub mod abi;
+pub mod cdata;
 pub mod envelope;
 pub mod error;
 pub mod interop;
@@ -38,6 +39,11 @@ pub use tokio;
 
 /// Re-exported `log` facade (installed automatically at bridge init).
 pub use log;
+
+/// Re-exported `tracing` facade: with no subscriber installed, events mirror
+/// into the `log` facade (tracing's "log" compatibility), so spans/events
+/// from ecosystem crates stay visible.
+pub use tracing;
 
 pub use serde;
 pub use serde_json;

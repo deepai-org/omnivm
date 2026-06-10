@@ -54,10 +54,13 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 	for _, exportName := range exports {
 		exportName := exportName
 		symbol := cSharedWrapperSymbol(exportName)
-		fn := func(args []interface{}) interface{} {
+		// Error returns flow as values (never panics): the catch machinery
+		// then reports "rust function ..." with the envelope message + chain
+		// instead of a recovered-panic wrapper.
+		fn := func(args []interface{}) (interface{}, error) {
 			encodedArgs, leases, encodeErr := e.encodeCSharedGoArgs(args)
 			if encodeErr != nil {
-				panic(encodeErr)
+				return nil, encodeErr
 			}
 			defer func() {
 				for _, lease := range leases {
@@ -66,9 +69,9 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 			}()
 			value, callErr := e.callRustUnit(rustRT, unit, symbol, encodedArgs)
 			if callErr != nil {
-				panic(callErr)
+				return nil, fmt.Errorf("rust function %q: %w", exportName, callErr)
 			}
-			return normalizeArg(value)
+			return normalizeArg(value), nil
 		}
 		if _, exists := e.goFuncs[exportName]; !exists {
 			e.goFuncs[exportName] = fn

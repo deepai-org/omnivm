@@ -13,6 +13,7 @@ import * as ExprPrefix from './parselets/expr-prefix';
 import * as ExprPostfix from './parselets/expr-postfix';
 import * as Decls from './parselets/declarations';
 import { ParseletRegistry } from './parselet-registry';
+import { classifyRustAnchor, scanRustItemAt, rustConstTypeSignal, RustItemKind } from './rust-item-scanner';
 
 export { ParseError } from './parser-cursor';
 
@@ -88,7 +89,7 @@ export class Parser extends ParserCursor {
       const beforePos = this.current;
       
       try {
-        const item = this.parseTopLevel();
+        const item = this.parseModuleItem();
         if (item) {
           body.push(item);
         } else if (!this.isAtEnd()) {
@@ -115,6 +116,256 @@ export class Parser extends ParserCursor {
       body,
       runtimeDirective: this.fileRuntimeDirective,
       span: this.createSpan(0, this.tokens.length - 1)
+    };
+  }
+
+  /**
+   * Parse one module-level item, applying the two-regime Rust architecture:
+   *
+   * Regime 2 (default): the fine-grained union grammar parses the item, so
+   * expression-level Rust mixed into other languages keeps interleaving.
+   *
+   * Regime 1 (opaque item slicing): when the item starts at a definite-Rust
+   * item anchor and the union grammar either fails, produces errors, or
+   * yields a node of the wrong shape, the Rust raw scanner consumes exactly
+   * one item VERBATIM into an opaque RustItem node. A few anchors that no
+   * other donor language can produce at module level (`static X: T`,
+   * `mod x {`, `macro_rules!`, `extern crate`, Rust-typed `const X: T`)
+   * scan unconditionally because the union grammar mis-routes them silently.
+   *
+   * Anchor detection operates on the token stream — string/comment content
+   * never reaches it, so `"fn main() {}"` inside a Python string is inert.
+   */
+  private parseModuleItem(): AST.Decl | AST.Stmt | null {
+    const anchor = this.rustItemAnchor();
+    if (!anchor) return this.parseTopLevel();
+
+    const anchorToken = this.tokens[anchor.tokenIndex];
+    const itemKind = classifyRustAnchor(this.sourceText!, anchorToken.start);
+    if (!itemKind) return this.parseTopLevel();
+
+    const checkpoint = this.current;
+    const errCheckpoint = this.errors.length;
+    const savedBrace = this.braceDepth;
+    const savedIndent = [...this.indentStack];
+    const savedKeyword = [...this.keywordStack];
+
+    if (anchor.unconditional) {
+      const item = this.scanRustItemNode(anchorToken);
+      if (item) return item;
+      return this.parseTopLevel();
+    }
+
+    let node: AST.Decl | AST.Stmt | null = null;
+    let thrown: ParseError | undefined;
+    try {
+      node = this.parseTopLevel();
+    } catch (error) {
+      if (!(error instanceof ParseError)) throw error;
+      thrown = error;
+    }
+
+    // A Rust where-clause after the union node means the union grammar
+    // stopped mid-item (`fn f<T>(x: T) -> f64 where T: ...`): mis-sliced.
+    const stoppedAtWhere = !thrown && this.peekPastVsemis()?.value === "where";
+
+    if (!thrown && !stoppedAtWhere && this.errors.length === errCheckpoint && node &&
+        this.unionShapeMatchesRustAnchor(itemKind, node) &&
+        this.unionExtentMatchesScanner(itemKind, node, anchorToken)) {
+      return node;
+    }
+
+    // The union grammar can't express this item — slice it opaquely.
+    const unionPosition = this.current;
+    this.current = checkpoint;
+    this.braceDepth = savedBrace;
+    this.indentStack = savedIndent;
+    this.keywordStack = savedKeyword;
+    const item = this.scanRustItemNode(anchorToken);
+    if (item) {
+      this.errors.length = errCheckpoint;
+      return item;
+    }
+
+    // Scanner declined too — keep the union outcome.
+    this.current = unionPosition;
+    if (thrown) throw thrown;
+    return node;
+  }
+
+  /**
+   * Detect a Rust item anchor at the cursor (past virtual semicolons).
+   * Returns the anchor token index, and whether the anchor is definite
+   * enough to bypass the union grammar entirely.
+   */
+  private rustItemAnchor(): { tokenIndex: number; unconditional: boolean } | null {
+    if (!this.sourceText) return null;
+    let i = this.current;
+    while (i < this.tokens.length && this.tokens[i].virtualSemi) i++;
+    const t0 = this.tokens[i];
+    if (!t0) return null;
+
+    const value = (k: number) => this.tokens[i + k]?.value;
+    const isIdent = (k: number) => {
+      const t = this.tokens[i + k];
+      return !!t && (t.type === TokenType.Identifier || t.type === TokenType.Keyword);
+    };
+
+    /** Classify the anchor starting at token offset k (after pub, if any). */
+    const anchorAt = (k: number): { unconditional: boolean } | null => {
+      switch (value(k)) {
+        case "fn":
+          return isIdent(k + 1) ? { unconditional: false } : null;
+        case "async":
+        case "unsafe": {
+          let j = k;
+          while (value(j) === "async" || value(j) === "unsafe" || value(j) === "const") j++;
+          return value(j) === "fn" && isIdent(j + 1) ? { unconditional: false } : null;
+        }
+        case "const": {
+          if (value(k + 1) === "fn" && isIdent(k + 2)) return { unconditional: false };
+          // Rust module-level `const NAME: RustType = expr;` — unconditional
+          // only when the declared type carries a Rust-only signal, so TS
+          // `const x: number = 5` stays in the union grammar.
+          if (isIdent(k + 1) && value(k + 2) === ":") {
+            const typeText = this.tokenTextBetween(i + k + 3, "=", 60);
+            if (typeText !== null && rustConstTypeSignal(typeText)) {
+              return { unconditional: true };
+            }
+          }
+          return null;
+        }
+        case "static": {
+          let j = k + 1;
+          if (value(j) === "mut") j++;
+          return isIdent(j) && value(j + 1) === ":" ? { unconditional: true } : null;
+        }
+        case "use":
+          return isIdent(k + 1) ? { unconditional: false } : null;
+        case "struct":
+        case "enum":
+        case "trait":
+        case "type":
+          return isIdent(k + 1) ? { unconditional: false } : null;
+        case "union":
+          // `union Name {` / `union Name<` only — `union` is a plausible
+          // identifier in other languages.
+          return isIdent(k + 1) && (value(k + 2) === "{" || value(k + 2) === "<")
+            ? { unconditional: true } : null;
+        case "impl":
+          return isIdent(k + 1) || value(k + 1) === "<" ? { unconditional: false } : null;
+        case "mod":
+          return isIdent(k + 1) && (value(k + 2) === "{" || value(k + 2) === ";")
+            ? { unconditional: true } : null;
+        case "macro_rules":
+          return value(k + 1) === "!" ? { unconditional: true } : null;
+        case "extern":
+          return value(k + 1) === "crate" ? { unconditional: true } : null;
+        default:
+          return null;
+      }
+    };
+
+    if (t0.value === "pub") {
+      let k = 1;
+      if (value(k) === "(") {
+        let depth = 0;
+        while (i + k < this.tokens.length) {
+          if (value(k) === "(") depth++;
+          else if (value(k) === ")") { depth--; if (depth === 0) { k++; break; } }
+          k++;
+          if (k > 12) return null;
+        }
+      }
+      const inner = anchorAt(k);
+      return inner ? { tokenIndex: i, ...inner } : null;
+    }
+
+    const direct = anchorAt(0);
+    return direct ? { tokenIndex: i, ...direct } : null;
+  }
+
+  /**
+   * Raw source between token `from` and the first following token whose
+   * value is `until` (exclusive), or null when not found within `limit`.
+   */
+  private tokenTextBetween(from: number, until: string, limit: number): string | null {
+    const src = this.sourceText;
+    if (!src || !this.tokens[from]) return null;
+    for (let j = from; j < this.tokens.length && j - from < limit; j++) {
+      const t = this.tokens[j];
+      if (t.virtualSemi && j > from) return null; // statement ended first
+      if (t.value === until) {
+        return src.slice(this.tokens[from].start, t.start);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * For brace-delimited Rust-only item kinds, the union grammar's node must
+   * cover exactly the same source extent the raw scanner computes — anything
+   * else is a silent mis-slice (e.g. an impl body the union parser ran
+   * through). `fn` is exempt: poly-style fns (JSX/python bodies) legitimately
+   * diverge from Rust brace counting, and use/static/type are `;`-terminated.
+   */
+  private unionExtentMatchesScanner(
+    kind: RustItemKind,
+    node: AST.Decl | AST.Stmt,
+    anchorToken: Token,
+  ): boolean {
+    if (kind !== "impl" && kind !== "trait" && kind !== "struct" &&
+        kind !== "enum" && kind !== "union" && kind !== "mod") {
+      return true;
+    }
+    const src = this.sourceText;
+    if (!src) return true;
+    const scanned = scanRustItemAt(src, anchorToken.start);
+    if (!scanned) return true; // scanner has no opinion — keep the union node
+    const lo = Math.min(scanned.end, node.span.end);
+    const hi = Math.max(scanned.end, node.span.end);
+    return /^[\s;]*$/.test(src.slice(lo, hi));
+  }
+
+  /** Does the union grammar's parse result fit what the anchor promises? */
+  private unionShapeMatchesRustAnchor(kind: RustItemKind, node: AST.Decl | AST.Stmt): boolean {
+    switch (kind) {
+      case "fn": return node.kind === "FuncDecl";
+      case "use": return node.kind === "Import" || node.kind === "ImportDecl" || node.kind === "GroupedImport";
+      case "struct": case "type": return node.kind === "TypeDecl";
+      case "enum": return node.kind === "EnumDecl";
+      case "trait": return node.kind === "InterfaceDecl";
+      case "impl": return node.kind === "ImplDecl";
+      default: return false;
+    }
+  }
+
+  /**
+   * Regime 1: consume exactly one Rust item verbatim via the raw scanner,
+   * skipping every token the item covers.
+   */
+  private scanRustItemNode(anchorToken: Token): AST.RustItem | null {
+    const src = this.sourceText;
+    if (!src) return null;
+    const scanned = scanRustItemAt(src, anchorToken.start);
+    if (!scanned) return null;
+
+    while (!this.isAtEnd() && this.peek().virtualSemi) this.advance();
+    while (!this.isAtEnd() && this.peek().start < scanned.end) this.advance();
+
+    return {
+      kind: "RustItem",
+      itemKind: scanned.itemKind,
+      text: scanned.text,
+      ...(scanned.name ? { name: scanned.name } : {}),
+      fns: scanned.fns,
+      bindings: scanned.bindings,
+      span: {
+        start: scanned.start,
+        end: scanned.end,
+        line: anchorToken.line,
+        column: anchorToken.column,
+      },
     };
   }
 

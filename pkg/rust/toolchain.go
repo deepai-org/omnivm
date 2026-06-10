@@ -276,6 +276,27 @@ var builtinRoots = map[string]bool{
 
 var useRootRE = regexp.MustCompile(`(?m)^\s*(?:pub\s+)?use\s+(?:::)?([A-Za-z_][A-Za-z0-9_]*)`)
 
+var tokioPathRE = regexp.MustCompile(`\btokio::`)
+
+// injectRuntimeAliases makes real-world `use tokio::...` / `tokio::spawn`
+// paths resolve against the omnivm re-export (ONE tokio per process — the
+// version is pinned by the image): a crate-root alias is enough under
+// uniform paths. Same for the `log` facade.
+func injectRuntimeAliases(source string) string {
+	var aliases []string
+	if tokioPathRE.MatchString(source) && !strings.Contains(source, "use omnivm::tokio") {
+		aliases = append(aliases, "use omnivm::tokio;")
+	}
+	if regexp.MustCompile("\\blog::").MatchString(source) && !strings.Contains(source, "use omnivm::log") {
+		aliases = append(aliases, "use omnivm::log;")
+	}
+	if len(aliases) == 0 {
+		return source
+	}
+	return "// injected by omnivm: these crates are re-exported by the support dylib\n" +
+		"#[allow(unused_imports)]\n" + strings.Join(aliases, "\n#[allow(unused_imports)]\n") + "\n\n" + source
+}
+
 // InferDependencies maps `use` statement crate roots to Cargo.toml dependency
 // lines, with the crates.io hyphen/underscore mapping and versions pinned by
 // the in-image table. Mirrors Go import inference.
@@ -309,6 +330,10 @@ func InferDependencies(source string) []string {
 
 // enhanceCompileError adds "add the crate" style hints to rustc output.
 func enhanceCompileError(out string) string {
+	if strings.Contains(out, "failed to get ") || strings.Contains(out, "network failure") ||
+		strings.Contains(out, "Unable to update registry") {
+		out += "\nhint: this crate is not in the baked pin set and the registry is unreachable; offline images fail closed on unknown crates — add the crate to the prelude pin set or build online once"
+	}
 	if strings.Contains(out, "error[E0432]") || strings.Contains(out, "error[E0433]") {
 		out += "\nhint: unresolved imports usually mean the crate is not in the pinned prelude; supported prelude crates: " + strings.Join(sortedPinnedCrateNames(), ", ")
 	}
@@ -330,6 +355,7 @@ func sortedPinnedCrateNames() []string {
 // workspace lock and target dir, then the member dir is removed — the cached
 // artifact under /tmp/omnivm-plugins is what gets loaded.
 func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) {
+	source = injectRuntimeAliases(source)
 	hash := tc.UnitCacheKey(source, exports)
 	soPath := filepath.Join(pluginCacheDir, "rust-"+hash+".so")
 	if _, err := os.Stat(soPath); err == nil {
@@ -411,6 +437,11 @@ serde_json = "1"
 	if err := os.Rename(tmpArtifact, soPath); err != nil {
 		os.Remove(tmpArtifact)
 		return "", err
+	}
+	// Record the resolution that produced this artifact (reproducibility
+	// audit trail; non-pinned crates resolve once per image lifetime).
+	if lock, lockErr := os.ReadFile(filepath.Join(tc.WorkspaceDir, "Cargo.lock")); lockErr == nil {
+		_ = os.WriteFile(soPath+".lock", lock, 0o644)
 	}
 	tc.pruneArtifactCache()
 	return soPath, nil

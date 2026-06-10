@@ -26,10 +26,18 @@ where
   max - min
 }
 
+// Generic fns can't cross the export boundary; the poly-visible surface is
+// this concrete wrapper (the documented boundary idiom). The generic fn
+// above stays in the file to prove it parses and compiles as an internal
+// item.
+fn spread_f64(values: Vec<f64>) -> f64 {
+  spread(values)
+}
+
 const raw = [9, 3, 3, 1, 7, 9, 5].map(x => x * 2)
 
 const uniq = dedupe_sorted(raw)
 const sums = pair_sums(uniq)
-const range = spread(uniq)
+const range = spread_f64(uniq)
 
 print(f"uniq={uniq} sums={sums} range={range}")

@@ -60,6 +60,65 @@ macro_rules! __omnivm_export_async_impl {
     };
 }
 
+/// Per-argument extraction by declared kind: `df` params import Arrow
+/// markers directly (the C-Data pointer handoff stays zero-copy), `json`
+/// params go through serde. Codegen emits kinds from the fn's signature.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __omnivm_arg_kind {
+    (df, $args:expr, $idx:tt) => {
+        $crate::abi::arg_dataframe($args, $idx)?
+    };
+    (json, $args:expr, $idx:tt) => {
+        $crate::abi::arg($args, $idx)?
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __omnivm_export_kinds_impl {
+    ($sym:ident, $func:ident, [$(($kind:ident, $idx:tt)),*]) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(args_json: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char {
+            $crate::abi::invoke_enveloped(|| {
+                let __args = $crate::abi::parse_args(args_json)?;
+                let __ret = $func($($crate::__omnivm_arg_kind!($kind, &__args, $idx)),*);
+                let __value = {
+                    #[allow(unused_imports)]
+                    use $crate::abi::{PlainOutcome, ResultOutcome};
+                    $crate::abi::OutcomeToken(Some(__ret)).omni_outcome()?
+                };
+                Ok($crate::envelope::Envelope::ok_value(__value))
+            })
+        }
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __omnivm_export_async_kinds_impl {
+    ($sym:ident, $func:ident, [$(($kind:ident, $idx:tt)),*]) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(args_json: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char {
+            $crate::abi::invoke_enveloped(|| {
+                let __args = $crate::abi::parse_args(args_json)?;
+                let __fut = async move {
+                    let __ret = $func($($crate::__omnivm_arg_kind!($kind, &__args, $idx)),*).await;
+                    #[allow(unused_imports)]
+                    use $crate::abi::{PlainOutcome, ResultOutcome};
+                    $crate::abi::OutcomeToken(Some(__ret)).omni_outcome()
+                };
+                let __handle = {
+                    #[allow(unused_imports)]
+                    use $crate::rt::{RegisterLocalFut, RegisterSendFut};
+                    $crate::rt::FutToken(Some(__fut)).register()
+                };
+                Ok($crate::envelope::Envelope::future(__handle))
+            })
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! export_fn {
     ($sym:ident, $func:ident, 0) => { $crate::__omnivm_export_impl!($sym, $func, []); };
@@ -71,6 +130,10 @@ macro_rules! export_fn {
     ($sym:ident, $func:ident, 6) => { $crate::__omnivm_export_impl!($sym, $func, [0, 1, 2, 3, 4, 5]); };
     ($sym:ident, $func:ident, 7) => { $crate::__omnivm_export_impl!($sym, $func, [0, 1, 2, 3, 4, 5, 6]); };
     ($sym:ident, $func:ident, 8) => { $crate::__omnivm_export_impl!($sym, $func, [0, 1, 2, 3, 4, 5, 6, 7]); };
+    ($sym:ident, $func:ident, ($k0:ident)) => { $crate::__omnivm_export_kinds_impl!($sym, $func, [($k0, 0)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident)) => { $crate::__omnivm_export_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident, $k2:ident)) => { $crate::__omnivm_export_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1), ($k2, 2)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident, $k2:ident, $k3:ident)) => { $crate::__omnivm_export_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1), ($k2, 2), ($k3, 3)]); };
 }
 
 #[macro_export]
@@ -84,6 +147,10 @@ macro_rules! export_async_fn {
     ($sym:ident, $func:ident, 6) => { $crate::__omnivm_export_async_impl!($sym, $func, [0, 1, 2, 3, 4, 5]); };
     ($sym:ident, $func:ident, 7) => { $crate::__omnivm_export_async_impl!($sym, $func, [0, 1, 2, 3, 4, 5, 6]); };
     ($sym:ident, $func:ident, 8) => { $crate::__omnivm_export_async_impl!($sym, $func, [0, 1, 2, 3, 4, 5, 6, 7]); };
+    ($sym:ident, $func:ident, ($k0:ident)) => { $crate::__omnivm_export_async_kinds_impl!($sym, $func, [($k0, 0)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident)) => { $crate::__omnivm_export_async_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident, $k2:ident)) => { $crate::__omnivm_export_async_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1), ($k2, 2)]); };
+    ($sym:ident, $func:ident, ($k0:ident, $k1:ident, $k2:ident, $k3:ident)) => { $crate::__omnivm_export_async_kinds_impl!($sym, $func, [($k0, 0), ($k1, 1), ($k2, 2), ($k3, 3)]); };
 }
 
 /// Standard per-unit boilerplate appended by the host when compiling a unit:
