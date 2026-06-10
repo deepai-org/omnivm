@@ -829,6 +829,30 @@ static int omnivm_py_has_export_rejection(void) {
 	return g_export_rejection[0] != '\0';
 }
 
+static void omnivm_py_release_arrow_schema(ArrowSchema* schema) {
+	if (schema && schema->release) {
+		void (*release)(ArrowSchema*) = schema->release;
+		release(schema);
+		schema->release = NULL;
+	}
+}
+
+static void omnivm_py_release_arrow_array(ArrowArray* array) {
+	if (array && array->release) {
+		void (*release)(ArrowArray*) = array->release;
+		release(array);
+		array->release = NULL;
+	}
+}
+
+static void omnivm_py_release_arrow_stream(ArrowArrayStream* stream) {
+	if (stream && stream->release) {
+		void (*release)(ArrowArrayStream*) = stream->release;
+		release(stream);
+		stream->release = NULL;
+	}
+}
+
 static int omnivm_py_arrow_c_format(const char* format, char* out, size_t out_len, Py_ssize_t* itemsize) {
 	if (!format || !out || out_len < 2 || !itemsize) return 0;
 	if (strlen(format) != 1) return 0;
@@ -1305,23 +1329,11 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_array(PyObject* obj
 		return NULL;
 	}
 	Py_ssize_t validity_len = array->null_count > 0 ? (backing_elements + 7) / 8 : 0;
-	if (PyCapsule_SetName(schema_capsule, "used_arrow_schema") != 0) {
-		PyErr_Clear();
-		Py_DECREF(result);
-		return NULL;
-	}
-	if (PyCapsule_SetName(array_capsule, "used_arrow_array") != 0) {
-		PyErr_Clear();
-		PyCapsule_SetName(schema_capsule, "arrow_schema");
-		Py_DECREF(result);
-		return NULL;
-	}
-
 	py_omnivm_exported_buffer_t* exported =
 		(py_omnivm_exported_buffer_t*)calloc(1, sizeof(py_omnivm_exported_buffer_t));
 	if (!exported) {
-		if (array->release) array->release(array);
-		if (schema->release) schema->release(schema);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
 		Py_DECREF(result);
 		return NULL;
 	}
@@ -1348,8 +1360,8 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_array(PyObject* obj
 	exported->offset = offset * itemsize;
 	Py_DECREF(result);
 	if (!exported->format) {
-		if (exported->arrow_array && exported->arrow_array->release) exported->arrow_array->release(exported->arrow_array);
-		if (exported->arrow_schema && exported->arrow_schema->release) exported->arrow_schema->release(exported->arrow_schema);
+		omnivm_py_release_arrow_array(exported->arrow_array);
+		omnivm_py_release_arrow_schema(exported->arrow_schema);
 		if (exported->owner) Py_DECREF(exported->owner);
 		Py_DECREF(exported->schema_capsule);
 		Py_DECREF(exported->array_capsule);
@@ -1391,25 +1403,20 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 		Py_DECREF(capsule);
 		return NULL;
 	}
-	if (PyCapsule_SetName(capsule, "used_arrow_array_stream") != 0) {
-		PyErr_Clear();
-		Py_DECREF(capsule);
-		return NULL;
-	}
 	ArrowSchema* schema = (ArrowSchema*)calloc(1, sizeof(ArrowSchema));
 	ArrowArray* array = (ArrowArray*)calloc(1, sizeof(ArrowArray));
 	if (!schema || !array) {
 		if (schema) free(schema);
 		if (array) free(array);
-		stream->release(stream);
+		omnivm_py_release_arrow_stream(stream);
 		Py_DECREF(capsule);
 		return NULL;
 	}
 	if (stream->get_schema(stream, schema) != 0 || !schema->release ||
 	    stream->get_next(stream, array) != 0 || !array->release) {
-		if (array->release) array->release(array);
-		if (schema->release) schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1419,10 +1426,10 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	ArrowArray eos;
 	memset(&eos, 0, sizeof(eos));
 	if (stream->get_next(stream, &eos) != 0 || eos.release != NULL) {
-		if (eos.release) eos.release(&eos);
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(&eos);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1432,9 +1439,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	if (schema->n_children != 0 || schema->dictionary != NULL || array->length < 0 || array->offset < 0 ||
 	    array->null_count < 0 || array->null_count > array->length ||
 	    array->n_children != 0 || array->dictionary != NULL || array->n_buffers < 2 || !array->buffers) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1444,18 +1451,18 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	char format[2] = {0};
 	Py_ssize_t itemsize = 0;
 	if (!omnivm_py_arrow_c_format(schema->format, format, sizeof(format), &itemsize)) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
 		return NULL;
 	}
 	if (array->length > PY_SSIZE_T_MAX || array->offset > PY_SSIZE_T_MAX) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1464,27 +1471,27 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	Py_ssize_t length = (Py_ssize_t)array->length;
 	Py_ssize_t offset = (Py_ssize_t)array->offset;
 	if (length > 0 && array->buffers[1] == NULL) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
 		return NULL;
 	}
 	if (array->null_count > 0 && array->buffers[0] == NULL) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
 		return NULL;
 	}
 	if (offset > 0 && length > PY_SSIZE_T_MAX - offset) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1492,9 +1499,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	}
 	Py_ssize_t backing_elements = offset + length;
 	if (backing_elements > 0 && backing_elements > PY_SSIZE_T_MAX / itemsize) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1505,9 +1512,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	py_omnivm_exported_buffer_t* exported =
 		(py_omnivm_exported_buffer_t*)calloc(1, sizeof(py_omnivm_exported_buffer_t));
 	if (!exported) {
-		array->release(array);
-		schema->release(schema);
-		stream->release(stream);
+		omnivm_py_release_arrow_array(array);
+		omnivm_py_release_arrow_schema(schema);
+		omnivm_py_release_arrow_stream(stream);
 		free(array);
 		free(schema);
 		Py_DECREF(capsule);
@@ -1533,9 +1540,9 @@ static py_omnivm_exported_buffer_t* omnivm_py_export_arrow_c_stream(PyObject* ob
 	exported->strides[0] = itemsize;
 	exported->offset = offset * itemsize;
 	if (!exported->format) {
-		if (exported->stream_array && exported->stream_array->release) exported->stream_array->release(exported->stream_array);
-		if (exported->stream_schema && exported->stream_schema->release) exported->stream_schema->release(exported->stream_schema);
-		if (exported->stream && exported->stream->release) exported->stream->release(exported->stream);
+		omnivm_py_release_arrow_array(exported->stream_array);
+		omnivm_py_release_arrow_schema(exported->stream_schema);
+		omnivm_py_release_arrow_stream(exported->stream);
 		if (exported->owner) Py_DECREF(exported->owner);
 		Py_DECREF(exported->stream_capsule);
 		free(exported->stream_array);
@@ -2266,15 +2273,11 @@ static void omnivm_py_release_exported_buffer(py_omnivm_exported_buffer_t* expor
 		exported->has_aux_buffer = 0;
 	}
 	if (exported->arrow_array) {
-		if (exported->arrow_array->release) {
-			exported->arrow_array->release(exported->arrow_array);
-		}
+		omnivm_py_release_arrow_array(exported->arrow_array);
 		exported->arrow_array = NULL;
 	}
 	if (exported->arrow_schema) {
-		if (exported->arrow_schema->release) {
-			exported->arrow_schema->release(exported->arrow_schema);
-		}
+		omnivm_py_release_arrow_schema(exported->arrow_schema);
 		exported->arrow_schema = NULL;
 	}
 	if (exported->schema_capsule) {
@@ -2284,21 +2287,15 @@ static void omnivm_py_release_exported_buffer(py_omnivm_exported_buffer_t* expor
 		Py_DECREF(exported->array_capsule);
 	}
 	if (exported->stream_array) {
-		if (exported->stream_array->release) {
-			exported->stream_array->release(exported->stream_array);
-		}
+		omnivm_py_release_arrow_array(exported->stream_array);
 		free(exported->stream_array);
 	}
 	if (exported->stream_schema) {
-		if (exported->stream_schema->release) {
-			exported->stream_schema->release(exported->stream_schema);
-		}
+		omnivm_py_release_arrow_schema(exported->stream_schema);
 		free(exported->stream_schema);
 	}
 	if (exported->stream) {
-		if (exported->stream->release) {
-			exported->stream->release(exported->stream);
-		}
+		omnivm_py_release_arrow_stream(exported->stream);
 		exported->stream = NULL;
 	}
 	if (exported->stream_capsule) {

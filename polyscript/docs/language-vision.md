@@ -27,6 +27,15 @@ The preferred boundary is a typed or structural manifest value:
 
 JSON is application data, not runtime glue. It belongs in HTTP bodies, persisted documents, API payloads, or intentionally opaque values. Examples should not manually `JSON.stringify`, `json.loads`, `to_json`, or `String.valueOf` just to move ordinary data across a PolyScript boundary.
 
+Invisible crossings are fine when they preserve the user's model. A `.poly`
+file should not have to annotate every ordinary capture from Python to
+JavaScript, JavaScript to Java, Ruby to Python, or Go to another runtime.
+Crossings become language problems only when they change semantics: eager
+materialization of lazy data, manual JSON glue for ordinary values, shadowing a
+real field with proxy metadata, leaking a resource lifecycle, or producing an
+error whose origin is unclear. Diagnostics and examples should target those
+surprising cases, not make normal cross-runtime application code noisy.
+
 ## Ecosystem Libraries
 
 PolyScript should work with library ecosystems without knowing their brand names. The parser and resolver may recognize platform syntax and standard-library shapes, but they should not decide runtime ownership because a package is popular.
@@ -49,7 +58,13 @@ The language should preserve natural library behavior. If a runtime object has a
 
 ## JSX
 
-JSX is JavaScript-family syntax, not a React-only feature. The default lowering target is `React.createElement` and `React.Fragment` for compatibility, but source pragmas can select another ecosystem:
+JSX is JavaScript-family tree literal syntax. PolyScript treats it as a compact
+way to construct nested element data through a factory, not as a React-only
+feature. React is the compatibility default because that is the most common JSX
+ecosystem, but the language model is "tree literal plus factory/fragment
+symbols."
+
+The default lowering target is `React.createElement` and `React.Fragment` for compatibility, but source pragmas can select another ecosystem:
 
 ```polyscript
 /** @jsx h */
@@ -68,6 +83,12 @@ const panel = <Panel title="Orders" />
 ```
 
 The compiler should lower JSX according to these source-level signals without requiring a React import or assuming a particular package.
+
+Examples should keep both shapes visible:
+
+- a React example proves compatibility with the mainstream JSX ecosystem;
+- a non-React factory example proves JSX is general tree construction syntax;
+- neither example should imply that package names decide the runtime.
 
 ## Import Syntax
 
