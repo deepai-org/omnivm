@@ -38,6 +38,55 @@ The suite expects the automatic boundary model:
 
 Those contracts are also covered by the edge fixtures for resource/job handles, table bridges, stream proxies, request-like objects, function proxies, finalizers, chatty proxy materialization, and Java/Ruby/Python/JS/Go object member access.
 
+Invisible captures are allowed and expected. The suite is not trying to force
+source annotations at every runtime edge. A crossing needs attention only when
+it would surprise the user: eager-draining a lazy owner, converting ordinary
+data through manual JSON glue, shadowing fields such as `then`, `items`, `keys`,
+`get`, `close`, or `length`, losing lifecycle ownership, or hiding the source
+runtime of an error. Diagnostics should explain those cases while keeping
+normal cross-runtime application code quiet.
+
+## Source example audit rules
+
+The checked-in examples should stay small enough to explain a language rule but
+real enough to exercise ecosystem behavior:
+
+- imports should be donor-language-shaped and should be the runtime evidence
+- package names should not be treated as special compiler knowledge
+- JSX should be covered both as React compatibility and as non-React
+  factory/fragment tree construction
+- broad package examples should share a reusable pattern instead of becoming a
+  list of unrelated library trivia
+- environment requirements belong in the Docker/package table below
+- boundary examples should name the semantic reason for the crossing when the
+  crossing affects ownership, laziness, error origin, or proxy field behavior
+
+## Current source audit snapshot
+
+Last audited against these rules: 97 `.poly`/compat/Passenger source fixtures
+under `polyscript/examples/` and `test/fixtures/passenger-django-polyscript/`.
+
+Findings:
+
+- Import ergonomics are mostly aligned: Python uses `import`/`from`, JavaScript
+  uses ES imports, Go examples use quoted Go paths or Go source files, Ruby
+  examples use Ruby-style gem paths where they appear in PolyScript imports,
+  and Java examples use dotted class/package imports.
+- JSX coverage is balanced: `javascript-react-jsx-docs.poly` proves React
+  compatibility, while `javascript-jsx-factory-docs.poly` proves non-React
+  factory/fragment tree construction.
+- Manual JSON usage is limited to stable output formatting, HTTP/application
+  payloads, or explicit library serialization examples. The collision examples
+  stringify summaries after the boundary has already been exercised; they are
+  not using JSON as the crossing mechanism.
+- The one useful-but-hosty case to keep visible is
+  `vertical-order-review-app.poly`, where Java Jackson emits JSON and Python
+  parses it back. That is acceptable as a Jackson/application-payload example,
+  but it should not become the pattern for ordinary cross-runtime records.
+- No examples should add package-name inference tables. If a new ecosystem
+  example needs a package, add Docker/package coverage and rely on source
+  syntax for ownership.
+
 ## Useful commands
 
 ```bash

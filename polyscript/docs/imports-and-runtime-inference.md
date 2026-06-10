@@ -138,3 +138,14 @@ Parsing an import and resolving a runtime does not install the package. The pack
 - Java classes and jars must be on the classpath.
 
 The compiler decides ownership. OmniVM or the deployment image provides the runtime packages.
+
+## Example Curation Checklist
+
+Use this checklist when adding or auditing `.poly` examples:
+
+- The import should look like the owning runtime's normal source syntax.
+- The example should prove an ecosystem shape, not just the spelling of one famous package.
+- Package names may appear in examples, but they should not be described as runtime evidence.
+- Cross-runtime values should move naturally through captures; avoid manual JSON encode/decode unless JSON is the application payload.
+- If an example depends on a package being installed, the Docker/package coverage table in `docs/example-suite.md` should name that environment dependency.
+- JSX examples should include both React compatibility and a non-React factory shape so JSX stays documented as factory-backed tree syntax.

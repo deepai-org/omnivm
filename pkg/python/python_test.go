@@ -1436,6 +1436,9 @@ ArrowArray._fields_ = [
 PyCapsule_New = ctypes.pythonapi.PyCapsule_New
 PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
 PyCapsule_New.restype = ctypes.py_object
+PyCapsule_IsValid = ctypes.pythonapi.PyCapsule_IsValid
+PyCapsule_IsValid.argtypes = [ctypes.py_object, ctypes.c_char_p]
+PyCapsule_IsValid.restype = ctypes.c_int
 
 class ArrowCapsuleArray:
     def __init__(self):
@@ -1455,10 +1458,9 @@ class ArrowCapsuleArray:
         self.buffers[1] = ctypes.cast(self.backing, ctypes.c_void_p)
 
     def __arrow_c_array__(self, requested_schema=None):
-        return (
-            PyCapsule_New(ctypes.addressof(self.schema), b"arrow_schema", None),
-            PyCapsule_New(ctypes.addressof(self.array), b"arrow_array", None),
-        )
+        self.schema_capsule = PyCapsule_New(ctypes.addressof(self.schema), b"arrow_schema", None)
+        self.array_capsule = PyCapsule_New(ctypes.addressof(self.array), b"arrow_array", None)
+        return (self.schema_capsule, self.array_capsule)
 
 payload = ArrowCapsuleArray()
 `); result.Err != nil {
@@ -1473,6 +1475,9 @@ payload = ArrowCapsuleArray()
 	}
 	if exported.Dtype != arrow.DtypeI32 || exported.ArrowFormat != "i" || exported.Elements != 3 || exported.Offset != 4 || len(exported.Shape) != 1 || exported.Shape[0] != 3 || !exported.ReadOnly {
 		t.Fatalf("bad exported Arrow capsule metadata: %+v", exported)
+	}
+	if result := r.Eval("(PyCapsule_IsValid(payload.schema_capsule, b'arrow_schema'), PyCapsule_IsValid(payload.array_capsule, b'arrow_array'))"); result.Err != nil || result.Value != "(1, 1)" {
+		t.Fatalf("Arrow capsules should keep standard names after export: value=%v err=%v", result.Value, result.Err)
 	}
 	lease, err := arrow.GlobalStore().Borrow("python-export-arrow-capsule")
 	if err != nil {
@@ -1879,6 +1884,10 @@ ArrowArrayStream._fields_ = [
     ("private_data", ctypes.c_void_p),
 ]
 
+PyCapsule_IsValid = ctypes.pythonapi.PyCapsule_IsValid
+PyCapsule_IsValid.argtypes = [ctypes.py_object, ctypes.c_char_p]
+PyCapsule_IsValid.restype = ctypes.c_int
+
 @SchemaRelease
 def schema_release(schema):
     released_schema.value += 1
@@ -1946,7 +1955,8 @@ class ArrowStreamArray:
     def __arrow_c_stream__(self, requested_schema=None):
         ctypes.pythonapi.PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
         ctypes.pythonapi.PyCapsule_New.restype = ctypes.py_object
-        return ctypes.pythonapi.PyCapsule_New(ctypes.addressof(self.stream), b"arrow_array_stream", None)
+        self.stream_capsule = ctypes.pythonapi.PyCapsule_New(ctypes.addressof(self.stream), b"arrow_array_stream", None)
+        return self.stream_capsule
 
 payload = ArrowStreamArray()
 `); result.Err != nil {
@@ -1961,6 +1971,9 @@ payload = ArrowStreamArray()
 	}
 	if exported.Dtype != arrow.DtypeI32 || exported.ArrowFormat != "i" || exported.Elements != 3 || exported.Offset != 4 || len(exported.Shape) != 1 || exported.Shape[0] != 3 || !exported.ReadOnly {
 		t.Fatalf("bad exported Arrow stream metadata: %+v", exported)
+	}
+	if result := r.Eval("PyCapsule_IsValid(payload.stream_capsule, b'arrow_array_stream')"); result.Err != nil || result.Value != "1" {
+		t.Fatalf("Arrow stream capsule should keep standard name after export: value=%v err=%v", result.Value, result.Err)
 	}
 	lease, err := arrow.GlobalStore().Borrow("python-export-arrow-stream")
 	if err != nil {
