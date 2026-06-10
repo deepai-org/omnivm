@@ -182,6 +182,26 @@ pub extern "C" fn omnivm_rs_stats_v1() -> *mut c_char {
     to_c_owned(&crate::rt::stats_json())
 }
 
+/// Converts a stored future into a background task on the LocalSet (`go
+/// expr` semantics: progress on pump ticks and during other parks).
+#[no_mangle]
+pub extern "C" fn omnivm_rs_spawn_background_v1(handle: u64) -> i32 {
+    let ok = std::panic::catch_unwind(|| crate::rt::spawn_background(handle)).unwrap_or(false);
+    if ok {
+        1
+    } else {
+        0
+    }
+}
+
+/// Runs a synchronous unit export on the blocking pool (`go expr` for sync
+/// fns); returns an await handle, or 0 on panic.
+#[no_mangle]
+pub extern "C" fn omnivm_rs_spawn_blocking_v1(fn_ptr: u64, args_json: *const c_char) -> u64 {
+    let args = c_str(args_json).to_string();
+    std::panic::catch_unwind(|| crate::rt::spawn_blocking_call(fn_ptr as usize, args)).unwrap_or(0)
+}
+
 /// Object handle ops for the support dylib's own table (units forward here).
 #[no_mangle]
 pub extern "C" fn OmniVMHandleOp(payload: *mut c_char) -> *mut c_char {

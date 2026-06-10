@@ -378,6 +378,31 @@ func (e *Executor) channelFromArg(arg interface{}) (*ChanRef, bool) {
 	if ref, ok := arg.(*ChanRef); ok {
 		return ref, true
 	}
+	// Channel descriptors (guest-held handles, e.g. omnivm::Channel in Rust)
+	// resolve through the handle table — both as raw marker maps and as the
+	// GoHandleProxy the bridge decodes them into.
+	resolveByID := func(rawID interface{}) (*ChanRef, bool) {
+		id, err := bridgeHandleID(rawID)
+		if err != nil {
+			return nil, false
+		}
+		entry, found := e.ensureHandleTable().Get(id)
+		if !found {
+			return nil, false
+		}
+		ref, isChan := entry.Value.(*ChanRef)
+		return ref, isChan
+	}
+	if descriptor, ok := arg.(map[string]interface{}); ok &&
+		(descriptor["__omnivm_channel__"] == true || descriptor["__omnivm_stream__"] == true) {
+		return resolveByID(descriptor["id"])
+	}
+	if proxy, ok := arg.(*GoHandleProxy); ok && proxy != nil && proxy.id != 0 {
+		return resolveByID(proxy.id)
+	}
+	if proxy, ok := arg.(*GoStreamProxy); ok && proxy != nil && proxy.id != 0 {
+		return resolveByID(proxy.id)
+	}
 	name, ok := arg.(string)
 	if !ok {
 		return nil, false
@@ -551,6 +576,13 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 	}
 
 	funcName := strings.TrimSpace(code[:parenIdx])
+
+	// Rust fns spawn through tokio (spawn_local for async fns,
+	// spawn_blocking for sync fns) — never on a bare goroutine, which would
+	// violate golden-thread affinity.
+	if meta, isRust := e.rustFuncs[funcName]; isRust {
+		return e.spawnRust(op, meta, code[parenIdx+1:len(code)-1])
+	}
 
 	fn, ok := e.goFuncs[funcName]
 	if !ok {

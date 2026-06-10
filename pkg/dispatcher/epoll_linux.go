@@ -90,6 +90,10 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 	if uvBackendFD >= 0 {
 		C.omnivm_epoll_add(C.int(epollFD), C.int(uvBackendFD))
 	}
+	extraFDs := d.watchedFDs()
+	for _, fd := range extraFDs {
+		C.omnivm_epoll_add(C.int(epollFD), C.int(fd))
+	}
 
 	// Install wakeup function so RunOnMain/RunAsync can signal new tasks
 	d.setWakeupFunc(func() {
@@ -118,6 +122,15 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 			case shutdownFD:
 				gotShutdown = true
 			default:
+				for _, extra := range extraFDs {
+					if fd == extra {
+						// Drain the eventfd counter and treat as a pump
+						// wakeup (e.g. Rust multi-executor completions).
+						var buf [8]byte
+						_, _ = syscall.Read(extra, buf[:])
+						gotHeartbeat = true
+					}
+				}
 				if fd == uvBackendFD {
 					gotUV = true
 				}

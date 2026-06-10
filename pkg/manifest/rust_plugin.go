@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/omnivm/omnivm/pkg/arrow"
+	"github.com/omnivm/omnivm/pkg/handles"
 	"github.com/omnivm/omnivm/pkg/rust"
 )
 
@@ -71,6 +72,15 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 		}
 		if _, exists := e.goFuncs[exportName]; !exists {
 			e.goFuncs[exportName] = fn
+		}
+		meta, known := e.rustFuncs[exportName]
+		if !known {
+			meta = &rustFuncMeta{unit: unit, rt: rustRT, symbol: symbol}
+			e.rustFuncs[exportName] = meta
+		}
+		if exportName == op.Name {
+			meta.async = op.Async
+			meta.arity = len(op.Params)
 		}
 	}
 
@@ -189,9 +199,17 @@ func (e *Executor) decodeRustEnvelope(rustRT *rust.Runtime, unit *rust.Unit, raw
 		return nil, fmt.Errorf("%s", env.Error)
 	}
 	if env.Boundary == "rust_future" {
-		return e.driveRustFuture(rustRT, unit, env.HandleID)
+		value, err := e.driveRustFuture(rustRT, unit, env.HandleID)
+		if err != nil {
+			return nil, err
+		}
+		return e.adaptRustValue(rustRT, unit, value)
 	}
-	return decodeCSharedEnvelopeValue(cSharedPluginHandle(unit.Handle()), env)
+	value, err := decodeCSharedEnvelopeValue(cSharedPluginHandle(unit.Handle()), env)
+	if err != nil {
+		return nil, err
+	}
+	return e.adaptRustValue(rustRT, unit, value)
 }
 
 // driveRustFuture awaits a stored future: the golden thread re-parks in
@@ -247,4 +265,175 @@ func rustUnitSource(op *Op, exports []string) string {
 		return source
 	}
 	return source + "\n" + extra.String()
+}
+
+// rustFuncMeta records how a unit export dispatches (spawn needs to know
+// async-ness and the raw symbol address for blocking-pool dispatch).
+type rustFuncMeta struct {
+	unit   *rust.Unit
+	rt     *rust.Runtime
+	symbol string
+	async  bool
+	arity  int
+}
+
+// RustFutureRef is a spawned-but-not-awaited Rust computation (the `go expr`
+// result). Await drives it through the re-park loop; abandonment releases the
+// underlying task (abort is tokio cancellation).
+type RustFutureRef struct {
+	rt     *rust.Runtime
+	unit   *rust.Unit
+	handle uint64
+}
+
+// RustStreamRef adapts a Rust stream proxy (an object handle with a `next`
+// method) onto the manifest stream protocol; handleStreamNext pulls it and
+// guests consume it through the universal stream_next/stream_cancel ops.
+type RustStreamRef struct {
+	proxy *cSharedObjectProxy
+}
+
+func (r *RustStreamRef) next() (interface{}, bool, error) {
+	value, found, err := r.proxy.Call("next", nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, true, nil
+	}
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, false, fmt.Errorf("rust stream next returned %T", value)
+	}
+	if done, _ := payload["done"].(bool); done {
+		_ = r.proxy.Release()
+		return nil, true, nil
+	}
+	return payload["value"], false, nil
+}
+
+func (r *RustStreamRef) cancel() error {
+	return r.proxy.Release()
+}
+
+// spawnRust implements `go expr` for Rust fns: async fns create their stored
+// future inline (cheap) and convert it to a background LocalSet task; sync
+// fns dispatch onto tokio's blocking pool by symbol address. Either way the
+// result is a RustFutureRef resolved by the await op.
+func (e *Executor) spawnRust(op *Op, meta *rustFuncMeta, argsStr string) (interface{}, error) {
+	var args []interface{}
+	for _, expr := range splitTopLevelArgs(argsStr) {
+		value, err := e.resolveRustArg(expr)
+		if err != nil {
+			return nil, fmt.Errorf("spawn rust %s: argument %q: %w", op.Code, expr, err)
+		}
+		args = append(args, value)
+	}
+	encodedArgs, leases, err := e.encodeCSharedGoArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for _, lease := range leases {
+			lease.release()
+		}
+	}()
+	argsJSON, err := json.Marshal(encodedArgs)
+	if err != nil {
+		return nil, fmt.Errorf("spawn rust: marshal args: %w", err)
+	}
+
+	support := meta.rt.Support()
+	var handle uint64
+	if meta.async {
+		raw, callErr := meta.unit.Call(meta.symbol, string(argsJSON))
+		if callErr != nil {
+			return nil, callErr
+		}
+		var env cSharedPluginEnvelope
+		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+			return nil, fmt.Errorf("spawn rust: decode envelope: %w", err)
+		}
+		if !env.OK {
+			return nil, fmt.Errorf("%s", env.Error)
+		}
+		if env.Boundary != "rust_future" {
+			// Completed synchronously; resolve immediately.
+			value, decErr := decodeCSharedEnvelopeValue(cSharedPluginHandle(meta.unit.Handle()), env)
+			if decErr != nil {
+				return nil, decErr
+			}
+			if op.Bind != "" {
+				e.setBinding(op.Bind, value)
+			}
+			return value, nil
+		}
+		if _, scanErr := fmt.Sscanf(env.HandleID, "%d", &handle); scanErr != nil {
+			return nil, fmt.Errorf("spawn rust: bad future handle %q", env.HandleID)
+		}
+		if !support.SpawnBackground(handle) {
+			return nil, fmt.Errorf("spawn rust: future %d could not be backgrounded", handle)
+		}
+	} else {
+		addr, addrErr := meta.unit.SymbolAddr(meta.symbol)
+		if addrErr != nil {
+			return nil, addrErr
+		}
+		handle = support.SpawnBlocking(addr, string(argsJSON))
+		if handle == 0 {
+			return nil, fmt.Errorf("spawn rust: blocking dispatch failed for %s", meta.symbol)
+		}
+	}
+
+	ref := &RustFutureRef{rt: meta.rt, unit: meta.unit, handle: handle}
+	if op.Bind != "" {
+		e.setBinding(op.Bind, ref)
+	}
+	return ref, nil
+}
+
+// awaitRustFutureRef resolves a spawned Rust task through the re-park loop.
+func (e *Executor) awaitRustFutureRef(ref *RustFutureRef, bind string) (interface{}, error) {
+	value, err := e.driveRustFuture(ref.rt, ref.unit, fmt.Sprintf("%d", ref.handle))
+	if err != nil {
+		return nil, err
+	}
+	value, err = e.adaptRustValue(ref.rt, ref.unit, value)
+	if err != nil {
+		return nil, err
+	}
+	if bind != "" {
+		e.setBinding(bind, value)
+	}
+	return value, nil
+}
+
+// adaptRustValue post-processes decoded Rust results: stream proxies become
+// manifest stream handles consumable by every guest.
+func (e *Executor) adaptRustValue(rustRT *rust.Runtime, unit *rust.Unit, value interface{}) (interface{}, error) {
+	proxy, ok := value.(*cSharedObjectProxy)
+	if !ok || proxy.Kind() != "stream" {
+		return value, nil
+	}
+	streamRef := &RustStreamRef{proxy: proxy}
+	id, err := e.ensureHandleTable().Register(streamRef, handles.RegisterOptions{
+		Runtime: "rust",
+		Kind:    "stream",
+		ScopeID: e.currentHandleScope(),
+		Release: func(any) error { return streamRef.cancel() },
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rust stream handle: %w", err)
+	}
+	// Stream descriptors are produced to be consumed (often after the
+	// producing op's scope closes); exhaustion or cancel releases them.
+	if err := e.ensureHandleTable().Escape(id); err != nil {
+		return nil, fmt.Errorf("rust stream handle escape: %w", err)
+	}
+	return map[string]interface{}{
+		"__omnivm_stream__": true,
+		"id":                int64(id),
+		"kind":              "stream",
+		"runtime":           "rust",
+	}, nil
 }

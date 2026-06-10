@@ -148,12 +148,86 @@ impl<F: Future<Output = FutResult> + 'static> RegisterLocalFut for &mut FutToken
     }
 }
 
+thread_local! {
+    // `go expr` tasks on the default executor: spawned onto the LocalSet so
+    // they progress on every pump tick and during any park, and resolved by
+    // the same drive loop via their JoinHandle.
+    static LOCAL_SPAWNED: RefCell<HashMap<u64, tokio::task::JoinHandle<FutResult>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Converts a stored (not yet driven) future into a background task: it is
+/// spawned onto the LocalSet under the same await handle, so it makes
+/// progress whenever the golden thread enters the runtime (pump ticks and
+/// other futures' parks) instead of only when itself driven.
+pub fn spawn_background(id: u64) -> bool {
+    let Some(fut) = LOCAL_FUTURES.with(|m| m.borrow_mut().remove(&id)) else {
+        // Multi-executor mode futures are already spawned.
+        return SPAWNED.lock().unwrap().iter().any(|(sid, _)| *sid == id);
+    };
+    if Handle::try_current().is_ok() {
+        // Already inside the runtime: spawn_local directly.
+        let handle = tokio::task::spawn_local(fut);
+        LOCAL_SPAWNED.with(|m| m.borrow_mut().insert(id, handle));
+        return true;
+    }
+    LOCAL.with(|local| {
+        let _guard = runtime().enter();
+        let handle = local.spawn_local(fut);
+        LOCAL_SPAWNED.with(|m| m.borrow_mut().insert(id, handle));
+    });
+    true
+}
+
+/// Runs a synchronous unit export (`char* fn(char*)`) on tokio's blocking
+/// pool, parking-free: the `go expr` escalation for sync fns. Returns an
+/// await handle resolving to the export's envelope `value`.
+pub fn spawn_blocking_call(fn_ptr: usize, args_json: String) -> u64 {
+    let id = NEXT_FUTURE_ID.fetch_add(1, Ordering::Relaxed);
+    let handle = runtime().spawn(async move {
+        let raw = tokio::task::spawn_blocking(move || {
+            type ExportFn = unsafe extern "C" fn(*mut std::ffi::c_char) -> *mut std::ffi::c_char;
+            let export: ExportFn = unsafe { std::mem::transmute(fn_ptr) };
+            let c_args = std::ffi::CString::new(args_json)
+                .map_err(|e| OmniError::msg(format!("spawn args: {e}")))?;
+            let out = unsafe { export(c_args.as_ptr() as *mut std::ffi::c_char) };
+            if out.is_null() {
+                return Ok::<String, OmniError>(String::new());
+            }
+            let s = unsafe { std::ffi::CStr::from_ptr(out) }
+                .to_string_lossy()
+                .into_owned();
+            extern "C" {
+                fn free(p: *mut std::ffi::c_void);
+            }
+            unsafe { free(out as *mut std::ffi::c_void) };
+            Ok(s)
+        })
+        .await
+        .map_err(|e| OmniError::msg(format!("spawn_blocking: {e}")))??;
+        let env: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| OmniError::msg(format!("spawn envelope: {e}")))?;
+        if env.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let message = env.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(OmniError::msg(message.to_string()));
+        }
+        Ok(env.get("value").cloned().unwrap_or(serde_json::Value::Null))
+    });
+    SPAWNED.lock().unwrap().push((id, handle));
+    signal_completion_fd();
+    id
+}
+
 /// Releases an abandoned await (watchdog timeout, scope cleanup, manifest
 /// error between parks). Dropping the box / aborting the task IS tokio
 /// cancellation. Quiet and idempotent.
 pub fn release_future(id: u64) -> bool {
     let local = LOCAL_FUTURES.with(|m| m.borrow_mut().remove(&id).is_some());
     if local {
+        return true;
+    }
+    if let Some(handle) = LOCAL_SPAWNED.with(|m| m.borrow_mut().remove(&id)) {
+        handle.abort();
         return true;
     }
     let mut spawned = SPAWNED.lock().unwrap();
@@ -166,7 +240,9 @@ pub fn release_future(id: u64) -> bool {
 }
 
 pub fn pending_future_count() -> usize {
-    LOCAL_FUTURES.with(|m| m.borrow().len()) + SPAWNED.lock().unwrap().len()
+    LOCAL_FUTURES.with(|m| m.borrow().len())
+        + LOCAL_SPAWNED.with(|m| m.borrow().len())
+        + SPAWNED.lock().unwrap().len()
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +415,7 @@ pub fn drive_to_json(id: u64, slice_ms: u64, task_fd: RawFd) -> String {
                 "envelope".into(),
                 serde_json::from_str(
                     &crate::envelope::Envelope::err(&OmniError::msg(format!(
-                        "await handle {id} is not live (released or already completed)"
+                        "await handle {id} is not live (released, already completed, or created on a different OS thread — Rust runtime calls must stay on the golden thread)"
                     )))
                     .to_json(),
                 )
@@ -366,13 +442,24 @@ fn drive(id: u64, slice_ms: u64, task_fd: RawFd) -> DriveOutcome {
 
     let mut fut = match LOCAL_FUTURES.with(|m| m.borrow_mut().remove(&id)) {
         Some(f) => f,
-        None => {
-            // Multi-executor mode stores spawned tasks instead.
-            if SPAWNED.lock().unwrap().iter().any(|(sid, _)| *sid == id) {
-                return drive_spawned(id, slice_ms);
+        None => match LOCAL_SPAWNED.with(|m| m.borrow_mut().remove(&id)) {
+            // `go expr` task on the LocalSet: await its JoinHandle through
+            // the same park (the wrapper re-stores in LOCAL_FUTURES while
+            // the underlying task keeps running on the set).
+            Some(join) => Box::pin(async move {
+                match join.await {
+                    Ok(result) => result,
+                    Err(join_err) => Err(OmniError::msg(format!("rust task failed: {join_err}"))),
+                }
+            }),
+            None => {
+                // Multi-executor mode stores spawned tasks instead.
+                if SPAWNED.lock().unwrap().iter().any(|(sid, _)| *sid == id) {
+                    return drive_spawned(id, slice_ms);
+                }
+                return DriveOutcome::NotFound;
             }
-            return DriveOutcome::NotFound;
-        }
+        },
     };
 
     // Take the AsyncFd out of the cache for the duration of the park (the

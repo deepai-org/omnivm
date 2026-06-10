@@ -1,0 +1,30 @@
+// Corpus: axum — handlers as plain async fns plus a Router wired with the
+// usual routing DSL; the handler is invoked directly (no socket) so CI stays
+// deterministic.
+
+use axum::{routing::get, Json, Router};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Health {
+  status: String,
+  checks: i64,
+}
+
+async fn health_handler() -> Json<Health> {
+  Json(Health { status: "ok".to_string(), checks: 3 })
+}
+
+async fn probe() -> Health {
+  // Prove the router wires up with the real DSL...
+  let _app: Router = Router::new()
+    .route("/health", get(health_handler))
+    .route("/ready", get(|| async { "ready" }));
+  // ...then call the handler directly and unwrap the Json extractor.
+  health_handler().await.0
+}
+
+const report = probe()
+
+summary = f"status={report['status']} checks={report['checks']}"
+print(summary)

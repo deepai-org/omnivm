@@ -45,6 +45,12 @@ type Dispatcher struct {
 	// dispatcher work is never starved by a foreign park.
 	taskFDValue atomic.Int64
 
+	// extraFDs are additional readable fds the epoll loop watches (e.g. the
+	// Rust multi-executor completion eventfd); readiness triggers a pump
+	// cycle and the fd is drained by the loop.
+	extraMu  sync.Mutex
+	extraFDs []int
+
 	// WatchdogTimeout is how long a single task can block the Golden Thread
 	// before an alert is fired. Zero means no watchdog.
 	WatchdogTimeout time.Duration
@@ -467,4 +473,21 @@ func (d *Dispatcher) TaskFD() int {
 
 func (d *Dispatcher) setTaskFD(fd int) {
 	d.taskFDValue.Store(int64(fd))
+}
+
+// WatchFD registers an additional fd for the epoll loop (call before Run).
+// Readiness triggers a pump cycle; eventfd counters are drained by the loop.
+func (d *Dispatcher) WatchFD(fd int) {
+	if fd < 0 {
+		return
+	}
+	d.extraMu.Lock()
+	d.extraFDs = append(d.extraFDs, fd)
+	d.extraMu.Unlock()
+}
+
+func (d *Dispatcher) watchedFDs() []int {
+	d.extraMu.Lock()
+	defer d.extraMu.Unlock()
+	return append([]int(nil), d.extraFDs...)
 }

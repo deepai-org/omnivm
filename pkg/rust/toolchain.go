@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ABIRev is the bridge ABI revision this host speaks. It must match
@@ -258,6 +259,8 @@ var pinnedCrates = map[string]string{
 	"base64":     `base64 = "0.22"`,
 	"sha2":       `sha2 = "0.10"`,
 	"csv":        `csv = "1"`,
+	"sqlx":       `sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }`,
+	"tower":      `tower = "0.5"`,
 }
 
 // crate roots that never become inferred Cargo dependencies: language
@@ -385,20 +388,67 @@ serde_json = "1"
 	// (see ensureSupportDylib); the transient member is what adds this unit
 	// to the set. Stale members were removed after their builds, so this
 	// compiles the new unit only.
+	fmt.Fprintf(os.Stderr, "[rust] compiling unit %s (cold cache)...\n", unitName)
+	buildStart := time.Now()
 	cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
 	cmd.Dir = tc.WorkspaceDir
 	cmd.Env = tc.cargoEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(string(out))))
 	}
+	fmt.Fprintf(os.Stderr, "[rust] unit %s compiled in %s\n", unitName, time.Since(buildStart).Round(time.Millisecond))
 
 	built := filepath.Join(tc.TargetDir, "release", "lib"+libName+".so")
 	data, err := os.ReadFile(built)
 	if err != nil {
 		return "", fmt.Errorf("rust: built unit missing: %w", err)
 	}
-	if err := os.WriteFile(soPath, data, 0o755); err != nil {
+	// Atomic publish: concurrent processes never observe a partial artifact.
+	tmpArtifact := soPath + ".tmp." + unitName
+	if err := os.WriteFile(tmpArtifact, data, 0o755); err != nil {
 		return "", err
 	}
+	if err := os.Rename(tmpArtifact, soPath); err != nil {
+		os.Remove(tmpArtifact)
+		return "", err
+	}
+	tc.pruneArtifactCache()
 	return soPath, nil
+}
+
+// Cache GC limits (overridable for tests).
+var (
+	// CacheMaxArtifacts bounds /tmp/omnivm-plugins rust artifacts (LRU by
+	// mtime; currently-loaded units are never pruned).
+	CacheMaxArtifacts = 256
+)
+
+func (tc *Toolchain) pruneArtifactCache() {
+	entries, err := filepath.Glob(filepath.Join(pluginCacheDir, "rust-*.so"))
+	if err != nil || len(entries) <= CacheMaxArtifacts {
+		return
+	}
+	type aged struct {
+		path string
+		mod  int64
+	}
+	var candidates []aged
+	for _, path := range entries {
+		if _, loaded := loadedUnitPath(path); loaded {
+			continue
+		}
+		st, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		candidates = append(candidates, aged{path: path, mod: st.ModTime().UnixNano()})
+	}
+	excess := len(entries) - CacheMaxArtifacts
+	if excess <= 0 || len(candidates) == 0 {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod < candidates[j].mod })
+	for i := 0; i < excess && i < len(candidates); i++ {
+		_ = os.Remove(candidates[i].path)
+	}
 }

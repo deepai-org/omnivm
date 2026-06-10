@@ -1,0 +1,10 @@
+# file expected-state [expected-stdout-substring]
+# Phase A baseline (2026-06-10). Phase B ratchets every file to `pass`.
+rust-anyhow-thiserror-errors.poly parse-fail
+rust-axum-router.poly parse-fail
+rust-chrono-schedule.poly pass minutes=1800
+rust-itertools-windows.poly parse-fail
+rust-rayon-stats.poly runtime-fail
+rust-regex-pipeline.poly parse-fail
+rust-sqlx-sqlite.poly pass n=2 total=65
+rust-tokio-reqwest-fanout.poly runtime-fail

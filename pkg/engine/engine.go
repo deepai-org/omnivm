@@ -173,10 +173,19 @@ func (e *Engine) StartDispatcher() {
 	}
 
 	// Rust parked awaits watch the dispatcher task eventfd (edge-observed,
-	// no reads) and pump JS at uv_backend_timeout() cadence.
+	// no reads) and pump JS at uv_backend_timeout() cadence; multi-executor
+	// background completions wake the dispatcher through their eventfd; the
+	// per-await deadline follows the dispatcher task timeout instead of a
+	// fixed constant.
 	if rt, ok := e.Runtimes["rust"]; ok {
 		if rustRT, ok := rt.(*rust.Runtime); ok {
 			rustRT.TaskFDFn = e.Disp.TaskFD
+			if e.Disp.TaskTimeout > 0 {
+				rust.DriveTimeout = e.Disp.TaskTimeout
+			}
+			if support := rustRT.Support(); support != nil {
+				e.Disp.WatchFD(support.CompletionFD())
+			}
 			if jsrt, hasJS := e.Runtimes["javascript"]; hasJS {
 				if uv, hasTimeout := jsrt.(interface{ GetUVBackendTimeout() int }); hasTimeout {
 					rustRT.UVDeadline = uv.GetUVBackendTimeout

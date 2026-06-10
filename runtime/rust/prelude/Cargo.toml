@@ -34,3 +34,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 sha2 = "0.10"
 csv = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+axum = "0.8"
+tower = "0.5"

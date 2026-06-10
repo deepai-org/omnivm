@@ -1,0 +1,35 @@
+// Corpus: itertools — combinators plus a generic, trait-bounded summary fn
+// over data produced by JavaScript.
+
+use itertools::Itertools;
+
+fn dedupe_sorted(mut values: Vec<i64>) -> Vec<i64> {
+  values.sort();
+  values.into_iter().dedup().collect()
+}
+
+fn pair_sums(values: Vec<i64>) -> Vec<i64> {
+  values
+    .iter()
+    .tuple_windows::<(_, _)>()
+    .map(|(a, b)| a + b)
+    .collect()
+}
+
+fn spread<T>(values: Vec<T>) -> f64
+where
+  T: Into<f64> + Copy,
+{
+  let floats: Vec<f64> = values.iter().map(|v| (*v).into()).collect();
+  let max = floats.iter().cloned().fold(f64::MIN, f64::max);
+  let min = floats.iter().cloned().fold(f64::MAX, f64::min);
+  max - min
+}
+
+const raw = [9, 3, 3, 1, 7, 9, 5].map(x => x * 2)
+
+const uniq = dedupe_sorted(raw)
+const sums = pair_sums(uniq)
+const range = spread(uniq)
+
+print(f"uniq={uniq} sums={sums} range={range}")

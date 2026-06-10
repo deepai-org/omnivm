@@ -19,14 +19,16 @@
 pub mod abi;
 pub mod envelope;
 pub mod error;
+pub mod interop;
+pub mod logging;
 pub mod objects;
 pub mod rt;
-pub mod logging;
 pub mod table;
 
 mod export_macros;
 
 pub use error::OmniError;
+pub use interop::{Callback, Channel};
 pub use objects::ObjectExport;
 
 /// Re-exported so user units and the support library agree on one tokio (the

@@ -1,0 +1,25 @@
+// Corpus: regex — named captures and lifetime-carrying signatures, fed by
+// Python text, formatted by JavaScript.
+
+use regex::Regex;
+
+fn extract_codes<'a>(re_src: &str, text: &'a str) -> Vec<&'a str> {
+  let re = Regex::new(re_src).unwrap();
+  re.find_iter(text).map(|m| m.as_str()).collect()
+}
+
+fn count_named(re_src: &str, text: &str) -> i64 {
+  let re = Regex::new(re_src).unwrap();
+  re.captures_iter(text)
+    .filter(|c| c.name("ticket").is_some())
+    .count() as i64
+}
+
+log_text = "deploy JIRA-101 fixes JIRA-204; ignore ABC, ship JIRA-7"
+
+const codes = extract_codes("JIRA-[0-9]+", log_text)
+const named = count_named("(?P<ticket>JIRA-[0-9]+)", log_text)
+
+const banner = codes.map(c => c.toLowerCase()).join(",")
+
+print(f"codes={banner} named={named}")

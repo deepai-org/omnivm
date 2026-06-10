@@ -1,0 +1,44 @@
+// Corpus: sqlx — an async in-memory SQLite pool with typed row mapping,
+// reported through Python.
+
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::Row;
+
+async fn tally_orders(amounts: Vec<i64>) -> Vec<String> {
+  let pool = SqlitePoolOptions::new()
+    .max_connections(1)
+    .connect("sqlite::memory:")
+    .await
+    .unwrap();
+
+  sqlx::query("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+  for amount in &amounts {
+    sqlx::query("INSERT INTO orders (amount) VALUES (?1)")
+      .bind(amount)
+      .execute(&pool)
+      .await
+      .unwrap();
+  }
+
+  let rows = sqlx::query("SELECT COUNT(*) AS n, SUM(amount) AS total FROM orders WHERE amount > 10")
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+  rows
+    .iter()
+    .map(|row| {
+      let n: i64 = row.get("n");
+      let total: i64 = row.get("total");
+      format!("n={n} total={total}")
+    })
+    .collect()
+}
+
+const report = tally_orders([5, 25, 40, 8])
+
+print(f"orders {report[0]}")

@@ -20,16 +20,26 @@ use crate::error::OmniError;
 use crate::envelope::Envelope;
 
 type MethodFn = Box<dyn Fn(&(dyn Any + Send), &[serde_json::Value]) -> Result<serde_json::Value, OmniError> + Send + Sync>;
+type GetterFn = Box<dyn Fn(&(dyn Any + Send)) -> Result<serde_json::Value, OmniError> + Send + Sync>;
+type ViewFn = Box<dyn Fn(&(dyn Any + Send)) -> serde_json::Value + Send + Sync>;
 
 pub struct ObjectExport {
     kind: String,
     value: Box<dyn Any + Send>,
     methods: HashMap<String, MethodFn>,
+    getters: HashMap<String, GetterFn>,
+    view: Option<ViewFn>,
 }
 
 impl ObjectExport {
     pub fn new<T: Any + Send>(kind: impl Into<String>, value: T) -> Self {
-        ObjectExport { kind: kind.into(), value: Box::new(value), methods: HashMap::new() }
+        ObjectExport {
+            kind: kind.into(),
+            value: Box::new(value),
+            methods: HashMap::new(),
+            getters: HashMap::new(),
+            view: None,
+        }
     }
 
     /// Registers a method callable from any peer runtime. The closure
@@ -50,12 +60,45 @@ impl ObjectExport {
         );
         self
     }
+
+    /// Registers a readable property (peer-side attribute access).
+    pub fn getter<T, F>(mut self, name: impl Into<String>, f: F) -> Self
+    where
+        T: Any + Send,
+        F: Fn(&T) -> Result<serde_json::Value, OmniError> + Send + Sync + 'static,
+    {
+        self.getters.insert(
+            name.into(),
+            Box::new(move |obj| {
+                let typed = obj
+                    .downcast_ref::<T>()
+                    .ok_or_else(|| OmniError::msg("object handle: type mismatch in getter dispatch"))?;
+                f(typed)
+            }),
+        );
+        self
+    }
+
+    /// Registers a data projection used for index/len/iter/contains: the
+    /// closure returns the object's current value-model view (array or map).
+    pub fn view<T, F>(mut self, f: F) -> Self
+    where
+        T: Any + Send,
+        F: Fn(&T) -> serde_json::Value + Send + Sync + 'static,
+    {
+        self.view = Some(Box::new(move |obj| {
+            obj.downcast_ref::<T>().map(&f).unwrap_or(serde_json::Value::Null)
+        }));
+        self
+    }
 }
 
 struct Entry {
     kind: String,
     value: Box<dyn Any + Send>,
     methods: HashMap<String, MethodFn>,
+    getters: HashMap<String, GetterFn>,
+    view: Option<ViewFn>,
 }
 
 static OBJECTS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
@@ -91,13 +134,46 @@ pub fn handle_marker(value: &serde_json::Value) -> Option<(String, String)> {
     Some((id, kind))
 }
 
+type BoxedValueIter = std::sync::Mutex<Box<dyn Iterator<Item = serde_json::Value> + Send>>;
+
+/// Exports an iterator as a stream proxy: peers pull through the existing
+/// `stream_next`/`stream_cancel` protocol (the host adapts the handle's
+/// `next` method into a manifest stream). Lazy and cancellable: dropping the
+/// handle (release) drops the iterator.
+pub fn export_stream<I>(iter: I) -> ObjectHandleRef
+where
+    I: Iterator + Send + 'static,
+    I::Item: serde::Serialize,
+{
+    let boxed: Box<dyn Iterator<Item = serde_json::Value> + Send> = Box::new(
+        iter.map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null)),
+    );
+    register(
+        ObjectExport::new("stream", std::sync::Mutex::new(boxed) as BoxedValueIter).method(
+            "next",
+            |cell: &BoxedValueIter, _args| {
+                Ok(match cell.lock().unwrap().next() {
+                    Some(value) => serde_json::json!({"done": false, "value": value}),
+                    None => serde_json::json!({"done": true}),
+                })
+            },
+        ),
+    )
+}
+
 pub fn register(export: ObjectExport) -> ObjectHandleRef {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string();
     let kind = export.kind.clone();
     let mut guard = OBJECTS.lock().unwrap();
     guard.get_or_insert_with(HashMap::new).insert(
         id.clone(),
-        Entry { kind: kind.clone(), value: export.value, methods: export.methods },
+        Entry {
+            kind: kind.clone(),
+            value: export.value,
+            methods: export.methods,
+            getters: export.getters,
+            view: export.view,
+        },
     );
     ObjectHandleRef { id, kind }
 }
@@ -138,15 +214,95 @@ pub fn handle_op(payload: &str) -> Envelope {
             env
         }
         "get" => {
-            // Methods surface as callable attributes; no data fields by default.
             let key = req.get("key").and_then(|v| v.as_str()).unwrap_or("");
-            if entry.methods.contains_key(key) {
-                let mut env = Envelope::default();
-                env.ok = true;
-                env.found = false;
-                return env;
+            if let Some(getter) = entry.getters.get(key) {
+                return match getter(entry.value.as_ref()) {
+                    Ok(value) => Envelope::ok_found(value),
+                    Err(err) => Envelope::err(&err),
+                };
+            }
+            // Map-shaped views expose their fields as attributes too.
+            if let Some(view) = &entry.view {
+                if let serde_json::Value::Object(map) = view(entry.value.as_ref()) {
+                    if let Some(value) = map.get(key) {
+                        return Envelope::ok_found(value.clone());
+                    }
+                }
             }
             Envelope { ok: true, found: false, ..Default::default() }
+        }
+        "index" => {
+            let Some(view) = &entry.view else {
+                return Envelope { ok: true, found: false, ..Default::default() };
+            };
+            let key = req.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let data = view(entry.value.as_ref());
+            let found = match (&data, &key) {
+                (serde_json::Value::Array(items), serde_json::Value::Number(n)) => {
+                    let idx = n.as_i64().unwrap_or(-1);
+                    let len = items.len() as i64;
+                    let idx = if idx < 0 { len + idx } else { idx };
+                    if idx >= 0 && idx < len { Some(items[idx as usize].clone()) } else { None }
+                }
+                (serde_json::Value::Object(map), serde_json::Value::String(s)) => map.get(s).cloned(),
+                _ => None,
+            };
+            match found {
+                Some(value) => Envelope::ok_found(value),
+                None => Envelope { ok: true, found: false, ..Default::default() },
+            }
+        }
+        "len" => {
+            let Some(view) = &entry.view else {
+                return Envelope { ok: true, found: false, ..Default::default() };
+            };
+            let n = match view(entry.value.as_ref()) {
+                serde_json::Value::Array(items) => Some(items.len()),
+                serde_json::Value::Object(map) => Some(map.len()),
+                serde_json::Value::String(s) => Some(s.chars().count()),
+                _ => None,
+            };
+            match n {
+                Some(n) => Envelope::ok_found(serde_json::Value::from(n as u64)),
+                None => Envelope { ok: true, found: false, ..Default::default() },
+            }
+        }
+        "iter" => {
+            let Some(view) = &entry.view else {
+                return Envelope { ok: true, found: false, ..Default::default() };
+            };
+            let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("values");
+            let items = match (view(entry.value.as_ref()), mode) {
+                (serde_json::Value::Array(items), _) => Some(items),
+                (serde_json::Value::Object(map), "keys") => {
+                    Some(map.keys().map(|k| serde_json::Value::String(k.clone())).collect())
+                }
+                (serde_json::Value::Object(map), "items") => Some(
+                    map.into_iter()
+                        .map(|(k, v)| serde_json::Value::Array(vec![serde_json::Value::String(k), v]))
+                        .collect(),
+                ),
+                (serde_json::Value::Object(map), _) => Some(map.into_values().collect()),
+                _ => None,
+            };
+            match items {
+                Some(items) => Envelope::ok_found(serde_json::Value::Array(items)),
+                None => Envelope { ok: true, found: false, ..Default::default() },
+            }
+        }
+        "contains" => {
+            let Some(view) = &entry.view else {
+                return Envelope { ok: true, found: false, ..Default::default() };
+            };
+            let needle = req.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let found = match view(entry.value.as_ref()) {
+                serde_json::Value::Array(items) => items.contains(&needle),
+                serde_json::Value::Object(map) => {
+                    needle.as_str().map(|s| map.contains_key(s)).unwrap_or(false)
+                }
+                _ => false,
+            };
+            Envelope::ok_found(serde_json::Value::Bool(found))
         }
         "call" => {
             let key = req.get("key").and_then(|v| v.as_str()).unwrap_or("");
@@ -176,7 +332,7 @@ pub fn handle_op(payload: &str) -> Envelope {
                 ))),
             }
         }
-        "len" | "iter" | "contains" | "index" | "set" | "read" | "close" => {
+        "set" | "read" | "close" => {
             Envelope { ok: true, found: false, ..Default::default() }
         }
         other => Envelope::err(&OmniError::msg(format!("unsupported object handle op {other:?}"))),

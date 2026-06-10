@@ -164,6 +164,7 @@ type Executor struct {
 	funcs             map[string]*FuncDef
 	goFuncs           map[string]interface{}
 	goSourceFuncs     map[string]*goSourceFuncDef
+	rustFuncs         map[string]*rustFuncMeta
 	javaStubFuncs     map[string]*FuncDef
 	channels          map[string]*ChanRef
 	channelsMu        sync.RWMutex
@@ -209,6 +210,7 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		funcs:             make(map[string]*FuncDef),
 		goFuncs:           make(map[string]interface{}),
 		goSourceFuncs:     make(map[string]*goSourceFuncDef),
+		rustFuncs:         make(map[string]*rustFuncMeta),
 		javaStubFuncs:     make(map[string]*FuncDef),
 		channels:          make(map[string]*ChanRef),
 		resources:         make(map[handles.ID]*ResourceRef),
@@ -2601,6 +2603,9 @@ func (e *Executor) opAwait(op *Op) (interface{}, error) {
 	e.awaitFromDepth--
 	if err != nil {
 		return nil, err
+	}
+	if ref, ok := val.(*RustFutureRef); ok {
+		return e.awaitRustFutureRef(ref, op.Bind)
 	}
 	if ref, ok := val.(RuntimeRef); ok {
 		switch ref.Runtime {

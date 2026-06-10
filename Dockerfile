@@ -171,6 +171,16 @@ RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
 # support dylib with divergent crate metadata; the prelude pre-compiles the
 # pinned crate set into the shared target dir so a .poly file using only
 # prelude crates compiles user code only.
+#
+# Layer order is deliberate: manifests + lockfile first (registry fetch caches
+# against the pin set, not against source edits), full sources after.
+COPY runtime/rust/Cargo.toml runtime/rust/Cargo.lock /opt/omnivm-rust/
+COPY runtime/rust/omnivm/Cargo.toml /opt/omnivm-rust/omnivm/
+COPY runtime/rust/prelude/Cargo.toml /opt/omnivm-rust/prelude/
+COPY runtime/rust/units/seed/Cargo.toml /opt/omnivm-rust/units/seed/
+RUN mkdir -p /opt/omnivm-rust/omnivm/src /opt/omnivm-rust/prelude/src /opt/omnivm-rust/units/seed/src && \
+    touch /opt/omnivm-rust/omnivm/src/lib.rs /opt/omnivm-rust/prelude/src/lib.rs /opt/omnivm-rust/units/seed/src/lib.rs && \
+    cd /opt/omnivm-rust && CARGO_HOME=/opt/cargo cargo fetch --locked
 COPY runtime/rust/ /opt/omnivm-rust/
 ENV OMNIVM_RUST_WORKSPACE_DIR=/opt/omnivm-rust
 ENV OMNIVM_RUST_TARGET_DIR=/opt/omnivm-rust/target
@@ -342,6 +352,10 @@ RUN go test -v -count=1 ./pkg/golang/
 # and exercise the dlopen/bridge/drive ABI). RUSTFLAGS consistency is owned
 # by pkg/rust Toolchain.RustFlags().
 RUN go test -v -count=1 -timeout 600s ./pkg/rust/
+
+# Rust ecosystem corpus: four-state classification (parse/infer/compile/
+# runtime-fail/pass) ratcheted against scripts/rust-corpus-expectations.txt.
+RUN chmod +x scripts/test-rust-corpus.sh && bash scripts/test-rust-corpus.sh
 
 # cgo-linked runtime tests
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \

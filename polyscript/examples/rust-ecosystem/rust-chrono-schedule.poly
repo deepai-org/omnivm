@@ -1,0 +1,21 @@
+// Corpus: chrono — timezone-aware parsing and Duration arithmetic crossing
+// to Python's datetime.
+
+use chrono::{DateTime, Duration, FixedOffset};
+
+fn shift_deadline(start: DateTime<FixedOffset>, hours: i64) -> DateTime<FixedOffset> {
+  start + Duration::hours(hours)
+}
+
+fn span_minutes(a: DateTime<FixedOffset>, b: DateTime<FixedOffset>) -> i64 {
+  (b - a).num_minutes()
+}
+
+kickoff = "2026-06-10T09:30:00.250+05:45"
+
+const due = shift_deadline(kickoff, 30)
+const minutes = span_minutes(kickoff, due)
+
+import datetime
+parsed = datetime.datetime.fromisoformat(due)
+print(f"due_tz={parsed.utcoffset()} minutes={minutes}")

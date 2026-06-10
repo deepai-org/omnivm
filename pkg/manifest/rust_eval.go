@@ -113,7 +113,25 @@ func (e *Executor) resolveRustArg(expr string) (interface{}, error) {
 	binding, bound := e.getBinding(root)
 	if root == expr && bound {
 		if ref, isRef := binding.(RuntimeRef); isRef {
+			// Callables cross as runtime-ref markers (Rust wraps them as
+			// omnivm::Callback); data refs evaluate in their owner runtime.
+			if ref.CallableKnown && ref.Callable {
+				return encodeCSharedHandlePayloadValue(ref), nil
+			}
 			return e.evalForeignRustArg(ref.Runtime, expr)
+		}
+		// Manifest channels cross as descriptors (Rust wraps them as
+		// omnivm::Channel riding stream_next + the send builtin).
+		if ch, isChan := binding.(*ChanRef); isChan {
+			id, err := e.genericStreamHandle("go", ch)
+			if err != nil {
+				return nil, fmt.Errorf("channel handle for %q: %w", root, err)
+			}
+			return map[string]interface{}{
+				"__omnivm_channel__": true,
+				"id":                 int64(id),
+				"kind":               "channel",
+			}, nil
 		}
 		return binding, nil
 	}

@@ -37,6 +37,11 @@ static int omnivm_rust_complete(void* fn, unsigned long long id, int ok, const c
 }
 static int omnivm_rust_mode(void* fn, int mode) { return ((omnivm_rs_mode_fn)fn)(mode); }
 
+typedef unsigned long long (*omnivm_rs_spawn_blocking_fn)(unsigned long long, const char*);
+static unsigned long long omnivm_rust_spawn_blocking(void* fn, unsigned long long ptr, const char* args) {
+	return ((omnivm_rs_spawn_blocking_fn)fn)(ptr, args);
+}
+
 #cgo LDFLAGS: -ldl
 */
 import "C"
@@ -54,15 +59,17 @@ import (
 type Support struct {
 	handle unsafe.Pointer
 
-	setBridge    unsafe.Pointer
-	abiVersion   unsafe.Pointer
-	pump         unsafe.Pointer
-	drive        unsafe.Pointer
-	releaseFut   unsafe.Pointer
-	completeBr   unsafe.Pointer
-	setExecutor  unsafe.Pointer
-	completionFD unsafe.Pointer
-	stats        unsafe.Pointer
+	setBridge     unsafe.Pointer
+	abiVersion    unsafe.Pointer
+	pump          unsafe.Pointer
+	drive         unsafe.Pointer
+	releaseFut    unsafe.Pointer
+	completeBr    unsafe.Pointer
+	setExecutor   unsafe.Pointer
+	completionFD  unsafe.Pointer
+	stats         unsafe.Pointer
+	spawnBg       unsafe.Pointer
+	spawnBlocking unsafe.Pointer
 
 	mu              sync.Mutex
 	bridgeInstalled bool
@@ -123,6 +130,8 @@ func loadSupport(path string) (*Support, error) {
 		"omnivm_rs_set_executor_v1":    &s.setExecutor,
 		"omnivm_rs_completion_fd_v1":   &s.completionFD,
 		"omnivm_rs_stats_v1":           &s.stats,
+		"omnivm_rs_spawn_background_v1": &s.spawnBg,
+		"omnivm_rs_spawn_blocking_v1":   &s.spawnBlocking,
 	}
 	for name, dst := range syms {
 		sym, symErr := dlsym(h, name)
@@ -212,6 +221,20 @@ func (s *Support) Stats() string {
 	return callOwnedString(C.omnivm_rust_call_str(s.stats, nil))
 }
 
+// SpawnBackground converts a stored future into a background LocalSet task
+// (`go expr` semantics: progress on pump ticks and during other parks).
+func (s *Support) SpawnBackground(handle uint64) bool {
+	return C.omnivm_rust_release(s.spawnBg, C.ulonglong(handle)) != 0
+}
+
+// SpawnBlocking runs a synchronous unit export on tokio's blocking pool and
+// returns an await handle (0 on failure).
+func (s *Support) SpawnBlocking(fnAddr uintptr, argsJSON string) uint64 {
+	cArgs := C.CString(argsJSON)
+	defer C.free(unsafe.Pointer(cArgs))
+	return uint64(C.omnivm_rust_spawn_blocking(s.spawnBlocking, C.ulonglong(fnAddr), cArgs))
+}
+
 // Unit is a loaded user cdylib.
 type Unit struct {
 	handle unsafe.Pointer
@@ -263,4 +286,23 @@ func (u *Unit) Call(symbol, argsJSON string) (string, error) {
 	cArgs := C.CString(argsJSON)
 	defer C.free(unsafe.Pointer(cArgs))
 	return callOwnedString(C.omnivm_rust_call_str(sym, cArgs)), nil
+}
+
+// SymbolAddr resolves an exported symbol's raw address (for blocking-pool
+// dispatch of sync exports).
+func (u *Unit) SymbolAddr(symbol string) (uintptr, error) {
+	sym, err := dlsym(u.handle, symbol)
+	if err != nil {
+		return 0, err
+	}
+	return uintptr(sym), nil
+}
+
+// loadedUnitPath reports whether an artifact path is dlopen'd in this process
+// (loaded units are never pruned from the cache).
+func loadedUnitPath(path string) (*Unit, bool) {
+	unitsMu.Lock()
+	defer unitsMu.Unlock()
+	u, ok := loadedUnits[path]
+	return u, ok
 }

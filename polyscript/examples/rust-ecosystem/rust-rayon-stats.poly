@@ -1,0 +1,23 @@
+// Corpus: rayon — the "GIL released, CPU-bound" parallelism escalation over
+// Python-generated numbers.
+
+use rayon::prelude::*;
+
+fn parallel_rms(values: Vec<f64>) -> f64 {
+  let sum_sq: f64 = values.par_iter().map(|v| v * v).sum();
+  (sum_sq / values.len() as f64).sqrt()
+}
+
+fn bucket_counts(values: Vec<f64>, edges: Vec<f64>) -> Vec<i64> {
+  edges
+    .par_iter()
+    .map(|edge| values.iter().filter(|v| **v < *edge).count() as i64)
+    .collect()
+}
+
+samples = [float(i % 17) for i in range(5000)]
+
+const rms = parallel_rms(samples)
+const buckets = bucket_counts(samples, [4.0, 8.0, 16.0])
+
+print(f"rms={round(rms, 3)} buckets={buckets}")
