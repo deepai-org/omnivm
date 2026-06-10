@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -177,6 +178,25 @@ func (tc *Toolchain) RustFlags() string {
 	}, " ")
 }
 
+// withBuildLock serializes workspace builds ACROSS PROCESSES (prefork
+// workers share /opt/omnivm-rust): transient unit members must not be
+// visible to another process's --workspace invocation mid-lifecycle, and
+// cargo's own target-dir lock does not cover member dirs.
+func (tc *Toolchain) withBuildLock(fn func() error) error {
+	lockPath := filepath.Join(tc.WorkspaceDir, ".omnivm-build.flock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		// Read-only workspace: fall back to the in-process mutex only.
+		return fn()
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fn()
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
 func (tc *Toolchain) cargoEnv() []string {
 	return append(os.Environ(),
 		"CARGO_TARGET_DIR="+tc.TargetDir,
@@ -195,10 +215,16 @@ func (tc *Toolchain) cargoEnv() []string {
 //     the image prebuild. The prelude member pins the feature union.
 func (tc *Toolchain) ensureSupportDylib() error {
 	dylib := filepath.Join(tc.TargetDir, "release", "libomnivm_rs.so")
-	cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
-	cmd.Dir = tc.WorkspaceDir
-	cmd.Env = tc.cargoEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
+	var out []byte
+	err := tc.withBuildLock(func() error {
+		cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
+		cmd.Dir = tc.WorkspaceDir
+		cmd.Env = tc.cargoEnv()
+		var buildErr error
+		out, buildErr = cmd.CombinedOutput()
+		return buildErr
+	})
+	if err != nil {
 		// A read-only workspace with a prebuilt dylib is still usable.
 		if _, statErr := os.Stat(dylib); statErr == nil {
 			tc.SupportDylib = dylib
@@ -375,6 +401,20 @@ func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) 
 	pkgName := "omnivm-unit-" + unitName
 	libName := "omnivm_" + unitName
 	memberDir := filepath.Join(tc.WorkspaceDir, "units", unitName)
+	err := tc.withBuildLock(func() error {
+		// Another process may have published while we waited for the lock.
+		if _, statErr := os.Stat(soPath); statErr == nil {
+			return nil
+		}
+		return tc.buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath)
+	})
+	if err != nil {
+		return "", err
+	}
+	return soPath, nil
+}
+
+func (tc *Toolchain) buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath string) error {
 	defer os.RemoveAll(memberDir)
 
 	deps := InferDependencies(source)
@@ -401,13 +441,13 @@ serde_json = "1"
 %s`, pkgName, libName, depBlock.String())
 
 	if err := os.MkdirAll(filepath.Join(memberDir, "src"), 0o755); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(memberDir, "Cargo.toml"), []byte(cargoToml), 0o644); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(memberDir, "src", "lib.rs"), []byte(source), 0o644); err != nil {
-		return "", err
+		return err
 	}
 
 	// --workspace keeps feature unification identical across every build
@@ -420,23 +460,23 @@ serde_json = "1"
 	cmd.Dir = tc.WorkspaceDir
 	cmd.Env = tc.cargoEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(string(out))))
+		return fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(string(out))))
 	}
 	fmt.Fprintf(os.Stderr, "[rust] unit %s compiled in %s\n", unitName, time.Since(buildStart).Round(time.Millisecond))
 
 	built := filepath.Join(tc.TargetDir, "release", "lib"+libName+".so")
 	data, err := os.ReadFile(built)
 	if err != nil {
-		return "", fmt.Errorf("rust: built unit missing: %w", err)
+		return fmt.Errorf("rust: built unit missing: %w", err)
 	}
 	// Atomic publish: concurrent processes never observe a partial artifact.
 	tmpArtifact := soPath + ".tmp." + unitName
 	if err := os.WriteFile(tmpArtifact, data, 0o755); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.Rename(tmpArtifact, soPath); err != nil {
 		os.Remove(tmpArtifact)
-		return "", err
+		return err
 	}
 	// Record the resolution that produced this artifact (reproducibility
 	// audit trail; non-pinned crates resolve once per image lifetime).
@@ -444,7 +484,7 @@ serde_json = "1"
 		_ = os.WriteFile(soPath+".lock", lock, 0o644)
 	}
 	tc.pruneArtifactCache()
-	return soPath, nil
+	return nil
 }
 
 // Cache GC limits (overridable for tests).
