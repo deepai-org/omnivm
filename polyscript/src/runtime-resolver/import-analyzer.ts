@@ -60,6 +60,17 @@ const RUBY_MODULES = new Set([
   "stringio", "tempfile", "fileutils", "securerandom", "digest",
 ]);
 
+/**
+ * Rust crate roots recognized for `use crate::path;` import provenance.
+ * Mirrors the prelude workspace from docs/rust-runtime-design.md.
+ */
+export const RUST_MODULES = new Set([
+  "std", "core", "alloc",
+  "tokio", "serde", "serde_json", "polars", "arrow", "reqwest", "hyper",
+  "axum", "rayon", "regex", "chrono", "anyhow", "thiserror", "itertools",
+  "futures", "crossbeam", "ndarray", "candle", "nalgebra",
+]);
+
 const JAVA_MODULES = new Set([
   "java.lang", "java.util", "java.io", "java.nio", "java.net",
   "java.math", "java.time", "java.text", "java.sql", "java.security",
@@ -75,6 +86,10 @@ export function analyzeImportPath(
   options?: { preferredRuntime?: OmniRuntime },
 ): RuntimeAffinity | undefined {
   const evidence: AffinityEvidence = { type: "import", detail: `import "${path}"` };
+
+  // Rust use-paths: `a::b`, `a::b::*` — no other donor language imports with `::`.
+  const rustAffinity = analyzeRustUsePath(path);
+  if (rustAffinity) return rustAffinity;
 
   if (options?.preferredRuntime === OmniRuntime.JavaScript &&
       (path.startsWith("node:") || JS_MODULES.has(path) || [...JS_MODULES].some(mod => path.startsWith(`${mod}/`)))) {
@@ -152,6 +167,9 @@ export function analyzeImportPath(
 export function analyzeBareImport(name: string): RuntimeAffinity | undefined {
   const evidence: AffinityEvidence = { type: "import", detail: `import ${name}` };
 
+  const rustAffinity = analyzeRustUsePath(name);
+  if (rustAffinity) return rustAffinity;
+
   if (PYTHON_MODULES.has(name)) {
     return { runtime: OmniRuntime.Python, confidence: "inferred", evidence: [evidence] };
   }
@@ -172,5 +190,30 @@ export function analyzeBareImport(name: string): RuntimeAffinity | undefined {
     return { runtime: OmniRuntime.Java, confidence: "inferred", evidence: [evidence] };
   }
 
+  return undefined;
+}
+
+/**
+ * Analyze a Rust `use` path (`tokio::time::sleep`, `polars::prelude::*`,
+ * `serde::{Serialize, Deserialize}` reduced to its crate root).
+ * `::`-separated paths are unique to Rust among the donor languages once the
+ * Ruby Constant::Constant form is excluded; a known crate root makes the
+ * import definite Rust, and a lowercase root is still Rust-leaning.
+ */
+export function analyzeRustUsePath(path: string): RuntimeAffinity | undefined {
+  if (!path.includes("::")) {
+    return undefined;
+  }
+  const root = path.split("::")[0].trim();
+  if (!/^[A-Za-z_]\w*$/.test(root)) return undefined;
+
+  const evidence: AffinityEvidence = { type: "import", detail: `use ${path}` };
+  if (RUST_MODULES.has(root)) {
+    return { runtime: OmniRuntime.Rust, confidence: "definite", evidence: [evidence] };
+  }
+  // Ruby constant paths are Constant-cased (Foo::Bar); lowercase roots are Rust-leaning.
+  if (/^[a-z_]/.test(root)) {
+    return { runtime: OmniRuntime.Rust, confidence: "inferred", evidence: [evidence] };
+  }
   return undefined;
 }

@@ -1,0 +1,15 @@
+# The OmniVM Rust workspace. Everything Rust in a process builds inside ONE
+# cargo workspace — the support dylib (omnivm_rs), the prelude warm-build,
+# and every generated user unit (units/u*). This is what enforces the
+# same-toolchain invariant in practice: one Cargo.lock, one feature
+# resolution, one set of crate metadata hashes, so a unit never silently
+# rebuilds omnivm_rs with different symbol hashes than the copy already
+# loaded in the process.
+[workspace]
+resolver = "2"
+members = ["omnivm", "prelude", "units/*"]
+
+[profile.release]
+# Panics unwind into catch_unwind at every exported entry point and become
+# structured RuntimeErrors; aborts taint the worker (by design).
+panic = "unwind"

@@ -11,6 +11,7 @@ var supportedRuntimes = map[string]bool{
 	"ruby":       true,
 	"java":       true,
 	"go":         true,
+	"rust":       true,
 }
 
 var supportedOps = map[string]bool{

@@ -404,6 +404,11 @@ func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 		return e.execAsync(op)
 	}
 
+	// runtime:"rust" — same registered-call dispatch as eval, result discarded
+	if op.Runtime == "rust" && op.Code != "" {
+		return e.evalRustCode(op)
+	}
+
 	rt, err := e.resolveRuntime(op)
 	if err != nil {
 		return nil, err
@@ -488,6 +493,11 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	// runtime:"go" with code — parse as function call expression
 	if op.Runtime == "go" && op.Code != "" {
 		return e.evalGoCode(op)
+	}
+
+	// runtime:"rust" — dispatch to unit exports registered by rust func_defs
+	if op.Runtime == "rust" && op.Code != "" {
+		return e.evalRustCode(op)
 	}
 
 	if op.Async {
@@ -1015,6 +1025,14 @@ func (e *Executor) opFuncDef(op *Op) (interface{}, error) {
 		} else {
 			return nil, nil
 		}
+	}
+
+	// Rust cdylib with source (one artifact for binary and c-shared hosts)
+	if op.BodyRuntime == "rust" && op.Source != "" {
+		if err := e.compileRustPlugin(op); err != nil {
+			return nil, fmt.Errorf("func_def %q: rust unit: %w", op.Name, err)
+		}
+		return nil, nil
 	}
 
 	nativeRuntime, err := e.executeNativeFuncSource(op)

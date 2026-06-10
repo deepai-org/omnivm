@@ -103,6 +103,19 @@ export class ManifestCodeGenerator {
   private loweredNodesBySource: Map<AST.Program | AST.Decl | AST.Stmt | AST.Expr, LoweredManifestNode[]> = new Map();
   /** Go functions declared in the current source file, used to keep main() self-contained. */
   private goFuncDecls: Map<string, AST.FuncDecl> = new Map();
+  /**
+   * The single shared Rust compilation unit for this program: every Rust
+   * top-level item (use statements, structs, enums, impls, lowered statics)
+   * plus all Rust fns and one export shim macro line per exported fn.
+   * Every Rust func_def op carries this same source so the host compiles
+   * and caches exactly one cdylib.
+   */
+  private rustUnit?: {
+    source: string;
+    exports: string[];
+    /** Module-level Rust nodes absorbed into the unit (emit no standalone ops). */
+    absorbed: Set<AST.Decl | AST.Stmt>;
+  };
 
   /**
    * Generate a dispatch manifest from an annotated program.
@@ -125,6 +138,8 @@ export class ManifestCodeGenerator {
     this.explicitBridgeOps = [];
     this.usingCounter = 0;
     this.goFuncDecls = this.indexGoFuncDecls(annotated.program.body);
+    this.rustUnit = undefined;
+    this.collectRustUnit(annotated.program.body);
     this.loweredIR = lowerAnnotatedProgram(annotated);
     this.loweredNodesBySource = this.indexLoweredNodes(this.loweredIR);
 
@@ -1715,10 +1730,28 @@ export class ManifestCodeGenerator {
   }
 
   private emitCompiledBlock(block: RuntimeBlock): ManifestOp[] {
-    const lang = block.runtime === OmniRuntime.Rust ? "rust" : "c";
+    if (block.runtime === OmniRuntime.Rust) {
+      const ops: ManifestOp[] = [];
+      for (const node of block.nodes) {
+        // Module-level Rust items (use/struct/enum/impl/static) live in the
+        // shared unit source, not in exec ops.
+        if (this.rustUnit?.absorbed.has(node as AST.Decl | AST.Stmt)) {
+          continue;
+        }
+        if (node.kind === "FuncDecl") {
+          ops.push(...this.emitRustFuncDef(node));
+          continue;
+        }
+        // Orchestration-level Rust statements (e.g. calls into exported Rust
+        // fns with cross-runtime arguments) go through the generic emitters.
+        ops.push(...this.emitNode(node as AST.Decl | AST.Stmt, block.runtime));
+      }
+      return ops;
+    }
+
     return block.nodes.map(node => ({
       op: "exec_compiled" as const,
-      lang,
+      lang: "c",
       code: nodeToSourceCode(node, this.source),
     }));
   }
@@ -2965,6 +2998,11 @@ export class ManifestCodeGenerator {
       return this.emitGoFuncDef(node);
     }
 
+    // Rust func_def: every Rust fn carries the shared compilation unit.
+    if (funcRuntime === OmniRuntime.Rust || node.declKeyword === "fn") {
+      return this.emitRustFuncDef(node);
+    }
+
     const paramNames = new Set<string>();
     const params: ParamDef[] = node.params.map(p => {
       const def = this.paramDef(p);
@@ -3038,6 +3076,8 @@ export class ManifestCodeGenerator {
         return OmniRuntime.JavaScript;
       case "func":
         return OmniRuntime.Go;
+      case "fn":
+        return OmniRuntime.Rust;
       default:
         return undefined;
     }
@@ -3285,6 +3325,262 @@ export class ManifestCodeGenerator {
     return name.includes('_')
       ? name.split('_').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('')
       : name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  // ─── Rust Function Definitions ──────────────────────────────────
+
+  /**
+   * Emit a Rust func_def op. The per-op `name`/`params`/`async` describe the
+   * individual fn so stubs register correctly; `source` is the complete
+   * shared Rust compilation unit and `exports` lists ALL exported Rust fn
+   * names, identical across every Rust func_def in the program, so the host
+   * compiles and caches exactly one cdylib.
+   */
+  private emitRustFuncDef(node: AST.FuncDecl): ManifestOp[] {
+    const name = node.name.name;
+    this.recordBinding(name, OmniRuntime.Rust, "function");
+
+    const params: ParamDef[] = node.params.map(p => ({
+      name: p.name.kind === "Identifier" ? p.name.name : "/* pattern */",
+      ...(p.spread ? { spread: true } : {}),
+    }));
+
+    const funcDef: FuncDefOp = {
+      op: "func_def",
+      name,
+      params,
+      body: [],
+      bodyRuntime: OmniRuntime.Rust,
+      ...(node.async ? { async: true } : {}),
+      ...(this.rustUnit
+        ? { source: this.rustUnit.source, exports: this.rustUnit.exports }
+        : { source: this.rustItemSource(node, node.async ? "async " : ""), exports: [name] }),
+    };
+
+    return [funcDef];
+  }
+
+  /**
+   * Collect the shared Rust compilation unit from the program's top level:
+   * use statements, structs/enums/traits/impls, module-level `const x = expr`
+   * bindings lowered to `std::sync::LazyLock` statics, all Rust fns, and one
+   * generated export shim macro line per exported fn.
+   */
+  private collectRustUnit(nodes: Array<AST.Decl | AST.Stmt>): void {
+    if (!this.source) return;
+
+    const useItems: string[] = [];
+    const typeItems: string[] = [];
+    const staticItems: string[] = [];
+    const fnItems: string[] = [];
+    const shims: string[] = [];
+    const exports: string[] = [];
+    const absorbed = new Set<AST.Decl | AST.Stmt>();
+
+    // Names usable inside the unit without crossing the bridge: use-import
+    // bindings, Rust type names, and previously lowered statics.
+    const moduleBindings = new Set<string>();
+    // Exported Rust fns are manifest stubs — a const whose value calls one is
+    // orchestration, not a module-level Rust item.
+    const rustFnNames = new Set<string>();
+
+    const isRustNode = (node: AST.Decl | AST.Stmt): boolean =>
+      this.affinityMap.get(node)?.runtime === OmniRuntime.Rust;
+
+    const isRustFn = (node: AST.Decl | AST.Stmt): node is AST.FuncDecl =>
+      node.kind === "FuncDecl" && (node.declKeyword === "fn" || isRustNode(node));
+
+    for (const node of nodes) {
+      if (isRustFn(node)) rustFnNames.add(node.name.name);
+    }
+
+    for (const node of nodes) {
+      switch (node.kind) {
+        case "Import": {
+          if (!isRustNode(node)) break;
+          const raw = this.sliceSource(node)?.trim();
+          if (!raw || !/^(?:pub\s+)?use\s/.test(raw)) break;
+          useItems.push(raw.endsWith(";") ? raw : `${raw};`);
+          absorbed.add(node);
+          const segments = node.path.split("::");
+          if (segments[0]) moduleBindings.add(segments[0]);
+          const last = segments[segments.length - 1];
+          if (last && last !== "*") moduleBindings.add(last);
+          break;
+        }
+
+        case "ImportDecl": {
+          if (!isRustNode(node)) break;
+          const raw = this.sliceSource(node)?.trim();
+          if (!raw || !/^(?:pub\s+)?use\s/.test(raw)) break;
+          useItems.push(raw.endsWith(";") ? raw : `${raw};`);
+          absorbed.add(node);
+          const root = node.path.split("::")[0];
+          if (root) moduleBindings.add(root);
+          for (const spec of node.specifiers || []) moduleBindings.add(spec.local);
+          break;
+        }
+
+        case "TypeDecl":
+          if (isRustNode(node) && node.structDecl) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+            moduleBindings.add(node.name.name);
+          }
+          break;
+
+        case "EnumDecl":
+          if (isRustNode(node)) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+            moduleBindings.add(node.name.name);
+          }
+          break;
+
+        case "InterfaceDecl":
+        case "ImplDecl":
+          if (isRustNode(node)) {
+            typeItems.push(this.rustItemSource(node));
+            absorbed.add(node);
+          }
+          break;
+
+        case "FuncDecl": {
+          if (!isRustFn(node)) break;
+          fnItems.push(this.rustItemSource(node, node.async ? "async " : ""));
+          const macroName = node.async ? "export_async_fn" : "export_fn";
+          shims.push(`omnivm::${macroName}!(OmniVMCall_${node.name.name}, ${node.name.name}, ${node.params.length});`);
+          exports.push(node.name.name);
+          break;
+        }
+
+        case "ConstDecl":
+        case "VarDecl": {
+          if (node.names.length !== 1 || !node.values || node.values.length !== 1) break;
+          const value = node.values[0];
+          const valueAff = this.affinityMap.get(value) || this.affinityMap.get(node);
+          if (valueAff?.runtime !== OmniRuntime.Rust) break;
+          // Absorb only when every referenced root identifier resolves inside
+          // the unit (imports/types/earlier statics) — calls into exported
+          // Rust fns or other-runtime bindings stay orchestration ops.
+          const roots = new Set<string>();
+          this.collectExprRootIdents(value, roots);
+          const allLocal = [...roots].every(r => moduleBindings.has(r) && !rustFnNames.has(r));
+          if (roots.size === 0 || !allLocal) break;
+
+          const bindName = node.names[0].name;
+          staticItems.push(this.rustStaticItem(bindName, node, value));
+          absorbed.add(node);
+          moduleBindings.add(bindName);
+          this.recordBinding(bindName, OmniRuntime.Rust, "value", node);
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    if (exports.length === 0 && absorbed.size === 0) return;
+
+    const sections = [
+      useItems.join("\n"),
+      ...typeItems,
+      ...staticItems,
+      ...fnItems,
+      shims.join("\n"),
+    ].filter(section => section.length > 0);
+
+    this.rustUnit = {
+      source: sections.join("\n\n"),
+      exports,
+      absorbed,
+    };
+  }
+
+  /**
+   * Lower a module-level Rust `const name = expr` binding to a lazily
+   * initialized static (`std::sync::LazyLock`), preserving the author's name
+   * so fn bodies referencing it verbatim keep working.
+   */
+  private rustStaticItem(name: string, node: AST.ConstDecl | AST.VarDecl, value: AST.Expr): string {
+    const valueSource = this.sliceSource(value) || exprToCode(value, this.source);
+    let typeName: string | undefined;
+    if (node.type) {
+      typeName = this.sliceSource(node.type as unknown as { span: AST.Span });
+    }
+    if (!typeName && value.kind === "Call" && value.callee.kind === "Member" &&
+        value.callee.property.kind === "Identifier" && value.callee.property.name === "new") {
+      typeName = this.sliceSource(value.callee.object)?.replace(/\./g, "::");
+    }
+    if (!typeName) typeName = "omnivm::Value";
+    return [
+      "#[allow(non_upper_case_globals)]",
+      `static ${name}: std::sync::LazyLock<${typeName}> = std::sync::LazyLock::new(|| ${valueSource});`,
+    ].join("\n");
+  }
+
+  /**
+   * Slice a Rust item's raw source, expanding backwards to include preceding
+   * attribute lines (#[derive(...)], #[serde(tag = "type")]) which the lexer
+   * treats as comments and the node span excludes. `prefix` re-attaches
+   * modifiers the parser consumed before the span start (e.g. `async `).
+   */
+  private rustItemSource(node: { span: AST.Span }, prefix = ""): string {
+    const src = this.source;
+    if (!src) return "";
+    const body = src.slice(node.span.start, node.span.end);
+    const text = prefix && !body.startsWith(prefix.trim()) ? prefix + body : body;
+
+    // Walk back over immediately preceding attribute lines.
+    let lineStart = src.lastIndexOf("\n", node.span.start - 1) + 1;
+    let attrStart = lineStart;
+    while (attrStart > 0) {
+      const prevEnd = attrStart - 1;
+      const prevStart = src.lastIndexOf("\n", prevEnd - 1) + 1;
+      const prevLine = src.slice(prevStart, prevEnd);
+      if (/^\s*#\[[^\n]*\]\s*$/.test(prevLine)) {
+        attrStart = prevStart;
+      } else {
+        break;
+      }
+    }
+    if (attrStart < lineStart) {
+      return src.slice(attrStart, lineStart) + text;
+    }
+    return text;
+  }
+
+  /**
+   * Collect root identifier names referenced by an expression: bare
+   * identifiers and the left-most objects of member chains (property names
+   * are skipped — `Client::new()` references only `Client`).
+   */
+  private collectExprRootIdents(node: unknown, out: Set<string>): void {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) this.collectExprRootIdents(item, out);
+      return;
+    }
+    const n = node as any;
+    if (n.kind === "Identifier") {
+      out.add(n.name);
+      return;
+    }
+    if (n.kind === "Member") {
+      this.collectExprRootIdents(n.object, out);
+      return;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === "span") continue;
+      this.collectExprRootIdents(value, out);
+    }
+  }
+
+  /** Raw source slice for a node, when source text and a real span exist. */
+  private sliceSource(node: { span?: AST.Span } | undefined): string | undefined {
+    if (!node || !this.source || !node.span || node.span.end <= node.span.start) return undefined;
+    return this.source.slice(node.span.start, node.span.end);
   }
 
   // ─── Go Source Reconstruction ──────────────────────────────────

@@ -3042,6 +3042,15 @@ int omnivm_v8_get_uv_backend_fd(omnivm_v8_context* ctx_w) {
     return uv_backend_fd(ctx_w->event_loop);
 }
 
+// uv_backend_timeout exposes libuv's next-timer deadline so deadline-aware
+// pumping (e.g. a parked Rust await) can match JS timer cadence instead of
+// riding a fixed heartbeat. Returns ms until the next timer, 0 if work is
+// ready now, or -1 for "no deadline".
+int omnivm_v8_get_uv_backend_timeout(omnivm_v8_context* ctx_w) {
+    if (!ctx_w || !ctx_w->event_loop) return -1;
+    return uv_backend_timeout(ctx_w->event_loop);
+}
+
 void omnivm_v8_terminate_execution(omnivm_v8_context* ctx_w) {
     if (!ctx_w || !ctx_w->isolate) return;
     ctx_w->isolate->TerminateExecution();

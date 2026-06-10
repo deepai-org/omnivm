@@ -208,6 +208,10 @@ const (
 	RuntimeRuby       = 3
 	RuntimeJVM        = 4
 	RuntimeGo         = 5
+	// RuntimeRust routes like Go: async Rust composes its deadline inline in
+	// the tokio park (cooperative cancellation at .await points); CPU-bound
+	// Rust between awaits takes the Go-style deadline + worker-taint path.
+	RuntimeRust = 6
 )
 
 // Init starts the watchdog pthread. goldenTID is the pthread_t of the

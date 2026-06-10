@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,11 @@ type Dispatcher struct {
 
 	pumpMu    sync.RWMutex
 	pumpFuncs map[string]PumpFunc
+
+	// taskFDValue holds the epoll loop's task eventfd (or -1). Other
+	// reactors (e.g. a parked Rust await) watch it edge-observed so
+	// dispatcher work is never starved by a foreign park.
+	taskFDValue atomic.Int64
 
 	// WatchdogTimeout is how long a single task can block the Golden Thread
 	// before an alert is fired. Zero means no watchdog.
@@ -447,4 +453,18 @@ func (d *Dispatcher) rejectTask(t task, err error) {
 	if t.reject != nil {
 		t.reject(err)
 	}
+}
+
+// TaskFD returns the epoll task eventfd, or -1 when the epoll loop is not
+// running. Safe from any goroutine.
+func (d *Dispatcher) TaskFD() int {
+	v := d.taskFDValue.Load()
+	if v == 0 {
+		return -1
+	}
+	return int(v)
+}
+
+func (d *Dispatcher) setTaskFD(fd int) {
+	d.taskFDValue.Store(int64(fd))
 }

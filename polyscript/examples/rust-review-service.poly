@@ -1,8 +1,7 @@
-// Rust Review Service — NORTH-STAR GOAL, NOT YET COMPILABLE.
-// This is the acceptance target for Rust runtime support
-// (docs/rust-runtime-design.md). It must compile and run unchanged once
-// steps 1-4 of the design land. Do not add it to the e2e test list until
-// Rust support ships; do use it to keep the design honest.
+// Rust Review Service — the acceptance target for Rust runtime support
+// (docs/rust-runtime-design.md). It compiles and runs unchanged under both
+// the omnivm binary (manifest-runner) and libomnivm.so c-shared hosts, and
+// is pinned by the e2e suite (test/examples-e2e.test.ts).
 //
 // What it exercises, by boundary:
 // - [rust] `use`, `fn`, `#[derive]`, `format!`, `.await?`, `match` arms — all

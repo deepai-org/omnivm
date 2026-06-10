@@ -49,6 +49,7 @@ void omnivm_v8_free_string(char* s);
 
 // Epoll integration: get libuv's backend fd for epoll monitoring
 int omnivm_v8_get_uv_backend_fd(omnivm_v8_context* ctx);
+int omnivm_v8_get_uv_backend_timeout(omnivm_v8_context* ctx);
 
 // Thread-safe execution termination (for watchdog)
 void omnivm_v8_terminate_execution(omnivm_v8_context* ctx);

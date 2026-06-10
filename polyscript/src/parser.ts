@@ -242,12 +242,26 @@ export class Parser extends ParserCursor {
            keyword === "go" || keyword === "echo";
   }
   
+  /** `pub` followed by a Rust item keyword starts a Rust declaration. */
+  public isRustPubDeclStart(): boolean {
+    const next = this.peekNext()?.value;
+    return next === "fn" || next === "struct" || next === "enum" ||
+           next === "async" || next === "use" || next === "const" ||
+           next === "static" || next === "trait" || next === "impl" ||
+           next === "type" || next === "mod";
+  }
+
   public isDeclStart(): boolean {
     const type = this.peek().type;
     const value = this.peek().value;
     
     // Check for decorators (@decorator)
     if (value === "@") {
+      return true;
+    }
+
+    // Rust visibility modifier before an item keyword
+    if (value === "pub" && this.isRustPubDeclStart()) {
       return true;
     }
     
@@ -417,6 +431,18 @@ export class Parser extends ParserCursor {
         return Functions.parseFuncDecl(this, isAsync, isUnsafe, isGenerator);
       }
       throw this.error(this.peek(), "Expected function declaration after async/unsafe");
+    }
+
+    // Rust visibility modifier: pub fn / pub struct / pub enum / pub use / ...
+    if (keyword === "pub" && this.isRustPubDeclStart()) {
+      this.advance(); // consume 'pub'
+      return this.parseDeclaration();
+    }
+
+    // Rust-style struct declaration: struct Name { ... } / struct Name<T>(...)
+    if (keyword === "struct" && this.peekNext()?.type === TokenType.Identifier) {
+      this.advance(); // consume 'struct'
+      return Decls.parseStructDecl(this);
     }
 
     // Function declarations (with generator support)

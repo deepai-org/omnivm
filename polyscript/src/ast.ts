@@ -571,7 +571,7 @@ export interface JSXSpreadChild {
 
 export interface RuntimeTag {
   kind: "RuntimeTag";
-  runtime: "py" | "js" | "go" | "rb" | "java";
+  runtime: "py" | "js" | "go" | "rb" | "java" | "rs";
   expr: Expr;
   span: Span;
 }
@@ -712,6 +712,8 @@ export interface TypeDecl {
   name: Identifier;
   genericParams?: Identifier[];
   definition: TypeNode;
+  /** True for Rust-style `struct Name { ... }` declarations. */
+  structDecl?: boolean;
   span: Span;
 }
 
@@ -783,6 +785,8 @@ export interface EnumDecl {
   kind: "EnumDecl";
   name: Identifier;
   members: EnumMember[];
+  /** True when any variant carries a payload (Rust `Name { .. }` / `Name(..)`). */
+  payloadVariants?: boolean;
   span: Span;
 }
 

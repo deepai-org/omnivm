@@ -619,6 +619,7 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
                        next.value === "]" ||
                        next.value === "}" ||
                        next.value === "," ||
+                       next.value === "." ||
                        next.virtualSemi ||
                        (host.isBinaryOp(next) && next.value !== ":" && next.value !== "<") ||
                        (next.type === TokenType.Keyword && host.isStatementKeyword(next.value));
@@ -632,6 +633,12 @@ export function parsePostfix(host: PostfixHost, expr: AST.Expr): AST.Expr {
           prefix: false,
           span: host.createSpanFrom(expr)
         };
+        // Rust try-then-chain across lines: `.send().await?\n  .text()`.
+        // MASI inserts a vsemi after `?` (following `)`/`]`); skip it when
+        // the next line continues the member chain with `.`.
+        if (host.peek().type === TokenType.VirtualSemi && host.peekNext()?.value === ".") {
+          host.advance(); // skip virtual semicolon
+        }
         continue;
       }
     }

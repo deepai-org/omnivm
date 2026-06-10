@@ -63,6 +63,18 @@ else
     fail "run go file" "got: $OUT"
 fi
 
+# --- Test: omnivm run main.rs ---
+echo "--- Test: omnivm run main.rs ---"
+cat > /tmp/hello.rs << 'EOF'
+fn main() { println!("hello from rust"); }
+EOF
+OUT=$(omnivm run /tmp/hello.rs 2>/dev/null)
+if [ "$OUT" = "hello from rust" ]; then
+    pass "run rust file"
+else
+    fail "run rust file" "got: $OUT"
+fi
+
 # --- Test 5: argv passthrough (Python) ---
 echo "--- Test: argv passthrough (Python) ---"
 cat > /tmp/args.py << 'EOF'
@@ -417,6 +429,13 @@ fi
 
 # --- Test 27: Go inline execution ---
 echo "--- Test: Go inline execution ---"
+OUT=$(omnivm -rust 'println!("hello from rust repl");' 2>/dev/null)
+if [ "$OUT" = "hello from rust repl" ]; then
+    pass "legacy -rust flag"
+else
+    fail "legacy -rust flag" "got: $OUT"
+fi
+
 OUT=$(omnivm -go 'fmt.Println("hello from go repl")' 2>/dev/null)
 if [ "$OUT" = "hello from go repl" ]; then
     pass "go inline execution"

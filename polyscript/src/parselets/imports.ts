@@ -219,6 +219,30 @@ export function parseImport(host: ImportHost): AST.Import | AST.ImportDecl | AST
           pathParts.push(".*");
           break;
         }
+        // Rust grouped use import: use serde::{Serialize, Deserialize};
+        if (sep === "::" && host.check("{")) {
+          host.advance(); // consume {
+          const specifiers: AST.ImportSpecifier[] = [];
+          if (!host.check("}")) {
+            do {
+              if (host.check("}")) break;
+              const imported = host.parseIdentifier().name;
+              let local = imported;
+              if (host.match("as")) {
+                local = host.parseIdentifier().name;
+              }
+              specifiers.push({ imported, local });
+            } while (host.match(","));
+          }
+          host.consume("}", "Expected '}' after use import group");
+          host.consumeSemicolon();
+          return {
+            kind: "ImportDecl",
+            specifiers,
+            path: pathParts.join(""),
+            span: host.createSpan(start, host.current - 1)
+          };
+        }
         if (host.peek().type === TokenType.Identifier || host.peek().type === TokenType.Keyword) {
           pathParts.push(sep === "::" ? "::" : ".");
           pathParts.push(host.advance().value);

@@ -13,6 +13,7 @@ const (
 	RuntimeRuby       = 3
 	RuntimeJVM        = 4
 	RuntimeGo         = 5
+	RuntimeRust       = 6
 )
 
 func Init()                                {}

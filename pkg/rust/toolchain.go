@@ -1,0 +1,404 @@
+package rust
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+)
+
+// ABIRev is the bridge ABI revision this host speaks. It must match
+// omnivm_rs::abi::ABI_REV; it is part of every artifact cache key, so a host
+// upgrade invalidates incompatible artifacts instead of silently loading them
+// (the same-toolchain invariant).
+const ABIRev = 1
+
+const pluginCacheDir = "/tmp/omnivm-plugins"
+
+var (
+	toolchainOnce sync.Once
+	toolchain     *Toolchain
+	toolchainErr  error
+)
+
+// Toolchain holds resolved paths for the pinned Rust toolchain and the
+// omnivm cargo workspace shipped with the image.
+//
+// Everything builds inside ONE cargo workspace (WorkspaceDir): the support
+// dylib, the prelude, and every generated unit. One Cargo.lock and one unit
+// graph mean cargo assigns omnivm_rs the same -C metadata for every build —
+// a unit can never silently rebuild the support dylib with symbol hashes
+// that differ from the copy already dlopen'd in this process.
+type Toolchain struct {
+	CargoBin     string
+	RustcVersion string
+	// WorkspaceDir is the cargo workspace root (runtime/rust in the tree,
+	// /opt/omnivm-rust in the image). It must be writable: generated units
+	// build as transient workspace members under units/.
+	WorkspaceDir string
+	// CrateDir is the omnivm support crate (WorkspaceDir/omnivm).
+	CrateDir string
+	// TargetDir is the shared cargo target dir (support dylib + prelude +
+	// units), so a unit using only prelude crates compiles user code only.
+	TargetDir string
+	// RustLibDir is the sysroot directory holding libstd-*.so for dynamic
+	// linking (prefer-dynamic).
+	RustLibDir string
+	// SupportDylib is the built libomnivm_rs.so path.
+	SupportDylib string
+	// LockHash is the SHA256 of the workspace Cargo.lock — part of the
+	// cache key so image upgrades reset the cache by design.
+	LockHash string
+
+	// buildMu serializes unit builds (cargo locks the target dir anyway;
+	// this keeps member churn in units/ orderly).
+	buildMu sync.Mutex
+}
+
+// GetToolchain locates (and on first use, builds) the Rust support toolchain.
+func GetToolchain() (*Toolchain, error) {
+	toolchainOnce.Do(func() {
+		toolchain, toolchainErr = initToolchain()
+	})
+	return toolchain, toolchainErr
+}
+
+func initToolchain() (*Toolchain, error) {
+	cargo, err := exec.LookPath("cargo")
+	if err != nil {
+		return nil, fmt.Errorf("rust: cargo not found in PATH: %w", err)
+	}
+
+	rustcOut, err := exec.Command("rustc", "--version").Output()
+	if err != nil {
+		return nil, fmt.Errorf("rust: rustc --version: %w", err)
+	}
+	rustcVersion := strings.TrimSpace(string(rustcOut))
+
+	sysrootOut, err := exec.Command("rustc", "--print", "sysroot").Output()
+	if err != nil {
+		return nil, fmt.Errorf("rust: rustc --print sysroot: %w", err)
+	}
+	sysroot := strings.TrimSpace(string(sysrootOut))
+
+	hostOut, err := exec.Command("rustc", "--print", "host-tuple").Output()
+	host := ""
+	if err == nil {
+		host = strings.TrimSpace(string(hostOut))
+	} else {
+		// Older rustc: derive from version output ("host: ..." via -vV).
+		vv, vvErr := exec.Command("rustc", "-vV").Output()
+		if vvErr != nil {
+			return nil, fmt.Errorf("rust: cannot determine host tuple: %w", vvErr)
+		}
+		for _, line := range strings.Split(string(vv), "\n") {
+			if rest, ok := strings.CutPrefix(line, "host: "); ok {
+				host = strings.TrimSpace(rest)
+			}
+		}
+	}
+	rustLibDir := filepath.Join(sysroot, "lib", "rustlib", host, "lib")
+
+	workspaceDir, err := findWorkspaceDir()
+	if err != nil {
+		return nil, err
+	}
+
+	targetDir := os.Getenv("OMNIVM_RUST_TARGET_DIR")
+	if targetDir == "" {
+		targetDir = filepath.Join(workspaceDir, "target")
+	}
+
+	tc := &Toolchain{
+		CargoBin:     cargo,
+		RustcVersion: rustcVersion,
+		WorkspaceDir: workspaceDir,
+		CrateDir:     filepath.Join(workspaceDir, "omnivm"),
+		TargetDir:    targetDir,
+		RustLibDir:   rustLibDir,
+	}
+
+	if err := tc.ensureSupportDylib(); err != nil {
+		return nil, err
+	}
+
+	lock, err := os.ReadFile(filepath.Join(workspaceDir, "Cargo.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("rust: workspace Cargo.lock: %w", err)
+	}
+	sum := sha256.Sum256(lock)
+	tc.LockHash = hex.EncodeToString(sum[:])
+
+	return tc, nil
+}
+
+func findWorkspaceDir() (string, error) {
+	if dir := os.Getenv("OMNIVM_RUST_WORKSPACE_DIR"); dir != "" {
+		return dir, nil
+	}
+	candidates := []string{"/opt/omnivm-rust"}
+	// Development fallback: locate runtime/rust relative to this file.
+	if _, thisFile, _, ok := runtime.Caller(0); ok {
+		candidates = append(candidates, filepath.Join(filepath.Dir(thisFile), "..", "..", "runtime", "rust"))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "runtime", "rust"),
+			filepath.Join(wd, "..", "..", "runtime", "rust"))
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(filepath.Join(c, "omnivm", "Cargo.toml")); err == nil && !st.IsDir() {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("rust: omnivm workspace not found (set OMNIVM_RUST_WORKSPACE_DIR)")
+}
+
+// RustFlags is the one canonical flag set for every Rust build sharing the
+// target dir (support dylib, prelude, units). It MUST be identical across
+// them: cargo fingerprints include RUSTFLAGS, so divergent flags would
+// rebuild omnivm_rs with new symbol hashes while the old inode is already
+// loaded in the process. The Dockerfile prebuild uses the same construction.
+func (tc *Toolchain) RustFlags() string {
+	return strings.Join([]string{
+		"-C", "prefer-dynamic",
+		"-C", "link-arg=-Wl,-rpath," + filepath.Join(tc.TargetDir, "release"),
+		"-C", "link-arg=-Wl,-rpath," + filepath.Join(tc.TargetDir, "release", "deps"),
+		"-C", "link-arg=-Wl,-rpath," + tc.RustLibDir,
+	}, " ")
+}
+
+func (tc *Toolchain) cargoEnv() []string {
+	return append(os.Environ(),
+		"CARGO_TARGET_DIR="+tc.TargetDir,
+		"RUSTFLAGS="+tc.RustFlags(),
+	)
+}
+
+// ensureSupportDylib builds libomnivm_rs.so. The build always runs (a no-op
+// when the image prebuild is fresh) and always from the workspace root:
+//   - freshness BEFORE first dlopen matters because rebuilding the dylib
+//     after it is loaded leaves the process on the stale copy silently
+//     (content changes do not change Rust symbol hashes);
+//   - --workspace matters because cargo resolver-2 feature unification is
+//     computed per build invocation — a narrower package selection would
+//     rebuild omnivm_rs with different feature sets (and symbol hashes) than
+//     the image prebuild. The prelude member pins the feature union.
+func (tc *Toolchain) ensureSupportDylib() error {
+	dylib := filepath.Join(tc.TargetDir, "release", "libomnivm_rs.so")
+	cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
+	cmd.Dir = tc.WorkspaceDir
+	cmd.Env = tc.cargoEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// A read-only workspace with a prebuilt dylib is still usable.
+		if _, statErr := os.Stat(dylib); statErr == nil {
+			tc.SupportDylib = dylib
+			return nil
+		}
+		return fmt.Errorf("rust: building omnivm support dylib: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	if _, err := os.Stat(dylib); err != nil {
+		return fmt.Errorf("rust: support dylib missing after build: %w", err)
+	}
+	tc.SupportDylib = dylib
+	return nil
+}
+
+// UnitCacheKey computes the artifact cache key: source + bridge ABI revision
+// + toolchain + prelude lockfile. Same scheme as the Go plugin cache.
+func (tc *Toolchain) UnitCacheKey(source string, exports []string) string {
+	sorted := append([]string(nil), exports...)
+	sort.Strings(sorted)
+	material := strings.Join([]string{
+		"rust",
+		fmt.Sprintf("abi:%d", ABIRev),
+		tc.RustcVersion,
+		tc.LockHash,
+		strings.Join(sorted, ","),
+		source,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:])
+}
+
+// pinnedCrates maps crate roots inferred from `use` statements to pinned
+// dependency specs. The prelude policy: rustls over native-tls throughout
+// (native-tls drags in openssl-sys probing the system), and a deliberate
+// feature union so commonly-needed features are "free" (no cold rebuild).
+var pinnedCrates = map[string]string{
+	"serde":      `serde = { version = "1", features = ["derive"] }`,
+	"serde_json": `serde_json = "1"`,
+	"tokio":      ``, // re-exported by the omnivm crate; one runtime per process
+	"reqwest":    `reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }`,
+	"rayon":      `rayon = "1"`,
+	"polars":     `polars = { version = "0.46", features = ["lazy", "serde", "ipc", "ipc_streaming"] }`,
+	"anyhow":     `anyhow = "1"`,
+	"thiserror":  `thiserror = "2"`,
+	"itertools":  `itertools = "0.14"`,
+	"regex":      `regex = "1"`,
+	"chrono":     `chrono = { version = "0.4", features = ["serde"] }`,
+	"futures":    `futures = "0.3"`,
+	"rand":       `rand = "0.9"`,
+	"once_cell":  `once_cell = "1"`,
+	"ndarray":    `ndarray = "0.16"`,
+	"arrow":      `arrow = "55"`,
+	"axum":       `axum = "0.8"`,
+	"hyper":      `hyper = { version = "1", features = ["full"] }`,
+	"bytes":      `bytes = "1"`,
+	"url":        `url = "2"`,
+	"uuid":       `uuid = { version = "1", features = ["v4", "serde"] }`,
+	"base64":     `base64 = "0.22"`,
+	"sha2":       `sha2 = "0.10"`,
+	"csv":        `csv = "1"`,
+}
+
+// crate roots that never become inferred Cargo dependencies: language
+// builtins, the omnivm crate itself, tokio (re-exported by omnivm so one
+// runtime exists per process), and serde/serde_json (always declared by the
+// generated Cargo.toml).
+var builtinRoots = map[string]bool{
+	"std": true, "core": true, "alloc": true,
+	"crate": true, "self": true, "super": true,
+	"omnivm": true, "tokio": true,
+	"serde": true, "serde_json": true,
+}
+
+var useRootRE = regexp.MustCompile(`(?m)^\s*(?:pub\s+)?use\s+(?:::)?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// InferDependencies maps `use` statement crate roots to Cargo.toml dependency
+// lines, with the crates.io hyphen/underscore mapping and versions pinned by
+// the in-image table. Mirrors Go import inference.
+func InferDependencies(source string) []string {
+	seen := map[string]bool{}
+	var deps []string
+	for _, match := range useRootRE.FindAllStringSubmatch(source, -1) {
+		root := match[1]
+		if builtinRoots[root] || seen[root] {
+			continue
+		}
+		seen[root] = true
+		if line, ok := pinnedCrates[root]; ok {
+			if line != "" {
+				deps = append(deps, line)
+			}
+			continue
+		}
+		// Unknown crate: crates.io package names use hyphens where Rust
+		// paths use underscores; let cargo resolve the newest version.
+		pkg := strings.ReplaceAll(root, "_", "-")
+		if pkg == root {
+			deps = append(deps, fmt.Sprintf("%s = \"*\"", root))
+		} else {
+			deps = append(deps, fmt.Sprintf("%s = { package = %q, version = \"*\" }", root, pkg))
+		}
+	}
+	sort.Strings(deps)
+	return deps
+}
+
+// enhanceCompileError adds "add the crate" style hints to rustc output.
+func enhanceCompileError(out string) string {
+	if strings.Contains(out, "error[E0432]") || strings.Contains(out, "error[E0433]") {
+		out += "\nhint: unresolved imports usually mean the crate is not in the pinned prelude; supported prelude crates: " + strings.Join(sortedPinnedCrateNames(), ", ")
+	}
+	return out
+}
+
+func sortedPinnedCrateNames() []string {
+	names := make([]string, 0, len(pinnedCrates))
+	for name := range pinnedCrates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// BuildUnit compiles a complete Rust compilation unit (user items + export
+// shims) into a cached cdylib and returns the artifact path. The unit builds
+// as a transient member of the omnivm workspace (units/u<hash>), sharing the
+// workspace lock and target dir, then the member dir is removed — the cached
+// artifact under /tmp/omnivm-plugins is what gets loaded.
+func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) {
+	hash := tc.UnitCacheKey(source, exports)
+	soPath := filepath.Join(pluginCacheDir, "rust-"+hash+".so")
+	if _, err := os.Stat(soPath); err == nil {
+		return soPath, nil
+	}
+	if err := os.MkdirAll(pluginCacheDir, 0o755); err != nil {
+		return "", err
+	}
+
+	tc.buildMu.Lock()
+	defer tc.buildMu.Unlock()
+	if _, err := os.Stat(soPath); err == nil {
+		return soPath, nil
+	}
+
+	unitName := "u" + hash[:16]
+	pkgName := "omnivm-unit-" + unitName
+	libName := "omnivm_" + unitName
+	memberDir := filepath.Join(tc.WorkspaceDir, "units", unitName)
+	defer os.RemoveAll(memberDir)
+
+	deps := InferDependencies(source)
+	var depBlock strings.Builder
+	for _, dep := range deps {
+		depBlock.WriteString(dep)
+		depBlock.WriteByte('\n')
+	}
+
+	cargoToml := fmt.Sprintf(`[package]
+name = %q
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = %q
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+omnivm = { package = "omnivm_rs", path = "../../omnivm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+%s`, pkgName, libName, depBlock.String())
+
+	if err := os.MkdirAll(filepath.Join(memberDir, "src"), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(memberDir, "Cargo.toml"), []byte(cargoToml), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(memberDir, "src", "lib.rs"), []byte(source), 0o644); err != nil {
+		return "", err
+	}
+
+	// --workspace keeps feature unification identical across every build
+	// (see ensureSupportDylib); the transient member is what adds this unit
+	// to the set. Stale members were removed after their builds, so this
+	// compiles the new unit only.
+	cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
+	cmd.Dir = tc.WorkspaceDir
+	cmd.Env = tc.cargoEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(string(out))))
+	}
+
+	built := filepath.Join(tc.TargetDir, "release", "lib"+libName+".so")
+	data, err := os.ReadFile(built)
+	if err != nil {
+		return "", fmt.Errorf("rust: built unit missing: %w", err)
+	}
+	if err := os.WriteFile(soPath, data, 0o755); err != nil {
+		return "", err
+	}
+	return soPath, nil
+}

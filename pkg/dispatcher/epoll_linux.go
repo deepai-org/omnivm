@@ -73,6 +73,8 @@ func (d *Dispatcher) RunEpoll(ctx context.Context, uvBackendFD int) {
 
 	taskFD := int(C.omnivm_create_eventfd())
 	shutdownFD := int(C.omnivm_create_eventfd())
+	d.setTaskFD(taskFD)
+	defer d.setTaskFD(-1)
 	heartbeatFD := int(C.omnivm_create_timerfd_ms(10)) // 10ms heartbeat
 
 	defer syscall.Close(taskFD)

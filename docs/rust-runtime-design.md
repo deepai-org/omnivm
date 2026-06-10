@@ -7,7 +7,7 @@ level, the events/async model, and ecosystem compatibility. The async design
 went through several revisions; only the converged result is recorded here,
 with the rejected alternatives noted where the reasoning matters.
 
-Status: agreed design, pre-implementation.
+Status: implemented (pkg/rust, runtime/rust workspace, PolyScript Rust support; rust-review-service.poly runs under both hosts).
 
 ## Positioning
 
@@ -484,6 +484,33 @@ awaiting a tokio/reqwest future through a shared `Client` handle — with no
 runtime annotations anywhere. The design is done when that file compiles and
 runs unchanged under both the binary and `libomnivm.so`. It is deliberately
 not in the e2e test list yet; add it there as the final step.
+
+## Implementation Status Addendum (2026-06-10)
+
+Steps 1, 2a/2b/2c, 3, and the acceptance target are implemented and tested;
+the north-star example runs unchanged under both hosts and sits in the e2e
+list. Step 4 notes, recorded so the doc matches the tree:
+
+- **Arrow tabular crossing** ships as Arrow IPC streams in-band (the
+  `__omnivm_arrow_ipc_b64__` marker, decoded inside the `omnivm` crate so
+  user fns take plain polars `DataFrame`s). Moving to C Data Interface
+  pointers (true zero-copy) is the planned Tier-2/3 follow-up; the crate-side
+  seam (`table.rs`) is where it lands.
+- **DLPack tensor interchange** is not yet implemented; tensors currently
+  cross through the serde value model.
+- **The `log` facade bridge is implemented** (auto-installed at bridge init,
+  forwarded with structured prefixes and counted in runtime stats;
+  `OMNIVM_RUST_LOG` sets the level). The `tracing` subscriber and `metrics`
+  recorder forwarding into host CallMetrics are not yet implemented.
+- **Rust as proxy consumer** (peer callables as `Box<dyn Fn>`) is partial:
+  bridge calls from Rust work everywhere (sync and async hop), but there is
+  no dedicated closure wrapper yet.
+- One operational invariant discovered during implementation is now
+  load-bearing: every Rust artifact builds inside the single cargo workspace
+  with `cargo build --workspace` and byte-identical RUSTFLAGS, because cargo
+  computes crate metadata (and therefore Rust symbol hashes) from the
+  workspace, the package selection, and the flags. The prelude member is
+  what pins resolver-2 feature unification.
 
 ## Required Tests
 

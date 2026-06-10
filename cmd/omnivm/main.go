@@ -100,6 +100,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	rustrt "github.com/omnivm/omnivm/pkg/rust"
 	"github.com/omnivm/omnivm/pkg/signals"
 )
 
@@ -114,6 +115,9 @@ var eng *engine.Engine
 
 // goRuntime is the Go plugin runtime, initialized alongside other runtimes.
 var goRuntime = golangrt.New()
+
+// rustRuntime is the Rust cdylib runtime, initialized alongside other runtimes.
+var rustRuntime = rustrt.New()
 
 //export OmniCall
 func OmniCall(cRuntime *C.char, cCode *C.char) *C.char {
@@ -260,6 +264,7 @@ func main() {
 		"java":       jvm.New(),
 		"ruby":       ruby.New(),
 		"go":         goRuntime,
+		"rust":       rustRuntime,
 	}
 
 	needSet := make(map[string]bool)
@@ -275,7 +280,7 @@ func main() {
 	}
 
 	// Initialize runtimes in dependency order (Python first for bridge)
-	for _, name := range []string{"python", "javascript", "java", "ruby", "go"} {
+	for _, name := range []string{"python", "javascript", "java", "ruby", "go", "rust"} {
 		if !needSet[name] {
 			continue
 		}
@@ -316,6 +321,18 @@ func main() {
 				return "ERR:" + err.Error()
 			}
 			return val
+		}
+	}
+
+	// Rust pumps the other reactors between re-parks while a future is parked
+	// on the golden thread (the heartbeat-pump arm of the await select loop).
+	if _, ok := eng.Runtimes["rust"]; ok {
+		rustRuntime.PumpOthers = func() {
+			for name, rt := range eng.Runtimes {
+				if name != "rust" {
+					rt.Pump()
+				}
+			}
 		}
 	}
 
@@ -507,6 +524,9 @@ func repl(ctx context.Context) {
 		case line == ":go":
 			currentLang = "go"
 			fmt.Println("Switched to Go")
+		case line == ":rust" || line == ":rs":
+			currentLang = "rust"
+			fmt.Println("Switched to Rust")
 		case line == ":help":
 			printHelp()
 		case line == ":status":
@@ -538,6 +558,7 @@ func printHelp() {
   :javascript, :js   Switch to JavaScript
   :java, :jvm        Switch to Java
   :ruby, :rb         Switch to Ruby
+  :rust, :rs         Switch to Rust
   :go                Switch to Go
   :status            Show runtime status
   :help              Show this help

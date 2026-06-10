@@ -1,0 +1,24 @@
+[package]
+# The crate ships with the OmniVM image as a Rust dylib so that exactly one
+# tokio runtime (and one set of bridge/object/future tables) exists per
+# process, no matter how many user cdylib units are loaded. Generated unit
+# crates depend on it via `omnivm = { package = "omnivm_rs", path = ... }`
+# so user code says `omnivm::call(...)` while the artifact on disk is
+# libomnivm_rs.so (the plain name libomnivm.so belongs to the c-shared host).
+name = "omnivm_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
+# Arrow tabular interchange (the `table` lane): IPC + serde projection so
+# user fns take/return plain polars DataFrames across the boundary.
+polars = { version = "0.46", features = ["lazy", "serde", "ipc", "ipc_streaming"] }
+base64 = "0.22"
+# log facade bridge: ecosystem crates logging through `log` stay visible
+log = "0.4"

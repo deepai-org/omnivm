@@ -10,9 +10,9 @@
 # Ruby 3.3, and JDK 21+ from standard repos (no PPAs needed).
 
 # ============================================================
-# Stage 1: Build environment with all dev headers
+# Stage 1a: Toolchains + runtime dev headers (no project source)
 # ============================================================
-FROM debian:sid AS builder
+FROM debian:sid AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -37,6 +37,17 @@ RUN ARCH=$(dpkg --print-architecture) && \
 ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 ENV GOPATH=/go
 ENV GOFLAGS="-buildvcs=false"
+
+# ---- Rust (pinned toolchain for the Rust peer runtime) ----
+# The same-toolchain invariant: every Rust artifact in a process is built by
+# this rustc and the prelude lockfile; the bridge ABI rev in the plugin cache
+# key enforces it across image upgrades.
+ENV RUST_VERSION=1.95.0
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+    --default-toolchain ${RUST_VERSION} --profile minimal
+ENV PATH="/opt/cargo/bin:${PATH}"
 
 # ---- Python 3.14 dev ----
 RUN apt-get update && apt-get install -y python3.14-dev python3.14-venv && rm -rf /var/lib/apt/lists/* && \
@@ -153,6 +164,31 @@ RUN LIBNODE_DIR=$(dirname $(find /usr/lib -name "libnode.so" -print -quit)) && \
     ln -sf /usr/local/lib/libv8.so /usr/local/lib/libv8_libplatform.so && \
     ln -sf /usr/local/lib/libv8.so /usr/local/lib/libv8_libbase.so && \
     ldconfig
+
+# ---- Rust support workspace (support dylib + prelude + seed unit) ----
+# Changes rarely; the prelude build is expensive and caches as its own layer.
+# Everything builds inside ONE cargo workspace so units never rebuild the
+# support dylib with divergent crate metadata; the prelude pre-compiles the
+# pinned crate set into the shared target dir so a .poly file using only
+# prelude crates compiles user code only.
+COPY runtime/rust/ /opt/omnivm-rust/
+ENV OMNIVM_RUST_WORKSPACE_DIR=/opt/omnivm-rust
+ENV OMNIVM_RUST_TARGET_DIR=/opt/omnivm-rust/target
+# RUSTFLAGS here MUST match pkg/rust Toolchain.RustFlags() exactly — cargo
+# fingerprints include the flags, and a mismatch would rebuild omnivm_rs with
+# new symbol hashes at runtime.
+RUN RUSTLIB="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/lib" && \
+    export CARGO_TARGET_DIR=/opt/omnivm-rust/target && \
+    export RUSTFLAGS="-C prefer-dynamic -C link-arg=-Wl,-rpath,/opt/omnivm-rust/target/release -C link-arg=-Wl,-rpath,/opt/omnivm-rust/target/release/deps -C link-arg=-Wl,-rpath,${RUSTLIB}" && \
+    cd /opt/omnivm-rust && cargo build --release --workspace && \
+    echo "${RUSTLIB}" > /etc/ld.so.conf.d/rust-std.conf && \
+    echo "/opt/omnivm-rust/target/release" >> /etc/ld.so.conf.d/rust-std.conf && \
+    ldconfig
+
+# ============================================================
+# Stage 1b: Build environment with project source
+# ============================================================
+FROM base AS builder
 
 # ---- Copy source (ordered by change frequency for cache efficiency) ----
 WORKDIR /build
@@ -302,6 +338,11 @@ RUN go test -race -v ./pkg/cli/ ./pkg/dispatcher/ ./pkg/errmsg/ ./pkg/omnivm/ ./
 # compiled plugins must share identical runtime/internal/sys instrumentation.
 RUN go test -v -count=1 ./pkg/golang/
 
+# Rust runtime tests (compile cdylib units against the prewarmed target dir
+# and exercise the dlopen/bridge/drive ABI). RUSTFLAGS consistency is owned
+# by pkg/rust Toolchain.RustFlags().
+RUN go test -v -count=1 -timeout 600s ./pkg/rust/
+
 # cgo-linked runtime tests
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
@@ -369,6 +410,20 @@ RUN ruby -rfileutils -e 'site = RbConfig::CONFIG["sitedir"]; FileUtils.mkdir_p(s
 # Copy Go toolchain from builder (needed for Go plugin compilation at runtime)
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Rust toolchain, support dylib, and prewarmed prelude target dir (needed for
+# Rust unit compilation at runtime; cached units only need the dylib + libstd)
+COPY --from=builder /opt/rustup /opt/rustup
+COPY --from=builder /opt/cargo /opt/cargo
+COPY --from=builder /opt/omnivm-rust /opt/omnivm-rust
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH="/opt/cargo/bin:${PATH}"
+ENV OMNIVM_RUST_WORKSPACE_DIR=/opt/omnivm-rust
+ENV OMNIVM_RUST_TARGET_DIR=/opt/omnivm-rust/target
+RUN echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/lib" > /etc/ld.so.conf.d/rust-std.conf && \
+    echo "/opt/omnivm-rust/target/release" >> /etc/ld.so.conf.d/rust-std.conf && \
+    ldconfig
 
 # Copy V8 bridge shim (rarely changes — libnode.so comes from apt-installed libnode127)
 COPY --from=builder /usr/local/lib/libv8.so /usr/local/lib/

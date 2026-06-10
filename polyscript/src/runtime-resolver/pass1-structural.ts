@@ -27,6 +27,8 @@ export class Pass1Structural {
   private source?: string;
   private importBindingNodes = new Map<string, AST.Import | AST.ImportDecl>();
   private importedJavaQualifiedClasses = new Set<string>();
+  /** Depth of enclosing Rust-style `match { pat => ... }` bodies. */
+  private rustMatchDepth = 0;
 
   constructor(
     symbolTable: SymbolTable,
@@ -131,6 +133,39 @@ export class Pass1Structural {
         break;
 
       // --- Definite Rust ---
+      case "TypeDecl":
+        // Rust `struct Name { ... }` (Go spells it `type Name struct`).
+        if (node.structDecl) {
+          this.assign(node, OmniRuntime.Rust, "definite", { type: "syntax", detail: "Rust struct declaration: struct X {" });
+          this.symbolTable.define(node.name.name, {
+            name: node.name.name,
+            affinity: this.getAffinity(node)!,
+            declNode: node,
+          });
+        }
+        break;
+
+      case "EnumDecl":
+        // Data-carrying variants (`Approved { score: f64 }`) are Rust-only.
+        if (node.payloadVariants) {
+          this.assign(node, OmniRuntime.Rust, "definite", { type: "syntax", detail: "Rust enum with data-carrying variants" });
+          this.symbolTable.define(node.name.name, {
+            name: node.name.name,
+            affinity: this.getAffinity(node)!,
+            declNode: node,
+          });
+        }
+        break;
+
+      case "InterfaceDecl":
+        {
+          const rawTrait = this.nodeSource(node)?.trimStart();
+          if (rawTrait?.startsWith("trait ")) {
+            this.assign(node, OmniRuntime.Rust, "definite", { type: "keyword", detail: "Rust trait declaration" });
+          }
+        }
+        break;
+
       case "ImplDecl":
         this.assign(node, OmniRuntime.Rust, "definite", { type: "node_type", detail: "ImplDecl" });
         this.scopeStack.push(OmniRuntime.Rust);
@@ -315,7 +350,9 @@ export class Pass1Structural {
         runtime = OmniRuntime.JavaScript;
         break;
       case "fn":
+        // `fn` is unique to Rust among the donor languages.
         runtime = OmniRuntime.Rust;
+        confidence = "definite";
         break;
       case "fun":
         // Kotlin-style, map to Java for now
@@ -374,6 +411,14 @@ export class Pass1Structural {
       this.assign(node, OmniRuntime.Python, "inferred", { type: "keyword", detail: "match style: python" });
     }
 
+    // `=>` is contextual: inside a Rust-style `match { }` body it is a match
+    // arm separator, not a JS arrow. Track depth so lambda classification can
+    // demote the definite-JS arrow rule. Only genuine `match` syntax counts
+    // (Kotlin-style `when` also produces style "rust").
+    const rawMatch = this.nodeSource(node)?.trimStart();
+    const isRustMatchBody = node.style === "rust" && rawMatch?.startsWith("match");
+    if (isRustMatchBody) this.rustMatchDepth++;
+
     this.visitExpr(node.expr);
     for (const arm of node.arms) {
       for (const pattern of arm.patterns) this.visitExpr(pattern);
@@ -384,6 +429,8 @@ export class Pass1Structural {
         this.visitExpr(arm.body as AST.Expr);
       }
     }
+
+    if (isRustMatchBody) this.rustMatchDepth--;
   }
 
   private visitImport(node: AST.Import): void {
@@ -394,6 +441,7 @@ export class Pass1Structural {
       ? analyzeImportPath(path, { preferredRuntime: OmniRuntime.Go }) || analyzeBareImport(path)
       : analyzeBareImport(node.path) || analyzeImportPath(node.path);
     const rubyRequireImport = raw ? /^\s*require\s+["']/.test(raw) : false;
+    const rustUseImport = raw ? /^\s*(?:pub\s+)?use\s+[A-Za-z_]/.test(raw) : false;
     const javaStaticImport = !quotedImport && this.isJavaStaticImportPath(path);
     const javaClassImport = !quotedImport && this.isJavaClassImportPath(path);
     const javaWildcardImport = !quotedImport && this.isJavaWildcardImport(raw, path);
@@ -403,7 +451,13 @@ export class Pass1Structural {
     const pythonSyntaxImport = raw
       ? /^\s*import\s+[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:\s+as\s+[A-Za-z_][\w]*)?\s*;?\s*$/.test(raw)
       : !quotedImport && /^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*$/.test(node.path);
-    const affinity = analyzedAffinity || (rubyRequireImport
+    const affinity = analyzedAffinity || (rustUseImport
+      ? {
+          runtime: OmniRuntime.Rust,
+          confidence: "definite" as const,
+          evidence: [{ type: "syntax" as const, detail: "Rust use import syntax" }],
+        }
+      : undefined) || (rubyRequireImport
       ? {
           runtime: OmniRuntime.Ruby,
           confidence: "definite" as const,
@@ -500,6 +554,26 @@ export class Pass1Structural {
 
   private visitImportDecl(node: AST.ImportDecl): void {
     this.registerImportDeclBindingNodes(node);
+    const rawImportDecl = this.nodeSource(node)?.trimStart();
+    // Rust grouped use: `use serde::{Serialize, Deserialize};`
+    if (rawImportDecl && /^(?:pub\s+)?use\s+[A-Za-z_]/.test(rawImportDecl)) {
+      const affinity: RuntimeAffinity = {
+        runtime: OmniRuntime.Rust,
+        confidence: "definite",
+        evidence: [{ type: "syntax", detail: "Rust use import syntax" }],
+      };
+      this.assign(node, affinity.runtime, affinity.confidence, ...affinity.evidence);
+      if (node.specifiers) {
+        for (const spec of node.specifiers) {
+          this.symbolTable.define(spec.local, { name: spec.local, affinity });
+        }
+      }
+      const root = node.path.split("::")[0];
+      if (root) {
+        this.symbolTable.define(root, { name: root, affinity });
+      }
+      return;
+    }
     const preferredRuntime = this.importDeclPreferredRuntime(node);
     const analyzedAffinity = preferredRuntime
       ? analyzeImportPath(node.path, { preferredRuntime }) || analyzeImportPath(node.path)
@@ -660,6 +734,16 @@ export class Pass1Structural {
       const root = cleaned.split(".")[0];
       if (root) names.add(root);
     }
+    if (runtime === OmniRuntime.Rust && cleaned.includes("::")) {
+      // `use reqwest::Client;` binds `Client`; the crate root is also visible.
+      const segments = cleaned.split("::");
+      const last = segments[segments.length - 1];
+      if (last && last !== "*") names.add(last);
+      const root = segments[0];
+      if (root) names.add(root);
+      // The full `a::b` string is not a usable binding name.
+      return [...names].filter(n => !n.includes("::"));
+    }
 
     if (slashName) names.add(slashName);
     if (names.size === 0) names.add(path);
@@ -667,6 +751,22 @@ export class Pass1Structural {
   }
 
   private visitCall(node: AST.Call): void {
+    // Rust macro invocation: `ident!(...)` — println!, vec!, format!, json!,
+    // panic!. The parser represents the macro bang as a postfix `!` unary on
+    // the macro name. No other donor language has this form (bare `panic(`
+    // stays a Go builtin).
+    if (node.callee.kind === "Unary" && node.callee.op === "!" && !node.callee.prefix &&
+        node.callee.argument.kind === "Identifier") {
+      this.assign(node, OmniRuntime.Rust, "definite", {
+        type: "syntax",
+        detail: `Rust macro invocation: ${node.callee.argument.name}!(`,
+      });
+      this.assign(node.callee, OmniRuntime.Rust, "definite", {
+        type: "syntax",
+        detail: `Rust macro invocation: ${node.callee.argument.name}!(`,
+      });
+    }
+
     // Check for builtin calls
     if (node.callee.kind === "Identifier") {
       const builtinRuntime = lookupBuiltinAffinity(node.callee.name);
@@ -699,7 +799,43 @@ export class Pass1Structural {
     }
   }
 
+  private static readonly RUST_PRIMITIVE_TYPES = new Set([
+    "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize",
+    "f32", "f64",
+  ]);
+
+  /**
+   * Rust-definite `let` forms: `let mut x = ...` and `let x: i32 = ...`
+   * (Rust-only primitive type annotation). Bare `let x = ...` stays
+   * ambiguous and is resolved by Pass 2 propagation.
+   */
+  private rustLetEvidence(node: AST.VarDecl): AffinityEvidence | undefined {
+    const raw = this.nodeSource(node)?.trimStart();
+    if (raw && /^let\s+mut\s/.test(raw)) {
+      return { type: "syntax", detail: "let mut binding" };
+    }
+    if (raw?.startsWith("let") && node.type && node.type.kind === "SimpleType" &&
+        Pass1Structural.RUST_PRIMITIVE_TYPES.has(node.type.id.name)) {
+      return { type: "syntax", detail: `let with Rust type annotation: ${node.type.id.name}` };
+    }
+    return undefined;
+  }
+
   private visitVarDecl(node: AST.VarDecl): void {
+    const rustLet = this.rustLetEvidence(node);
+    if (rustLet) {
+      this.assign(node, OmniRuntime.Rust, "definite", rustLet);
+      if (node.values) {
+        for (const v of node.values) this.visitExpr(v);
+      }
+      const aff = this.getAffinity(node)!;
+      for (const name of node.names) {
+        this.symbolTable.define(name.name, { name: name.name, affinity: aff });
+      }
+      return;
+    }
+
     if (node.destructurePattern) {
       for (const v of node.values ?? []) {
         this.visitExpr(v);
@@ -890,6 +1026,14 @@ export class Pass1Structural {
         if (expr.op === "?" && !expr.prefix) {
           this.assign(expr, OmniRuntime.Rust, "inferred", { type: "node_type", detail: "try operator ?" });
         }
+        // Postfix `.await` is Rust (JS `await` is prefix)
+        if (expr.op === "await" && !expr.prefix) {
+          this.assign(expr, OmniRuntime.Rust, "definite", { type: "syntax", detail: "postfix .await" });
+        }
+        // Mutable borrow `&mut expr` is Rust
+        if (expr.op === "&mut" && expr.prefix) {
+          this.assign(expr, OmniRuntime.Rust, "definite", { type: "syntax", detail: "mutable borrow &mut" });
+        }
         break;
       case "Assign":
         this.visitExpr(expr.right);
@@ -1072,17 +1216,66 @@ export class Pass1Structural {
     const importedJavaClass = this.importedJavaClassForChain(chainParts);
     const rawMember = this.nodeSource(expr);
 
+    const objectIsKnown = objectAff && objectAff.confidence !== "fallback" &&
+      !(objectAff.confidence === "inferred" && objectAff.evidence[0]?.type === "scope" &&
+        objectAff.evidence[0]?.detail.startsWith("scope majority"));
+
     if (rawMember?.includes("::")) {
+      // `::` paths are shared between Ruby (Foo::Bar constants) and Rust
+      // (module/associated paths). Resolve contextually:
+      // 1. A known root binding wins (use-imports, Rust struct/enum decls,
+      //    Ruby modules alike) — but only when the binding is definite or
+      //    already Ruby/Rust-affine. Weak inferences from other runtimes
+      //    (e.g. JS import-from syntax on an unknown package) must not
+      //    defeat the Constant-path heuristics below.
+      const objectDecidesPath = objectIsKnown &&
+        (objectAff.confidence === "definite" ||
+         objectAff.runtime === OmniRuntime.Ruby ||
+         objectAff.runtime === OmniRuntime.Rust);
+      if (objectDecidesPath) {
+        return {
+          runtime: objectAff.runtime,
+          confidence: objectAff.confidence,
+          evidence: [
+            { type: "syntax", detail: `:: path root: ${objectAff.runtime}` },
+            ...objectAff.evidence,
+          ],
+        };
+      }
+      // 2. Rust-affine globals: Vec::new(), tokio::spawn, serde_json::json.
+      const rootId = this.memberRootIdentifier(expr);
+      const rootGlobal = rootId ? lookupGlobalAffinity(rootId.name) : undefined;
+      if (rootGlobal) {
+        return {
+          runtime: rootGlobal,
+          confidence: "inferred",
+          evidence: [{ type: "builtin", detail: `:: path root global: ${rootId!.name}` }],
+        };
+      }
+      // 3. Ruby constant paths are Constant-cased; lowercase::lowercase is
+      //    Rust-leaning evidence.
+      if (rootId && /^[a-z_]/.test(rootId.name)) {
+        return {
+          runtime: OmniRuntime.Rust,
+          confidence: "inferred",
+          evidence: [{ type: "syntax", detail: "Rust lowercase :: path" }],
+        };
+      }
+      // 4. Inside Rust scope, `::` paths are Rust.
+      if (this.currentScopeRuntime() === OmniRuntime.Rust) {
+        return {
+          runtime: OmniRuntime.Rust,
+          confidence: "inferred",
+          evidence: [{ type: "scope", detail: "Rust scope :: path" }],
+        };
+      }
+      // 5. Default: Constant-cased path outside Rust context — Ruby.
       return {
         runtime: OmniRuntime.Ruby,
         confidence: "definite",
         evidence: [{ type: "syntax", detail: "Ruby constant path ::" }],
       };
     }
-
-    const objectIsKnown = objectAff && objectAff.confidence !== "fallback" &&
-      !(objectAff.confidence === "inferred" && objectAff.evidence[0]?.type === "scope" &&
-        objectAff.evidence[0]?.detail.startsWith("scope majority"));
 
     if (qualifiedRuntime) {
       return {
@@ -1192,12 +1385,24 @@ export class Pass1Structural {
       ? this.source.slice(expr.span.start, expr.span.end).trim()
       : undefined;
 
+    // Rust closure pipes: |x| expr
+    if ((expr as any).rustClosure) {
+      this.assign(expr, OmniRuntime.Rust, "definite", { type: "syntax", detail: "Rust closure |args|" });
+      return;
+    }
+
     if (raw?.startsWith("lambda ")) {
       this.assign(expr, OmniRuntime.Python, "definite", { type: "syntax", detail: "lambda expression" });
       return;
     }
 
     if (raw?.includes("=>")) {
+      // `=>` is contextual, not definite-JS: inside a Rust-style `match { }`
+      // body it is the match-arm separator. The `match` keyword is the anchor.
+      if (this.rustMatchDepth > 0) {
+        this.assign(expr, OmniRuntime.Rust, "inferred", { type: "syntax", detail: "=> inside Rust match body" });
+        return;
+      }
       this.assign(expr, OmniRuntime.JavaScript, "definite", { type: "syntax", detail: "arrow function =>" });
       return;
     }

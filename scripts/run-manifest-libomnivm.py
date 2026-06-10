@@ -11,7 +11,7 @@ import omnivm
 def _collect_runtimes(value, out):
     if isinstance(value, dict):
         runtime = value.get("runtime")
-        if runtime in {"go", "javascript", "java", "ruby"}:
+        if runtime in {"go", "javascript", "java", "ruby", "rust"}:
             out.add(runtime)
         for child in value.values():
             _collect_runtimes(child, out)
@@ -25,7 +25,7 @@ def _manifest_runtimes(path):
         manifest = json.load(f)
     runtimes = set()
     _collect_runtimes(manifest, runtimes)
-    return [name for name in ("go", "javascript", "java", "ruby") if name in runtimes]
+    return [name for name in ("go", "javascript", "java", "ruby", "rust") if name in runtimes]
 
 
 def main() -> int:
