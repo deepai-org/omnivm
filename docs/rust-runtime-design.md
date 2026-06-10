@@ -108,7 +108,7 @@ contract, and depends on an `omnivm` crate that wraps it:
 
 ```rust
 #[no_mangle]
-pub extern "C" fn omnivm_set_bridge(
+pub extern "C" fn omnivm_set_bridge_v1(
     call: extern "C" fn(*const c_char, *const c_char) -> *mut c_char,
     free: extern "C" fn(*mut c_char),
 ) { ... }
@@ -118,6 +118,54 @@ let v: String = omnivm::call("python", "2 ** 100")?;
 let users = omnivm::call_typed::<Vec<User>>("python", "get_users()")?;
 ```
 
+### ABI versioning and artifact identity
+
+The `omnivm` crate ships *inside* compiled artifacts that are cached by hash.
+When the host updates (new envelope field, new bridge function), stale cached
+cdylibs still carry the old crate — and unlike the JSON envelope,
+`extern "C"` layouts do not degrade gracefully. Go dodges this because
+`plugin.Open` hard-fails on toolchain mismatch; `dlopen` on a cdylib loads
+anything. Therefore:
+
+- The bridge install symbol is **versioned** (`omnivm_set_bridge_v1`, `_v2`,
+  …) and the host refuses to load an artifact whose symbol version it does
+  not speak — a structured load error, not a crash later.
+- The cache key includes the **bridge ABI revision** alongside source and
+  `Cargo.lock`, so a host upgrade naturally invalidates incompatible
+  artifacts instead of silently loading them.
+- **Same-toolchain invariant:** every Rust artifact in a process is built by
+  the image's pinned rustc and prelude lockfile. Rust has no stable ABI
+  between independently compiled dylibs; this invariant is what makes passing
+  Rust types (e.g. a tokio `Handle`) across artifact boundaries sound. The
+  ABI revision in the cache key is what enforces it across image upgrades.
+
+### Loading: dlopen flags
+
+Multiple cached cdylibs in one process share a global symbol namespace by
+default, and every unit exports the same `omnivm_*` symbols by design. Load
+with `RTLD_LOCAL` and resolve per-handle via `dlsym`. Whether to add
+`RTLD_DEEPBIND` is an explicit decision with a test, not a default by
+accident: DEEPBIND has a history of breaking TLS-heavy crates and asan
+builds. The required test loads two units exporting identical symbols and
+verifies each unit's bridge installs independently.
+
+### One executor per process
+
+If every cdylib statically links its own tokio, two units mean two reactors,
+two `Handle::try_current()` worlds, and the reentrancy invariant only holds
+within one unit. The design rejects per-unit runtimes: the current-thread
+runtime and driver loop live in a single **runtime-support cdylib shipped
+with the host image**, and each user unit receives a runtime `Handle` at load
+time through a versioned ABI entry point (`omnivm_set_runtime_handle_v1`).
+The `omnivm` crate re-exports tokio so user code and the support library
+agree on one version.
+
+The cost is explicit: tokio's version is pinned by the host image, not the
+user's `Cargo.toml`. A crate that requires a newer tokio than the image ships
+waits for an image upgrade. That trade is accepted — it is the same posture
+as the pinned CPython/Node/JVM versions every other guest already lives
+with.
+
 ### Panic and error envelope
 
 Compiled units build with `panic = "unwind"`. Every exported entry point wraps
@@ -125,6 +173,18 @@ the body in `std::panic::catch_unwind`, converting panics into the structured
 error envelope with `RUST_BACKTRACE` frames. A stray `.unwrap()` must become a
 Python `omnivm.RuntimeError`, never a worker abort. `anyhow`/`thiserror`
 errors walk `source()` chains into the existing `cause_chain` field.
+
+Two qualifications keep this honest:
+
+- Unwinding across a plain `extern "C"` boundary is undefined behavior.
+  `catch_unwind` at entry points covers host→Rust calls, but any **callback
+  the host invokes** that could panic must be declared `extern "C-unwind"`
+  (or wrapped so the panic is caught before the boundary).
+- `catch_unwind` cannot catch aborts. Dependencies compiled with
+  `panic = "abort"` profiles, or code that calls `std::process::abort()` on
+  invariant violation, still take the worker down. The matrix row is:
+  *panics become `RuntimeError`; aborts taint the worker* — same recycle
+  path as a Go plugin deadline.
 
 ### Registration touchpoints
 
@@ -236,9 +296,12 @@ mutual recursion makes this path non-optional.
   degraded in c-shared mode. Gated behind an explicit knob
   (`runtime.rust.executor = "multi"` or `#[omnivm::executor(multi)]`). When
   set: multi-thread tokio runtime, eventfd-based completion delivery into the
-  dispatcher epoll, background progress in c-shared mode, and a `rust_tokio`
-  owner-dispatch target that can genuinely report `supported: true`
-  (tokio `Waker` is `Send + Sync`; `Handle::spawn` works from any thread).
+  dispatcher epoll, background progress in c-shared mode, and a
+  `rust_executor` owner-dispatch target that can genuinely report
+  `supported: true` (tokio `Waker` is `Send + Sync`; `Handle::spawn` works
+  from any thread). The target is named for the concept, not the library —
+  consistent with `java_executor`/`javascript_event_loop` — so swapping the
+  reactor implementation never changes a public API string.
 - README caveat: some crates spawn threads internally regardless (TLS, DNS
   resolver paths). "Zero threads" is a default posture, not an enforced
   guarantee.
@@ -267,25 +330,100 @@ default executor; thread-isolated under `executor = "multi"`.*
 - `futures::Stream` / `AsyncRead` values crossing a boundary map onto the
   existing stream-proxy protocol (`stream_next` / `stream_cancel`).
 
+## Value Boundary: serde as the Universal Codec
+
+The integration primitive is not JSON — it is a custom serde
+`Serializer`/`Deserializer` pair in the `omnivm` crate that reads and writes
+the manifest value model directly, the same way `serde_json::Value` or `rmpv`
+implement the serde data model. Any `Serialize`/`Deserialize` type crosses
+the boundary by building the value tree in memory — no parse/stringify text
+round-trip even before Tier 3 `omni_value_t` lands; when it lands, the same
+codec targets the tagged union. This buys the entire serde ecosystem in one
+move. Consequences worth specifying:
+
+- **Attribute fidelity.** `#[serde(rename_all, flatten, skip, default, …)]`
+  are honored: the serde-projected shape *is* the canonical crossing shape.
+  Deliberately, there is **one** projection — the author's declared wire
+  shape — not per-target re-idiomization. Renaming fields per consuming
+  language would give the same struct different field names in different
+  runtimes and break cross-runtime code sharing.
+- **Enum projection.** Data-carrying enums are Rust's most expressive feature
+  and have the worst default cross-language story. serde's tagged
+  representations (externally/internally/adjacently tagged) project to a JS
+  discriminated union (`{ type: "...", ... }`), a Python tagged dict, a Ruby
+  tagged hash, a Java tagged map — the canonical projection per
+  representation is specified, not erased to an opaque map. `Result`/`Option`
+  (already mapped in the typed-boundaries section) are the degenerate cases
+  of this rule.
+- **Temporal canonical type.** The canonical type set gains a timestamp so
+  `chrono::DateTime` / `time::OffsetDateTime` round-trip to Python `datetime`
+  and JS `Date` with timezone and sub-second precision intact, rather than
+  degrading to ISO strings.
+
+## Bulk Data: Three Interchanges, Not One
+
+Tabular and tensor data are different shapes and get different zero-copy
+contracts:
+
+- **Arrow C Data Interface → tabular**, and it is a *universal* type, not a
+  Rust↔Python fast path: `arrow-rs`/`polars` (Rust), `pyarrow`/pandas
+  (Python), `apache-arrow` (JS), `red-arrow` (Ruby), and Go all speak it.
+  The `table` op treats Arrow as the canonical tabular crossing for all six
+  runtimes; a polars frame crosses zero-copy to every guest. This is the
+  structural version of the "no library-specific fast paths" rule.
+- **DLPack → tensors.** `ndarray`, candle/burn tensors, `nalgebra` matrices,
+  and image buffers are strided dense tensors, not columnar data — Arrow is
+  the wrong shape for them. DLPack is the established contract, consumed by
+  numpy (`np.from_dlpack`), PyTorch, JAX, CuPy, and TF. A candle tensor
+  crossing to PyTorch with no copy is the Rust-as-ML-glue story.
+- **Opaque borrowed byte buffers** in the value model for a single large
+  `Vec<u8>`/`Bytes` (a model file, an image) that would otherwise base64
+  through JSON — backed by the existing named-buffer/handle machinery.
+
+## Object Proxies: Stateful Handles for Rust
+
+The manifest proxy/handle protocol already lets guests hold and call
+runtime-owned objects; Rust joins it from both sides. This matters because
+the highest-value crates expose stateful, expensive-to-create objects, and a
+call-oriented boundary alone cannot use them: a `sqlx`/`deadpool` connection
+pool, a `reqwest::Client` (its connection pooling is lost if every call
+rebuilds it), a compiled `regex::Regex`, a `tantivy::Index`, a loaded model.
+
+- **Rust as producer:** exported objects register in the handle table and
+  cross as proxies; peers invoke methods across calls. `method_call`/`drop`
+  mirrors the stream proxy's `stream_next`/`stream_cancel`. Lifetime follows
+  the existing discipline — deterministic scope cleanup, quiet idempotent
+  finalizer release, watchdog-teardown drop path.
+- **Rust as consumer:** peer-language callables wrap as `Box<dyn Fn>` so
+  crates that take closures (event handlers, comparators, visitors)
+  integrate at all; the call hops through the bridge (async hop in 2c).
+- **Cross-unit state:** separately compiled cdylibs share no Rust statics, so
+  handles are also how two units share a pool or model — state lives behind
+  a handle in the host table instead of being re-instantiated per unit.
+
 ## Ecosystem Compatibility
 
 Consistent with the bridge plan's rule: no library-specific fast paths.
 Popular crates work because their values expose ordinary protocols.
 
-- **serde / serde_json:** is the value boundary. `copy` semantics =
-  `Serialize`/`Deserialize` against the JSON envelope; when Tier 3
-  `omni_value_t` lands, serde targets it directly and skips JSON.
+- **serde:** the universal codec above.
 - **tokio / reqwest / hyper / axum / actix:** covered by the async design.
   Route handlers call `omnivm::call(...)` through the bridge (hopping to the
-  host thread in c-shared mode).
+  host thread in c-shared mode). Pooled clients persist across calls as
+  handles.
 - **rayon:** works as the parallel CPU escalation; pure Rust work violates no
   runtime locks.
-- **arrow-rs / polars / ndarray:** Arrow C Data Interface via `arrow::ffi`
-  against the `table` op. polars DataFrame ↔ pandas crossing is zero-copy
-  with no adapter code.
-- **anyhow / thiserror:** `source()` chains → `cause_chain`. **tracing:** a
-  subscriber in the `omnivm` crate forwards spans into `CallMetrics` /
-  `SetOnCallDone`.
+- **arrow-rs / polars:** Arrow interchange above. **ndarray / candle /
+  nalgebra:** DLPack interchange above.
+- **anyhow / thiserror:** `source()` chains → `cause_chain`. `miette`/`eyre`
+  diagnostics (source spans, help text) are candidates for a richer envelope
+  than a flat chain — worth a look once the envelope grows structured
+  `details`.
+- **Observability:** a `tracing` subscriber in the `omnivm` crate forwards
+  spans into `CallMetrics`/`SetOnCallDone` — **plus** the `tracing-log`
+  bridge, because a large fraction of the ecosystem still emits through the
+  older `log` facade and would otherwise go silent. The `metrics` facade
+  forwards the same way.
 - **pyo3-based crates:** unsupported initially (could in principle attach to
   the embedded CPython; explicitly out of scope).
 
@@ -297,12 +435,27 @@ Popular crates work because their values expose ordinary protocols.
    builds, shared `target/` dir baked in. A `.poly` file using only prelude
    crates compiles user code only.
 2. **sccache** plus the SHA256 plugin cache for everything else.
+3. **rustls over native-tls throughout the prelude** (`reqwest` with
+   `rustls-tls`, etc.). `native-tls` drags in `openssl-sys` with a `build.rs`
+   that probes the system — exactly the native-linkage fragility that turns
+   "compiles in the image" into "fails on someone's machine."
+4. **Deliberate feature-unification policy.** If user code requests a tokio
+   feature the baked prelude was not compiled with, cargo recompiles the
+   crate cold. Compile prelude crates with the union of commonly-needed
+   features and document which features are "free" (no recompile) versus
+   which trigger a cold build.
+5. **Image upgrades reset the cache by design** — the cache key includes the
+   lockfile and ABI revision, so hit rates across image versions are zero.
+   Ship precompiled cdylibs for the example suite and common helpers in the
+   image itself, so the post-upgrade cold-start story is not "every `.poly`
+   recompiles."
 
 ## Build Order
 
-1. **Peer runtime:** `pkg/rust/` cdylib compile/cache/dlopen, bridge ABI,
-   `omnivm` crate, panic→envelope. Gets `omnivm run main.rs`, `-rust 'code'`,
-   manifest `func_def`.
+1. **Peer runtime:** `pkg/rust/` cdylib compile/cache/dlopen (versioned ABI
+   symbols, ABI rev in cache key, `RTLD_LOCAL`), bridge ABI, `omnivm` crate
+   with the serde value codec, panic→envelope. Gets `omnivm run main.rs`,
+   `-rust 'code'`, manifest `func_def`.
 2. **Async, staged:**
    - **2a (smallest correct ship, covers production):** c-shared
      `block_on(select!(timeout(fut), heartbeat-pump))` + reentrancy guard +
@@ -312,12 +465,14 @@ Popular crates work because their values expose ordinary protocols.
      asyncio.
    - **2c (escalation):** async bridge hop (outbound arm + oneshot, retires
      the guard); `executor = "multi"` knob; eventfd completion delivery;
-     `rust_tokio` owner-dispatch target.
+     `rust_executor` owner-dispatch target.
 3. **PolyScript:** Rust evidence in Pass 1 + method tables, `@rs` tag, the
    `=>`/`let` disambiguation (full corpus run before/after), `emitRustFuncDef`
    with typed signatures.
-4. **Package layer:** prelude workspace image, `use`→`Cargo.toml` inference,
-   Arrow FFI for the `table` op.
+4. **Package layer:** prelude workspace image (rustls, feature-union policy,
+   precompiled helper cdylibs), `use`→`Cargo.toml` inference, Arrow FFI for
+   the `table` op, DLPack tensor interchange, object-proxy
+   producer/consumer support, `log`/`metrics` facade bridges.
 
 ## Required Tests
 
@@ -333,3 +488,19 @@ Popular crates work because their values expose ordinary protocols.
   a JS interval, in both binary and c-shared modes.
 - Abandoned-await release: watchdog timeout mid-park leaves no leaked boxed
   future (handle-table diagnostics clean).
+- ABI-mismatch rejection: an artifact built against an older bridge ABI
+  revision fails to load with a structured error, never loads silently.
+- Two-unit isolation: two cdylibs exporting identical `omnivm_*` symbols
+  load under `RTLD_LOCAL`, each unit's bridge installs independently, and
+  both observe the **same** runtime handle (one reactor per process).
+- Abort honesty: a `panic = "abort"`-built dependency aborting mid-call
+  taints the worker through the documented recycle path (cannot become a
+  `RuntimeError`; must not be silent).
+- Codec fidelity round-trips: adjacently/internally/externally tagged enums
+  to each guest's canonical projection and back; `chrono::DateTime` ↔ Python
+  `datetime` ↔ JS `Date` preserving timezone and sub-second precision.
+- DLPack round-trip: `ndarray` ↔ numpy `from_dlpack` zero-copy (pointer
+  identity), with release/ownership verified under early drop.
+- Stateful handle lifecycle: a `reqwest::Client` held by Python across calls
+  reuses connections; drop path verified on scope cleanup and watchdog
+  teardown.
