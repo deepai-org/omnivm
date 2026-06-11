@@ -139,6 +139,124 @@ describe("Turbofish is definite-Rust evidence in expression position (Regime 2)"
   });
 });
 
+describe("Registry-sweep regression classes (2026-06 burn-down)", () => {
+  // Each case is a minimized form of a class that failed the registry-wide
+  // sweep; the full files live in the pinned crates the sweep walks.
+
+  it("paren-form macro_rules!( .. ); slices to the trailing semicolon", () => {
+    // uuid/macros.rs, itertools/cons_tuples_impl.rs: a `}` closing a macro
+    // ARM body at brace depth 0 while still inside the outer `(...)` must
+    // not end the item.
+    const rust =
+      "macro_rules! unsafe_transmute(\n" +
+      "    ($e:expr) => { unsafe { core::mem::transmute::<_, _>($e) } }\n" +
+      ");";
+    const items = scanTopLevelRustItems(rust);
+    expect(items.map((i) => i.itemKind)).toEqual(["macro"]);
+    expect(items[0].text).toBe(rust);
+
+    const { manifest, parseErrors } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    expect(JSON.stringify(manifest.ops[manifest.ops.length - 1])).toContain("done");
+  });
+
+  it("const _: () = { .. }; with blank lines in the body stays one item", () => {
+    // anyhow/nightly.rs, ryu/tests.rs: the SEMI_ONLY blank-line runaway
+    // guard must only count blank lines OUTSIDE balanced delimiters.
+    const rust =
+      "const _: () = {\n" +
+      "    let x = 1;\n" +
+      "\n" +
+      "    assert!(x == 1);\n" +
+      "};";
+    const items = scanTopLevelRustItems(rust);
+    expect(items.map((i) => i.itemKind)).toEqual(["const"]);
+    expect(items[0].text).toBe(rust);
+
+    const { manifest, parseErrors, gen } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    expect(((gen as any).rustUnit?.source ?? "")).toContain(rust);
+    expect(JSON.stringify(manifest.ops[manifest.ops.length - 1])).toContain("done");
+  });
+
+  it("struct-literal static (vtable pattern) anchors as Rust", () => {
+    // bytes/bytes.rs, serde_json/lexical/cached_float80.rs: a `::`-free
+    // `const NAME: Type = Type { .. };` is Rust-only (`Ident {` after `=`
+    // is never a TS initializer).
+    const rust =
+      "const STATIC_VTABLE: Vtable = Vtable {\n" +
+      "    clone: static_clone,\n" +
+      "    drop: static_drop,\n" +
+      "};";
+    const { manifest, parseErrors, gen } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    const unit = (gen as any).rustUnit?.source ?? "";
+    expect(unit).toContain(rust);
+    expect(JSON.stringify(manifest.ops[manifest.ops.length - 1])).toContain("done");
+  });
+
+  it("a TS object-literal const stays in the union grammar", () => {
+    const { manifest, parseErrors } = compile(
+      "const cfg: Config = { retries: 3 };\nprint(cfg.retries)\n"
+    );
+    expect(parseErrors).toEqual([]);
+    expect(JSON.stringify(manifest.ops)).not.toContain('"rust"');
+  });
+
+  it("pub type alias with a :: path lands in the Rust unit verbatim", () => {
+    // futures-util/never.rs: the union TypeDecl shape-matched but carried
+    // no Rust affinity, so the alias never reached the unit.
+    const rust = "pub type Never = core::convert::Infallible;";
+    const { parseErrors, gen } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    expect(((gen as any).rustUnit?.source ?? "")).toContain(rust);
+  });
+
+  it("type alias with dyn Fn(..) RHS slices as one Rust item", () => {
+    // rayon-core/lib.rs: the union grammar stopped mid-alias on `dyn`.
+    const rust = "type PanicHandler = dyn Fn(Box<dyn Any + Send>) + Send + Sync;";
+    const { manifest, parseErrors, gen } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    expect(((gen as any).rustUnit?.source ?? "")).toContain(rust);
+    expect(JSON.stringify(manifest.ops[manifest.ops.length - 1])).toContain("done");
+  });
+
+  it("a TS function-type alias stays in the union grammar", () => {
+    const { manifest, parseErrors } = compile(
+      'type Handler = (e: string) => void;\nprint("ok")\n'
+    );
+    expect(parseErrors).toEqual([]);
+    expect(JSON.stringify(manifest.ops)).not.toContain('"rust"');
+  });
+
+  it("<T> Trait for Type inside a macro body does not open JSX mode", () => {
+    // serde/serde_core ser/impls.rs: `deref_impl! { <T> Serialize for
+    // Box<T> .. }` opened JSX text mode in the lexer, which never closed
+    // and swallowed the rest of the file.
+    const rust =
+      "deref_impl! {\n" +
+      "    <T> Serialize for Box<T> where T: ?Sized + Serialize\n" +
+      "}\n" +
+      "\n" +
+      "fn after_macro() -> i64 {\n" +
+      "    42\n" +
+      "}";
+    const { manifest, parseErrors, gen } = compile(`${rust}\n\nprint("done")\n`);
+    expect(parseErrors).toEqual([]);
+    const unit = (gen as any).rustUnit?.source ?? "";
+    expect(unit).toContain("fn after_macro");
+    expect(JSON.stringify(manifest.ops[manifest.ops.length - 1])).toContain("done");
+  });
+
+  it("JSX text containing ' for ' still lexes as JSX", () => {
+    const { parseErrors, manifest } = compile(
+      'const el = <Choice> Vote for me </Choice>;\nprint("ok")\n'
+    );
+    expect(parseErrors).toEqual([]);
+    expect(JSON.stringify(manifest.ops)).not.toContain('"rust"');
+  });
+});
+
 describe("Rust round-trip oracle: real crate sources survive verbatim", () => {
   for (const name of FIXTURES) {
     describe(name, () => {

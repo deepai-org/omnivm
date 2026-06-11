@@ -1,7 +1,8 @@
 // Corpus: gradual typing — Rust fns may omit param and return types.
 // Untyped params complete to omnivm::Dyn (Python-flavored ["key"] indexing,
-// iteration, arithmetic and comparison, panicking accessors); an omitted
-// return type on a gradual fn whose body ends in an expression completes to
+// plain `for r in reviews` iteration via IntoIterator, arithmetic and
+// comparison, panicking accessors); an omitted return type on a gradual fn
+// whose body ends in an expression completes to
 // `-> impl omnivm::serde::Serialize`. Call-site evidence stamps concrete
 // types when every call site agrees: scale_rating's untyped first param is
 // called with an integer literal only, so it completes to i64 (and the
@@ -10,14 +11,15 @@
 fn top_score(reviews) {
   let mut best = 0.0;
   let mut total = 0.0;
-  for r in reviews.iter() {
+  let n = reviews.len() as f64;
+  for r in reviews {
     let score = r["score"].as_f64();
     total = total + score;
     if r["score"] > best {
       best = score;
     }
   }
-  format!("best={best} avg={}", total / reviews.len() as f64)
+  format!("best={best} avg={}", total / n)
 }
 
 fn scale_rating(rating, factor: i64) -> i64 {

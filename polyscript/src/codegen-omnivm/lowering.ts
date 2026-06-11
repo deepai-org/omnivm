@@ -364,8 +364,41 @@ class ManifestLowerer {
       lines.push("}", "");
     }
 
-    const signature = `func ${exportName}(${params.map(p => `${p.name} ${p.type}`).join(", ")})${returnType ? ` ${returnType}` : ""}`;
+    // Numeric-arg coercion: plugin args cross as interface{}, so a body
+    // doing `m > 50` or `m * 2` fails to compile. Params whose EVERY use is
+    // numeric get a shadow-converted float64 local; anything ambiguous
+    // (indexing, method calls, string/nil comparisons) stays interface{}.
+    const bodyText = bodyLines.join("\n");
+    const coerced: string[] = [];
+    const finalParamDecls = params.map(p => {
+      if (p.type !== "interface{}") return `${p.name} ${p.type}`;
+      if (!goParamIsNumericOnly(p.name, bodyText)) return `${p.name} ${p.type}`;
+      coerced.push(p.name);
+      return `__omnivm_raw_${p.name} ${p.type}`;
+    });
+    if (coerced.length > 0) {
+      lines.push(
+        "func __omnivm_f64(v interface{}) float64 {",
+        "\tswitch n := v.(type) {",
+        "\tcase float64:",
+        "\t\treturn n",
+        "\tcase int:",
+        "\t\treturn float64(n)",
+        "\tcase int64:",
+        "\t\treturn float64(n)",
+        "\tcase int32:",
+        "\t\treturn float64(n)",
+        "\t}",
+        "\treturn 0",
+        "}",
+        "",
+      );
+    }
+    const signature = `func ${exportName}(${finalParamDecls.join(", ")})${returnType ? ` ${returnType}` : ""}`;
     lines.push(`${signature} {`);
+    for (const pName of coerced) {
+      lines.push(`\t${pName} := __omnivm_f64(__omnivm_raw_${pName})`);
+    }
     for (const line of bodyLines) {
       lines.push(`\t${line}`);
     }
@@ -652,4 +685,22 @@ class ManifestLowerer {
   private allocId(): number {
     return this.nextId++;
   }
+}
+
+/**
+ * A go-plugin param is numeric-only when it appears at least once in a
+ * numeric comparison/arithmetic context and NEVER in a context that needs
+ * its interface{} form (indexing, member access, calls, string/nil/bool
+ * comparison, reassignment, type assertion).
+ */
+export function goParamIsNumericOnly(name: string, body: string): boolean {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const numericUse = new RegExp(
+    `(?:\\b${esc}\\s*(?:[<>]=?|[-+*/%])\\s*[\\d(])|(?:[\\d)]\\s*(?:[<>]=?|[-+*/%])\\s*${esc}\\b)|(?:\\b${esc}\\s*(?:==|!=)\\s*[\\d.])|(?:[\\d.]\\s*(?:==|!=)\\s*${esc}\\b)`,
+  );
+  if (!numericUse.test(body)) return false;
+  const disqualifying = new RegExp(
+    `(?:\\b${esc}\\s*[\\[.(])|(?:\\b${esc}\\s*(?:==|!=)\\s*(?:"|nil\\b|true\\b|false\\b))|(?:(?:"|nil|true|false)\\s*(?:==|!=)\\s*${esc}\\b)|(?:\\b${esc}\\s*=[^=])|(?:\\b${esc}\\s*,)|(?:,\\s*${esc}\\s*:?=)`,
+  );
+  return !disqualifying.test(body);
 }

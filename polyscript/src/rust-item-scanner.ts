@@ -416,7 +416,10 @@ function scanItemEnd(source: string, anchorPos: number, kind: RustItemKind): num
       case "}":
         brace--;
         pos++;
-        if (brace === 0 && !semiOnly) return pos; // closing brace of the item body
+        // Closing brace of the item body — but only at depth 0 of EVERY
+        // delimiter kind: a paren-form `macro_rules! m( ($x:expr) => { .. } );`
+        // closes its `{...}` arm body while still inside the outer `(...)`.
+        if (brace === 0 && paren === 0 && bracket === 0 && !semiOnly) return pos;
         if (brace < 0) return -1;
         continue;
       case "(": paren++; pos++; continue;
@@ -433,6 +436,43 @@ function scanItemEnd(source: string, anchorPos: number, kind: RustItemKind): num
     }
   }
   return -1;
+}
+
+/**
+ * Does [from, to) contain a blank line at delimiter depth 0? Trivia-aware:
+ * blank lines inside strings/comments don't count, and neither do blank
+ * lines inside `(..)`/`[..]`/`{..}` groups (e.g. a braced const initializer).
+ * A line whose only content is a `//` comment counts as content.
+ */
+function crossesTopLevelBlankLine(source: string, from: number, to: number): boolean {
+  let pos = from;
+  let depth = 0;
+  let sawContent = true; // the anchor keyword is content on its own line
+  while (pos < to) {
+    const c = source[pos];
+    if (c === "\n") {
+      if (depth === 0) {
+        if (!sawContent) return true;
+        sawContent = false;
+      }
+      pos++;
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\r") { pos++; continue; }
+    const isLineComment = c === "/" && source[pos + 1] === "/";
+    const step = stepToken(source, pos);
+    sawContent = true;
+    if (step.next !== -1) {
+      pos = step.next;
+      // A line comment consumes its trailing newline — start a fresh line.
+      if (isLineComment && depth === 0) sawContent = false;
+      continue;
+    }
+    if (c === "{" || c === "(" || c === "[") depth++;
+    else if (c === "}" || c === ")" || c === "]") { if (depth > 0) depth--; }
+    pos++;
+  }
+  return false;
 }
 
 /** Extract bound names from a verbatim `use ...;` item. */
@@ -856,9 +896,12 @@ export function scanRustItemAt(source: string, anchorPos: number): ScannedRustIt
   if (end === -1) return null;
 
   // Run-away guard for semicolon-terminated items: a Rust use/static/const/
-  // type item never contains a blank line. If the scan crossed one, the `;`
-  // it found belongs to something else — reject.
-  if (SEMI_ONLY.has(itemKind) && /\n[ \t]*\n/.test(source.slice(anchorPos, end))) {
+  // type item never contains a blank line OUTSIDE balanced delimiters. If
+  // the scan crossed one at depth 0, the `;` it found belongs to something
+  // else — reject. Blank lines inside a braced initializer are legitimate
+  // (`const _: () = { ... };` bodies, vtable struct literals, `&{ .. }`
+  // const blocks), so the check is delimiter-depth-aware.
+  if (SEMI_ONLY.has(itemKind) && crossesTopLevelBlankLine(source, anchorPos, end)) {
     return null;
   }
 
@@ -946,6 +989,10 @@ export function rustConstTypeSignal(typeText: string): boolean {
   // are likewise Rust-only.
   if (/::/.test(typeText) || /&\s*(?:'\w+|mut\b|str\b|\[)/.test(typeText)) return true;
   if (/^\s*&/.test(typeText) || /^\s*\*\s*(?:mut|const)\b/.test(typeText)) return true;
+  // The unit type: `const _: () = ...` build-probe items. TS function types
+  // (`(): () => void`) never reach here with a bare `()` — the caller only
+  // takes the text before a true `=`, never before `=>`.
+  if (/^\(\s*\)$/.test(typeText.trim())) return true;
   for (const word of typeText.split(/[^A-Za-z0-9_]+/)) {
     if (RUST_PRIMITIVES.has(word)) return true;
   }

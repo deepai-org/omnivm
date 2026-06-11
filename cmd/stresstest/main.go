@@ -136,6 +136,13 @@ func stressRuntimeID(name string) int {
 
 func main() {
 	goldenThreadID = int64(C.get_thread_id())
+
+	// Rust-only mode: just the Rust stress section (rust_stress.go) with no
+	// Python/JS/Ruby/JVM initialization — used by the Docker tester stage.
+	if len(os.Args) > 1 && os.Args[1] == "--rust-only" {
+		os.Exit(runRustOnly())
+	}
+
 	fmt.Println("=== OmniVM Cross-Runtime Stack Mixing Stress Test ===")
 	fmt.Println()
 
@@ -5195,6 +5202,11 @@ else System.out.println(result[0]);
 		}
 		return nil
 	})
+
+	// Rust stress section (rust_stress.go): typed-lane churn, channel relay
+	// rounds, compile-cache hits, panic storm, large-value crossings, and
+	// the absolute liveness-counter drain gate.
+	runRustStressTests(run)
 
 	// Check allocation counter
 	fmt.Println()

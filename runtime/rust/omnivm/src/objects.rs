@@ -136,10 +136,21 @@ pub fn handle_marker(value: &serde_json::Value) -> Option<(String, String)> {
 
 type BoxedValueIter = std::sync::Mutex<Box<dyn Iterator<Item = serde_json::Value> + Send>>;
 
+/// Batch size requested by a `next` method call: `{"n": K}` in the first
+/// argument selects the plural `{"done","values":[...]}` response shape;
+/// absent (or 1) keeps the singular `{"done","value"}` wire untouched.
+fn batch_n(args: &[serde_json::Value]) -> usize {
+    args.first()
+        .and_then(|arg| arg.get("n"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1) as usize
+}
+
 /// Exports an iterator as a stream proxy: peers pull through the existing
 /// `stream_next`/`stream_cancel` protocol (the host adapts the handle's
 /// `next` method into a manifest stream). Lazy and cancellable: dropping the
-/// handle (release) drops the iterator.
+/// handle (release) drops the iterator. Batched pulls (`{"n": K}` args) move
+/// up to K values per crossing.
 pub fn export_stream<I>(iter: I) -> ObjectHandleRef
 where
     I: Iterator + Send + 'static,
@@ -151,11 +162,27 @@ where
     register(
         ObjectExport::new("stream", std::sync::Mutex::new(boxed) as BoxedValueIter).method(
             "next",
-            |cell: &BoxedValueIter, _args| {
-                Ok(match cell.lock().unwrap().next() {
-                    Some(value) => serde_json::json!({"done": false, "value": value}),
-                    None => serde_json::json!({"done": true}),
-                })
+            |cell: &BoxedValueIter, args| {
+                let n = batch_n(args);
+                let mut iter = cell.lock().unwrap();
+                if n <= 1 {
+                    return Ok(match iter.next() {
+                        Some(value) => serde_json::json!({"done": false, "value": value}),
+                        None => serde_json::json!({"done": true}),
+                    });
+                }
+                let mut values = Vec::with_capacity(n);
+                let mut done = false;
+                while values.len() < n {
+                    match iter.next() {
+                        Some(value) => values.push(value),
+                        None => {
+                            done = true;
+                            break;
+                        }
+                    }
+                }
+                Ok(serde_json::json!({"done": done, "values": values}))
             },
         ),
     )
@@ -179,15 +206,27 @@ where
     register(
         ObjectExport::new("stream", std::sync::Mutex::new(boxed) as BoxedValueStream).method(
             "next",
-            |cell: &BoxedValueStream, _args| {
+            |cell: &BoxedValueStream, args| {
+                let n = batch_n(args);
                 let mut guard = cell.lock().unwrap();
-                match crate::rt::block_on_stream_next(guard.as_mut()) {
-                    Ok(Some(value)) => Ok(serde_json::json!({"done": false, "value": value})),
-                    Ok(None) => Ok(serde_json::json!({"done": true})),
-                    Err(crate::rt::StreamPollWouldBlock) => {
-                        Ok(serde_json::json!({"done": false, "pending": true}))
-                    }
+                if n <= 1 {
+                    return Ok(match crate::rt::block_on_stream_next(guard.as_mut()) {
+                        Ok(Some(value)) => serde_json::json!({"done": false, "value": value}),
+                        Ok(None) => serde_json::json!({"done": true}),
+                        Err(crate::rt::StreamPollWouldBlock) => {
+                            serde_json::json!({"done": false, "pending": true})
+                        }
+                    });
                 }
+                // Batched: pending only when EMPTY-HANDED (the channel rule);
+                // collected values cross and the pending state resurfaces on
+                // the next pull.
+                Ok(match crate::rt::block_on_stream_next_batch(guard.as_mut(), n) {
+                    Ok((values, done)) => serde_json::json!({"done": done, "values": values}),
+                    Err(crate::rt::StreamPollWouldBlock) => {
+                        serde_json::json!({"done": false, "pending": true, "values": []})
+                    }
+                })
             },
         ),
     )

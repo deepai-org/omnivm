@@ -1621,6 +1621,12 @@ class __OmniVMStreamProxy:
         self._local_values = values if isinstance(values, list) else None
         self._cache = []
         self._cursor = 0
+        # Batched-pull buffer: raw (unmaterialized) values already moved from
+        # the host but not yet consumed. Materialization stays per-__next__ so
+        # mid-stream materialization errors surface at the same consumption
+        # point as the historical one-value-per-pull protocol.
+        self._remote_buffer = []
+        self._remote_done = False
         self._exhausted = False
         self._closed = False
         self._closed_reason = None
@@ -1683,7 +1689,11 @@ class __OmniVMStreamProxy:
         if caller is None or not hasattr(caller, "call"):
             return {"done": True}
         import json as __j
-        raw = caller.call("__manifest", __j.dumps({"op": "stream_next", "id": self._value.get("id")}))
+        # max_n batches up to 64 values per bridge hop; the host answers in
+        # the plural {"done","values":[...]} shape ("done" rides WITH the
+        # final values). We never send "pending": snapshot semantics — an
+        # open-but-empty channel reads as done, exactly as before batching.
+        raw = caller.call("__manifest", __j.dumps({"op": "stream_next", "id": self._value.get("id"), "max_n": 64}))
         env = __j.loads(raw)
         if isinstance(env, dict) and env.get("__omnivm_result__") is True:
             return env["value"] if "value" in env else {"done": True}
@@ -1711,41 +1721,58 @@ class __OmniVMStreamProxy:
                 raise
             self._cache.append(materialized)
             return True
-        try:
-            item = self._next_envelope()
-        except Exception as err:
+        if not self._remote_buffer and not self._remote_done:
             try:
-                if not self.close():
+                item = self._next_envelope()
+            except Exception as err:
+                try:
+                    if not self.close():
+                        self._mark_closed("owner_lifecycle")
+                except Exception as close_exc:
+                    _omnivm_record_cleanup_error(
+                        err,
+                        close_exc,
+                        f"OmniVM stream close failed during pull error cleanup: {close_exc}",
+                    )
                     self._mark_closed("owner_lifecycle")
-            except Exception as close_exc:
-                _omnivm_record_cleanup_error(
-                    err,
-                    close_exc,
-                    f"OmniVM stream close failed during pull error cleanup: {close_exc}",
+                raise
+            if not isinstance(item, dict) or "done" not in item:
+                err = _omnivm_runtime_error(
+                    f"OmniVM stream_next returned malformed chunk for handle {self._value.get('id')}: expected an object with a done flag",
+                    "stream_next",
+                    {"stream": {"id": self._value.get("id"), "chunk": item}},
                 )
-                self._mark_closed("owner_lifecycle")
-            raise
-        if not isinstance(item, dict) or "done" not in item:
-            err = _omnivm_runtime_error(
-                f"OmniVM stream_next returned malformed chunk for handle {self._value.get('id')}: expected an object with a done flag",
-                "stream_next",
-                {"stream": {"id": self._value.get("id"), "chunk": item}},
-            )
-            try:
-                self.close()
-            except Exception as close_exc:
-                _omnivm_record_cleanup_error(
-                    err,
-                    close_exc,
-                    f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
-                )
-                self._mark_closed("owner_lifecycle")
-            raise err
-        if item.get("done") is True:
+                try:
+                    self.close()
+                except Exception as close_exc:
+                    _omnivm_record_cleanup_error(
+                        err,
+                        close_exc,
+                        f"OmniVM stream close failed during malformed chunk cleanup: {close_exc}",
+                    )
+                    self._mark_closed("owner_lifecycle")
+                raise err
+            values = item.get("values")
+            if isinstance(values, list):
+                self._remote_buffer.extend(values)
+            elif item.get("done") is not True:
+                # Singular {"done":false,"value":...} shape (pre-batch hosts
+                # and test doubles): one value per envelope.
+                self._remote_buffer.append(item.get("value"))
+            if item.get("done") is True:
+                # The host releases the handle when it reports done, even
+                # with final values riding along: no stream_cancel is owed
+                # for the buffered remainder, and the GC finalizer must not
+                # fire a release for the already-released id.
+                self._remote_done = True
+                finalizer = getattr(self, "_finalizer", None)
+                if finalizer is not None and finalizer.alive:
+                    finalizer.detach()
+        if not self._remote_buffer:
             self._mark_closed("owner_lifecycle")
             return False
         try:
-            materialized = globals()["__omnivm_materialize_capture"](item.get("value"))
+            materialized = globals()["__omnivm_materialize_capture"](self._remote_buffer.pop(0))
         except Exception as err:
             try:
                 self.close()
@@ -1848,6 +1875,13 @@ class __OmniVMStreamProxy:
         if self._local_values is not None:
             self._cache = self._cache[:self._cursor]
             return self._mark_closed("explicit_release")
+        if self._remote_done:
+            # The host already released the handle when it reported done;
+            # closing mid-drain just drops the buffered-but-unconsumed tail
+            # (consumed values stay consumed). No stream_cancel is sent.
+            self._remote_buffer = []
+            self._cache = self._cache[:self._cursor]
+            return self._mark_closed("explicit_release")
         if not self._bridge_active():
             self._mark_closed("explicit_release")
             return False
@@ -1860,6 +1894,7 @@ class __OmniVMStreamProxy:
         env = __j.loads(raw)
         released = isinstance(env, dict) and env.get("__omnivm_result__") is True and env.get("value") is True
         if released:
+            self._remote_buffer = []
             self._cache = self._cache[:self._cursor]
             self._mark_closed("explicit_release")
         return released
@@ -3251,6 +3286,14 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var bridgeToken = globalThis.__omnivm_current_bridge_token();
   var localValues = Array.isArray(value && value.values) ? value.values.slice() : null;
   var localIndex = 0;
+  // Batched-pull buffer: raw (unmaterialized) chunk values already moved
+  // from the host but not yet consumed. Materialization stays per-next so
+  // mid-stream materialization errors surface at the same consumption point
+  // as the historical one-value-per-pull protocol.
+  var remoteBuffer = [];
+  // remoteDone: the host reported done (and released the handle) while
+  // buffered values were still being drained — no stream_cancel is owed.
+  var remoteDone = false;
   var remoteClosed = false;
   var closeListeners = [];
   var addCloseListener = function(listener) {
@@ -3282,6 +3325,13 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
   var cancelRemote = function() {
     if (remoteClosed) return false;
     if (localValues) return markRemoteClosed(true);
+    if (remoteDone) {
+      // The host already released the handle when it reported done; cancel
+      // mid-drain just drops the buffered-but-unconsumed tail (consumed
+      // values stay consumed) without a stream_cancel wire call.
+      remoteBuffer.length = 0;
+      return markRemoteClosed(true);
+    }
     var caller = globalThis.__omnivm_bridge_module();
     if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {
       markRemoteClosed(false);
@@ -3291,7 +3341,10 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     var raw = caller.call("__manifest", JSON.stringify({op: "stream_cancel", id: value.id}));
     var env = JSON.parse(raw);
     var released = !!(env && env.__omnivm_result__ === true && env.value === true);
-    if (released === true) markRemoteClosed(true);
+    if (released === true) {
+      remoteBuffer.length = 0;
+      markRemoteClosed(true);
+    }
     return released;
   };
   var closeRemote = function() {
@@ -3359,33 +3412,50 @@ globalThis.__omnivm_make_stream_proxy = globalThis.__omnivm_make_stream_proxy ||
     }
     if (remoteClosed) return {done: true};
     try {
-      var caller = globalThis.__omnivm_bridge_module();
-      if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {
-        closeRemote();
-        return {done: true};
-      }
-      if (!caller) {
-        closeRemote();
-        return {done: true};
-      }
-      var raw = caller.call("__manifest", JSON.stringify({op: "stream_next", id: value.id}));
-      var env = JSON.parse(raw);
-      if (env && env.__omnivm_result__ === true) {
-        var chunk = env.value;
-        if (!chunk || typeof chunk !== 'object' || !Object.prototype.hasOwnProperty.call(chunk, "done")) {
-          var malformed = typeof globalThis.__omnivm_runtime_error === 'function'
-            ? globalThis.__omnivm_runtime_error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag", "stream_next", {stream: {id: value.id, chunk: chunk}})
-            : new Error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag");
-          if (!malformed.boundary_path) malformed.boundary_path = "stream_next";
-          if (!malformed.boundaryPath) malformed.boundaryPath = "stream_next";
-          if (!malformed.details) malformed.details = {stream: {id: value.id, chunk: chunk}};
-          throw malformed;
-        }
-        if (chunk.done === true) {
+      if (remoteBuffer.length === 0 && !remoteDone) {
+        var caller = globalThis.__omnivm_bridge_module();
+        if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {
           closeRemote();
           return {done: true};
         }
-        return {done: false, value: globalThis.__omnivm_stream_chunk_value(chunk.value)};
+        if (!caller) {
+          closeRemote();
+          return {done: true};
+        }
+        // max_n batches up to 64 values per bridge hop; the host answers in
+        // the plural {"done","values":[...]} shape ("done" rides WITH the
+        // final values). We never send "pending": snapshot semantics — an
+        // open-but-empty channel reads as done, exactly as before batching.
+        var raw = caller.call("__manifest", JSON.stringify({op: "stream_next", id: value.id, max_n: 64}));
+        var env = JSON.parse(raw);
+        if (env && env.__omnivm_result__ === true) {
+          var chunk = env.value;
+          if (!chunk || typeof chunk !== 'object' || !Object.prototype.hasOwnProperty.call(chunk, "done")) {
+            var malformed = typeof globalThis.__omnivm_runtime_error === 'function'
+              ? globalThis.__omnivm_runtime_error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag", "stream_next", {stream: {id: value.id, chunk: chunk}})
+              : new Error("OmniVM stream_next returned malformed chunk for handle " + value.id + ": expected an object with a done flag");
+            if (!malformed.boundary_path) malformed.boundary_path = "stream_next";
+            if (!malformed.boundaryPath) malformed.boundaryPath = "stream_next";
+            if (!malformed.details) malformed.details = {stream: {id: value.id, chunk: chunk}};
+            throw malformed;
+          }
+          if (Array.isArray(chunk.values)) {
+            for (var chunkIndex = 0; chunkIndex < chunk.values.length; chunkIndex++) {
+              remoteBuffer.push(chunk.values[chunkIndex]);
+            }
+          } else if (chunk.done !== true) {
+            // Singular {"done":false,"value":...} shape (pre-batch hosts
+            // and test doubles): one value per envelope.
+            remoteBuffer.push(chunk.value);
+          }
+          if (chunk.done === true) remoteDone = true;
+        } else {
+          closeRemote();
+          return {done: true};
+        }
+      }
+      if (remoteBuffer.length > 0) {
+        return {done: false, value: globalThis.__omnivm_stream_chunk_value(remoteBuffer.shift())};
       }
     } catch (_e) {
       cancelRemoteQuiet(_e);

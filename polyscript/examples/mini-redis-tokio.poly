@@ -1,0 +1,1351 @@
+// mini-redis on OmniVM — tokio-rs/mini-redis (MIT, https://github.com/tokio-rs/mini-redis)
+// ported into one .poly file with the Rust kept as unchanged as possible.
+//
+// What is ported verbatim (byte-identical lines from upstream src/):
+//   * db.rs        — the whole file: Db / DbDropGuard / Shared / State / Entry,
+//                    the std-Mutex-guarded state, the BTreeSet expiration index,
+//                    and the spawned expiration-purge background task
+//                    (NB: its fn name is deliberately not written in this
+//                    comment — OmniVM exports any fn whose name appears in
+//                    text outside the Rust unit, even comments, and the
+//                    purge task's `Arc<Shared>` param is not serde-able)
+//                    (tokio::select! over sleep_until + Notify).
+//   * parse.rs     — the whole file: Parse cursor + ParseError.
+//   * frame.rs     — the Frame enum, array/push_bulk/push_int/to_error,
+//                    PartialEq<&str>, and the Display impl. (The RESP byte
+//                    decoder `Frame::check/parse` and its `Error` enum are the
+//                    socket edge — not ported; see below.)
+//   * cmd/get.rs, cmd/set.rs, cmd/publish.rs, cmd/ping.rs, cmd/unknown.rs —
+//                    structs + parse_frames + into_frame verbatim.
+//   * lib.rs       — the `Error` / `Result` boxed-error aliases.
+//
+// What was adapted (the I/O edge, exactly as the task of a port demands):
+//   * Every `Cmd::apply(self, db, dst: &mut Connection)` returns the response
+//     `Frame` instead of writing it to the TCP socket — the polyglot boundary
+//     replaces src/connection.rs. The per-file `use` headers are merged into
+//     one block (single compilation unit; duplicate `use` is E0252) and
+//     `mod`/`use crate::{Connection, ...}` plumbing is dropped.
+//   * cmd/mod.rs `Command` is ported without the Subscribe/Unsubscribe
+//     variants (their apply loop is welded to Connection + Shutdown); pub/sub
+//     is exercised through `Db::subscribe`/`Db::publish` like upstream
+//     cmd/subscribe.rs does, via the NEW-CODE wrappers below.
+//
+// The polyglot harness: Python is the redis client driving request frames
+// through the command layer and asserting on every reply; JavaScript plays
+// the reporting layer (filters/joins over the results); the final line is a
+// deterministic, greppable verdict.
+
+// ---- merged `use` header (one compilation unit) -------------------------
+use bytes::Bytes;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::{fmt, str, vec};
+use tokio::sync::{broadcast, Notify};
+use tokio::time::{self, Duration, Instant};
+use tracing::{debug, instrument};
+
+// ---- src/lib.rs (error aliases, verbatim) -------------------------------
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+/// A specialized `Result` type for mini-redis operations.
+///
+/// This is defined as a convenience.
+pub type Result<T> = std::result::Result<T, Error>;
+
+// ---- src/db.rs (verbatim) ------------------------------------------------
+/// A wrapper around a `Db` instance. This exists to allow orderly cleanup
+/// of the `Db` by signalling the background purge task to shut down when
+/// this struct is dropped.
+#[derive(Debug)]
+pub(crate) struct DbDropGuard {
+    /// The `Db` instance that will be shut down when this `DbDropGuard` struct
+    /// is dropped.
+    db: Db,
+}
+
+/// Server state shared across all connections.
+///
+/// `Db` contains a `HashMap` storing the key/value data and all
+/// `broadcast::Sender` values for active pub/sub channels.
+///
+/// A `Db` instance is a handle to shared state. Cloning `Db` is shallow and
+/// only incurs an atomic ref count increment.
+///
+/// When a `Db` value is created, a background task is spawned. This task is
+/// used to expire values after the requested duration has elapsed. The task
+/// runs until all instances of `Db` are dropped, at which point the task
+/// terminates.
+#[derive(Debug, Clone)]
+pub(crate) struct Db {
+    /// Handle to shared state. The background task will also have an
+    /// `Arc<Shared>`.
+    shared: Arc<Shared>,
+}
+
+#[derive(Debug)]
+struct Shared {
+    /// The shared state is guarded by a mutex. This is a `std::sync::Mutex` and
+    /// not a Tokio mutex. This is because there are no asynchronous operations
+    /// being performed while holding the mutex. Additionally, the critical
+    /// sections are very small.
+    ///
+    /// A Tokio mutex is mostly intended to be used when locks need to be held
+    /// across `.await` yield points. All other cases are **usually** best
+    /// served by a std mutex. If the critical section does not include any
+    /// async operations but is long (CPU intensive or performing blocking
+    /// operations), then the entire operation, including waiting for the mutex,
+    /// is considered a "blocking" operation and `tokio::task::spawn_blocking`
+    /// should be used.
+    state: Mutex<State>,
+
+    /// Notifies the background task handling entry expiration. The background
+    /// task waits on this to be notified, then checks for expired values or the
+    /// shutdown signal.
+    background_task: Notify,
+}
+
+#[derive(Debug)]
+struct State {
+    /// The key-value data. We are not trying to do anything fancy so a
+    /// `std::collections::HashMap` works fine.
+    entries: HashMap<String, Entry>,
+
+    /// The pub/sub key-space. Redis uses a **separate** key space for key-value
+    /// and pub/sub. `mini-redis` handles this by using a separate `HashMap`.
+    pub_sub: HashMap<String, broadcast::Sender<Bytes>>,
+
+    /// Tracks key TTLs.
+    ///
+    /// A `BTreeSet` is used to maintain expirations sorted by when they expire.
+    /// This allows the background task to iterate this map to find the value
+    /// expiring next.
+    ///
+    /// While highly unlikely, it is possible for more than one expiration to be
+    /// created for the same instant. Because of this, the `Instant` is
+    /// insufficient for the key. A unique key (`String`) is used to
+    /// break these ties.
+    expirations: BTreeSet<(Instant, String)>,
+
+    /// True when the Db instance is shutting down. This happens when all `Db`
+    /// values drop. Setting this to `true` signals to the background task to
+    /// exit.
+    shutdown: bool,
+}
+
+/// Entry in the key-value store
+#[derive(Debug)]
+struct Entry {
+    /// Stored data
+    data: Bytes,
+
+    /// Instant at which the entry expires and should be removed from the
+    /// database.
+    expires_at: Option<Instant>,
+}
+
+impl DbDropGuard {
+    /// Create a new `DbDropGuard`, wrapping a `Db` instance. When this is dropped
+    /// the `Db`'s purge task will be shut down.
+    pub(crate) fn new() -> DbDropGuard {
+        DbDropGuard { db: Db::new() }
+    }
+
+    /// Get the shared database. Internally, this is an
+    /// `Arc`, so a clone only increments the ref count.
+    pub(crate) fn db(&self) -> Db {
+        self.db.clone()
+    }
+}
+
+impl Drop for DbDropGuard {
+    fn drop(&mut self) {
+        // Signal the 'Db' instance to shut down the task that purges expired keys
+        self.db.shutdown_purge_task();
+    }
+}
+
+impl Db {
+    /// Create a new, empty, `Db` instance. Allocates shared state and spawns a
+    /// background task to manage key expiration.
+    pub(crate) fn new() -> Db {
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                entries: HashMap::new(),
+                pub_sub: HashMap::new(),
+                expirations: BTreeSet::new(),
+                shutdown: false,
+            }),
+            background_task: Notify::new(),
+        });
+
+        // Start the background task.
+        tokio::spawn(purge_expired_tasks(shared.clone()));
+
+        Db { shared }
+    }
+
+    /// Get the value associated with a key.
+    ///
+    /// Returns `None` if there is no value associated with the key. This may be
+    /// due to never having assigned a value to the key or a previously assigned
+    /// value expired.
+    pub(crate) fn get(&self, key: &str) -> Option<Bytes> {
+        // Acquire the lock, get the entry and clone the value.
+        //
+        // Because data is stored using `Bytes`, a clone here is a shallow
+        // clone. Data is not copied.
+        let state = self.shared.state.lock().unwrap();
+        state.entries.get(key).map(|entry| entry.data.clone())
+    }
+
+    /// Set the value associated with a key along with an optional expiration
+    /// Duration.
+    ///
+    /// If a value is already associated with the key, it is removed.
+    pub(crate) fn set(&self, key: String, value: Bytes, expire: Option<Duration>) {
+        let mut state = self.shared.state.lock().unwrap();
+
+        // If this `set` becomes the key that expires **next**, the background
+        // task needs to be notified so it can update its state.
+        //
+        // Whether or not the task needs to be notified is computed during the
+        // `set` routine.
+        let mut notify = false;
+
+        let expires_at = expire.map(|duration| {
+            // `Instant` at which the key expires.
+            let when = Instant::now() + duration;
+
+            // Only notify the worker task if the newly inserted expiration is the
+            // **next** key to evict. In this case, the worker needs to be woken up
+            // to update its state.
+            notify = state
+                .next_expiration()
+                .map(|expiration| expiration > when)
+                .unwrap_or(true);
+
+            when
+        });
+
+        // Insert the entry into the `HashMap`.
+        let prev = state.entries.insert(
+            key.clone(),
+            Entry {
+                data: value,
+                expires_at,
+            },
+        );
+
+        // If there was a value previously associated with the key **and** it
+        // had an expiration time. The associated entry in the `expirations` map
+        // must also be removed. This avoids leaking data.
+        if let Some(prev) = prev {
+            if let Some(when) = prev.expires_at {
+                // clear expiration
+                state.expirations.remove(&(when, key.clone()));
+            }
+        }
+
+        // Track the expiration. If we insert before remove that will cause bug
+        // when current `(when, key)` equals prev `(when, key)`. Remove then insert
+        // can avoid this.
+        if let Some(when) = expires_at {
+            state.expirations.insert((when, key));
+        }
+
+        // Release the mutex before notifying the background task. This helps
+        // reduce contention by avoiding the background task waking up only to
+        // be unable to acquire the mutex due to this function still holding it.
+        drop(state);
+
+        if notify {
+            // Finally, only notify the background task if it needs to update
+            // its state to reflect a new expiration.
+            self.shared.background_task.notify_one();
+        }
+    }
+
+    /// Returns a `Receiver` for the requested channel.
+    ///
+    /// The returned `Receiver` is used to receive values broadcast by `PUBLISH`
+    /// commands.
+    pub(crate) fn subscribe(&self, key: String) -> broadcast::Receiver<Bytes> {
+        use std::collections::hash_map::Entry;
+
+        // Acquire the mutex
+        let mut state = self.shared.state.lock().unwrap();
+
+        // If there is no entry for the requested channel, then create a new
+        // broadcast channel and associate it with the key. If one already
+        // exists, return an associated receiver.
+        match state.pub_sub.entry(key) {
+            Entry::Occupied(e) => e.get().subscribe(),
+            Entry::Vacant(e) => {
+                // No broadcast channel exists yet, so create one.
+                //
+                // The channel is created with a capacity of `1024` messages. A
+                // message is stored in the channel until **all** subscribers
+                // have seen it. This means that a slow subscriber could result
+                // in messages being held indefinitely.
+                //
+                // When the channel's capacity fills up, publishing will result
+                // in old messages being dropped. This prevents slow consumers
+                // from blocking the entire system.
+                let (tx, rx) = broadcast::channel(1024);
+                e.insert(tx);
+                rx
+            }
+        }
+    }
+
+    /// Publish a message to the channel. Returns the number of subscribers
+    /// listening on the channel.
+    pub(crate) fn publish(&self, key: &str, value: Bytes) -> usize {
+        let state = self.shared.state.lock().unwrap();
+
+        state
+            .pub_sub
+            .get(key)
+            // On a successful message send on the broadcast channel, the number
+            // of subscribers is returned. An error indicates there are no
+            // receivers, in which case, `0` should be returned.
+            .map(|tx| tx.send(value).unwrap_or(0))
+            // If there is no entry for the channel key, then there are no
+            // subscribers. In this case, return `0`.
+            .unwrap_or(0)
+    }
+
+    /// Signals the purge background task to shut down. This is called by the
+    /// `DbShutdown`s `Drop` implementation.
+    fn shutdown_purge_task(&self) {
+        // The background task must be signaled to shut down. This is done by
+        // setting `State::shutdown` to `true` and signalling the task.
+        let mut state = self.shared.state.lock().unwrap();
+        state.shutdown = true;
+
+        // Drop the lock before signalling the background task. This helps
+        // reduce lock contention by ensuring the background task doesn't
+        // wake up only to be unable to acquire the mutex.
+        drop(state);
+        self.shared.background_task.notify_one();
+    }
+}
+
+impl Shared {
+    /// Purge all expired keys and return the `Instant` at which the **next**
+    /// key will expire. The background task will sleep until this instant.
+    fn purge_expired_keys(&self) -> Option<Instant> {
+        let mut state = self.state.lock().unwrap();
+
+        if state.shutdown {
+            // The database is shutting down. All handles to the shared state
+            // have dropped. The background task should exit.
+            return None;
+        }
+
+        // This is needed to make the borrow checker happy. In short, `lock()`
+        // returns a `MutexGuard` and not a `&mut State`. The borrow checker is
+        // not able to see "through" the mutex guard and determine that it is
+        // safe to access both `state.expirations` and `state.entries` mutably,
+        // so we get a "real" mutable reference to `State` outside of the loop.
+        let state = &mut *state;
+
+        // Find all keys scheduled to expire **before** now.
+        let now = Instant::now();
+
+        while let Some(&(when, ref key)) = state.expirations.iter().next() {
+            if when > now {
+                // Done purging, `when` is the instant at which the next key
+                // expires. The worker task will wait until this instant.
+                return Some(when);
+            }
+
+            // The key expired, remove it
+            state.entries.remove(key);
+            state.expirations.remove(&(when, key.clone()));
+        }
+
+        None
+    }
+
+    /// Returns `true` if the database is shutting down
+    ///
+    /// The `shutdown` flag is set when all `Db` values have dropped, indicating
+    /// that the shared state can no longer be accessed.
+    fn is_shutdown(&self) -> bool {
+        self.state.lock().unwrap().shutdown
+    }
+}
+
+impl State {
+    fn next_expiration(&self) -> Option<Instant> {
+        self.expirations
+            .iter()
+            .next()
+            .map(|expiration| expiration.0)
+    }
+}
+
+/// Routine executed by the background task.
+///
+/// Wait to be notified. On notification, purge any expired keys from the shared
+/// state handle. If `shutdown` is set, terminate the task.
+async fn purge_expired_tasks(shared: Arc<Shared>) {
+    // If the shutdown flag is set, then the task should exit.
+    while !shared.is_shutdown() {
+        // Purge all keys that are expired. The function returns the instant at
+        // which the **next** key will expire. The worker should wait until the
+        // instant has passed then purge again.
+        if let Some(when) = shared.purge_expired_keys() {
+            // Wait until the next key expires **or** until the background task
+            // is notified. If the task is notified, then it must reload its
+            // state as new keys have been set to expire early. This is done by
+            // looping.
+            tokio::select! {
+                _ = time::sleep_until(when) => {}
+                _ = shared.background_task.notified() => {}
+            }
+        } else {
+            // There are no keys expiring in the future. Wait until the task is
+            // notified.
+            shared.background_task.notified().await;
+        }
+    }
+
+    debug!("Purge background task shut down")
+}
+
+// ---- src/frame.rs (verbatim except: RESP byte decoder not ported) -------
+/// A frame in the Redis protocol.
+#[derive(Clone, Debug)]
+pub enum Frame {
+    Simple(String),
+    Error(String),
+    Integer(u64),
+    Bulk(Bytes),
+    Null,
+    Array(Vec<Frame>),
+}
+
+impl Frame {
+    /// Returns an empty array
+    pub(crate) fn array() -> Frame {
+        Frame::Array(vec![])
+    }
+
+    /// Push a "bulk" frame into the array. `self` must be an Array frame.
+    ///
+    /// # Panics
+    ///
+    /// panics if `self` is not an array
+    pub(crate) fn push_bulk(&mut self, bytes: Bytes) {
+        match self {
+            Frame::Array(vec) => {
+                vec.push(Frame::Bulk(bytes));
+            }
+            _ => panic!("not an array frame"),
+        }
+    }
+
+    /// Push an "integer" frame into the array. `self` must be an Array frame.
+    ///
+    /// # Panics
+    ///
+    /// panics if `self` is not an array
+    pub(crate) fn push_int(&mut self, value: u64) {
+        match self {
+            Frame::Array(vec) => {
+                vec.push(Frame::Integer(value));
+            }
+            _ => panic!("not an array frame"),
+        }
+    }
+
+    /// Converts the frame to an "unexpected frame" error
+    pub(crate) fn to_error(&self) -> crate::Error {
+        format!("unexpected frame: {self}").into()
+    }
+}
+
+impl PartialEq<&str> for Frame {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            Frame::Simple(s) => s.eq(other),
+            Frame::Bulk(s) => s.eq(other),
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for Frame {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        use std::str;
+
+        match self {
+            Frame::Simple(response) => response.fmt(fmt),
+            Frame::Error(msg) => write!(fmt, "error: {msg}"),
+            Frame::Integer(num) => num.fmt(fmt),
+            Frame::Bulk(msg) => match str::from_utf8(msg) {
+                Ok(string) => string.fmt(fmt),
+                Err(_) => write!(fmt, "{msg:?}"),
+            },
+            Frame::Null => "(nil)".fmt(fmt),
+            Frame::Array(parts) => {
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        // use space as the array element display separator
+                        write!(fmt, " ")?;
+                    }
+
+                    part.fmt(fmt)?;
+                }
+
+                Ok(())
+            }
+        }
+    }
+}
+
+// ---- src/parse.rs (verbatim except the six fn signatures: upstream's
+// ---- module-local `Result<T, ParseError>` collides with lib.rs's crate-root
+// ---- `Result<T>` alias once everything lives in one module, so they are
+// ---- qualified as `std::result::Result` — a flattening cost, not OmniVM's) -
+/// Utility for parsing a command
+///
+/// Commands are represented as array frames. Each entry in the frame is a
+/// "token". A `Parse` is initialized with the array frame and provides a
+/// cursor-like API. Each command struct includes a `parse_frame` method that
+/// uses a `Parse` to extract its fields.
+#[derive(Debug)]
+pub(crate) struct Parse {
+    /// Array frame iterator.
+    parts: vec::IntoIter<Frame>,
+}
+
+/// Error encountered while parsing a frame.
+///
+/// Only `EndOfStream` errors are handled at runtime. All other errors result in
+/// the connection being terminated.
+#[derive(Debug)]
+pub(crate) enum ParseError {
+    /// Attempting to extract a value failed due to the frame being fully
+    /// consumed.
+    EndOfStream,
+
+    /// All other errors
+    Other(crate::Error),
+}
+
+impl Parse {
+    /// Create a new `Parse` to parse the contents of `frame`.
+    ///
+    /// Returns `Err` if `frame` is not an array frame.
+    pub(crate) fn new(frame: Frame) -> std::result::Result<Parse, ParseError> {
+        let array = match frame {
+            Frame::Array(array) => array,
+            frame => return Err(format!("protocol error; expected array, got {frame:?}").into()),
+        };
+
+        Ok(Parse {
+            parts: array.into_iter(),
+        })
+    }
+
+    /// Return the next entry. Array frames are arrays of frames, so the next
+    /// entry is a frame.
+    fn next(&mut self) -> std::result::Result<Frame, ParseError> {
+        self.parts.next().ok_or(ParseError::EndOfStream)
+    }
+
+    /// Return the next entry as a string.
+    ///
+    /// If the next entry cannot be represented as a String, then an error is returned.
+    pub(crate) fn next_string(&mut self) -> std::result::Result<String, ParseError> {
+        match self.next()? {
+            // Both `Simple` and `Bulk` representation may be strings. Strings
+            // are parsed to UTF-8.
+            //
+            // While errors are stored as strings, they are considered separate
+            // types.
+            Frame::Simple(s) => Ok(s),
+            Frame::Bulk(data) => str::from_utf8(&data[..])
+                .map(|s| s.to_string())
+                .map_err(|_| "protocol error; invalid string".into()),
+            frame => Err(format!(
+                "protocol error; expected simple frame or bulk frame, got {frame:?}"
+            )
+            .into()),
+        }
+    }
+
+    /// Return the next entry as raw bytes.
+    ///
+    /// If the next entry cannot be represented as raw bytes, an error is
+    /// returned.
+    pub(crate) fn next_bytes(&mut self) -> std::result::Result<Bytes, ParseError> {
+        match self.next()? {
+            // Both `Simple` and `Bulk` representation may be raw bytes.
+            //
+            // Although errors are stored as strings and could be represented as
+            // raw bytes, they are considered separate types.
+            Frame::Simple(s) => Ok(Bytes::from(s.into_bytes())),
+            Frame::Bulk(data) => Ok(data),
+            frame => Err(format!(
+                "protocol error; expected simple frame or bulk frame, got {frame:?}"
+            )
+            .into()),
+        }
+    }
+
+    /// Return the next entry as an integer.
+    ///
+    /// This includes `Simple`, `Bulk`, and `Integer` frame types. `Simple` and
+    /// `Bulk` frame types are parsed.
+    ///
+    /// If the next entry cannot be represented as an integer, then an error is
+    /// returned.
+    pub(crate) fn next_int(&mut self) -> std::result::Result<u64, ParseError> {
+        use atoi::atoi;
+
+        const MSG: &str = "protocol error; invalid number";
+
+        match self.next()? {
+            // An integer frame type is already stored as an integer.
+            Frame::Integer(v) => Ok(v),
+            // Simple and bulk frames must be parsed as integers. If the parsing
+            // fails, an error is returned.
+            Frame::Simple(data) => atoi::<u64>(data.as_bytes()).ok_or_else(|| MSG.into()),
+            Frame::Bulk(data) => atoi::<u64>(&data).ok_or_else(|| MSG.into()),
+            frame => Err(format!("protocol error; expected int frame but got {frame:?}").into()),
+        }
+    }
+
+    /// Ensure there are no more entries in the array
+    pub(crate) fn finish(&mut self) -> std::result::Result<(), ParseError> {
+        if self.parts.next().is_none() {
+            Ok(())
+        } else {
+            Err("protocol error; expected end of frame, but there was more".into())
+        }
+    }
+}
+
+impl From<String> for ParseError {
+    fn from(src: String) -> ParseError {
+        ParseError::Other(src.into())
+    }
+}
+
+impl From<&str> for ParseError {
+    fn from(src: &str) -> ParseError {
+        src.to_string().into()
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::EndOfStream => "protocol error; unexpected end of stream".fmt(f),
+            ParseError::Other(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+// ---- src/cmd/get.rs (apply adapted: returns the Frame) -------------------
+/// Get the value of key.
+///
+/// If the key does not exist the special value nil is returned. An error is
+/// returned if the value stored at key is not a string, because GET only
+/// handles string values.
+#[derive(Debug)]
+pub struct Get {
+    /// Name of the key to get
+    key: String,
+}
+
+impl Get {
+    /// Create a new `Get` command which fetches `key`.
+    pub fn new(key: impl ToString) -> Get {
+        Get {
+            key: key.to_string(),
+        }
+    }
+
+    /// Get the key
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Parse a `Get` instance from a received frame.
+    ///
+    /// The `Parse` argument provides a cursor-like API to read fields from the
+    /// `Frame`. At this point, the entire frame has already been received from
+    /// the socket.
+    ///
+    /// The `GET` string has already been consumed.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Get` value on success. If the frame is malformed, `Err` is
+    /// returned.
+    ///
+    /// # Format
+    ///
+    /// Expects an array frame containing two entries.
+    ///
+    /// ```text
+    /// GET key
+    /// ```
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> {
+        // The `GET` string has already been consumed. The next value is the
+        // name of the key to get. If the next value is not a string or the
+        // input is fully consumed, then an error is returned.
+        let key = parse.next_string()?;
+
+        Ok(Get { key })
+    }
+
+    /// Apply the `Get` command to the specified `Db` instance.
+    ///
+    /// [adapted] mini-redis writes the response to `dst: &mut Connection`;
+    /// here the response frame is returned across the polyglot boundary.
+    #[instrument(skip(self, db))]
+    pub(crate) async fn apply(self, db: &Db) -> crate::Result<Frame> {
+        // Get the value from the shared database state
+        let response = if let Some(value) = db.get(&self.key) {
+            // If a value is present, it is written to the client in "bulk"
+            // format.
+            Frame::Bulk(value)
+        } else {
+            // If there is no value, `Null` is written.
+            Frame::Null
+        };
+
+        debug!(?response);
+
+        Ok(response)
+    }
+
+    /// Converts the command into an equivalent `Frame`.
+    ///
+    /// This is called by the client when encoding a `Get` command to send to
+    /// the server.
+    pub(crate) fn into_frame(self) -> Frame {
+        let mut frame = Frame::array();
+        frame.push_bulk(Bytes::from("get".as_bytes()));
+        frame.push_bulk(Bytes::from(self.key.into_bytes()));
+        frame
+    }
+}
+
+// ---- src/cmd/set.rs (apply adapted: returns the Frame) -------------------
+/// Set `key` to hold the string `value`.
+///
+/// If `key` already holds a value, it is overwritten, regardless of its type.
+/// Any previous time to live associated with the key is discarded on successful
+/// SET operation.
+///
+/// # Options
+///
+/// Currently, the following options are supported:
+///
+/// * EX `seconds` -- Set the specified expire time, in seconds.
+/// * PX `milliseconds` -- Set the specified expire time, in milliseconds.
+#[derive(Debug)]
+pub struct Set {
+    /// the lookup key
+    key: String,
+
+    /// the value to be stored
+    value: Bytes,
+
+    /// When to expire the key
+    expire: Option<Duration>,
+}
+
+impl Set {
+    /// Create a new `Set` command which sets `key` to `value`.
+    ///
+    /// If `expire` is `Some`, the value should expire after the specified
+    /// duration.
+    pub fn new(key: impl ToString, value: Bytes, expire: Option<Duration>) -> Set {
+        Set {
+            key: key.to_string(),
+            value,
+            expire,
+        }
+    }
+
+    /// Get the key
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Get the value
+    pub fn value(&self) -> &Bytes {
+        &self.value
+    }
+
+    /// Get the expire
+    pub fn expire(&self) -> Option<Duration> {
+        self.expire
+    }
+
+    /// Parse a `Set` instance from a received frame.
+    ///
+    /// The `Parse` argument provides a cursor-like API to read fields from the
+    /// `Frame`. At this point, the entire frame has already been received from
+    /// the socket.
+    ///
+    /// The `SET` string has already been consumed.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Set` value on success. If the frame is malformed, `Err` is
+    /// returned.
+    ///
+    /// # Format
+    ///
+    /// Expects an array frame containing at least 3 entries.
+    ///
+    /// ```text
+    /// SET key value [EX seconds|PX milliseconds]
+    /// ```
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Set> {
+        // [adapted: omnivm] upstream says `use ParseError::EndOfStream;` here,
+        // but OmniVM's Cargo dependency inference reads any non-builtin `use`
+        // root as a crate name, so the variant is path-qualified below.
+
+        // Read the key to set. This is a required field
+        let key = parse.next_string()?;
+
+        // Read the value to set. This is a required field.
+        let value = parse.next_bytes()?;
+
+        // The expiration is optional. If nothing else follows, then it is
+        // `None`.
+        let mut expire = None;
+
+        // Attempt to parse another string.
+        match parse.next_string() {
+            Ok(s) if s.to_uppercase() == "EX" => {
+                // An expiration is specified in seconds. The next value is an
+                // integer.
+                let secs = parse.next_int()?;
+                expire = Some(Duration::from_secs(secs));
+            }
+            Ok(s) if s.to_uppercase() == "PX" => {
+                // An expiration is specified in milliseconds. The next value is
+                // an integer.
+                let ms = parse.next_int()?;
+                expire = Some(Duration::from_millis(ms));
+            }
+            // Currently, mini-redis does not support any of the other SET
+            // options. An error here results in the connection being
+            // terminated. Other connections will continue to operate normally.
+            Ok(_) => return Err("currently `SET` only supports the expiration option".into()),
+            // The `EndOfStream` error indicates there is no further data to
+            // parse. In this case, it is a normal run time situation and
+            // indicates there are no specified `SET` options.
+            Err(ParseError::EndOfStream) => {}
+            // All other errors are bubbled up, resulting in the connection
+            // being terminated.
+            Err(err) => return Err(err.into()),
+        }
+
+        Ok(Set { key, value, expire })
+    }
+
+    /// Apply the `Set` command to the specified `Db` instance.
+    ///
+    /// [adapted] response frame returned instead of written to a Connection.
+    #[instrument(skip(self, db))]
+    pub(crate) async fn apply(self, db: &Db) -> crate::Result<Frame> {
+        // Set the value in the shared database state.
+        db.set(self.key, self.value, self.expire);
+
+        // Create a success response and write it to `dst`.
+        let response = Frame::Simple("OK".to_string());
+        debug!(?response);
+        Ok(response)
+    }
+
+    /// Converts the command into an equivalent `Frame`.
+    ///
+    /// This is called by the client when encoding a `Set` command to send to
+    /// the server.
+    pub(crate) fn into_frame(self) -> Frame {
+        let mut frame = Frame::array();
+        frame.push_bulk(Bytes::from("set".as_bytes()));
+        frame.push_bulk(Bytes::from(self.key.into_bytes()));
+        frame.push_bulk(self.value);
+        if let Some(ms) = self.expire {
+            // Expirations in Redis protocol can be specified in two ways
+            // 1. SET key value EX seconds
+            // 2. SET key value PX milliseconds
+            // We the second option because it allows greater precision and
+            // src/bin/cli.rs parses the expiration argument as milliseconds
+            // in duration_from_ms_str()
+            frame.push_bulk(Bytes::from("px".as_bytes()));
+            frame.push_bulk(Bytes::from(ms.as_millis().to_string()));
+        }
+        frame
+    }
+}
+
+// ---- src/cmd/publish.rs (apply adapted: returns the Frame) ---------------
+/// Posts a message to the given channel.
+///
+/// Send a message into a channel without any knowledge of individual consumers.
+/// Consumers may subscribe to channels in order to receive the messages.
+///
+/// Channel names have no relation to the key-value namespace. Publishing on a
+/// channel named "foo" has no relation to setting the "foo" key.
+#[derive(Debug)]
+pub struct Publish {
+    /// Name of the channel on which the message should be published.
+    channel: String,
+
+    /// The message to publish.
+    message: Bytes,
+}
+
+impl Publish {
+    /// Create a new `Publish` command which sends `message` on `channel`.
+    pub(crate) fn new(channel: impl ToString, message: Bytes) -> Publish {
+        Publish {
+            channel: channel.to_string(),
+            message,
+        }
+    }
+
+    /// Parse a `Publish` instance from a received frame.
+    ///
+    /// The `Parse` argument provides a cursor-like API to read fields from the
+    /// `Frame`. At this point, the entire frame has already been received from
+    /// the socket.
+    ///
+    /// The `PUBLISH` string has already been consumed.
+    ///
+    /// # Returns
+    ///
+    /// On success, the `Publish` value is returned. If the frame is malformed,
+    /// `Err` is returned.
+    ///
+    /// # Format
+    ///
+    /// Expects an array frame containing three entries.
+    ///
+    /// ```text
+    /// PUBLISH channel message
+    /// ```
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Publish> {
+        // The `PUBLISH` string has already been consumed. Extract the `channel`
+        // and `message` values from the frame.
+        //
+        // The `channel` must be a valid string.
+        let channel = parse.next_string()?;
+
+        // The `message` is arbitrary bytes.
+        let message = parse.next_bytes()?;
+
+        Ok(Publish { channel, message })
+    }
+
+    /// Apply the `Publish` command to the specified `Db` instance.
+    ///
+    /// [adapted] response frame returned instead of written to a Connection.
+    pub(crate) async fn apply(self, db: &Db) -> crate::Result<Frame> {
+        // The shared state contains the `tokio::sync::broadcast::Sender` for
+        // all active channels. Calling `db.publish` dispatches the message into
+        // the appropriate channel.
+        //
+        // The number of subscribers currently listening on the channel is
+        // returned. This does not mean that `num_subscriber` channels will
+        // receive the message. Subscribers may drop before receiving the
+        // message. Given this, `num_subscribers` should only be used as a
+        // "hint".
+        let num_subscribers = db.publish(&self.channel, self.message);
+
+        // The number of subscribers is returned as the response to the publish
+        // request.
+        let response = Frame::Integer(num_subscribers as u64);
+
+        Ok(response)
+    }
+
+    /// Converts the command into an equivalent `Frame`.
+    ///
+    /// This is called by the client when encoding a `Publish` command to send
+    /// to the server.
+    pub(crate) fn into_frame(self) -> Frame {
+        let mut frame = Frame::array();
+        frame.push_bulk(Bytes::from("publish".as_bytes()));
+        frame.push_bulk(Bytes::from(self.channel.into_bytes()));
+        frame.push_bulk(self.message);
+
+        frame
+    }
+}
+
+// ---- src/cmd/ping.rs (apply adapted: returns the Frame) ------------------
+/// Returns PONG if no argument is provided, otherwise
+/// return a copy of the argument as a bulk.
+///
+/// This command is often used to test if a connection
+/// is still alive, or to measure latency.
+#[derive(Debug, Default)]
+pub struct Ping {
+    /// optional message to be returned
+    msg: Option<Bytes>,
+}
+
+impl Ping {
+    /// Create a new `Ping` command with optional `msg`.
+    pub fn new(msg: Option<Bytes>) -> Ping {
+        Ping { msg }
+    }
+
+    /// Parse a `Ping` instance from a received frame.
+    ///
+    /// The `Parse` argument provides a cursor-like API to read fields from the
+    /// `Frame`. At this point, the entire frame has already been received from
+    /// the socket.
+    ///
+    /// The `PING` string has already been consumed.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Ping` value on success. If the frame is malformed, `Err` is
+    /// returned.
+    ///
+    /// # Format
+    ///
+    /// Expects an array frame containing `PING` and an optional message.
+    ///
+    /// ```text
+    /// PING [message]
+    /// ```
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ping> {
+        match parse.next_bytes() {
+            Ok(msg) => Ok(Ping::new(Some(msg))),
+            Err(ParseError::EndOfStream) => Ok(Ping::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Apply the `Ping` command and return the message.
+    ///
+    /// [adapted] response frame returned instead of written to a Connection.
+    #[instrument(skip(self))]
+    pub(crate) async fn apply(self) -> crate::Result<Frame> {
+        let response = match self.msg {
+            None => Frame::Simple("PONG".to_string()),
+            Some(msg) => Frame::Bulk(msg),
+        };
+
+        debug!(?response);
+
+        Ok(response)
+    }
+
+    /// Converts the command into an equivalent `Frame`.
+    ///
+    /// This is called by the client when encoding a `Ping` command to send
+    /// to the server.
+    pub(crate) fn into_frame(self) -> Frame {
+        let mut frame = Frame::array();
+        frame.push_bulk(Bytes::from("ping".as_bytes()));
+        if let Some(msg) = self.msg {
+            frame.push_bulk(msg);
+        }
+        frame
+    }
+}
+
+// ---- src/cmd/unknown.rs (apply adapted: returns the Frame) ---------------
+/// Represents an "unknown" command. This is not a real `Redis` command.
+#[derive(Debug)]
+pub struct Unknown {
+    command_name: String,
+}
+
+impl Unknown {
+    /// Create a new `Unknown` command which responds to unknown commands
+    /// issued by clients
+    pub(crate) fn new(key: impl ToString) -> Unknown {
+        Unknown {
+            command_name: key.to_string(),
+        }
+    }
+
+    /// Returns the command name
+    pub(crate) fn get_name(&self) -> &str {
+        &self.command_name
+    }
+
+    /// Responds to the client, indicating the command is not recognized.
+    ///
+    /// [adapted] response frame returned instead of written to a Connection.
+    #[instrument(skip(self))]
+    pub(crate) async fn apply(self) -> crate::Result<Frame> {
+        let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name));
+
+        debug!(?response);
+
+        Ok(response)
+    }
+}
+
+// ---- src/cmd/mod.rs (adapted: no Subscribe/Unsubscribe variants; apply
+// ---- returns the Frame and drops the Connection + Shutdown params) --------
+/// Enumeration of supported Redis commands.
+///
+/// Methods called on `Command` are delegated to the command implementation.
+#[derive(Debug)]
+pub enum Command {
+    Get(Get),
+    Publish(Publish),
+    Set(Set),
+    Ping(Ping),
+    Unknown(Unknown),
+}
+
+impl Command {
+    /// Parse a command from a received frame.
+    ///
+    /// The `Frame` must represent a Redis command supported by `mini-redis` and
+    /// be the array variant.
+    ///
+    /// # Returns
+    ///
+    /// On success, the command value is returned, otherwise, `Err` is returned.
+    pub fn from_frame(frame: Frame) -> crate::Result<Command> {
+        // The frame value is decorated with `Parse`. `Parse` provides a
+        // "cursor" like API which makes parsing the command easier.
+        //
+        // The frame value must be an array variant. Any other frame variants
+        // result in an error being returned.
+        let mut parse = Parse::new(frame)?;
+
+        // All redis commands begin with the command name as a string. The name
+        // is read and converted to lower cases in order to do case sensitive
+        // matching.
+        let command_name = parse.next_string()?.to_lowercase();
+
+        // Match the command name, delegating the rest of the parsing to the
+        // specific command.
+        let command = match &command_name[..] {
+            "get" => Command::Get(Get::parse_frames(&mut parse)?),
+            "publish" => Command::Publish(Publish::parse_frames(&mut parse)?),
+            "set" => Command::Set(Set::parse_frames(&mut parse)?),
+            "ping" => Command::Ping(Ping::parse_frames(&mut parse)?),
+            _ => {
+                // The command is not recognized and an Unknown command is
+                // returned.
+                //
+                // `return` is called here to skip the `finish()` call below. As
+                // the command is not recognized, there is most likely
+                // unconsumed fields remaining in the `Parse` instance.
+                return Ok(Command::Unknown(Unknown::new(command_name)));
+            }
+        };
+
+        // Check if there is any remaining unconsumed fields in the `Parse`
+        // value. If fields remain, this indicates an unexpected frame format
+        // and an error is returned.
+        parse.finish()?;
+
+        // The command has been successfully parsed
+        Ok(command)
+    }
+
+    /// Apply the command to the specified `Db` instance.
+    ///
+    /// [adapted] the response frame is returned to the polyglot caller.
+    pub(crate) async fn apply(self, db: &Db) -> crate::Result<Frame> {
+        // [adapted: omnivm] upstream opens with `use Command::*;`, which
+        // OmniVM's dependency inference mistakes for a crates.io dependency
+        // (`Command = "*"`); the variants are path-qualified instead.
+        match self {
+            Command::Get(cmd) => cmd.apply(db).await,
+            Command::Publish(cmd) => cmd.apply(db).await,
+            Command::Set(cmd) => cmd.apply(db).await,
+            Command::Ping(cmd) => cmd.apply().await,
+            Command::Unknown(cmd) => cmd.apply().await,
+        }
+    }
+
+    /// Returns the command name
+    pub(crate) fn get_name(&self) -> &str {
+        match self {
+            Command::Get(_) => "get",
+            Command::Publish(_) => "publish",
+            Command::Set(_) => "set",
+            Command::Ping(_) => "ping",
+            Command::Unknown(cmd) => cmd.get_name(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NEW CODE — the replaced I/O edge. In mini-redis these duties live in
+// src/server.rs + src/connection.rs (TCP accept loop, RESP framing on the
+// socket). Here the polyglot boundary is the wire and Python is the client.
+// ---------------------------------------------------------------------------
+
+static SERVER: OnceLock<DbDropGuard> = OnceLock::new();
+static SUBSCRIPTION: Mutex<Option<broadcast::Receiver<Bytes>>> = Mutex::new(None);
+
+fn server_db() -> Db {
+    SERVER.get().expect("server not started").db()
+}
+
+/// Boot the shared state exactly like src/server.rs `run` does: one
+/// `DbDropGuard` whose `Db::new` spawns the expiration purge task.
+async fn server_start() -> String {
+    SERVER.get_or_init(DbDropGuard::new);
+    String::from("ready")
+}
+
+/// One request/response exchange — what `Handler::run` does per frame:
+/// `Command::from_frame(frame)` then `apply`. The request arrives as one
+/// space-delimited line (real Redis calls this an "inline command") because
+/// of a boundary limit: Rust fns invoked from *inside* Python code receive
+/// non-scalar args as `__omnivm_runtime_ref__` descriptor maps, so a
+/// `Vec<String>` param fails serde with "invalid type: map/string, expected
+/// a sequence". Scalars cross by value; the wrapper tokenizes here instead.
+/// The reply is rendered with mini-redis's own `Display` impl.
+async fn handle_request(line: String) -> String {
+    let mut request = Frame::array();
+    for part in line.split_whitespace() {
+        request.push_bulk(Bytes::copy_from_slice(part.as_bytes()));
+    }
+    let outcome = match Command::from_frame(request) {
+        Ok(cmd) => cmd.apply(&server_db()).await,
+        Err(e) => Err(e),
+    };
+    match outcome {
+        Ok(response) => response.to_string(),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+/// Open one broadcast subscription (what cmd/subscribe.rs does before its
+/// recv loop) and park the receiver for `subscription_drain` to consume.
+async fn subscription_open(channel: String) -> bool {
+    let rx = server_db().subscribe(channel);
+    *SUBSCRIPTION.lock().unwrap() = Some(rx);
+    true
+}
+
+/// Drain `count` buffered messages from the parked subscription.
+async fn subscription_drain(count: i64) -> Vec<String> {
+    let mut rx = SUBSCRIPTION
+        .lock()
+        .unwrap()
+        .take()
+        .expect("subscription_open first");
+    let mut messages = Vec::new();
+    for _ in 0..count {
+        let msg = rx.recv().await.expect("broadcast channel closed");
+        messages.push(String::from_utf8_lossy(&msg).into_owned());
+    }
+    messages
+}
+
+/// Park the golden thread in the reactor so wall-clock time passes and the
+/// spawned purge loop gets to run its `sleep_until` arm.
+async fn advance(ms: i64) -> bool {
+    time::sleep(Duration::from_millis(ms as u64)).await;
+    true
+}
+
+/// Test-only census of live entries (the purge task's observable effect):
+/// mini-redis `Db::get` itself never checks `expires_at` — expired keys
+/// disappear because the background task removes them.
+fn live_keys() -> i64 {
+    server_db().shared.state.lock().unwrap().entries.len() as i64
+}
+
+// ---------------------------------------------------------------------------
+// Python: the redis client (plays src/connection.rs + a test script).
+// ---------------------------------------------------------------------------
+
+const ready = server_start()
+
+# The command script. Friction log for this innocuous-looking block:
+#   1. it was first a list of ([parts], want) Python tuples — the resolver
+#      routed the literal to JavaScript, where `(["PING"], "PONG")` is a
+#      comma expression evaluating to "PONG": silent data corruption;
+#   2. as a nested list routed to JS, elements crossed into Rust as maps;
+#   3. a Python `def run_case(c)` wrapper got NO runtime and the runner
+#      installed the def source into the javascript defaultRuntime;
+#   4. a top-level `for c in script:` loop bound the loop var at manifest
+#      level, and `c[0]`/`req = c[0]`/`req, want = c` inside the body were
+#      routed to javascript ("c is not defined") or rust ("cannot parse
+#      expression") respectively.
+# Flat string lists + a list comprehension (Python-only syntax, so the call
+# gets real capture treatment) is the shape that works.
+requests = [
+    "PING",
+    "PING polyglot",
+    "SET color blue",
+    "GET color",
+    "GET missing",
+    "SET color teal",
+    "GET color",
+    "GPUT color mauve",
+    "SET color",
+    "GET color extra",
+    "SET color mauve XX",
+]
+expectations = [
+    "PONG",
+    "polyglot",
+    "OK",
+    "blue",
+    "(nil)",
+    "OK",
+    "teal",
+    "error: ERR unknown command 'gput'",
+    "error: protocol error; unexpected end of stream",
+    "error: protocol error; expected end of frame, but there was more",
+    "error: currently `SET` only supports the expiration option",
+]
+# `str(req)` matters: `requests` was inferred as a JavaScript array and its
+# elements arrive in the comprehension as JS string proxies.
+# (A `"x" if c else "y"` ternary in the next comprehension also came out
+# the other side as JS `c ? "x" : "y"` with a template literal — inside a
+# python eval — so the pass/fail split is a filtered comprehension instead.)
+replies = [handle_request(str(req)) for req in requests]
+failures = [f"want={want} got={got}" for got, want in zip(replies, expectations) if str(got) != str(want)]
+passed = len(replies) - len(failures)
+
+# pub/sub: subscribe first, publish through the command layer, then drain.
+const sub_open = subscription_open("news")
+fan_news_1 = handle_request("PUBLISH news rust-on-omnivm")
+fan_news_2 = handle_request("PUBLISH news ship-it")
+fan_void = handle_request("PUBLISH lost void")
+const received = subscription_drain(2)
+
+# expiration: SET PX, watch the background purge task evict the entry.
+flash_set = handle_request("SET flash gone-soon PX 120")
+flash_before = handle_request("GET flash")
+keys_before = live_keys()
+const waited = advance(250)
+keys_after = live_keys()
+flash_after = handle_request("GET flash")
+
+// ---------------------------------------------------------------------------
+// JavaScript: the reporting layer.
+// ---------------------------------------------------------------------------
+
+// (template literal, not [a, b, c].join(",") — the array-method form was
+// routed to *rust* because its operands were bound by rust evals)
+const fanout = `${fan_news_1},${fan_news_2},${fan_void}`
+const feed = received.map(m => m.toUpperCase()).join(" | ")
+
+print(f"mini-redis port: server={ready} checks={passed}/{len(requests)} failures={failures} fanout={fanout} feed={feed} flash={flash_before}->{flash_after} live_keys={keys_before}->{keys_after}")

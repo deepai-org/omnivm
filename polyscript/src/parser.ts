@@ -265,8 +265,21 @@ export class Parser extends ParserCursor {
         case "struct":
         case "enum":
         case "trait":
-        case "type":
           return isIdent(k + 1) ? { unconditional: false } : null;
+        case "type": {
+          if (!isIdent(k + 1)) return null;
+          // `pub type` is Rust-only syntax (TS has no pub), and a bare
+          // `type` alias whose RHS carries a Rust-only signal (`::` path,
+          // `&'lifetime`, `dyn`) is definite Rust. Both must bypass the
+          // union grammar: it parses a shape-valid TypeDecl that either
+          // gets no Rust affinity (`pub type Never = core::convert::
+          // Infallible;` never reaches the Rust unit) or stops mid-item
+          // (`type H = dyn Fn(..) + Send;`).
+          if (k > 0 || this.rawTypeAliasRustSignal(i + k)) {
+            return { unconditional: true };
+          }
+          return { unconditional: false };
+        }
         case "union":
           // `union Name {` / `union Name<` only — `union` is a plausible
           // identifier in other languages.
@@ -375,6 +388,16 @@ export class Parser extends ParserCursor {
         if (src[p + 1] !== "=" && src[p + 1] !== ">") {
           typeEnd = stripped.length;
           if (rustConstTypeSignal(stripped)) return true;
+          // Struct-literal / const-block initializer: `= Vtable { .. }`,
+          // `= path::Type { .. }`, `= &{ .. }` are Rust-only at module
+          // level (a TS object literal is a BARE `{`, never `Ident {`; TS
+          // class/function expressions are excluded by keyword). Checked
+          // on the raw source so multi-line initializers work.
+          const init = src.slice(p + 1, p + 201);
+          if (/^\s*&\s*\{/.test(init) ||
+              /^\s*&?\s*(?!(?:class|function|async|new|await|typeof|return|yield)\b)[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*\s*\{/.test(init)) {
+            return true;
+          }
         }
       } else if (c === ";" && depth === 0) {
         if (typeEnd === -1) return false; // no initializer — not a Rust const
@@ -385,7 +408,78 @@ export class Parser extends ParserCursor {
       stripped += c;
       p++;
     }
-    return false;
+    // Cap reached before the depth-0 `;` (large braced initializer): a `::`
+    // path after the `=` is already a definite-Rust signal — don't make the
+    // verdict depend on the initializer's length.
+    return typeEnd !== -1 && stripped.slice(typeEnd).includes("::");
+  }
+
+  /**
+   * Definite-Rust signal for a module-level `type Name<...> = RHS;` whose
+   * `type` keyword is the token at `typeTokenIndex`: true when the RHS
+   * carries Rust-only syntax — a `::` path, a `&'lifetime` reference, or a
+   * `dyn` trait object — outside string content. TS aliases
+   * (`type A = B | C`, `type H = (e: Event) => void`) carry none of these.
+   * Operates on the RAW SOURCE because the union lexer reads lifetimes
+   * (`&'static`) as string starts.
+   */
+  private rawTypeAliasRustSignal(typeTokenIndex: number): boolean {
+    const src = this.sourceText;
+    const tok = this.tokens[typeTokenIndex];
+    if (!src || !tok) return false;
+    const cap = Math.min(src.length, tok.start + 600);
+    let p = tok.start;
+    let depth = 0;  // ([{ nesting in the RHS — `[(&str, &str)]` contains `;`-free groups
+    let angle = 0;  // <> generic parameters before the `=`
+    let eqSeen = false;
+    let rhs = ""; // RHS text with string contents removed
+    while (p < cap) {
+      const c = src[p];
+      if (c === '"') {
+        p++;
+        while (p < cap && src[p] !== '"') p += src[p] === "\\" ? 2 : 1;
+        p++;
+        if (eqSeen) rhs += " ";
+        continue;
+      }
+      if (c === "'") {
+        if (/[A-Za-z_]/.test(src[p + 1] || "") && src[p + 2] !== "'") {
+          // Lifetime ('static, 'a) — keep it visible for the signal.
+          if (eqSeen) rhs += "'";
+          p++;
+          while (p < cap && /[A-Za-z0-9_]/.test(src[p])) { if (eqSeen) rhs += src[p]; p++; }
+          continue;
+        }
+        // Char literal / single-quoted string — hide its content so a TS
+        // `type Sep = '::';` cannot fake a Rust path.
+        p++;
+        while (p < cap && src[p] !== "'") p += src[p] === "\\" ? 2 : 1;
+        p++;
+        if (eqSeen) rhs += " ";
+        continue;
+      }
+      if (!eqSeen) {
+        if (c === "<") angle++;
+        else if (c === ">") { if (angle > 0) angle--; }
+        else if (c === "=" && angle === 0) {
+          // `==`/`=>`/`<=`/`>=`/`!=` never sit in the alias header.
+          if (src[p + 1] !== "=" && src[p + 1] !== ">" &&
+              src[p - 1] !== "=" && src[p - 1] !== "<" && src[p - 1] !== ">" && src[p - 1] !== "!") {
+            eqSeen = true;
+          }
+        } else if (c === "\n" && angle === 0) {
+          return false; // alias header never spans a bare newline
+        }
+        p++;
+        continue;
+      }
+      if (c === ";" && depth === 0) break;
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth > 0) depth--; }
+      rhs += c;
+      p++;
+    }
+    return /::|&\s*'|\bdyn\s/.test(rhs);
   }
 
   /**

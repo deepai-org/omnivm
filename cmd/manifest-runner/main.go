@@ -75,6 +75,7 @@ import (
 	"github.com/omnivm/omnivm/pkg/polyglot"
 	"github.com/omnivm/omnivm/pkg/python"
 	"github.com/omnivm/omnivm/pkg/ruby"
+	"github.com/omnivm/omnivm/pkg/rust"
 )
 
 func init() {
@@ -403,6 +404,19 @@ func main() {
 
 	// Flush stdout before shutdown messages
 	os.Stdout.Sync()
+
+	// Env-gated leak telemetry: scripts/test-rust-leaks.sh runs leak-heavy
+	// manifests with OMNIVM_RUST_STATS_AT_EXIT=1 and asserts the crate's
+	// liveness counters (live_objects, live_byte_buffers, pending_futures,
+	// ...) drained before shutdown. The rust runtime is created lazily by the
+	// executor, so absence simply means the manifest never crossed into Rust.
+	if os.Getenv("OMNIVM_RUST_STATS_AT_EXIT") == "1" {
+		if rt, ok := runtimes["rust"]; ok {
+			if rustRT, isRust := rt.(*rust.Runtime); isRust && rustRT.Support() != nil {
+				fmt.Fprintf(os.Stderr, "OMNIVM_RUST_STATS_AT_EXIT %s\n", rustRT.Support().Stats())
+			}
+		}
+	}
 
 	// Shutdown in reverse order
 	fmt.Fprintln(os.Stderr, "Shutting down...")

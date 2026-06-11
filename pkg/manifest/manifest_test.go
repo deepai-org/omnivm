@@ -8015,7 +8015,7 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "if self._local_values is not None:\n            if len(self._cache) >= len(self._local_values):") ||
 		!contains(code, "self._mark_closed(\"local_eof\")") ||
 		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._local_values[len(self._cache)])") ||
-		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](item.get(\"value\"))") ||
+		!contains(code, "materialized = globals()[\"__omnivm_materialize_capture\"](self._remote_buffer.pop(0))") ||
 		!contains(code, "self._cache.append(materialized)") ||
 		!contains(code, "class _OmniVMRuntimeError(RuntimeError):") ||
 		!contains(code, "def _omnivm_runtime_error(message, boundary_path, details=None):") ||
@@ -8046,13 +8046,13 @@ func TestInjectPythonCapturesMaterializesHandleProxy(t *testing.T) {
 		!contains(code, "self.close()\n                    except Exception:\n                        pass") ||
 		!contains(code, "if finalizer is not None and finalizer.alive:") ||
 		!contains(code, "finalizer.detach()") ||
-		!contains(code, "except Exception as err:\n            try:\n                if not self.close():") ||
+		!contains(code, "except Exception as err:\n                try:\n                    if not self.close():") ||
 		!contains(code, "f\"OmniVM stream close failed during pull error cleanup: {close_exc}\"") ||
 		!contains(code, "if self._closed:\n            return False") ||
 		!contains(code, "if self._local_values is not None:\n            self._cache = self._cache[:self._cursor]\n            return self._mark_closed(\"explicit_release\")") ||
 		!contains(code, `"op": "stream_cancel"`) ||
 		!contains(code, "released = isinstance(env, dict) and env.get(\"__omnivm_result__\") is True and env.get(\"value\") is True") ||
-		!contains(code, "if released:\n            self._cache = self._cache[:self._cursor]\n            self._mark_closed(\"explicit_release\")\n        return released") ||
+		!contains(code, "if released:\n            self._remote_buffer = []\n            self._cache = self._cache[:self._cursor]\n            self._mark_closed(\"explicit_release\")\n        return released") ||
 		!contains(code, "if not self._bridge_active():\n            self._mark_closed(\"explicit_release\")\n            return False") ||
 		!contains(code, "if not globals()[\"__omnivm_bridge_matches\"](self._bridge_token, caller):\n            return {\"done\": True}") ||
 		!contains(code, "def _omnivm_close(self):\n        return self.close()") ||
@@ -9228,10 +9228,10 @@ func TestInjectJSCapturesMaterializesChannelCapture(t *testing.T) {
 		!contains(code, "catch (_localMaterializeErr) {\n        markRemoteClosed(true);\n        throw _localMaterializeErr;\n      }") ||
 		!contains(code, "}\n    if (remoteClosed) return {done: true};\n    try {") ||
 		!contains(code, "var bridgeToken = globalThis.__omnivm_current_bridge_token();") ||
-		!contains(code, "if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {\n        closeRemote();\n        return {done: true};\n      }") ||
-		!contains(code, "if (!caller) {\n        closeRemote();\n        return {done: true};\n      }") ||
+		!contains(code, "if (!globalThis.__omnivm_bridge_matches(bridgeToken, caller)) {\n          closeRemote();\n          return {done: true};\n        }") ||
+		!contains(code, "if (!caller) {\n          closeRemote();\n          return {done: true};\n        }") ||
 		!contains(code, "var released = !!(env && env.__omnivm_result__ === true && env.value === true)") ||
-		!contains(code, "if (released === true) markRemoteClosed(true);\n    return released;") ||
+		!contains(code, "if (released === true) {\n      remoteBuffer.length = 0;\n      markRemoteClosed(true);\n    }\n    return released;") ||
 		!contains(code, "var recordCleanupError = function(error, cleanupError)") ||
 		!contains(code, "error.omnivmCleanupErrors = (error.omnivmCleanupErrors || []).concat([cleanupError]);") ||
 		!contains(code, "var cancelRemoteQuiet = function(error)") ||

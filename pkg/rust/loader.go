@@ -62,8 +62,8 @@ import "C"
 
 import (
 	"fmt"
-	"sync/atomic"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -74,17 +74,18 @@ import (
 type Support struct {
 	handle unsafe.Pointer
 
-	setBridge     unsafe.Pointer
-	abiVersion    unsafe.Pointer
-	pump          unsafe.Pointer
-	drive         unsafe.Pointer
-	releaseFut    unsafe.Pointer
-	completeBr    unsafe.Pointer
-	setExecutor   unsafe.Pointer
-	completionFD  unsafe.Pointer
-	stats         unsafe.Pointer
-	spawnBg       unsafe.Pointer
-	spawnBlocking unsafe.Pointer
+	setBridge      unsafe.Pointer
+	setTypedBridge unsafe.Pointer
+	abiVersion     unsafe.Pointer
+	pump           unsafe.Pointer
+	drive          unsafe.Pointer
+	releaseFut     unsafe.Pointer
+	completeBr     unsafe.Pointer
+	setExecutor    unsafe.Pointer
+	completionFD   unsafe.Pointer
+	stats          unsafe.Pointer
+	spawnBg        unsafe.Pointer
+	spawnBlocking  unsafe.Pointer
 
 	mu              sync.Mutex
 	bridgeInstalled bool
@@ -137,15 +138,16 @@ func loadSupport(path string) (*Support, error) {
 	}
 	s := &Support{handle: h}
 	syms := map[string]*unsafe.Pointer{
-		"omnivm_set_bridge_v1":         &s.setBridge,
-		"omnivm_abi_version_v1":        &s.abiVersion,
-		"omnivm_rs_pump_v1":            &s.pump,
-		"omnivm_rs_drive_v1":           &s.drive,
-		"omnivm_rs_release_future_v1":  &s.releaseFut,
-		"omnivm_rs_complete_bridge_v1": &s.completeBr,
-		"omnivm_rs_set_executor_v1":    &s.setExecutor,
-		"omnivm_rs_completion_fd_v1":   &s.completionFD,
-		"omnivm_rs_stats_v1":           &s.stats,
+		"omnivm_set_bridge_v1":          &s.setBridge,
+		"omnivm_rs_set_typed_bridge_v1": &s.setTypedBridge,
+		"omnivm_abi_version_v1":         &s.abiVersion,
+		"omnivm_rs_pump_v1":             &s.pump,
+		"omnivm_rs_drive_v1":            &s.drive,
+		"omnivm_rs_release_future_v1":   &s.releaseFut,
+		"omnivm_rs_complete_bridge_v1":  &s.completeBr,
+		"omnivm_rs_set_executor_v1":     &s.setExecutor,
+		"omnivm_rs_completion_fd_v1":    &s.completionFD,
+		"omnivm_rs_stats_v1":            &s.stats,
 		"omnivm_rs_spawn_background_v1": &s.spawnBg,
 		"omnivm_rs_spawn_blocking_v1":   &s.spawnBlocking,
 	}
@@ -333,7 +335,8 @@ func loadedUnitPath(path string) (*Unit, bool) {
 	return u, ok
 }
 
-// Typed-lane tags (mirror omni_value_t).
+// Typed-lane tags (mirror omni_value_t; omniTagJSON is the outbound-bridge
+// extension for non-scalar results crossing as JSON text).
 const (
 	omniTagNull   = 0
 	omniTagBool   = 1
@@ -341,6 +344,7 @@ const (
 	omniTagF64    = 3
 	omniTagString = 4
 	omniTagError  = 7
+	omniTagJSON   = 8
 )
 
 // TypedCallCount counts typed-lane calls (observability + benchmarks).

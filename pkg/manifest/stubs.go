@@ -1181,8 +1181,28 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 //
 // Requests without max_n never reach here — their wire shape is untouched.
 func (e *Executor) handleStreamNextBatch(id handles.ID, req BridgeRequest) (string, error) {
-	values := make([]interface{}, 0, req.MaxN)
-	for len(values) < req.MaxN {
+	// Rust-produced streams batch at the SOURCE: one object call moves up to
+	// max_n values (the rust `next` method accepts {"n": K}), instead of one
+	// envelope crossing per value through the generic loop below.
+	maxN := req.MaxN
+	if entry, err := e.handleEntry(id); err == nil {
+		if ref, isRust := entry.Value.(*RustStreamRef); isRust {
+			return e.rustStreamNextBatch(id, ref, req)
+		}
+		// Guest-runtime-backed streams (JS/python generators, ruby
+		// enumerators) run user code per pulled value: eager batch pulls
+		// would make per-value side effects and finally-block timing
+		// observable (a consumer that breaks after 2 values must not have
+		// driven the generator 64 steps). They stay one-value-per-envelope —
+		// still answered in the plural {"done","values"} shape the batched
+		// consumers decode.
+		switch entry.Value.(type) {
+		case RuntimeRef, *RuntimeRef:
+			maxN = 1
+		}
+	}
+	values := make([]interface{}, 0, maxN)
+	for len(values) < maxN {
 		if req.Pending {
 			if pending, isChan := e.chanRefOpenEmpty(id); isChan && pending {
 				if len(values) == 0 {
@@ -6297,7 +6317,18 @@ func bridgeMarkerHandleID(value map[string]interface{}) (handles.ID, bool) {
 
 // callGoFuncFromBridge invokes a Go plugin function from a bridge call.
 // Includes panic recovery since plugin code may have type assertion failures.
-func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []interface{}) (result string, err error) {
+func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []interface{}) (string, error) {
+	value, err := e.invokeGoFuncFromBridge(name, fn, args)
+	if err != nil {
+		return "", err
+	}
+	return e.marshalGoBridgeResult(value)
+}
+
+// invokeGoFuncFromBridge dispatches one registry call and returns the RAW
+// result value: the JSON lane marshals it (callGoFuncFromBridge) while the
+// typed outbound lane crosses scalars as omni_value_t with no JSON text.
+func (e *Executor) invokeGoFuncFromBridge(name string, fn interface{}, args []interface{}) (value interface{}, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("go function %q panicked: %v", name, r)
@@ -6309,8 +6340,7 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 
 	// Try func() interface{} (no args)
 	if f, ok := fn.(func() interface{}); ok {
-		res := f()
-		return e.marshalGoBridgeResult(res)
+		return f(), nil
 	}
 
 	// Try func(interface{}) interface{} (single arg)
@@ -6319,8 +6349,7 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 		if len(normalizedArgs) > 0 {
 			arg = normalizedArgs[0]
 		}
-		res := f(arg)
-		return e.marshalGoBridgeResult(res)
+		return f(arg), nil
 	}
 
 	// Try func(interface{}, interface{}) interface{} (two args)
@@ -6332,26 +6361,20 @@ func (e *Executor) callGoFuncFromBridge(name string, fn interface{}, args []inte
 		if len(normalizedArgs) > 1 {
 			b = normalizedArgs[1]
 		}
-		res := f(a, b)
-		return e.marshalGoBridgeResult(res)
+		return f(a, b), nil
 	}
 
 	// Try func([]interface{}) (interface{}, error)
 	if f, ok := fn.(func([]interface{}) (interface{}, error)); ok {
-		res, ferr := f(normalizedArgs)
-		if ferr != nil {
-			return "", ferr
-		}
-		return e.marshalGoBridgeResult(res)
+		return f(normalizedArgs)
 	}
 
 	// Try func([]interface{}) interface{}
 	if f, ok := fn.(func([]interface{}) interface{}); ok {
-		res := f(normalizedArgs)
-		return e.marshalGoBridgeResult(res)
+		return f(normalizedArgs), nil
 	}
 
-	return "", fmt.Errorf("go function %q has unsupported signature", name)
+	return nil, fmt.Errorf("go function %q has unsupported signature", name)
 }
 
 func (e *Executor) marshalGoBridgeResult(value interface{}) (string, error) {

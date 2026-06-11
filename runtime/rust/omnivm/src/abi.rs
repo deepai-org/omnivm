@@ -27,6 +27,7 @@ static BRIDGE_FREE: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" {
     fn malloc(n: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
 }
 
 /// Copies a string into a malloc'd, NUL-terminated buffer the host frees with
@@ -405,6 +406,10 @@ pub const OMNI_TAG_I64: i64 = 2;
 pub const OMNI_TAG_F64: i64 = 3;
 pub const OMNI_TAG_STRING: i64 = 4;
 pub const OMNI_TAG_ERROR: i64 = 7;
+/// Outbound-lane extension (set_typed_bridge_v1 contract only): a non-scalar
+/// result crosses losslessly as its compact JSON text instead of failing the
+/// call. The inbound export lane never produces this tag.
+pub const OMNI_TAG_JSON: i64 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -428,6 +433,13 @@ pub struct OmniValue {
     pub v: OmniPayload,
 }
 
+// SAFETY: the only non-Send/Sync member is the string payload pointer, an
+// exclusively-owned malloc'd buffer (no shared mutable state, no thread
+// affinity). Needed so `&[OmniValue]` args can be held across an await in
+// Send-registered async exports.
+unsafe impl Send for OmniValue {}
+unsafe impl Sync for OmniValue {}
+
 impl OmniValue {
     pub fn null() -> Self {
         OmniValue { tag: OMNI_TAG_NULL, v: OmniPayload { i: 0 } }
@@ -446,6 +458,80 @@ impl OmniValue {
         let mut value = Self::string(message);
         value.tag = OMNI_TAG_ERROR;
         value
+    }
+
+    /// A non-scalar value as its compact JSON text (outbound-lane tag).
+    pub fn json_text(text: &str) -> Self {
+        let mut value = Self::string(text);
+        value.tag = OMNI_TAG_JSON;
+        value
+    }
+
+    fn string_payload(&self) -> Option<&str> {
+        if !matches!(self.tag, OMNI_TAG_STRING | OMNI_TAG_ERROR | OMNI_TAG_JSON) {
+            return None;
+        }
+        let s = unsafe { self.v.s };
+        if s.ptr.is_null() {
+            return Some("");
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len as usize) };
+        std::str::from_utf8(bytes).ok()
+    }
+
+    /// Projects any tag into the manifest value model. JSON-tagged payloads
+    /// parse; an unparseable payload degrades to its raw text.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self.tag {
+            OMNI_TAG_BOOL => serde_json::Value::Bool(unsafe { self.v.i } != 0),
+            OMNI_TAG_I64 => serde_json::Value::from(unsafe { self.v.i }),
+            OMNI_TAG_F64 => serde_json::Value::from(unsafe { self.v.f }),
+            OMNI_TAG_STRING | OMNI_TAG_ERROR => {
+                serde_json::Value::String(self.string_payload().unwrap_or("").to_string())
+            }
+            OMNI_TAG_JSON => {
+                let text = self.string_payload().unwrap_or("");
+                serde_json::from_str(text)
+                    .unwrap_or_else(|_| serde_json::Value::String(text.to_string()))
+            }
+            _ => serde_json::Value::Null,
+        }
+    }
+}
+
+/// String payloads are owned: dropping an OmniValue frees its malloc'd
+/// buffer. Inbound export shims never drop host-owned values (args are
+/// borrowed; results are written with `ptr::write`), so the Drop only fires
+/// for crate/user-constructed values — which is exactly what makes
+/// `call_typed_fn(&[OmniValue])` leak-free without a manual free step.
+impl Drop for OmniValue {
+    fn drop(&mut self) {
+        if matches!(self.tag, OMNI_TAG_STRING | OMNI_TAG_ERROR | OMNI_TAG_JSON) {
+            let s = unsafe { self.v.s };
+            if !s.ptr.is_null() {
+                unsafe { free(s.ptr as *mut c_void) };
+            }
+            self.tag = OMNI_TAG_NULL;
+            self.v = OmniPayload { i: 0 };
+        }
+    }
+}
+
+/// Lifts a manifest value into the typed lane: scalars take their native
+/// tags, anything structured rides as JSON text (lossless).
+pub fn json_to_omni(value: serde_json::Value) -> OmniValue {
+    match value {
+        serde_json::Value::Null => OmniValue::null(),
+        serde_json::Value::Bool(b) => OmniValue { tag: OMNI_TAG_BOOL, v: OmniPayload { i: b as i64 } },
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                OmniValue { tag: OMNI_TAG_I64, v: OmniPayload { i } }
+            } else {
+                OmniValue { tag: OMNI_TAG_F64, v: OmniPayload { f: n.as_f64().unwrap_or(0.0) } }
+            }
+        }
+        serde_json::Value::String(s) => OmniValue::string(&s),
+        other => OmniValue::json_text(&other.to_string()),
     }
 }
 
@@ -521,5 +607,84 @@ impl ToOmniValue for bool {
 impl ToOmniValue for String {
     fn to_omni(self) -> OmniValue {
         OmniValue::string(&self)
+    }
+}
+
+impl ToOmniValue for &str {
+    fn to_omni(self) -> OmniValue {
+        OmniValue::string(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed OUTBOUND bridge (rust → host): scalar calls to peer-registered
+// functions cross as omni_value_t with no JSON text — CallTypedByAddr's
+// encoding in reverse. The host installs a trampoline through the versioned
+// `omnivm_rs_set_typed_bridge_v1` export (mirroring omnivm_set_bridge_v1).
+//
+// Ownership: argument strings stay RUST-owned (borrowed for the duration of
+// the call; the host copies) — the mirror of the inbound lane, where the host
+// frees its own arg strings after the call. The RESULT string is malloc'd by
+// the host and freed by the crate (OmniValue's Drop).
+// ---------------------------------------------------------------------------
+
+/// rc contract: 0 = ok (out is the result), 1 = error (out is the error
+/// message), 2 = unhandled (nothing executed; caller rides the JSON lane).
+pub type TypedBridgeFn =
+    unsafe extern "C" fn(*const c_char, *const c_char, *const OmniValue, i32, *mut OmniValue) -> i32;
+
+pub const TYPED_BRIDGE_OK: i32 = 0;
+pub const TYPED_BRIDGE_ERR: i32 = 1;
+pub const TYPED_BRIDGE_FALLBACK: i32 = 2;
+
+static TYPED_BRIDGE: AtomicUsize = AtomicUsize::new(0);
+
+/// Installs the host's typed outbound trampoline. Called once on the support
+/// dylib; process-global like the JSON bridge statics.
+#[no_mangle]
+pub extern "C" fn omnivm_rs_set_typed_bridge_v1(call: TypedBridgeFn) {
+    TYPED_BRIDGE.store(call as usize, Ordering::Release);
+}
+
+pub fn typed_bridge_installed() -> bool {
+    TYPED_BRIDGE.load(Ordering::Acquire) != 0
+}
+
+/// One typed outbound call. `None` means the typed lane is unavailable for
+/// this target (uninstalled, or the host reported fallback) and NOTHING was
+/// executed — the caller falls back to the JSON lane.
+pub fn typed_bridge_call(
+    runtime: &str,
+    func: &str,
+    args: &[OmniValue],
+) -> Option<Result<OmniValue, OmniError>> {
+    let call = TYPED_BRIDGE.load(Ordering::Acquire);
+    if call == 0 {
+        return None;
+    }
+    let call: TypedBridgeFn = unsafe { std::mem::transmute(call) };
+    let c_runtime = match std::ffi::CString::new(runtime) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(OmniError::msg(format!("typed bridge: {e}")))),
+    };
+    let c_func = match std::ffi::CString::new(func) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(OmniError::msg(format!("typed bridge: {e}")))),
+    };
+    let mut out = OmniValue::null();
+    let rc = unsafe {
+        call(c_runtime.as_ptr(), c_func.as_ptr(), args.as_ptr(), args.len() as i32, &mut out)
+    };
+    match rc {
+        TYPED_BRIDGE_OK => Some(Ok(out)),
+        TYPED_BRIDGE_FALLBACK => None,
+        _ => {
+            let message = out
+                .string_payload()
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("typed bridge call failed (rc={rc})"));
+            Some(Err(OmniError::msg(message)))
+        }
     }
 }

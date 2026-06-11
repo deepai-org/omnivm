@@ -159,7 +159,7 @@ enum SendOutcome {
     Closed,
 }
 
-fn decode_bridge_result(raw: &str) -> Result<serde_json::Value, OmniError> {
+pub(crate) fn decode_bridge_result(raw: &str) -> Result<serde_json::Value, OmniError> {
     let parsed: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| OmniError::msg(format!("bridge result: {e}")))?;
     if parsed.get("__omnivm_result__") == Some(&serde_json::Value::Bool(true)) {

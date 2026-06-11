@@ -18,19 +18,18 @@ const max_reading = new com.google.gson.Gson().fromJson(scaled_json.toString(), 
 // [ruby] tag with a => hash
 const tagged = { "max" => max_reading, "count" => scaled.length }
 
-// [go] gate (plugin args cross as interface{}; string comparisons are the
-// portable go-body idiom — see express-numpy-go-rate-limit)
-func gate(hint) {
-    if hint == "big" {
+// [go] gate — natural numeric comparison (plugin args coerce when usage
+// is numeric-only)
+func gate(m) {
+    if m > 50 {
         return "high"
     }
     return "low"
 }
 
 peak = [int(v) for v in [tagged["max"]]][0]
-const hint = "big" if peak > 50 else "small"
 
-const level = gate(hint)
+const level = gate(peak)
 
 // [rust] compute
 fn checksum(values: Vec<i64>, level: String) -> String {

@@ -656,3 +656,62 @@ pub fn block_on_stream_next(
         local.block_on(runtime(), std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)))
     }))
 }
+
+/// Batched stream pull: up to `max_n` items per crossing, NEVER waiting once
+/// at least one item is in hand (the channel-batching rule). Outside a drive
+/// the FIRST item may block on the runtime (timers/IO progress); the rest are
+/// taken opportunistically while the stream stays ready. Inside a drive every
+/// poll is a poll-once; empty-handed not-ready reports would-block (pending).
+/// Returns `(values, done)`.
+pub fn block_on_stream_next_batch(
+    mut stream: std::pin::Pin<&mut (dyn futures_core::Stream<Item = serde_json::Value> + Send)>,
+    max_n: usize,
+) -> Result<(Vec<serde_json::Value>, bool), StreamPollWouldBlock> {
+    let max_n = max_n.max(1);
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut values = Vec::new();
+        loop {
+            match stream.as_mut().poll_next(&mut cx) {
+                std::task::Poll::Ready(Some(value)) => {
+                    values.push(value);
+                    if values.len() >= max_n {
+                        return Ok((values, false));
+                    }
+                }
+                std::task::Poll::Ready(None) => return Ok((values, true)),
+                std::task::Poll::Pending => {
+                    if values.is_empty() {
+                        return Err(StreamPollWouldBlock);
+                    }
+                    return Ok((values, false));
+                }
+            }
+        }
+    }
+    Ok(LOCAL.with(|local| {
+        local.block_on(runtime(), async {
+            let mut values = Vec::new();
+            match std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await {
+                Some(value) => values.push(value),
+                None => return (values, true),
+            }
+            while values.len() < max_n {
+                // Opportunistic poll-once: a not-ready stream ends the batch
+                // instead of waiting for more (a registered waker firing
+                // after abandonment is a harmless spurious wake).
+                let step = std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(stream.as_mut().poll_next(cx))
+                })
+                .await;
+                match step {
+                    std::task::Poll::Ready(Some(value)) => values.push(value),
+                    std::task::Poll::Ready(None) => return (values, true),
+                    std::task::Poll::Pending => break,
+                }
+            }
+            (values, false)
+        })
+    }))
+}

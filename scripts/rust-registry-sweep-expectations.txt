@@ -1,16 +1,4 @@
 # Registry-wide Rust round-trip oracle sweep ratchet (scripts/rust-registry-sweep.js).
 # First line: pass-rate floor. Then one '<class> <path>' line per known-failing file.
 # Regenerate the list with: node polyscript/scripts/rust-registry-sweep.js --out=<file>
-min-pass-rate 98
-parse-fail anyhow-1.0.102/src/nightly.rs
-parse-fail bytes-1.11.1/src/bytes.rs
-slice-mismatch futures-util-0.3.32/src/never.rs
-parse-fail itertools-0.14.0/src/cons_tuples_impl.rs
-parse-fail rayon-core-1.13.0/src/lib.rs
-leak regex-syntax-0.8.11/src/unicode.rs
-parse-fail ryu-1.0.23/src/tests.rs
-leak serde_core-1.0.228/src/ser/impls.rs
-parse-fail serde_json-1.0.150/src/lexical/cached_float80.rs
-leak serde-1.0.228/src/core/ser/impls.rs
-parse-fail uuid-1.23.3/src/macros.rs
-parse-fail uuid-1.23.3/src/parser.rs
+min-pass-rate 100
