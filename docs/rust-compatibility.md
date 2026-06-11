@@ -10,7 +10,7 @@ is produced by a ratcheted CI gate, not by assertion.
 | Layer | Gate | What it proves | Current state |
 |---|---|---|---|
 | Syntax | `polyscript/scripts/rust-registry-sweep.js` (ratchet: `scripts/rust-registry-sweep-expectations.txt`) | Real crate source files compile through the PolyScript pipeline with every top-level item **byte-identical** in the emitted unit and zero leakage into other runtimes | **98.5%** of 782 files across 26 crates (floor 98, 12 diagnosed known-fails) |
-| Semantics | `scripts/test-rust-corpus.sh` (ratchet: `scripts/rust-corpus-expectations.txt`) | Idiomatic crate usage *runs* end-to-end mixed with Python/JS, with output assertions | **11/11** pass |
+| Semantics | `scripts/test-rust-corpus.sh` (ratchet: `scripts/rust-corpus-expectations.txt`) | Idiomatic crate usage *runs* end-to-end mixed with Python/JS, with output assertions | **17/17** pass |
 | Acceptance | `polyscript/examples/rust-review-service.poly` (e2e suite) | A four-language service runs unchanged under both the binary and `libomnivm.so` hosts | green |
 
 ## Syntax: most existing Rust parses unchanged
@@ -63,6 +63,9 @@ The ecosystem corpus exercises each claim with another runtime in the loop
 - **Concurrency shapes** — a spawned Rust task relaying between manifest
   channels fed after the spawn (live `pending` semantics, not snapshot), and
   Python lazily iterating a Rust-produced stream.
+- **Gradual typing** — an untyped Rust fn (`fn top_score(reviews)`) iterating
+  and indexing a Python list of dicts through `omnivm::Dyn`, plus call-site
+  stamping completing an untyped param to `i64` from an integer-literal call.
 
 ## The boundary contract (the rules that matter when mixing)
 
@@ -88,6 +91,21 @@ The ecosystem corpus exercises each claim with another runtime in the loop
    created. Async = current-thread runtime, golden thread parks in the
    reactor. Threads only via `go expr` on sync fns (blocking pool),
    `executor = "multi"`, or crates that spawn internally.
+6. **Gradual typing.** In `.poly` files a Rust fn may omit param types and
+   the return type (`fn top_score(reviews)`). Completion is deterministic
+   and signature-only: untyped params become `omnivm::Dyn` (a transparent
+   newtype over the JSON value model with Python-flavored `["key"]`/`[idx]`
+   indexing, iteration, arithmetic and comparison against native scalars,
+   and `as_i64`/`try_as_*` accessors); an omitted return type whose body
+   ends in an expression becomes `-> impl omnivm::serde::Serialize`. When
+   every call site agrees on unambiguous evidence the concrete type is
+   stamped instead — int/float/string/bool literals → `i64`/`f64`/`String`/
+   `bool`, DataFrame-provenance args → `DataFrame` (so the lanes, including
+   the df pointer lane and the scalar typed lane, follow). Dynamic type
+   errors panic with Python-style messages (`TypeError: ...`,
+   `KeyError: ...`) and surface as catchable runtime errors; rustc errors
+   mentioning `Dyn` carry a hint to annotate the parameter for native
+   methods. Valid (fully typed) Rust is never rewritten.
 
 ## Known limits (deliberate)
 

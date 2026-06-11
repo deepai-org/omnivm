@@ -563,6 +563,16 @@ const stats = heavy_stats(df)                     # rust, zero-copy Arrow
 print(f"rows: {stats.height}")                    # python again
 ```
 
+**Gradual typing.** Rust fns in `.poly` files may omit param and return
+types (`fn top_score(reviews) { ... }`). Untyped params complete to
+`omnivm::Dyn` — Python-flavored dynamic values (`r["score"]` indexing,
+iteration, arithmetic/comparison, `as_f64()` accessors; type errors are
+catchable Python-style `TypeError`/`KeyError` panics) — and an omitted
+return completes to `-> impl Serialize`. When every call site agrees
+(integer/float/string/bool literal, DataFrame provenance), the concrete
+type is stamped instead and the typed/df lanes follow. Fully typed Rust is
+never rewritten.
+
 The acceptance example (`polyscript/examples/rust-review-service.poly`, a
 four-language review service) and a nine-file ecosystem corpus
 (tokio/reqwest, axum, sqlx, regex, chrono, anyhow/thiserror, itertools,

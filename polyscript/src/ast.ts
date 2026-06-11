@@ -862,6 +862,8 @@ export interface RustItem {
     params: string[];
     /** Raw parameter type texts, parallel to `params` ("" when unknown). */
     paramTypes?: string[];
+    /** Indices of bare-identifier (type-less) params — the gradual slots. */
+    untypedParams?: number[];
     /** Raw return type text after `->` ("" when none). */
     returnType?: string;
     /** True when the fn declares non-lifetime generic parameters. */

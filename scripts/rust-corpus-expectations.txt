@@ -9,6 +9,7 @@ rust-axum-router.poly pass status=ok checks=3
 rust-channel-relay.poly pass moved=4
 rust-chrono-schedule.poly pass minutes=1800
 rust-go-peer-roundtrip.poly pass twice=20 combined=21
+rust-gradual-typing.poly pass best=4.9 avg=4.133333333333334 scaled=42
 rust-itertools-windows.poly pass range=16
 rust-java-enum-bridge.poly pass java_sees_kinds=True
 rust-rayon-stats.poly pass buckets=

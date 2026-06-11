@@ -357,3 +357,21 @@ use some_unknown_crate::Thing;
 		t.Fatalf("duplicate serde dep:\n%s", joined)
 	}
 }
+
+// TestDynCompileErrorHint: rustc errors about missing methods/operators on
+// the gradually typed omnivm::Dyn get a gradual-typing hint appended.
+func TestDynCompileErrorHint(t *testing.T) {
+	out := enhanceCompileError("error[E0599]: no method named `pow` found for struct `omnivm::Dyn`")
+	if !strings.Contains(out, "gradually typed (omnivm::Dyn)") {
+		t.Fatalf("missing gradual-typing hint:\n%s", out)
+	}
+	// Same errors without Dyn involved stay un-hinted.
+	out = enhanceCompileError("error[E0599]: no method named `pow` found for struct `Thing`")
+	if strings.Contains(out, "gradually typed") {
+		t.Fatalf("hint should require Dyn in the output:\n%s", out)
+	}
+	out = enhanceCompileError("error[E0369]: cannot multiply `Dyn` by `Vec<i64>`")
+	if !strings.Contains(out, "annotate the parameter with a concrete type") {
+		t.Fatalf("missing hint for operator error:\n%s", out)
+	}
+}
