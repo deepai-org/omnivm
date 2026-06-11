@@ -357,6 +357,15 @@ RUN go test -v -count=1 -timeout 600s ./pkg/rust/
 # runtime-fail/pass) ratcheted against scripts/rust-corpus-expectations.txt.
 RUN chmod +x scripts/test-rust-corpus.sh && bash scripts/test-rust-corpus.sh
 
+# Rust leak gates (absolute — drained or failed, no ratchet): leak-heavy
+# corpus manifests under OMNIVM_RUST_STATS_AT_EXIT=1 must drain the crate's
+# liveness counters, and the stresstest Rust section (typed-lane churn,
+# channel relay rounds, compile-cache hits, 500-panic storm, large values)
+# must end with the same counters at zero. The in-process companion gate is
+# pkg/manifest TestRustLeakGate (runs with the pure-Go tests above).
+RUN chmod +x scripts/test-rust-leaks.sh && bash scripts/test-rust-leaks.sh && \
+    stresstest --rust-only
+
 # Registry-wide Rust round-trip oracle sweep: every top-level item of every
 # pinned-crate source file (curated crate set) must survive byte-identical
 # through the full compile pipeline. Ratcheted against
