@@ -416,12 +416,12 @@ describe('north-star example: rust-review-service.poly', () => {
     expect(unit).toContain('static http: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| Client::new());');
     // fns verbatim, async restored
     expect(unit).toContain('async fn enrich(user_id: i64) -> Result<String, reqwest::Error> {');
-    expect(unit).toContain('fn classify(reviews: Vec<Review>) -> Vec<Verdict> {');
+    expect(unit).toContain('fn classify(frame: DataFrame) -> Vec<Verdict> {');
     expect(unit).toContain('fn heavy_stats(frame: DataFrame) -> DataFrame {');
     expect(unit).toContain('.send().await?');
     // export shims, one per fn, async vs sync
     expect(unit).toContain('omnivm::export_async_fn!(OmniVMCall_enrich, enrich, 1);');
-    expect(unit).toContain('omnivm::export_fn!(OmniVMCall_classify, classify, 1);');
+    expect(unit).toContain('omnivm::export_fn!(OmniVMCall_classify, classify, (df));');
     expect(unit).toContain('omnivm::export_fn!(OmniVMCall_heavy_stats, heavy_stats, (df));');
   });
 
@@ -445,7 +445,7 @@ describe('north-star example: rust-review-service.poly', () => {
       op.op === 'eval' && (op as EvalOp).runtime === 'rust') as EvalOp[];
     const codes = rustEvals.map(op => op.code);
     expect(codes).toContain('heavy_stats(df)');
-    expect(codes).toContain('classify(df.to_dict("records"))');
+    expect(codes).toContain('classify(df)');
     for (const op of rustEvals) {
       expect(op.captures).toHaveProperty('df');
     }

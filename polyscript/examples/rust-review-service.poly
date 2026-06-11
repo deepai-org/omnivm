@@ -8,8 +8,8 @@
 //   definite Rust evidence; no @rs tags anywhere.
 // - heavy_stats(df): pandas DataFrame -> Arrow C Data -> polars, zero-copy
 //   both directions.
-// - classify(...): serde value codec (no JSON text round-trip), rayon
-//   parallelism off the golden thread.
+// - classify(df): the table crosses zero-copy (Arrow C Data) — never
+//   to_dict/JSON — and rayon classifies off the golden thread.
 // - Verdict enum: #[serde(tag = "type")] -> discriminated union in JS
 //   (`v.type === "Flagged"`).
 // - Client::new(): stateful handle in the handle table; connection pool
@@ -50,8 +50,10 @@ async fn enrich(user_id: i64) -> Result<String, reqwest::Error> {
   Ok(body)
 }
 
-fn classify(reviews: Vec<Review>) -> Vec<Verdict> {
-  reviews.par_iter().map(|r| match r.score {
+fn classify(frame: DataFrame) -> Vec<Verdict> {
+  let scores: Vec<f64> = frame.column("score").unwrap()
+    .f64().unwrap().into_no_null_iter().collect();
+  scores.par_iter().map(|&s| match s {
     s if s > 0.9 => Verdict::Approved { score: s },
     s if s < 0.2 => Verdict::Flagged { reason: format!("score {s}") },
     _            => Verdict::NeedsHuman,
@@ -70,7 +72,7 @@ df = pd.read_parquet("/data/reviews.parquet")
 df = df[df.text.str.len() > 0]
 
 const stats = heavy_stats(df)
-const verdicts = classify(df.to_dict("records"))
+const verdicts = classify(df)
 
 // [js] Express owns the HTTP surface
 const app = express()
