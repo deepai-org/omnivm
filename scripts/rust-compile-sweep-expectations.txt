@@ -1,0 +1,137 @@
+# Level-2 registry compile sweep ratchet (scripts/rust-compile-sweep.sh).
+# First line: pass-rate floor over the judged sample (compile-ok / judged,
+# crate-private files INCLUDED — they dominate the known-fail list below by
+# design: a registry file is a module of a larger crate, and its crate::/
+# super:: paths, pub(super) visibility, and file-backed `mod x;` declarations
+# cannot resolve in a standalone unit. The report also prints the pass-rate
+# with those files excluded; that number is the one that should approach 100%.
+# Then one '<class> <path> — <first error line>' line per known-failing file
+# of the DEFAULT deterministic sample (--sample 150, stride over the sorted
+# eligible list of the level-1 crate set).
+# Regenerate the list with:
+#   bash scripts/rust-compile-sweep.sh --out <file>
+min-pass-rate 15
+compile-fail anyhow-1.0.102/src/fmt.rs — error[E0432]: unresolved import `crate::chain`
+compile-fail anyhow-1.0.102/src/ptr.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail base64-0.22.1/src/display.rs — error[E0433]: too many leading `super` keywords
+compile-fail base64-0.22.1/src/engine/mod.rs — error: no matching package named `general-purpose` found
+compile-fail base64-0.22.1/src/read/decoder.rs — error[E0432]: unresolved imports `crate::engine`, `crate::DecodeError`, `crate::DecodeSliceError`, `crate::PAD_BYTE`
+compile-fail base64-0.22.1/src/write/encoder_string_writer.rs — error[E0433]: too many leading `super` keywords
+compile-fail bytes-1.11.1/src/buf/chain.rs — error[E0432]: unresolved import `crate::buf`
+compile-fail bytes-1.11.1/src/buf/take.rs — error[E0432]: unresolved import `crate::Buf`
+compile-fail bytes-1.11.1/src/bytes_mut.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail chrono-0.4.45/src/datetime/tests.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/format/parsed.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/naive/date/mod.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/naive/internals.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/naive/time/tests.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/offset/local/tz_info/parser.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/offset/local/windows.rs — error[E0433]: too many leading `super` keywords
+compile-fail chrono-0.4.45/src/traits.rs — error[E0432]: unresolved imports `crate::IsoWeek`, `crate::Month`, `crate::Weekday`
+compile-fail csv-1.4.0/src/serializer.rs — error: no matching package found
+compile-fail csv-core-0.1.13/src/reader.rs — error[E0432]: unresolved import `crate::Terminator`
+compile-fail futures-util-0.3.32/src/compat/mod.rs — error[E0583]: file not found for module `executor`
+compile-fail futures-util-0.3.32/src/future/future/catch_unwind.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/future/future/remote_handle.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/future/maybe_done.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/future/poll_immediate.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/future/try_join_all.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/buf_writer.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/copy_buf_abortable.rs — error[E0432]: unresolved import `crate::abortable`
+compile-fail futures-util-0.3.32/src/io/into_sink.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/read_exact.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/read_vectored.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/take.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/io/write_vectored.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/sink/err_into.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/sink/mod.rs — error[E0583]: file not found for module `close`
+compile-fail futures-util-0.3.32/src/sink/with_flat_map.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/futures_unordered/iter.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/mod.rs — error: no matching package named `abortable` found
+compile-fail futures-util-0.3.32/src/stream/repeat.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/all.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/chain.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/cycle.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/flatten_unordered.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail futures-util-0.3.32/src/stream/stream/fuse.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/peek.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/skip_while.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/stream/then.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/try_stream/into_stream.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/try_stream/try_buffer_unordered.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/try_stream/try_filter.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/try_stream/try_for_each.rs — error[E0433]: too many leading `super` keywords
+compile-fail futures-util-0.3.32/src/stream/try_stream/try_take_while.rs — error[E0433]: too many leading `super` keywords
+compile-fail itertools-0.14.0/src/combinations.rs — error[E0433]: too many leading `super` keywords
+compile-fail itertools-0.14.0/src/duplicates_impl.rs — error: cannot find macro `debug_fmt_fields` in this scope
+compile-fail itertools-0.14.0/src/lazy_buffer.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail itertools-0.14.0/src/powerset.rs — error[E0433]: too many leading `super` keywords
+compile-fail itertools-0.14.0/src/unique_impl.rs — error: cannot find macro `debug_fmt_fields` in this scope
+compile-fail itertools-0.14.0/src/ziptuple.rs — error[E0433]: too many leading `super` keywords
+compile-fail log-0.4.32/src/kv/key.rs — error: no matching package found
+compile-fail memchr-2.8.1/src/arch/aarch64/neon/mod.rs — error[E0583]: file not found for module `memchr`
+compile-fail memchr-2.8.1/src/arch/all/packedpair/mod.rs — error[E0583]: file not found for module `default_rank`
+compile-fail memchr-2.8.1/src/arch/generic/mod.rs — error[E0583]: file not found for module `memchr`
+compile-fail memchr-2.8.1/src/arch/wasm32/simd128/memchr.rs — error[E0433]: cannot find `arch` in `crate`
+compile-fail memchr-2.8.1/src/arch/x86_64/avx2/packedpair.rs — error[E0433]: cannot find `arch` in `crate`
+compile-fail memchr-2.8.1/src/arch/x86_64/sse2/packedpair.rs — error[E0433]: cannot find `arch` in `crate`
+compile-fail memchr-2.8.1/src/memchr.rs — error[E0433]: cannot find `arch` in `crate`
+compile-fail memchr-2.8.1/src/tests/memchr/prop.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail memchr-2.8.1/src/tests/substring/prop.rs — error[E0433]: cannot find `tests` in `crate`
+compile-fail rayon-1.12.0/src/collections/btree_set.rs — error[E0433]: cannot find `iter` in `crate`
+compile-fail rayon-1.12.0/src/collections/vec_deque.rs — error[E0433]: cannot find `iter` in `crate`
+compile-fail rayon-1.12.0/src/iter/chain.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/collect/test.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/filter.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/flat_map.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/fold_chunks.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/interleave.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/map_with.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/panic_fuse.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/reduce.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/skip_any_while.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/take_any.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/try_reduce_with.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/iter/zip.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/par_either.rs — error[E0433]: cannot find `iter` in `crate`
+compile-fail rayon-1.12.0/src/result.rs — error[E0433]: cannot find `iter` in `crate`
+compile-fail rayon-1.12.0/src/slice/sort.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-1.12.0/src/string.rs — error[E0433]: cannot find `iter` in `crate`
+parse-fail rayon-core-1.13.0/src/lib.rs — Expected ')' but got 'Any'
+compile-fail rayon-core-1.13.0/src/sleep/counters.rs — error[E0433]: too many leading `super` keywords
+compile-fail rayon-core-1.13.0/src/thread_pool/mod.rs — error[E0583]: file not found for module `test`
+compile-fail regex-1.12.4/src/error.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail regex-1.12.4/src/regex/mod.rs — error[E0583]: file not found for module `bytes`
+compile-fail regex-automata-0.4.14/src/dfa/accel.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/dfa/onepass.rs — error[E0433]: too many leading `super` keywords
+compile-fail regex-automata-0.4.14/src/dfa/special.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/hybrid/mod.rs — error[E0583]: file not found for module `dfa`
+compile-fail regex-automata-0.4.14/src/meta/error.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/meta/reverse_inner.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail regex-automata-0.4.14/src/nfa/thompson/backtrack.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail regex-automata-0.4.14/src/nfa/thompson/map.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail regex-automata-0.4.14/src/util/alphabet.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/util/escape.rs — error[E0432]: unresolved import `crate::util`
+compile-fail regex-automata-0.4.14/src/util/look.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/util/prefilter/byteset.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-automata-0.4.14/src/util/primitives.rs — error[E0433]: cannot find `util` in `crate`
+compile-fail regex-syntax-0.8.11/src/ast/print.rs — error[E0432]: unresolved import `crate::ast`
+compile-fail regex-syntax-0.8.11/src/hir/interval.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail regex-syntax-0.8.11/src/hir/visitor.rs — error[E0433]: cannot find module or crate `alloc` in this scope
+compile-fail ryu-1.0.23/src/buffer/mod.rs — error[E0432]: unresolved import `crate::raw`
+compile-fail ryu-1.0.23/src/d2s_small_table.rs — error[E0432]: unresolved import `crate::common`
+compile-fail ryu-1.0.23/src/s2f.rs — error[E0432]: unresolved import `crate::common`
+compile-fail serde-1.0.228/src/core/de/mod.rs — error[E0583]: file not found for module `value`
+compile-fail serde-1.0.228/src/core/private/content.rs — error[E0432]: unresolved import `crate::lib`
+compile-fail serde-1.0.228/src/core/private/string.rs — error[E0428]: the name `__omnivm_export_from_utf8_lossy` is defined multiple times
+compile-fail serde-1.0.228/src/core/std_error.rs — error[E0432]: unresolved import `crate::lib`
+compile-fail serde-1.0.228/src/private/ser.rs — error[E0432]: unresolved import `crate::lib`
+compile-fail serde_core-1.0.228/src/de/value.rs — error[E0432]: unresolved import `crate::private::size_hint`
+compile-fail serde_core-1.0.228/src/private/doc.rs — error[E0432]: unresolved import `crate::lib`
+compile-fail serde_core-1.0.228/src/ser/fmt.rs — error[E0432]: unresolved import `crate::lib`
+compile-fail serde_json-1.0.150/src/de.rs — error[E0432]: unresolved import `crate::error`
+compile-fail serde_json-1.0.150/src/lexical/algorithm.rs — error[E0433]: too many leading `super` keywords
+compile-fail serde_json-1.0.150/src/lexical/parse.rs — error[E0433]: too many leading `super` keywords
+compile-fail serde_json-1.0.150/src/ser.rs — error[E0432]: unresolved import `crate::error`
+compile-fail serde_json-1.0.150/src/value/partial_eq.rs — error[E0433]: too many leading `super` keywords
+compile-fail sha2-0.10.9/src/sha256.rs — error: no matching package named `loongarch64-asm` found

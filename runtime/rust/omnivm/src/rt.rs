@@ -633,3 +633,26 @@ pub fn stats_json() -> String {
     })
     .to_string()
 }
+
+/// Marker error: an async stream pull happened inside an active drive and
+/// the stream wasn't ready — blocking would re-enter the runtime.
+pub struct StreamPollWouldBlock;
+
+/// Pulls the next item from an async stream. Outside a drive this blocks on
+/// the runtime (timers/IO progress, golden-thread discipline preserved);
+/// inside a drive it polls once and reports would-block instead of nesting.
+pub fn block_on_stream_next(
+    mut stream: std::pin::Pin<&mut (dyn futures_core::Stream<Item = serde_json::Value> + Send)>,
+) -> Result<Option<serde_json::Value>, StreamPollWouldBlock> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        return match stream.as_mut().poll_next(&mut cx) {
+            std::task::Poll::Ready(v) => Ok(v),
+            std::task::Poll::Pending => Err(StreamPollWouldBlock),
+        };
+    }
+    Ok(LOCAL.with(|local| {
+        local.block_on(runtime(), std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)))
+    }))
+}

@@ -1,14 +1,19 @@
 # + Arrow C-Data landed: the whole corpus passes end-to-end.
 # Ratcheted 2026-06-10 after the two-regime front end + export-set analysis
 # file expected-state [expected-stdout-substring]
+rust-all-six.poly pass stamp=high:310
 rust-anyhow-thiserror-errors.poly pass caught_frozen=True
 rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True
+rust-axum-multi-serve.poly pass body=pong-from-rust
 rust-axum-router.poly pass status=ok checks=3
 rust-channel-relay.poly pass moved=4
 rust-chrono-schedule.poly pass minutes=1800
+rust-go-peer-roundtrip.poly pass twice=20 combined=21
 rust-itertools-windows.poly pass range=16
+rust-java-enum-bridge.poly pass java_sees_kinds=True
 rust-rayon-stats.poly pass buckets=
 rust-regex-pipeline.poly pass codes=jira-101,jira-204,jira-7 named=3
+rust-ruby-tagged-hash.poly pass headline=CRASH ON SAVE
 rust-sqlx-sqlite.poly pass n=2 total=65
 rust-stream-python-iter.poly pass count=5
 rust-tokio-reqwest-fanout.poly pass total=32 tail=7+11

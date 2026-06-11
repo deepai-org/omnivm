@@ -45,7 +45,13 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 	if err != nil {
 		return err
 	}
-	soPath, err := tc.BuildUnit(source, exports)
+	var smap *rust.SourceMap
+	if len(op.SourceMap) > 0 {
+		// rustUnitSource only ever APPENDS glue after op.Source, so the op's
+		// unit_line coordinates stay valid for the completed unit.
+		smap = &rust.SourceMap{File: op.PolyFile, Entries: op.SourceMap}
+	}
+	soPath, err := tc.BuildUnitMapped(source, exports, smap)
 	if err != nil {
 		return fmt.Errorf("rust func_def %q: %w", op.Name, err)
 	}
@@ -57,10 +63,25 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 	for _, exportName := range exports {
 		exportName := exportName
 		symbol := cSharedWrapperSymbol(exportName)
+		// Typed lane: codegen emits OmniVMCallTyped_<sym> for scalar-shaped
+		// signatures; presence of the symbol IS the capability.
+		typedEntry := uintptr(0)
+		if addr, symErr := unit.SymbolAddr("OmniVMCallTyped_" + exportName); symErr == nil {
+			typedEntry = addr
+		}
 		// Error returns flow as values (never panics): the catch machinery
 		// then reports "rust function ..." with the envelope message + chain
 		// instead of a recovered-panic wrapper.
 		fn := func(args []interface{}) (interface{}, error) {
+			// Scalar-shaped calls cross as omni_value_t — no JSON text.
+			if typedEntry != 0 {
+				if value, handled, typedErr := unit.CallTypedByAddr(typedEntry, args); handled {
+					if typedErr != nil {
+						return nil, fmt.Errorf("rust function %q: %w", exportName, typedErr)
+					}
+					return value, nil
+				}
+			}
 			encodedArgs, leases, encodeErr := e.encodeCSharedGoArgs(args)
 			if encodeErr != nil {
 				return nil, encodeErr
@@ -84,6 +105,7 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 			meta = &rustFuncMeta{unit: unit, rt: rustRT, symbol: symbol}
 			e.rustFuncs[exportName] = meta
 		}
+		meta.typedEntry = typedEntry
 		if exportName == op.Name {
 			meta.async = op.Async
 			meta.arity = len(op.Params)
@@ -177,6 +199,15 @@ func (e *Executor) rustBridgeRouter(rtName, code string) string {
 			return "ERR:" + err.Error()
 		}
 		return res
+	}
+	if rtName == "go" {
+		// Go-peer callables: evaluate registered-function invocation
+		// expressions (the same parser opEval's go branch uses).
+		value, err := e.evalGoCode(&Op{OpType: "eval", Runtime: "go", Code: code})
+		if err != nil {
+			return "ERR:" + err.Error()
+		}
+		return fmt.Sprintf("%v", value)
 	}
 	rt, ok := e.runtimes[rtName]
 	if !ok {
@@ -287,11 +318,12 @@ func rustUnitSource(op *Op, exports []string) string {
 // rustFuncMeta records how a unit export dispatches (spawn needs to know
 // async-ness and the raw symbol address for blocking-pool dispatch).
 type rustFuncMeta struct {
-	unit   *rust.Unit
-	rt     *rust.Runtime
-	symbol string
-	async  bool
-	arity  int
+	unit       *rust.Unit
+	rt         *rust.Runtime
+	symbol     string
+	async      bool
+	arity      int
+	typedEntry uintptr // OmniVMCallTyped_<sym> when codegen emitted one
 }
 
 // RustFutureRef is a spawned-but-not-awaited Rust computation (the `go expr`

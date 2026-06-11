@@ -61,6 +61,7 @@ import {
   CaptureMap,
   ConcatSegment,
   ManifestDiagnostic,
+  RustSourceMapEntry,
 } from './manifest-types';
 import { BoundaryChecker, typeToString } from '../type-system/boundary-checker';
 import { lowerType } from '../type-system/lowering';
@@ -73,6 +74,13 @@ import { extractRustFnSignatures, attributePrefixStart } from '../rust-item-scan
 type RustExportSig = AST.RustItem["fns"][number];
 
 type BindingKind = "value" | "channel" | "stream" | "resource" | "table" | "job_handle" | "spawn_handle" | "function";
+
+/**
+ * One section piece of the assembled Rust compilation unit: the verbatim
+ * text plus, for slices lifted from the .poly source, the byte offset where
+ * the slice begins (undefined for generated glue — lowered statics, shims).
+ */
+type RustUnitPiece = { text: string; polyOffset?: number };
 
 export class ManifestCodeGenerator {
   private affinityMap: Map<AST.Decl | AST.Stmt | AST.Expr, RuntimeAffinity> = new Map();
@@ -127,16 +135,25 @@ export class ManifestCodeGenerator {
     absorbed: Set<AST.Decl | AST.Stmt>;
     /** Fns proven internal-only (or generic, unexportable): no func_def ops. */
     internalFns: Set<string>;
+    /**
+     * Line mapping from unit source back to the .poly file: one entry per
+     * verbatim item slice (generated glue gets none). The host uses it to
+     * rewrite rustc diagnostics to .poly coordinates.
+     */
+    sourceMap: RustSourceMapEntry[];
   };
+  /** The .poly file name source_map coordinates refer to, when known. */
+  private sourceFile?: string;
 
   /**
    * Generate a dispatch manifest from an annotated program.
    * Returns a DispatchManifest object (JSON-serializable).
    */
-  generate(annotated: AnnotatedProgram): DispatchManifest {
+  generate(annotated: AnnotatedProgram, options?: { sourceFile?: string }): DispatchManifest {
     this.affinityMap = annotated.affinityMap;
     this.defaultRuntime = annotated.defaultRuntime;
     this.source = annotated.source;
+    this.sourceFile = options?.sourceFile;
     this.bindingTable = new Map();
     this.bindingKinds = new Map();
     this.resourceDisposers = new Map();
@@ -195,8 +212,8 @@ export class ManifestCodeGenerator {
   /**
    * Generate and return pretty-printed JSON.
    */
-  generateJSON(annotated: AnnotatedProgram): string {
-    return JSON.stringify(this.generate(annotated), null, 2);
+  generateJSON(annotated: AnnotatedProgram, options?: { sourceFile?: string }): string {
+    return JSON.stringify(this.generate(annotated, options), null, 2);
   }
 
   private indexLoweredNodes(ir: LoweredManifestIR): Map<AST.Program | AST.Decl | AST.Stmt | AST.Expr, LoweredManifestNode[]> {
@@ -3374,11 +3391,31 @@ export class ManifestCodeGenerator {
       bodyRuntime: OmniRuntime.Rust,
       ...(node.async ? { async: true } : {}),
       ...(this.rustUnit
-        ? { source: this.rustUnit.source, exports: this.rustUnit.exports }
+        ? this.rustUnitOpFields()
         : { source: this.rustItemSource(node, node.async ? "async " : ""), exports: [name] }),
     };
 
     return [funcDef];
+  }
+
+  /**
+   * The unit-carrying fields every Rust func_def op shares: the full
+   * compilation unit source, the export list, and — when the unit has
+   * verbatim .poly slices — the diagnostic source map (so the host rewrites
+   * rustc errors to .poly coordinates).
+   */
+  private rustUnitOpFields(): Pick<FuncDefOp, "source" | "exports" | "source_map" | "poly_file"> {
+    const unit = this.rustUnit!;
+    return {
+      source: unit.source,
+      exports: unit.exports,
+      ...(unit.sourceMap.length > 0
+        ? {
+            source_map: unit.sourceMap,
+            ...(this.sourceFile ? { poly_file: this.sourceFile } : {}),
+          }
+        : {}),
+    };
   }
 
   /**
@@ -3402,7 +3439,7 @@ export class ManifestCodeGenerator {
         bodyRuntime: OmniRuntime.Rust,
         ...(sig.async ? { async: true } : {}),
         ...(this.rustUnit
-          ? { source: this.rustUnit.source, exports: this.rustUnit.exports }
+          ? this.rustUnitOpFields()
           : { source: node.text, exports: [sig.name] }),
       };
       ops.push(funcDef);
@@ -3420,10 +3457,10 @@ export class ManifestCodeGenerator {
   private collectRustUnit(nodes: Array<AST.Decl | AST.Stmt>): void {
     if (!this.source) return;
 
-    const useItems: string[] = [];
-    const typeItems: string[] = [];
-    const staticItems: string[] = [];
-    const fnItems: string[] = [];
+    const useItems: RustUnitPiece[] = [];
+    const typeItems: RustUnitPiece[] = [];
+    const staticItems: RustUnitPiece[] = [];
+    const fnItems: RustUnitPiece[] = [];
     const shims: string[] = [];
     const exports: string[] = [];
     const absorbed = new Set<AST.Decl | AST.Stmt>();
@@ -3460,19 +3497,19 @@ export class ManifestCodeGenerator {
           unitSpans.push({ start: node.span.start, end: node.span.end });
           switch (node.itemKind) {
             case "use":
-              useItems.push(node.text);
+              useItems.push({ text: node.text, polyOffset: node.span.start });
               absorbed.add(node);
               for (const bound of node.bindings) moduleBindings.add(bound);
               break;
             case "fn":
               // Not absorbed: emitCompiledBlock emits func_def ops for the
               // exported subset after the export-set analysis below.
-              fnItems.push(node.text);
+              fnItems.push({ text: node.text, polyOffset: node.span.start });
               for (const sig of node.fns) pendingFns.push({ sig, node });
               break;
             case "static":
             case "const":
-              staticItems.push(node.text);
+              staticItems.push({ text: node.text, polyOffset: node.span.start });
               absorbed.add(node);
               if (node.name) {
                 moduleBindings.add(node.name);
@@ -3480,7 +3517,7 @@ export class ManifestCodeGenerator {
               }
               break;
             default: // struct/enum/union/trait/impl/mod/type/macro/extern
-              typeItems.push(node.text);
+              typeItems.push({ text: node.text, polyOffset: node.span.start });
               absorbed.add(node);
               if (node.name) moduleBindings.add(node.name);
               break;
@@ -3517,15 +3554,19 @@ export class ManifestCodeGenerator {
 
         case "TypeDecl":
           if (isRustNode(node) && node.structDecl) {
-            typeItems.push(this.rustItemSource(node));
+            typeItems.push(this.rustItemPiece(node));
             absorbed.add(node);
             unitSpans.push({ start: node.span.start, end: node.span.end });
             moduleBindings.add(node.name.name);
           } else if (isRustNode(node)) {
             // Rust type alias `type A = B;` parsed by the union grammar.
-            const raw = this.rustItemSource(node);
+            const rawPiece = this.rustItemPiece(node);
+            const raw = rawPiece.text;
             if (/^\s*(?:#\[[^\n]*\]\s*\n|\/\/\/[^\n]*\s*\n)*\s*(?:pub(?:\([^)]*\))?\s+)?type\s+[A-Za-z_]/.test(raw)) {
-              typeItems.push(raw.trimEnd().endsWith(";") ? raw : `${raw};`);
+              typeItems.push({
+                text: raw.trimEnd().endsWith(";") ? raw : `${raw};`,
+                polyOffset: rawPiece.polyOffset,
+              });
               absorbed.add(node);
               unitSpans.push({ start: node.span.start, end: node.span.end });
               moduleBindings.add(node.name.name);
@@ -3535,7 +3576,7 @@ export class ManifestCodeGenerator {
 
         case "EnumDecl":
           if (isRustNode(node)) {
-            typeItems.push(this.rustItemSource(node));
+            typeItems.push(this.rustItemPiece(node));
             absorbed.add(node);
             unitSpans.push({ start: node.span.start, end: node.span.end });
             moduleBindings.add(node.name.name);
@@ -3545,7 +3586,7 @@ export class ManifestCodeGenerator {
         case "InterfaceDecl":
         case "ImplDecl":
           if (isRustNode(node)) {
-            typeItems.push(this.rustItemSource(node));
+            typeItems.push(this.rustItemPiece(node));
             absorbed.add(node);
             unitSpans.push({ start: node.span.start, end: node.span.end });
           }
@@ -3554,8 +3595,9 @@ export class ManifestCodeGenerator {
         case "FuncDecl": {
           if (!isRustFn(node)) break;
           unitSpans.push({ start: node.span.start, end: node.span.end });
-          const itemSource = this.rustItemSource(node, node.async ? "async " : "");
-          fnItems.push(itemSource);
+          const itemPiece = this.rustItemPiece(node, node.async ? "async " : "");
+          const itemSource = itemPiece.text;
+          fnItems.push(itemPiece);
           // Re-scan the reconstructed item so the export-set analysis sees
           // the same raw type texts as raw-scanned fn items; fall back to
           // AST-derived facts when the signature scan finds nothing.
@@ -3586,7 +3628,8 @@ export class ManifestCodeGenerator {
           if (roots.size === 0 || !allLocal) break;
 
           const bindName = node.names[0].name;
-          staticItems.push(this.rustStaticItem(bindName, node, value));
+          // Lowered statics are generated glue (LazyLock wrapper): no map.
+          staticItems.push({ text: this.rustStaticItem(bindName, node, value) });
           absorbed.add(node);
           unitSpans.push({ start: node.span.start, end: node.span.end });
           moduleBindings.add(bindName);
@@ -3637,20 +3680,57 @@ export class ManifestCodeGenerator {
 
     if (exports.length === 0 && absorbed.size === 0 && fnItems.length === 0) return;
 
-    const sections = [
-      useItems.join("\n"),
-      ...typeItems,
-      ...staticItems,
-      ...fnItems,
-      shims.join("\n"),
-    ].filter(section => section.length > 0);
+    // Assemble the unit source EXACTLY as before (pieces in a section join
+    // with "\n", sections join with "\n\n", empty sections drop out) while
+    // walking the same layout to record, for each verbatim .poly slice, its
+    // start line inside the unit. Generated glue (lowered statics, shims)
+    // contributes lines but no entries. The byte layout must stay identical:
+    // unit hashes key the artifact cache and the round-trip oracle.
+    const sectionPieces: RustUnitPiece[][] = [
+      useItems,
+      ...typeItems.map(piece => [piece]),
+      ...staticItems.map(piece => [piece]),
+      ...fnItems.map(piece => [piece]),
+      [{ text: shims.join("\n") }],
+    ];
+    const sections: string[] = [];
+    const sourceMap: RustSourceMapEntry[] = [];
+    let unitLine = 1;
+    for (const pieces of sectionPieces) {
+      const sectionText = pieces.map(piece => piece.text).join("\n");
+      if (sectionText.length === 0) continue;
+      for (const piece of pieces) {
+        const lineCount = piece.text.split("\n").length;
+        if (piece.polyOffset !== undefined) {
+          sourceMap.push({
+            unit_line: unitLine,
+            poly_line: this.lineOfOffset(piece.polyOffset),
+            lines: lineCount,
+          });
+        }
+        unitLine += lineCount; // pieces within a section join with "\n"
+      }
+      sections.push(sectionText);
+      unitLine += 1; // sections join with "\n\n": one blank separator line
+    }
 
     this.rustUnit = {
       source: sections.join("\n\n"),
       exports,
       absorbed,
       internalFns,
+      sourceMap,
     };
+  }
+
+  /** 1-based line number of a byte offset in the original source. */
+  private lineOfOffset(offset: number): number {
+    let line = 1;
+    const src = this.source!;
+    for (let i = 0; i < offset && i < src.length; i++) {
+      if (src.charCodeAt(i) === 10) line++;
+    }
+    return line;
   }
 
   /**
@@ -3693,7 +3773,9 @@ export class ManifestCodeGenerator {
     const kindList = rustShimKinds(sig);
     const arityOrKinds = kindList ?? `${sig.paramCount}`;
     const directShim =
-      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${sig.name}, ${arityOrKinds});`;
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${sig.name}, ${arityOrKinds});` +
+      rustTypedShim(sig, sig.name, (sig.paramTypes ?? []).map(t => stripRustLifetimes(t ?? "").trim()),
+        stripRustLifetimes(sig.returnType ?? "").trim());
 
     const paramTypes = sig.paramTypes ?? [];
     const params = sig.params.map((name, i) => adaptRustParamType(name, paramTypes[i] ?? ""));
@@ -3726,7 +3808,9 @@ export class ManifestCodeGenerator {
       `${fnIntro} ${adapterName}(${paramList})${retClause} {`,
       `    ${body}`,
       `}`,
-      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${adapterName}, ${rustShimKinds(sig) ?? sig.paramCount});`,
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${adapterName}, ${rustShimKinds(sig) ?? sig.paramCount});` +
+        rustTypedShim(sig, adapterName, params.map(p => p.ownedType),
+          ret.ownedType.length > 0 ? ret.ownedType : stripRustLifetimes(sig.returnType ?? "").trim()),
     ].join("\n");
   }
 
@@ -3757,10 +3841,14 @@ export class ManifestCodeGenerator {
    * unit, including preceding attribute lines (`#[cfg(...)]`) and a trailing
    * semicolon. Returns undefined when the import is not a Rust `use`.
    */
-  private rustUseItemSource(node: { span: AST.Span }): string | undefined {
-    const raw = this.rustItemSource(node);
+  private rustUseItemSource(node: { span: AST.Span }): RustUnitPiece | undefined {
+    const piece = this.rustItemPiece(node);
+    const raw = piece.text;
     if (!raw || !/(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s/.test(raw)) return undefined;
-    return raw.trimEnd().endsWith(";") ? raw : `${raw};`;
+    return {
+      text: raw.trimEnd().endsWith(";") ? raw : `${raw};`,
+      polyOffset: piece.polyOffset,
+    };
   }
 
   /**
@@ -3770,20 +3858,34 @@ export class ManifestCodeGenerator {
    * modifiers the parser consumed before the span start (e.g. `async `).
    */
   private rustItemSource(node: { span: AST.Span }, prefix = ""): string {
+    return this.rustItemPiece(node, prefix).text;
+  }
+
+  /**
+   * rustItemSource plus the byte offset in the original source where the
+   * reconstructed slice begins (attribute walk-back included) — the anchor
+   * the Rust unit source map records. Internal newlines of the slice match
+   * the original extent, so line arithmetic from the anchor stays valid.
+   */
+  private rustItemPiece(node: { span: AST.Span }, prefix = ""): RustUnitPiece {
     const src = this.source;
-    if (!src) return "";
+    if (!src) return { text: "" };
 
     // When the parser consumed leading modifiers (pub/async/unsafe/const)
     // before the node span, the line residue restores them verbatim.
     const residueLineStart = src.lastIndexOf("\n", node.span.start - 1) + 1;
     const residue = src.slice(residueLineStart, node.span.start);
     let text: string;
+    let start: number;
     if (residue.trim().length > 0 &&
         /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|unsafe\s+|const\s+)*$/.test(residue)) {
       text = src.slice(residueLineStart, node.span.end);
+      start = residueLineStart;
     } else {
       const body = src.slice(node.span.start, node.span.end);
       text = prefix && !body.startsWith(prefix.trim()) ? prefix + body : body;
+      // A re-attached prefix has no newline: span.start's line is the anchor.
+      start = node.span.start;
     }
 
     // Walk back over immediately preceding attribute/doc lines (same rule —
@@ -3791,9 +3893,9 @@ export class ManifestCodeGenerator {
     // multi-line attribute groups).
     const attrStart = attributePrefixStart(src, residueLineStart);
     if (attrStart < residueLineStart) {
-      return src.slice(attrStart, residueLineStart) + text;
+      return { text: src.slice(attrStart, residueLineStart) + text, polyOffset: attrStart };
     }
-    return text;
+    return { text, polyOffset: start };
   }
 
   /**
@@ -4450,6 +4552,20 @@ interface AdaptedRustParam {
  * Per-param extraction kinds for the export shim: `(df, json, ...)` when any
  * param is DataFrame-typed (zero-copy Arrow import), else null (arity form).
  */
+/**
+ * Scalar-shaped exports also get an omni_value_t typed entry: args/returns
+ * cross with no JSON text. Presence of the OmniVMCallTyped_ symbol is the
+ * host's capability signal.
+ */
+function rustTypedShim(sig: RustExportSig, target: string, paramTypes: string[], returnType: string): string {
+  if (sig.async || sig.typeGenerics) return "";
+  if (sig.paramCount > 3 || paramTypes.length !== sig.paramCount) return "";
+  const scalar = new Set(["i64", "f64", "bool", "String"]);
+  if (!paramTypes.every(t => scalar.has(t))) return "";
+  if (!scalar.has(returnType)) return "";
+  return `\nomnivm::export_typed_fn!(OmniVMCallTyped_${sig.name}, ${target}, ${sig.paramCount});`;
+}
+
 function rustShimKinds(sig: RustExportSig): string | null {
   const paramTypes = sig.paramTypes ?? [];
   if (sig.paramCount === 0 || sig.paramCount > 4) return null;

@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omnivm/omnivm/pkg/handles"
+	"github.com/omnivm/omnivm/pkg/rust"
+
 	"github.com/omnivm/omnivm/pkg"
 )
 
@@ -328,5 +331,162 @@ func TestRuntimeGlobalNotShadowedByStaleBinding(t *testing.T) {
 	}
 	if !sawPrint {
 		t.Fatalf("user code never executed: %q", executed)
+	}
+}
+
+// TestRustChannelBackpressure pushes 4 values through a size-1 channel with
+// concurrent producer/consumer tasks. Without send-side backpressure the
+// non-blocking send would silently drop values 2-4; with it, sum == 10.
+func TestRustChannelBackpressure(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "chan", Action: "make", Bind: "pipe", Size: 1},
+		{OpType: "func_def", Name: "producer", BodyRuntime: "rust", Async: true,
+			Params: []*Param{{Name: "out"}}, Exports: []string{"producer"},
+			Source: `
+async fn producer(out: omnivm::Channel) -> i64 {
+    for i in 1..=4i64 {
+        out.send_async(i).await.unwrap();
+    }
+    4
+}
+`},
+		{OpType: "func_def", Name: "consumer", BodyRuntime: "rust", Async: true,
+			Params: []*Param{{Name: "input"}}, Exports: []string{"consumer"},
+			Source: `
+async fn consumer(input: omnivm::Channel) -> i64 {
+    let mut sum = 0i64;
+    for _ in 0..4 {
+        sum += input.recv_async().await.unwrap().unwrap().as_i64().unwrap_or(0);
+    }
+    sum
+}
+`},
+		{OpType: "spawn", Code: "producer(pipe)", Bind: "p"},
+		{OpType: "spawn", Code: "consumer(pipe)", Bind: "c"},
+		{OpType: "await", From: &Op{OpType: "eval", Runtime: "go", Code: "c"}, Bind: "sum"},
+		{OpType: "await", From: &Op{OpType: "eval", Runtime: "go", Code: "p"}, Bind: "produced"},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	sum, _ := e.getBinding("sum")
+	if !numEquals(sum, 10) {
+		t.Fatalf("backpressure: sum=%v, want 10 (values were dropped)", sum)
+	}
+}
+
+// TestRustAsyncStreamExport pulls a timer-paced futures Stream through the
+// universal stream protocol: each pull blocks on the runtime (timers
+// progress) outside any drive.
+func TestRustAsyncStreamExport(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "func_def", Name: "ticks", BodyRuntime: "rust",
+			Exports: []string{"ticks"},
+			Source: `
+fn ticks() -> omnivm::objects::ObjectHandleRef {
+    let stream = futures_stream_of_squares(3);
+    omnivm::objects::export_async_stream(stream)
+}
+
+fn futures_stream_of_squares(n: i64) -> impl futures_core::Stream<Item = i64> + Send {
+    let mut i = 0i64;
+    futures_unfold(move || {
+        i += 1;
+        if i <= n { Some(i * i) } else { None }
+    })
+}
+
+fn futures_unfold<F>(f: F) -> impl futures_core::Stream<Item = i64> + Send
+where F: FnMut() -> Option<i64> + Send + Unpin + 'static {
+    struct S<F>(F, bool);
+    impl<F: FnMut() -> Option<i64> + Unpin> futures_core::Stream for S<F> {
+        type Item = i64;
+        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<i64>> {
+            // Alternate Pending/Ready to exercise the block_on wake path.
+            if self.1 {
+                self.1 = false;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            self.1 = true;
+            std::task::Poll::Ready((self.0)())
+        }
+    }
+    S(f, true)
+}
+`},
+		{OpType: "eval", Runtime: "rust", Code: "ticks()", Bind: "s"},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	binding, _ := e.getBinding("s")
+	descriptor, ok := binding.(map[string]interface{})
+	if !ok || descriptor["__omnivm_stream__"] != true {
+		t.Fatalf("s = %T %#v, want stream descriptor", binding, binding)
+	}
+	rawID, isInt := descriptor["id"].(int64)
+	if !isInt {
+		t.Fatalf("handle id type %T", descriptor["id"])
+	}
+	id := handles.ID(rawID)
+	var got []interface{}
+	for i := 0; i < 4; i++ {
+		value, done, okPull, pullErr := e.handleStreamNext(id)
+		if pullErr != nil || !okPull {
+			t.Fatalf("pull %d: ok=%v err=%v", i, okPull, pullErr)
+		}
+		if done {
+			break
+		}
+		got = append(got, value)
+	}
+	if len(got) != 3 || !numEquals(got[0], 1) || !numEquals(got[1], 4) || !numEquals(got[2], 9) {
+		t.Fatalf("stream values = %v, want [1 4 9]", got)
+	}
+}
+
+// TestRustTypedLane: scalar-shaped exports cross as omni_value_t (no JSON
+// text); the typed entry's presence is the capability signal, and mixed
+// shapes fall back to the envelope path.
+func TestRustTypedLane(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "func_def", Name: "typed_join", BodyRuntime: "rust",
+			Params: []*Param{{Name: "label"}, {Name: "count"}}, Exports: []string{"typed_join"},
+			Source: `
+fn typed_join(label: String, count: i64) -> String {
+    format!("{label}:{}", count * 2)
+}
+omnivm::export_fn!(OmniVMCall_typed_join, typed_join, 2);
+omnivm::export_typed_fn!(OmniVMCallTyped_typed_join, typed_join, 2);
+`},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	before := rust.TypedCallCount
+	value, err := e.goFuncs["typed_join"].(func([]interface{}) (interface{}, error))([]interface{}{"answer", int64(21)})
+	if err != nil {
+		t.Fatalf("typed call: %v", err)
+	}
+	if value != "answer:42" {
+		t.Fatalf("typed call = %v, want answer:42", value)
+	}
+	if rust.TypedCallCount != before+1 {
+		t.Fatalf("typed lane not taken (count %d -> %d)", before, rust.TypedCallCount)
+	}
+	// Non-scalar args fall back to the envelope path.
+	value, err = e.goFuncs["typed_join"].(func([]interface{}) (interface{}, error))([]interface{}{"answer", map[string]interface{}{"n": 1}})
+	if err == nil {
+		t.Logf("fallback returned %v", value)
+	}
+	if rust.TypedCallCount != before+1 {
+		t.Fatalf("fallback should not increment typed count")
 	}
 }

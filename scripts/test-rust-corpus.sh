@@ -56,7 +56,13 @@ PYEOF
         echo "infer-fail"
         return
     fi
-    if ! timeout 300 manifest-runner "$manifest" > "$runlog" 2>&1; then
+    # Per-file process-level knobs (executor escalation is set at engine
+    # init, before any in-file code runs).
+    local extra_env=()
+    case "$name" in
+        rust-axum-multi-serve.poly) extra_env=(OMNIVM_RUST_EXECUTOR=multi) ;;
+    esac
+    if ! timeout 300 env "${extra_env[@]}" manifest-runner "$manifest" > "$runlog" 2>&1; then
         if grep -q "rust compilation failed" "$runlog"; then
             echo "compile-fail"
         else

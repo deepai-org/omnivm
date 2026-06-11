@@ -1,0 +1,47 @@
+// Corpus (interop matrix): Ruby `=>` hashes cross into Rust serde structs,
+// and a Rust tagged enum arrives back in Ruby as a tagged hash (the design's
+// claimed Ruby projection) consumed with Ruby string methods.
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Deserialize)]
+struct Ticket {
+  title: String,
+  votes: i64,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status")]
+enum Triage {
+  Urgent { title: String },
+  Backlog { title: String, votes: i64 },
+}
+
+fn triage(tickets: Vec<Ticket>) -> Vec<Triage> {
+  tickets.into_iter().map(|t| if t.votes >= 10 {
+    Triage::Urgent { title: t.title }
+  } else {
+    Triage::Backlog { title: t.title, votes: t.votes }
+  }).collect()
+}
+
+// [ruby] builds the tickets as => hashes
+const tickets = [
+  { "title" => "crash on save", "votes" => 14 },
+  { "title" => "dark mode", "votes" => 3 },
+  { "title" => "data loss", "votes" => 22 }
+]
+
+// [rust] consumes the Ruby hashes as serde structs
+const triaged = triage(tickets)
+
+// [ruby] consumes the tagged-hash projection with Ruby methods
+const summary = {
+  "headline" => triaged[0]["title"].upcase,
+  "first_status" => triaged[0]["status"],
+  "total" => triaged.length
+}
+
+urgent = sum(1 for t in triaged if t["status"] == "Urgent")
+
+print(f"urgent={urgent} headline={summary['headline']} first={summary['first_status']} total={summary['total']}")

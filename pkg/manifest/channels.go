@@ -35,6 +35,21 @@ func (ch *ChanRef) sendNonBlocking(val interface{}) bool {
 	}
 }
 
+// sendStatus reports (sent, closed); !sent && !closed means full.
+func (ch *ChanRef) sendStatus(val interface{}) (bool, bool) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.closed {
+		return false, true
+	}
+	select {
+	case ch.ch <- val:
+		return true, false
+	default:
+		return false, false
+	}
+}
+
 func (ch *ChanRef) close() error {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
@@ -308,6 +323,25 @@ func (e *Executor) registerChannelBuiltins() {
 			return false
 		}
 		return ch.sendNonBlocking(val)
+	}
+	// Backpressure-aware send: distinguishes full (caller waits and
+	// retries — Rust send_async) from closed (caller errors). Never lies
+	// about a dropped value.
+	e.goFuncs["send_wait"] = func(chArg interface{}, val interface{}) interface{} {
+		ch, ok := e.channelFromArg(chArg)
+		if !ok {
+			return "closed"
+		}
+		sent, closed := ch.sendStatus(val)
+		switch {
+		case sent:
+			return "sent"
+		case closed:
+			return "closed"
+		default:
+			// Full: the value did NOT enter; the caller waits and retries.
+			return "pending"
+		}
 	}
 	e.goFuncs["wait"] = func(args []interface{}) interface{} {
 		// Rust spawn handles resolve through the re-park drive loop; all

@@ -739,3 +739,78 @@ describe('Tail-swallow regressions (sweep group 6)', () => {
     expect(items[0].itemKind).toBe('use');
   });
 });
+
+// ─── Rust diagnostic source map ────────────────────────────────────
+
+describe('Rust unit source map (rustc diagnostics -> .poly lines)', () => {
+  const code = [
+    'import polars as pl',          // poly line 1
+    '',                             // 2
+    'def summarize(rows):',         // 3
+    '    return len(rows)',         // 4
+    '',                             // 5
+    'use regex::Regex;',            // 6
+    '',                             // 7
+    '#[derive(Clone)]',             // 8
+    'struct Token {',               // 9
+    '    word: String,',            // 10
+    '}',                            // 11
+    '',                             // 12
+    'fn tokenize(text: String) -> Vec<String> {',  // 13
+    '    let re = Regex::new(r"\\w+").unwrap();',  // 14
+    '    re.find_iter(&text).map(|m| m.as_str().to_string()).collect()', // 15
+    '}',                            // 16
+    '',                             // 17
+    'result = tokenize("hello")',   // 18
+    'print(summarize(result))',     // 19
+  ].join('\n');
+
+  function rustFuncDef(manifest: DispatchManifest): FuncDefOp {
+    const fd = manifest.ops.find(
+      (op): op is FuncDefOp => op.op === 'func_def' && (op as FuncDefOp).bodyRuntime === OmniRuntime.Rust,
+    );
+    expect(fd).toBeDefined();
+    return fd!;
+  }
+
+  test('verbatim items map unit_line -> poly_line; glue gets no entries', () => {
+    const fd = rustFuncDef(compileManifest(code));
+    expect(fd.source).toBeDefined();
+    expect(fd.source_map).toEqual([
+      { unit_line: 1, poly_line: 6, lines: 1 },   // use regex::Regex;
+      { unit_line: 3, poly_line: 8, lines: 4 },   // #[derive] struct Token
+      { unit_line: 8, poly_line: 13, lines: 4 },  // fn tokenize
+    ]);
+    // Cross-check every entry: the unit slice IS the poly slice.
+    const unitLines = fd.source!.split('\n');
+    const polyLines = code.split('\n');
+    for (const entry of fd.source_map!) {
+      for (let i = 0; i < entry.lines; i++) {
+        expect(unitLines[entry.unit_line - 1 + i]).toBe(polyLines[entry.poly_line - 1 + i]);
+      }
+    }
+    // The export shim is generated glue: it must sit past every mapped extent.
+    const shimLine = unitLines.findIndex(l => l.includes('export_fn!')) + 1;
+    expect(shimLine).toBeGreaterThan(0);
+    for (const entry of fd.source_map!) {
+      expect(shimLine).toBeGreaterThanOrEqual(entry.unit_line + entry.lines);
+    }
+  });
+
+  test('poly_file flows from generate options into the op', () => {
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const resolver = new RuntimeResolver();
+    const annotated = resolver.resolve(ast, code);
+    const gen = new ManifestCodeGenerator();
+    const fd = rustFuncDef(gen.generate(annotated, { sourceFile: 'review.poly' }));
+    expect(fd.poly_file).toBe('review.poly');
+    expect(fd.source_map?.length).toBeGreaterThan(0);
+  });
+
+  test('no sourceFile option -> no poly_file, map still present', () => {
+    const fd = rustFuncDef(compileManifest(code));
+    expect(fd.poly_file).toBeUndefined();
+    expect(fd.source_map?.length).toBeGreaterThan(0);
+  });
+});

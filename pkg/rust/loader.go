@@ -17,6 +17,20 @@ typedef int  (*omnivm_rs_release_fn)(unsigned long long);
 typedef int  (*omnivm_rs_complete_fn)(unsigned long long, int, const char*);
 typedef int  (*omnivm_rs_mode_fn)(int);
 
+typedef struct {
+	long long tag;
+	union {
+		long long i;
+		double f;
+		struct { char* ptr; long long len; } s;
+		unsigned long long ref;
+	} v;
+} omnivm_rs_value_t;
+typedef int (*omnivm_rs_typed_fn)(const omnivm_rs_value_t*, int, omnivm_rs_value_t*);
+static int omnivm_rust_call_typed(void* fn, omnivm_rs_value_t* args, int n, omnivm_rs_value_t* out) {
+	return ((omnivm_rs_typed_fn)fn)(args, n, out);
+}
+
 static void* omnivm_rust_dlopen(const char* path) {
 	return dlopen(path, RTLD_NOW | RTLD_LOCAL);
 }
@@ -48,6 +62,7 @@ import "C"
 
 import (
 	"fmt"
+	"sync/atomic"
 	"sync"
 	"unsafe"
 )
@@ -316,4 +331,109 @@ func loadedUnitPath(path string) (*Unit, bool) {
 	defer unitsMu.Unlock()
 	u, ok := loadedUnits[path]
 	return u, ok
+}
+
+// Typed-lane tags (mirror omni_value_t).
+const (
+	omniTagNull   = 0
+	omniTagBool   = 1
+	omniTagI64    = 2
+	omniTagF64    = 3
+	omniTagString = 4
+	omniTagError  = 7
+)
+
+// TypedCallCount counts typed-lane calls (observability + benchmarks).
+var TypedCallCount uint64
+
+// ScalarArgs reports whether every arg fits the typed lane, returning the
+// encoded C values via fill (deferred allocation).
+func scalarTyped(arg interface{}, out *C.omnivm_rs_value_t, frees *[]unsafe.Pointer) bool {
+	switch v := arg.(type) {
+	case nil:
+		out.tag = omniTagNull
+	case bool:
+		out.tag = omniTagBool
+		n := C.longlong(0)
+		if v {
+			n = 1
+		}
+		*(*C.longlong)(unsafe.Pointer(&out.v)) = n
+	case int:
+		out.tag = omniTagI64
+		*(*C.longlong)(unsafe.Pointer(&out.v)) = C.longlong(v)
+	case int64:
+		out.tag = omniTagI64
+		*(*C.longlong)(unsafe.Pointer(&out.v)) = C.longlong(v)
+	case float64:
+		out.tag = omniTagF64
+		*(*C.double)(unsafe.Pointer(&out.v)) = C.double(v)
+	case string:
+		out.tag = omniTagString
+		cs := C.CString(v)
+		*frees = append(*frees, unsafe.Pointer(cs))
+		str := (*struct {
+			ptr *C.char
+			len C.longlong
+		})(unsafe.Pointer(&out.v))
+		str.ptr = cs
+		str.len = C.longlong(len(v))
+	default:
+		return false
+	}
+	return true
+}
+
+// CallTypedByAddr invokes a typed-lane export: scalar args/returns cross as
+// omni_value_t with no JSON. ok=false means the args didn't fit the lane
+// (caller falls back to the envelope path).
+func (u *Unit) CallTypedByAddr(addr uintptr, args []interface{}) (interface{}, bool, error) {
+	if addr == 0 {
+		return nil, false, nil
+	}
+	cArgs := make([]C.omnivm_rs_value_t, len(args)+1)
+	var frees []unsafe.Pointer
+	for i, arg := range args {
+		if !scalarTyped(arg, &cArgs[i], &frees) {
+			for _, p := range frees {
+				C.free(p)
+			}
+			return nil, false, nil
+		}
+	}
+	var out C.omnivm_rs_value_t
+	rc := C.omnivm_rust_call_typed(unsafe.Pointer(addr), &cArgs[0], C.int(len(args)), &out)
+	for _, p := range frees {
+		C.free(p)
+	}
+	atomic.AddUint64(&TypedCallCount, 1)
+	decodeString := func() string {
+		str := (*struct {
+			ptr *C.char
+			len C.longlong
+		})(unsafe.Pointer(&out.v))
+		text := C.GoStringN(str.ptr, C.int(str.len))
+		C.free(unsafe.Pointer(str.ptr))
+		return text
+	}
+	if rc != 0 {
+		if out.tag == omniTagError || out.tag == omniTagString {
+			return nil, true, fmt.Errorf("%s", decodeString())
+		}
+		return nil, true, fmt.Errorf("typed call failed (rc=%d)", int(rc))
+	}
+	switch out.tag {
+	case omniTagNull:
+		return nil, true, nil
+	case omniTagBool:
+		return *(*C.longlong)(unsafe.Pointer(&out.v)) != 0, true, nil
+	case omniTagI64:
+		return int64(*(*C.longlong)(unsafe.Pointer(&out.v))), true, nil
+	case omniTagF64:
+		return float64(*(*C.double)(unsafe.Pointer(&out.v))), true, nil
+	case omniTagString:
+		return decodeString(), true, nil
+	default:
+		return nil, true, fmt.Errorf("typed call: unsupported result tag %d", int(out.tag))
+	}
 }

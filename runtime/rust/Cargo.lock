@@ -1409,6 +1409,7 @@ name = "omnivm_rs"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "futures-core",
  "log",
  "polars",
  "polars-arrow",

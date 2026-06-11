@@ -1,0 +1,26 @@
+// Corpus (executor escalation): with OMNIVM_RUST_EXECUTOR=multi, an axum
+// server keeps serving on tokio worker threads while Python occupies the
+// golden thread — the probe below blocks in urllib and still gets answered.
+
+import os
+os.environ.setdefault("OMNIVM_RUST_EXECUTOR", "multi")
+
+use axum::{routing::get, Router};
+
+async fn start_server() -> String {
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:18642").await.unwrap();
+  tokio::spawn(async move {
+    let app = Router::new().route("/ping", get(|| async { "pong-from-rust" }));
+    axum::serve(listener, app).await.unwrap();
+  });
+  format!("listening env={} mode={}", std::env::var("OMNIVM_RUST_EXECUTOR").unwrap_or_default(), if tokio::runtime::Handle::current().runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread { "multi" } else { "current" })
+}
+
+const status = await start_server()
+
+print(f"server says: {status}")
+
+from urllib.request import urlopen
+body = urlopen("http://127.0.0.1:18642/ping", timeout=10).read().decode()
+
+print(f"status={status} body={body}")

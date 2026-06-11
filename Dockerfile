@@ -364,6 +364,16 @@ RUN chmod +x scripts/test-rust-corpus.sh && bash scripts/test-rust-corpus.sh
 # list). polyscript/dist was built in the builder stage above.
 RUN cd polyscript && node scripts/rust-registry-sweep.js --ratchet /build/scripts/rust-registry-sweep-expectations.txt
 
+# Level-2 registry COMPILE sweep: a deterministic sample of the same registry
+# files must also compile as REAL Rust units through the production toolchain
+# (scripts/rust-unit-compile -> pkg/rust BuildUnit: shared cargo workspace,
+# dependency inference, alias injection, artifact cache). Ratcheted against
+# scripts/rust-compile-sweep-expectations.txt (pass-rate floor + known-fail
+# list). The Go helper builds here, where /opt/omnivm-rust and the pinned
+# registry exist.
+RUN chmod +x scripts/rust-compile-sweep.sh && \
+    bash scripts/rust-compile-sweep.sh --ratchet /build/scripts/rust-compile-sweep-expectations.txt
+
 # Prefork fork-safety (the gunicorn posture): children initialize Rust
 # post-fork and run concurrent compile+dlopen round trips through libomnivm.
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \

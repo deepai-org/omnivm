@@ -208,6 +208,26 @@ export interface FuncDefOp {
   exports?: string[];
   /** External symbols the plugin needs injected (package-level vars set by OmniVM). */
   requires?: string[];
+  /**
+   * Rust units: maps each verbatim item slice in `source` back to the
+   * originating .poly file so the host can rewrite rustc diagnostics to
+   * point at .poly coordinates. Generated shim/glue lines have no entries.
+   */
+  source_map?: RustSourceMapEntry[];
+  /** The .poly file `source_map` coordinates refer to ("" when unknown). */
+  poly_file?: string;
+}
+
+/**
+ * One verbatim Rust item slice inside a compilation unit `source`:
+ * `unit_line` is the item's 1-based start line in the unit source string,
+ * `poly_line` its 1-based start line in the original .poly file, and
+ * `lines` its line count.
+ */
+export interface RustSourceMapEntry {
+  unit_line: number;
+  poly_line: number;
+  lines: number;
 }
 
 export interface FuncSourceArtifact {
