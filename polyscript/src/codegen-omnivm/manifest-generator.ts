@@ -3775,10 +3775,12 @@ export class ManifestCodeGenerator {
       pos = Math.max(pos, span.end);
     }
     if (pos < src.length) out += src.slice(pos);
-    // A fn NAME mentioned in a comment is not a reference: an export shim
-    // generated for it can demand impossible bounds (Deserialize on
-    // Arc<Shared>) and fail the whole unit build (dogfood finding).
-    return stripLineAndBlockComments(out);
+    // TODO(dogfood finding 4): comment-only mentions of a fn name keep it
+    // exported, and a doomed shim can fail the unit build. Stripping
+    // comments here destabilizes files whose inter-item trivia (attribute
+    // fragments, banners) leaks into this text — fix the assembly
+    // interaction before re-enabling stripLineAndBlockComments(out).
+    return out;
   }
 
   /**
@@ -4847,7 +4849,10 @@ function adaptRustReturnType(returnText: string): AdaptedRustReturn {
 }
 
 /** Removes line and block comments, string/char-literal aware. */
+// @ts-ignore retained for the TODO above (dogfood finding 4)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function stripLineAndBlockComments(text: string): string {
+
   let out = "";
   let i = 0;
   let mode: "code" | "line" | "block" | "dq" | "sq" | "bq" = "code";
@@ -4865,6 +4870,10 @@ function stripLineAndBlockComments(text: string): string {
     if (mode === "line") { if (c === "\n") { mode = "code"; out += c; } i++; continue; }
     if (mode === "block") { if (c === "*" && next === "/") { mode = "code"; i += 2; continue; } i++; continue; }
     if (c === "\\") { out += c + (next ?? ""); i += 2; continue; }
+    // Quote modes are line-bounded: this text is mixed-language, where a
+    // stray apostrophe (prose, Rust lifetimes in leaked segments) would
+    // otherwise open a never-closing string and eat the rest of the file.
+    if ((mode === "dq" || mode === "sq") && c === "\n") { mode = "code"; out += c; i++; continue; }
     if ((mode === "dq" && c === '"') || (mode === "sq" && c === "'") || (mode === "bq" && c === "`")) mode = "code";
     out += c; i++; continue;
   }
