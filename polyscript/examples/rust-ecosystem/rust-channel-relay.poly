@@ -1,0 +1,33 @@
+// Corpus (cursed concurrency): a spawned Rust async task relays between two
+// manifest channels while Python feeds the input AFTER the spawn — the Rust
+// future only progresses because pump ticks and the await's heartbeat arm
+// keep the one shared reactor moving between parks.
+
+const inbox = make(8)
+const outbox = make(8)
+
+async fn relay_triple(input: omnivm::Channel, output: omnivm::Channel) -> i64 {
+  let mut moved = 0i64;
+  while let Some(value) = input.recv_async().await.unwrap() {
+    let n = value.as_i64().unwrap_or(0);
+    output.send_async(n * 3).await.unwrap();
+    moved += 1;
+    if moved == 4 {
+      break;
+    }
+  }
+  moved
+}
+
+const job = go relay_triple(inbox, outbox)
+
+const work = [10, 20, 30, 40]
+for item in work:
+    inbox <- item
+
+const moved = await job
+close(outbox)
+
+const results = Array.from(outbox).map(x => x)
+
+print(f"moved={moved} results={results}")

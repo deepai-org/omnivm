@@ -73,6 +73,7 @@ type Support struct {
 
 	mu              sync.Mutex
 	bridgeInstalled bool
+	bridgeIsGo      bool
 }
 
 var (
@@ -171,12 +172,22 @@ func (s *Support) InstallBridge(callPtr, freePtr uintptr) {
 	}
 	C.omnivm_rust_set_bridge(s.setBridge, call, free)
 	s.bridgeInstalled = true
+	s.bridgeIsGo = callPtr == 0
 }
 
 func (s *Support) BridgeInstalled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bridgeInstalled
+}
+
+// BridgeIsGo reports whether the installed bridge routes through the Go
+// trampolines (vs host C pointers). Trampoline routing is process-global and
+// must be refreshed when a new executor takes over.
+func (s *Support) BridgeIsGo() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bridgeIsGo
 }
 
 // Pump runs one dispatcher-cycle tick of the tokio runtime; the returned JSON

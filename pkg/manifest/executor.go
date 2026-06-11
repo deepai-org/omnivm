@@ -165,6 +165,7 @@ type Executor struct {
 	goFuncs           map[string]interface{}
 	goSourceFuncs     map[string]*goSourceFuncDef
 	rustFuncs         map[string]*rustFuncMeta
+	bindingOrigins    map[string]string // binding name -> runtime whose global is the source of truth
 	javaStubFuncs     map[string]*FuncDef
 	channels          map[string]*ChanRef
 	channelsMu        sync.RWMutex
@@ -211,6 +212,7 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		goFuncs:           make(map[string]interface{}),
 		goSourceFuncs:     make(map[string]*goSourceFuncDef),
 		rustFuncs:         make(map[string]*rustFuncMeta),
+		bindingOrigins:    make(map[string]string),
 		javaStubFuncs:     make(map[string]*FuncDef),
 		channels:          make(map[string]*ChanRef),
 		resources:         make(map[handles.ID]*ResourceRef),
@@ -568,6 +570,7 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 				// Ruby locals don't persist across Execute/Eval boundaries.
 				// Combine aliases + assignment into a single Execute() call.
 				aliasCode := strings.TrimSuffix(prefix, "; ")
+				e.bindingOrigins[op.Bind] = rt.Name()
 				assignCode := runtimeAssign(rt.Name(), op.Bind, code)
 				combinedCode := aliasCode + "\n" + assignCode
 				execResult := rt.Execute(combinedCode)
@@ -594,6 +597,7 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 			javaCaptureNames = append(javaCaptureNames, explicitInjection.javaCaptureNames...)
 			expr = lowerJavaCapturedMemberAccess(expr, javaCaptureNames)
 			expr = normalizeJavaEvalExpression(expr)
+			e.bindingOrigins[op.Bind] = rt.Name()
 			assignLines := append(imports, javaCaptureAliasCode(javaCaptureNames), e.javaPersistentAliasPrefix(nil), runtimeAssign(rt.Name(), op.Bind, expr))
 			assignCode := strings.Join(assignLines, "\n")
 			execResult := rt.Execute(assignCode)
@@ -614,6 +618,7 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 			return val, nil
 		}
 
+		e.bindingOrigins[op.Bind] = rt.Name()
 		assignCode := runtimeAssign(rt.Name(), op.Bind, code)
 		execResult := rt.Execute(assignCode)
 		if execResult.Err != nil {
@@ -2067,6 +2072,14 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 	code := strings.TrimSpace(op.Code)
 	parenIdx := strings.Index(code, "(")
 	if parenIdx < 0 || !strings.HasSuffix(code, ")") {
+		// Bare identifiers resolve as bindings (e.g. `await job` lowers to
+		// an eval of the spawn-handle binding).
+		if val, ok := e.getBinding(code); ok {
+			if op.Bind != "" {
+				e.setBinding(op.Bind, val)
+			}
+			return val, nil
+		}
 		return nil, fmt.Errorf("eval go: cannot parse expression %q", code)
 	}
 

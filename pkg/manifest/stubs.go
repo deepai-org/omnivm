@@ -404,6 +404,7 @@ type BridgeRequest struct {
 	To          interface{}            `json:"to"`
 	Kind        string                 `json:"kind"`
 	Mode        string                 `json:"mode"`
+	Pending     bool                   `json:"pending,omitempty"` // stream_next: report open-empty channels as pending instead of done
 	Key         string                 `json:"key"`
 	Value       interface{}            `json:"value"`
 	Materialize bool                   `json:"materialize"`
@@ -1071,6 +1072,14 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		id, err := bridgeHandleID(req.ID)
 		if err != nil {
 			return "", err
+		}
+		// Live consumers (Rust channel recv_async) distinguish "no value
+		// yet" from "exhausted": an open-but-empty channel is pending, not
+		// done — done would release the handle out from under them.
+		if req.Pending {
+			if pending, isChan := e.chanRefOpenEmpty(id); isChan && pending {
+				return marshalResult(map[string]interface{}{"done": false, "pending": true})
+			}
 		}
 		value, done, ok, err := e.handleStreamNext(id)
 		if err != nil {

@@ -93,3 +93,135 @@ pub fn column_buffer_address(df: &DataFrame, name: &str) -> Result<u64, String> 
     }
     Err(format!("column {name} is not a primitive f64/i64 array"))
 }
+
+// ---------------------------------------------------------------------------
+// Export direction (rust → peer): returned DataFrames cross as C-Data pointer
+// handoffs. The exported shells (ArrowSchema/ArrowArray boxes) are registered
+// under a buffer id; the host releases them after the consumer imports
+// (Drop is a no-op for moved/consumed structs, frees buffers otherwise —
+// the failure path the C Data spec requires).
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+static SHELLS: Mutex<Option<HashMap<u64, (usize, usize)>>> = Mutex::new(None);
+static NEXT_SHELL_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Exports a DataFrame as a single record batch behind C-Data pointers,
+/// returning the in-band marker. The shells stay alive until
+/// [`release_shells`] (normally via the host's OmniVMReleaseBuffer call).
+pub fn export_dataframe_cdata(df: DataFrame) -> Result<serde_json::Value, String> {
+    let mut df = df;
+    df.as_single_chunk_par();
+    let rows = df.height();
+    let arrow_schema = df.schema().to_arrow(CompatLevel::newest());
+    let chunk = df
+        .iter_chunks(CompatLevel::newest(), true)
+        .next()
+        .ok_or_else(|| "arrow cdata export: empty frame chunking".to_string())?;
+    let arrays = chunk.into_arrays();
+    let fields: Vec<ArrowField> = arrow_schema.iter_values().cloned().collect();
+    let dtype = ArrowDataType::Struct(fields);
+    let struct_array = StructArray::new(dtype.clone(), rows, arrays, None);
+    let field = ArrowField::new("".into(), dtype, false);
+
+    let schema_ptr = Box::into_raw(Box::new(ffi::export_field_to_c(&field))) as usize;
+    let array_ptr = Box::into_raw(Box::new(ffi::export_array_to_c(Box::new(struct_array)))) as usize;
+
+    let id = NEXT_SHELL_ID.fetch_add(1, Ordering::Relaxed);
+    SHELLS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, (schema_ptr, array_ptr));
+
+    Ok(serde_json::json!({
+        ARROW_CDATA_KEY: true,
+        "schema": schema_ptr.to_string(),
+        "array": array_ptr.to_string(),
+        "buffer_id": id.to_string(),
+        "rows": rows as u64,
+    }))
+}
+
+/// Releases an exported pair's shells. Quiet and idempotent; Drop runs each
+/// struct's embedded release callback only if the consumer never took it.
+pub fn release_shells(id: u64) -> bool {
+    let entry = SHELLS.lock().unwrap().as_mut().and_then(|m| m.remove(&id));
+    match entry {
+        Some((schema_ptr, array_ptr)) => {
+            unsafe {
+                drop(Box::from_raw(schema_ptr as *mut ffi::ArrowSchema));
+                drop(Box::from_raw(array_ptr as *mut ffi::ArrowArray));
+            }
+            true
+        }
+        None => release_byte_buffer(id),
+    }
+}
+
+pub fn live_shell_count() -> usize {
+    SHELLS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Opaque byte buffers: a single large Vec<u8> (a model file, an image) that
+// would otherwise base64 through JSON crosses as a pointer + length marker,
+// owned by this registry until the host releases it (same OmniVMReleaseBuffer
+// id space as the C-Data shells).
+// ---------------------------------------------------------------------------
+
+pub const BYTES_KEY: &str = "__omnivm_bytes__";
+
+static BYTE_BUFFERS: Mutex<Option<HashMap<u64, Box<[u8]>>>> = Mutex::new(None);
+
+/// A byte payload that crosses by pointer when the host has opted into the
+/// pointer lane, and as base64 otherwise. Wrap large `Vec<u8>` returns:
+/// `omnivm::cdata::Bytes(data)`.
+pub struct Bytes(pub Vec<u8>);
+
+impl serde::Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if std::env::var("OMNIVM_ARROW_CDATA_RETURN").as_deref() == Ok("1") {
+            let boxed: Box<[u8]> = self.0.clone().into_boxed_slice();
+            let ptr = boxed.as_ptr() as usize;
+            let len = boxed.len();
+            let id = NEXT_SHELL_ID.fetch_add(1, Ordering::Relaxed);
+            BYTE_BUFFERS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(id, boxed);
+            let mut map = serializer.serialize_map(Some(4))?;
+            map.serialize_entry(BYTES_KEY, &true)?;
+            map.serialize_entry("ptr", &ptr.to_string())?;
+            map.serialize_entry("len", &(len as u64))?;
+            map.serialize_entry("buffer_id", &id.to_string())?;
+            return map.end();
+        }
+        use base64::Engine;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry(BYTES_KEY, &true)?;
+        map.serialize_entry(
+            "b64",
+            &base64::engine::general_purpose::STANDARD.encode(&self.0),
+        )?;
+        map.end()
+    }
+}
+
+pub(crate) fn release_byte_buffer(id: u64) -> bool {
+    BYTE_BUFFERS
+        .lock()
+        .unwrap()
+        .as_mut()
+        .map(|m| m.remove(&id).is_some())
+        .unwrap_or(false)
+}
+
+pub fn live_byte_buffer_count() -> usize {
+    BYTE_BUFFERS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0)
+}

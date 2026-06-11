@@ -222,8 +222,12 @@ pub extern "C" fn OmniVMReleaseObject(id: *mut c_char) -> *mut c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn OmniVMReleaseBuffer(_id: *mut c_char) -> *mut c_char {
-    // Owned zero-copy buffers are a step-4 surface; releasing is always safe.
+pub extern "C" fn OmniVMReleaseBuffer(id: *mut c_char) -> *mut c_char {
+    // Releases exported C-Data shells (and, by the Drop discipline, their
+    // buffers when the consumer never imported them). Quiet and idempotent.
+    if let Ok(n) = c_str(id).trim().parse::<u64>() {
+        crate::cdata::release_shells(n);
+    }
     to_c_owned("{\"ok\":true}")
 }
 

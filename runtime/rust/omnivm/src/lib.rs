@@ -29,6 +29,7 @@ pub mod table;
 mod export_macros;
 
 pub use error::OmniError;
+pub use cdata::Bytes;
 pub use interop::{Callback, Channel};
 pub use objects::ObjectExport;
 

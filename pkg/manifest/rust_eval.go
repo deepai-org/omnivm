@@ -64,6 +64,23 @@ except NameError:
 // polars DataFrame in Python (the tabular consumer) and bind as a runtime ref
 // so later Python code uses them natively (e.g. `stats.height`).
 func (e *Executor) bindRustResult(bind string, value interface{}) (interface{}, error) {
+	// Adopted C-Data tables arrive as python refs under a generated name;
+	// alias them to the user's binding so later python code uses them
+	// natively (stats.height).
+	if ref, isRef := value.(RuntimeRef); isRef && ref.Runtime == "python" &&
+		(strings.HasPrefix(ref.VarName, "__omnivm_table_") || strings.HasPrefix(ref.VarName, "__omnivm_bytes_")) && bind != "" {
+		if pyRT, hasPy := e.runtimes["python"]; hasPy {
+			if result := pyRT.Execute(fmt.Sprintf("%s = %s", bind, ref.VarName)); result.Err != nil {
+				return nil, fmt.Errorf("eval rust: aliasing table to %q: %w", bind, result.Err)
+			}
+			named, _, err := e.boundRuntimeRefSnapshot("python", bind)
+			if err != nil {
+				return nil, fmt.Errorf("eval rust: snapshot of %q: %w", bind, err)
+			}
+			e.setBinding(bind, named)
+			return named, nil
+		}
+	}
 	if marker, ok := arrowIPCPayload(value); ok {
 		if pyRT, hasPy := e.runtimes["python"]; hasPy && bind != "" {
 			setup := fmt.Sprintf(`
@@ -143,6 +160,12 @@ func (e *Executor) resolveRustArg(expr string) (interface{}, error) {
 			id, err := e.genericStreamHandle("go", ch)
 			if err != nil {
 				return nil, fmt.Errorf("channel handle for %q: %w", root, err)
+			}
+			// The consumer may be a spawned task pulling long after this op's
+			// scope closes; the handle's lifetime follows the channel
+			// (exhaustion/close still releases it via the stream protocol).
+			if err := e.ensureHandleTable().Escape(id); err != nil {
+				return nil, fmt.Errorf("channel handle escape for %q: %w", root, err)
 			}
 			return map[string]interface{}{
 				"__omnivm_channel__": true,

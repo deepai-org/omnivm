@@ -413,6 +413,12 @@ func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[strin
 				resolved[varName] = jsonVal
 				continue
 			}
+			// A plain value bound from THIS runtime's own eval has a live
+			// global there; re-injecting the manifest snapshot would shadow
+			// any mutation runtime code made since (the stale-binding wart).
+			if e.bindingOrigins[varName] == rtName {
+				continue
+			}
 			jsonVal, err := e.marshalForCapture(val)
 			if err != nil {
 				continue

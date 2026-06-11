@@ -8,6 +8,24 @@ fn column_addr(frame: DataFrame) -> u64 {
   omnivm::cdata::column_buffer_address(&frame, "score").unwrap()
 }
 
+use std::sync::OnceLock;
+
+static EXPORT_ADDR: OnceLock<u64> = OnceLock::new();
+
+fn make_frame() -> DataFrame {
+  let frame = df!["v" => [10.0f64, 20.0, 30.0]].unwrap();
+  let _ = EXPORT_ADDR.set(omnivm::cdata::column_buffer_address(&frame, "v").unwrap());
+  frame
+}
+
+fn recorded_addr() -> u64 {
+  EXPORT_ADDR.get().copied().unwrap_or(0)
+}
+
+fn blob(n: i64) -> omnivm::Bytes {
+  omnivm::Bytes((0..n).map(|i| (i % 251) as u8).collect())
+}
+
 fn row_total(frame: DataFrame) -> f64 {
   frame
     .column("score")
@@ -25,4 +43,9 @@ py_addr = table.combine_chunks().column("score").chunk(0).buffers()[1].address
 const rust_addr = column_addr(table)
 const total = row_total(table)
 
-print(f"pointer_identity={int(rust_addr) == py_addr} total={total}")
+const out_frame = make_frame()
+const rust_out_addr = recorded_addr()
+
+const payload = blob(100000)
+
+print(f"pointer_identity={int(rust_addr) == py_addr} return_identity={int(rust_out_addr) == out_frame.get_column('v').to_arrow().buffers()[1].address} bytes_ok={len(payload) == 100000 and payload[0] == 0 and payload[99999] == 99999 % 251} total={total}")

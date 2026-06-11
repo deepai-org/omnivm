@@ -310,7 +310,37 @@ func (e *Executor) registerChannelBuiltins() {
 		return ch.sendNonBlocking(val)
 	}
 	e.goFuncs["wait"] = func(args []interface{}) interface{} {
-		return e.waitSpawns(args)
+		// Rust spawn handles resolve through the re-park drive loop; all
+		// other shapes keep waitSpawns' exact contract (no-args = global
+		// join returning the spawn count; single arg = scalar result).
+		hasRust := false
+		for _, arg := range args {
+			if _, isRust := arg.(*RustFutureRef); isRust {
+				hasRust = true
+				break
+			}
+		}
+		if !hasRust {
+			return e.waitSpawns(args)
+		}
+		resolveOne := func(arg interface{}) interface{} {
+			if ref, isRust := arg.(*RustFutureRef); isRust {
+				value, err := e.awaitRustFutureRef(ref, "")
+				if err != nil {
+					return map[string]interface{}{"error": err.Error()}
+				}
+				return value
+			}
+			return waitSpawnValue(arg)
+		}
+		if len(args) == 1 {
+			return resolveOne(args[0])
+		}
+		results := make([]interface{}, 0, len(args))
+		for _, arg := range args {
+			results = append(results, resolveOne(arg))
+		}
+		return results
 	}
 }
 
@@ -718,4 +748,20 @@ func callGoFuncDirect(fn interface{}, args []interface{}) interface{} {
 		return f(args)
 	}
 	return nil
+}
+
+// chanRefOpenEmpty reports whether a handle is a manifest channel that is
+// open with no queued values (the live-stream "pending" state).
+func (e *Executor) chanRefOpenEmpty(id handles.ID) (bool, bool) {
+	entry, err := e.handleEntry(id)
+	if err != nil {
+		return false, false
+	}
+	ch, isChan := entry.Value.(*ChanRef)
+	if !isChan {
+		return false, false
+	}
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	return !ch.closed && len(ch.ch) == 0, true
 }
