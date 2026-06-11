@@ -71,6 +71,16 @@ export function scanOperator(h: ScanHost, htmlTags: Set<string>): void {
               return;
             }
           }
+        } else if (charAfterIdentifier === '>' &&
+                   /^>[ \t]*[A-Za-z_]\w*[ \t]+for\b/.test(
+                     h.source.slice(posAfterIdentifier, posAfterIdentifier + 64)) &&
+                   !h.source.slice(posAfterIdentifier, posAfterIdentifier + 240).includes('</')) {
+          // `<T> Serialize for Box<T>` — a Rust generic header handed to a
+          // macro (serde's deref_impl! arms), not JSX: a real JSX element
+          // with text content has a closing `</` nearby, while a generic
+          // header is followed by `Trait for Type`. Fall through to plain
+          // operator handling so JSX mode never opens (an unclosed JSX
+          // text mode would swallow the rest of the file).
         } else if (charAfterIdentifier !== ',' &&
                    !(charAfterIdentifier === ':' && h.source[posAfterIdentifier + 1] === ':') &&
                    !/^[ \t]+as[ \t]/.test(h.source.slice(posAfterIdentifier, posAfterIdentifier + 12))) {
