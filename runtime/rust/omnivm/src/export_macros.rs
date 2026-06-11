@@ -211,9 +211,12 @@ macro_rules! export_typed_fn {
             $crate::export_typed_fn!(@call out, move || $func(a0, a1, a2))
         }
     };
+    // Results are written with ptr::write: the out slot is host memory whose
+    // previous contents must never be dropped (OmniValue owns its string
+    // payload via Drop).
     (@check $nargs:ident, $want:expr, $out:ident) => {
         if $nargs != $want {
-            unsafe { *$out = $crate::abi::OmniValue::error("typed call: arity mismatch") };
+            unsafe { ::std::ptr::write($out, $crate::abi::OmniValue::error("typed call: arity mismatch")) };
             return 1;
         }
     };
@@ -221,7 +224,7 @@ macro_rules! export_typed_fn {
         match $crate::abi::FromOmniValue::from_omni(unsafe { &*$args.add($idx) }) {
             Ok(v) => v,
             Err(message) => {
-                unsafe { *$out = $crate::abi::OmniValue::error(&message) };
+                unsafe { ::std::ptr::write($out, $crate::abi::OmniValue::error(&message)) };
                 return 1;
             }
         }
@@ -229,12 +232,12 @@ macro_rules! export_typed_fn {
     (@call $out:ident, $thunk:expr) => {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe($thunk)) {
             Ok(result) => {
-                unsafe { *$out = $crate::abi::ToOmniValue::to_omni(result) };
+                unsafe { ::std::ptr::write($out, $crate::abi::ToOmniValue::to_omni(result)) };
                 0
             }
             Err(payload) => {
                 let message = $crate::error::panic_message(payload);
-                unsafe { *$out = $crate::abi::OmniValue::error(&message) };
+                unsafe { ::std::ptr::write($out, $crate::abi::OmniValue::error(&message)) };
                 1
             }
         }

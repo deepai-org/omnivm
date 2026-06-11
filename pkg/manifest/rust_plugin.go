@@ -184,9 +184,56 @@ func (e *Executor) rustRuntime() (*rust.Runtime, error) {
 		if !support.BridgeInstalled() || support.BridgeIsGo() {
 			rustRT.BridgeFn = e.rustBridgeRouter
 			rustRT.SetBridgeCallback(0, 0)
+			// Typed outbound lane: scalar rust→host calls cross as
+			// omni_value_t through the Go trampoline. Process-global like
+			// SetGoBridge, so it refreshes with the same discipline.
+			rust.SetGoTypedBridge(e.rustTypedBridge)
+			support.InstallTypedBridge()
 		}
 	}
 	return rustRT, nil
+}
+
+// rustTypedBridge services omnivm::call_typed_fn from Rust: functions in the
+// host's Go registry (Go plugins, Rust unit exports, manifest builtins
+// registered there) dispatch with already-decoded args; scalar results cross
+// typed and structured ones ride as JSON text (lossless). Anything else —
+// manifest func_defs (which need the full scope/marshal machinery anyway) and
+// named-runtime callables (whose invocation is source evaluation) — reports
+// unhandled BEFORE executing, so the crate's JSON fallback never double-runs.
+func (e *Executor) rustTypedBridge(rtName, fn string, args []interface{}) (rust.TypedResult, bool, error) {
+	if rtName != "" && rtName != "__manifest" && rtName != "go" {
+		return rust.TypedResult{}, false, nil
+	}
+	goFn, ok := e.goFuncs[fn]
+	if !ok {
+		return rust.TypedResult{}, false, nil
+	}
+	value, err := e.invokeGoFuncFromBridge(fn, goFn, decodeRuntimeRefArgs(args))
+	if err != nil {
+		return rust.TypedResult{}, true, err
+	}
+	switch value.(type) {
+	case nil, bool, int, int32, int64, float32, float64, string:
+		return rust.TypedResult{Scalar: value}, true, nil
+	case map[string]interface{}, []interface{}:
+		// Plain data trees cross IN-BAND as JSON text (the rust caller wants
+		// the data, not a resource proxy — deliberately unlike the guest-stub
+		// lane, which proxies maps by handle for mutation semantics).
+		raw, jsonErr := json.Marshal(value)
+		if jsonErr == nil {
+			return rust.TypedResult{JSON: string(raw), IsJSON: true}, true, nil
+		}
+		// Non-marshalable payloads inside the tree: take the proxy path.
+	}
+	// Everything else (channels, resources, streams, runtime refs) keeps the
+	// full bridge-return machinery — handle registration, escapes, and the
+	// enveloped descriptor the crate unwraps like a JSON-lane result.
+	raw, err := e.marshalGoBridgeResult(value)
+	if err != nil {
+		return rust.TypedResult{}, true, err
+	}
+	return rust.TypedResult{JSON: raw, IsJSON: true}, true, nil
 }
 
 // rustBridgeRouter services omnivm::call from Rust code in executor-hosted
@@ -342,7 +389,13 @@ type RustStreamRef struct {
 	proxy *cSharedObjectProxy
 }
 
+// rustStreamObjectCalls counts `next` object-call crossings into rust stream
+// proxies (each is one unit envelope round trip); batched pulls keep this far
+// below the value count. Observability for tests/benchmarks — additive only.
+var rustStreamObjectCalls atomic.Int64
+
 func (r *RustStreamRef) next() (interface{}, bool, error) {
+	rustStreamObjectCalls.Add(1)
 	value, found, err := r.proxy.Call("next", nil)
 	if err != nil {
 		return nil, false, err
@@ -361,8 +414,79 @@ func (r *RustStreamRef) next() (interface{}, bool, error) {
 	return payload["value"], false, nil
 }
 
+// nextBatch pulls up to n values in ONE object call ({"n": K} args; plural
+// {"done","values"} response). Units compiled before batching ignore the
+// args and answer in the singular shape — adapted here to a 1-value batch,
+// so old cached artifacts keep working. pending=true only arrives
+// empty-handed (the channel-batching rule, enforced crate-side).
+func (r *RustStreamRef) nextBatch(n int) (values []interface{}, done bool, pending bool, err error) {
+	rustStreamObjectCalls.Add(1)
+	value, found, err := r.proxy.Call("next", []interface{}{map[string]interface{}{"n": n}})
+	if err != nil {
+		return nil, false, false, err
+	}
+	if !found {
+		return nil, true, false, nil
+	}
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, false, false, fmt.Errorf("rust stream next returned %T", value)
+	}
+	done, _ = payload["done"].(bool)
+	pending, _ = payload["pending"].(bool)
+	if batched, isBatch := payload["values"].([]interface{}); isBatch {
+		if done {
+			_ = r.proxy.Release()
+		}
+		return batched, done, pending && len(batched) == 0, nil
+	}
+	// Singular shape (pre-batching unit artifact).
+	if done {
+		_ = r.proxy.Release()
+		return nil, true, false, nil
+	}
+	if pending {
+		return nil, false, true, nil
+	}
+	return []interface{}{payload["value"]}, false, false, nil
+}
+
 func (r *RustStreamRef) cancel() error {
 	return r.proxy.Release()
+}
+
+// rustStreamNextBatch services a batched stream_next (max_n > 1) against a
+// rust-produced stream with one object call. Response shape matches
+// handleStreamNextBatch's: {"done","values"} plural, {"pending":true} only
+// when empty-handed, "done" riding WITH the final values.
+func (e *Executor) rustStreamNextBatch(id handles.ID, ref *RustStreamRef, req BridgeRequest) (string, error) {
+	if _, err := e.ensureHandleTable().RecordAccess(id, handles.AccessOptions{Kind: "stream"}); err != nil {
+		return "", err
+	}
+	values, done, pending, err := ref.nextBatch(req.MaxN)
+	if err != nil {
+		return "", err
+	}
+	if pending && len(values) == 0 {
+		return marshalResult(map[string]interface{}{"done": false, "pending": true})
+	}
+	wrapped := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		w, wrapErr := e.bridgeStreamItemValue(id, value)
+		if wrapErr != nil {
+			if len(wrapped) == 0 {
+				return "", wrapErr
+			}
+			break
+		}
+		wrapped = append(wrapped, w)
+	}
+	if done {
+		if relErr := e.ensureHandleTable().ReleaseAllRefs(id); relErr != nil {
+			return "", relErr
+		}
+	}
+	return marshalResult(map[string]interface{}{"done": done, "values": wrapped})
 }
 
 // spawnRust implements `go expr` for Rust fns: async fns create their stored

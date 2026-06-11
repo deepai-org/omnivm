@@ -130,6 +130,31 @@ impl Dyn {
         }
     }
 
+    /// Iterate a dict's keys (Python's `.keys()`). Panics on non-dicts with
+    /// Python's attribute-error dialect.
+    pub fn keys(&self) -> impl Iterator<Item = &str> + '_ {
+        match &self.0 {
+            Value::Object(map) => map.keys().map(String::as_str),
+            _ => panic!("AttributeError: '{}' object has no attribute 'keys'", self.type_name()),
+        }
+    }
+
+    /// Iterate a dict's values (Python's `.values()`).
+    pub fn values(&self) -> impl Iterator<Item = &Dyn> + '_ {
+        match &self.0 {
+            Value::Object(map) => map.values().map(Dyn::from_ref),
+            _ => panic!("AttributeError: '{}' object has no attribute 'values'", self.type_name()),
+        }
+    }
+
+    /// Iterate a dict's `(key, value)` pairs (Python's `.items()`).
+    pub fn items(&self) -> impl Iterator<Item = (&str, &Dyn)> + '_ {
+        match &self.0 {
+            Value::Object(map) => map.iter().map(|(k, v)| (k.as_str(), Dyn::from_ref(v))),
+            _ => panic!("AttributeError: '{}' object has no attribute 'items'", self.type_name()),
+        }
+    }
+
     pub fn try_as_i64(&self) -> Option<i64> {
         match &self.0 {
             Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
@@ -248,6 +273,37 @@ impl From<&str> for Dyn {
 impl From<String> for Dyn {
     fn from(value: String) -> Dyn {
         Dyn(Value::from(value))
+    }
+}
+
+// ── iteration (`for x in dyn` / `for x in &dyn`) ────────────────────
+//
+// Owned iteration is ARRAYS-only and yields owned `Dyn` elements; borrowed
+// iteration yields `&Dyn` via the ref-cast idiom. Anything non-array panics
+// with the Python dialect (`TypeError: 'dict' object is not iterable` — for
+// dicts, reach for `.keys()` / `.values()` / `.items()` explicitly).
+
+impl IntoIterator for Dyn {
+    type Item = Dyn;
+    type IntoIter = std::vec::IntoIter<Dyn>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self.0 {
+            Value::Array(items) => items.into_iter().map(Dyn).collect::<Vec<Dyn>>().into_iter(),
+            other => panic!("TypeError: '{}' object is not iterable", Dyn(other).type_name()),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Dyn {
+    type Item = &'a Dyn;
+    type IntoIter = std::iter::Map<std::slice::Iter<'a, Value>, fn(&Value) -> &Dyn>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match &self.0 {
+            Value::Array(items) => items.iter().map(Dyn::from_ref as fn(&Value) -> &Dyn),
+            _ => panic!("TypeError: '{}' object is not iterable", self.type_name()),
+        }
     }
 }
 
@@ -585,5 +641,61 @@ mod tests {
     fn to_value_serializes() {
         assert_eq!(to_value(vec![1, 2]), json!([1, 2]));
         assert_eq!(to_value("x"), json!("x"));
+    }
+
+    #[test]
+    fn for_loop_owned_and_borrowed() {
+        let d = Dyn(json!([1, 2, 3]));
+        let mut borrowed = 0i64;
+        for item in &d {
+            borrowed += item.as_i64();
+        }
+        assert_eq!(borrowed, 6);
+        let mut owned = 0i64;
+        for item in d {
+            owned += item.as_i64(); // item: Dyn (owned)
+        }
+        assert_eq!(owned, 6);
+    }
+
+    #[test]
+    fn non_array_iteration_is_a_type_error() {
+        let owned = std::panic::catch_unwind(|| {
+            for _ in Dyn(json!({"a": 1})) {}
+        })
+        .err()
+        .map(crate::error::panic_message)
+        .unwrap_or_default();
+        assert!(
+            owned.contains("TypeError: 'dict' object is not iterable"),
+            "got: {owned}"
+        );
+        let borrowed = std::panic::catch_unwind(|| {
+            for _ in &Dyn(json!(42)) {}
+        })
+        .err()
+        .map(crate::error::panic_message)
+        .unwrap_or_default();
+        assert!(
+            borrowed.contains("TypeError: 'int' object is not iterable"),
+            "got: {borrowed}"
+        );
+    }
+
+    #[test]
+    fn dict_keys_values_items() {
+        let d = Dyn(json!({"a": 1, "b": 2}));
+        let keys: Vec<&str> = d.keys().collect();
+        assert_eq!(keys, vec!["a", "b"]);
+        let total: i64 = d.values().map(|v| v.as_i64()).sum();
+        assert_eq!(total, 3);
+        let items: Vec<(String, i64)> =
+            d.items().map(|(k, v)| (k.to_string(), v.as_i64())).collect();
+        assert_eq!(items, vec![("a".to_string(), 1), ("b".to_string(), 2)]);
+        let err = std::panic::catch_unwind(|| Dyn(json!([1])).keys().count())
+            .err()
+            .map(crate::error::panic_message)
+            .unwrap_or_default();
+        assert!(err.contains("AttributeError"), "got: {err}");
     }
 }

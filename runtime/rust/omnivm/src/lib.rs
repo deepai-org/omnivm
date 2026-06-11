@@ -32,6 +32,7 @@ pub mod table;
 mod export_macros;
 
 pub use error::OmniError;
+pub use abi::{FromOmniValue, OmniValue, ToOmniValue};
 pub use cdata::Bytes;
 pub use dyn_value::{to_value, Dyn};
 pub use futures_core;
@@ -88,6 +89,74 @@ pub fn call_typed<T: serde::de::DeserializeOwned>(runtime: &str, code: &str) -> 
 /// drive loop is consuming the outbound queue.
 pub async fn call_async(runtime: &str, code: &str) -> Result<String, OmniError> {
     rt::bridge_call_async(runtime, code).await
+}
+
+/// Calls a peer-registered function (Go-registered functions, Rust unit
+/// exports, manifest builtins in the host registry) through the typed
+/// omni_value_t lane: scalar args and results cross with no JSON text.
+///
+/// ```ignore
+/// use omnivm::ToOmniValue;
+/// let out = omnivm::call_typed_fn("go", "boost", &[7i64.to_omni(), "x".to_omni()])?;
+/// let n = i64::from_omni(&out)?;
+/// ```
+///
+/// Non-scalar results still arrive losslessly (as `OMNI_TAG_JSON` text —
+/// decode with [`OmniValue::to_json_value`]); targets the host does not speak
+/// typed for (manifest func_defs, python/js/ruby callables) transparently
+/// ride the JSON `{func,args}` / `call_ref` lane instead. From async context
+/// prefer [`call_typed_fn_async`].
+pub fn call_typed_fn(runtime: &str, func: &str, args: &[OmniValue]) -> Result<OmniValue, OmniError> {
+    if let Some(result) = abi::typed_bridge_call(runtime, func, args) {
+        return result.map(normalize_typed_result);
+    }
+    let raw = abi::bridge_call("__manifest", &typed_fn_request(runtime, func, args))?;
+    Ok(abi::json_to_omni(interop::decode_bridge_result(&raw)?))
+}
+
+/// JSON-tagged trampoline results carry the bridge's enveloped wire shape
+/// (`{"__omnivm_result__":true,"value":...}`); unwrap it exactly like the
+/// JSON lane so both paths surface the same value.
+fn normalize_typed_result(value: OmniValue) -> OmniValue {
+    if value.tag != abi::OMNI_TAG_JSON {
+        return value;
+    }
+    let projected = value.to_json_value();
+    let unwrapped = if projected.get("__omnivm_result__") == Some(&serde_json::Value::Bool(true)) {
+        projected.get("value").cloned().unwrap_or(serde_json::Value::Null)
+    } else {
+        projected
+    };
+    abi::json_to_omni(unwrapped)
+}
+
+/// [`call_typed_fn`] from async context: rides the bridge hop (the park exits
+/// before the host services the call), so the wire is the JSON `{func,args}`
+/// envelope — the typed omni_value_t crossing is the synchronous trampoline.
+/// Outside the runtime this is exactly `call_typed_fn`.
+pub async fn call_typed_fn_async(
+    runtime: &str,
+    func: &str,
+    args: &[OmniValue],
+) -> Result<OmniValue, OmniError> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return call_typed_fn(runtime, func, args);
+    }
+    let request = typed_fn_request(runtime, func, args);
+    let raw = rt::bridge_call_async("__manifest", &request).await?;
+    Ok(abi::json_to_omni(interop::decode_bridge_result(&raw)?))
+}
+
+/// The JSON-lane projection of a typed call: `{func,args}` for host-registry
+/// targets, the structured `call_ref` op for named-runtime callables.
+fn typed_fn_request(runtime: &str, func: &str, args: &[OmniValue]) -> String {
+    let json_args: Vec<serde_json::Value> = args.iter().map(OmniValue::to_json_value).collect();
+    let request = if runtime.is_empty() || runtime == "__manifest" || runtime == "go" {
+        serde_json::json!({"func": func, "args": json_args})
+    } else {
+        serde_json::json!({"op": "call_ref", "runtime": runtime, "var": func, "args": json_args})
+    };
+    request.to_string()
 }
 
 /// Registers a stateful object in the process-global handle table and returns
