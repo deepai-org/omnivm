@@ -3775,12 +3775,10 @@ export class ManifestCodeGenerator {
       pos = Math.max(pos, span.end);
     }
     if (pos < src.length) out += src.slice(pos);
-    // TODO(dogfood finding 4): comment-only mentions of a fn name keep it
-    // exported, and a doomed shim can fail the unit build. Stripping
-    // comments here destabilizes files whose inter-item trivia (attribute
-    // fragments, banners) leaks into this text — fix the assembly
-    // interaction before re-enabling stripLineAndBlockComments(out).
-    return out;
+    // A fn NAME mentioned in a comment is not a reference: an export shim
+    // generated for it can demand impossible bounds (Deserialize on
+    // Arc<Shared>) and fail the whole unit build (dogfood finding 4).
+    return stripLineAndBlockComments(out);
   }
 
   /**
@@ -4849,10 +4847,7 @@ function adaptRustReturnType(returnText: string): AdaptedRustReturn {
 }
 
 /** Removes line and block comments, string/char-literal aware. */
-// @ts-ignore retained for the TODO above (dogfood finding 4)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function stripLineAndBlockComments(text: string): string {
-
   let out = "";
   let i = 0;
   let mode: "code" | "line" | "block" | "dq" | "sq" | "bq" = "code";

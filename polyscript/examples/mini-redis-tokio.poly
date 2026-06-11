@@ -5,10 +5,10 @@
 //   * db.rs        — the whole file: Db / DbDropGuard / Shared / State / Entry,
 //                    the std-Mutex-guarded state, the BTreeSet expiration index,
 //                    and the spawned expiration-purge background task
-//                    (NB: its fn name is deliberately not written in this
-//                    comment — OmniVM exports any fn whose name appears in
-//                    text outside the Rust unit, even comments, and the
-//                    purge task's `Arc<Shared>` param is not serde-able)
+//                    purge_expired_tasks (safe to name here: the export-set
+//                    analysis strips comments, so a comment-only mention no
+//                    longer forces an export shim onto its non-serde-able
+//                    Arc<Shared> param)
 //                    (tokio::select! over sleep_until + Notify).
 //   * parse.rs     — the whole file: Parse cursor + ParseError.
 //   * frame.rs     — the Frame enum, array/push_bulk/push_int/to_error,

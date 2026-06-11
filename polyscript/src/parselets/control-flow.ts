@@ -644,15 +644,23 @@ export function parseLoop(host: ControlFlowHost, ): AST.Loop {
     
     // Check for keyword block (do...done)
     let body: AST.Block;
+    // A multi-line condition can leave the body `{` alone on the next line
+    // (Allman style / rustfmt where-wrapped conditions): a virtual semi
+    // separates the condition from the brace. Look PAST vsemis before
+    // routing — `{` means a brace block, never a Ruby while...end.
+    let pastVsemis = 0;
+    while (host.peekAt(pastVsemis)?.virtualSemi) pastVsemis++;
+    const braceBodyAhead = host.peekAt(pastVsemis)?.value === "{";
     if (host.match("do")) {
       body = host.parseKeywordBlock("do");
     } else if (host.match(":")) {
       // Python-style colon block
       body = host.parseIndentBlock();
-    } else if (host.peek().virtualSemi && !host.check("{")) {
+    } else if (host.peek().virtualSemi && !braceBodyAhead) {
       // Ruby-style: while cond \n body \n end
       body = host.parseKeywordBlock("while");
     } else {
+      while (host.peek().virtualSemi) host.advance();
       body = host.parseBlockOrStatement();
     }
 

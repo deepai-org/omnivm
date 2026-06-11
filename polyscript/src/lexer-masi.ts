@@ -34,6 +34,26 @@ export function applyMASI(tokens: Token[]): Token[] {
     else if (token.value === ']') bracketDepth = Math.max(0, bracketDepth - 1);
     else if (token.value === '{') curlyDepth++;
     else if (token.value === '}') curlyDepth = Math.max(0, curlyDepth - 1);
+    else if (token.type === TokenType.StringLiteral) {
+      // An UNTERMINATED string token (the scanner broke at end-of-line
+      // without finding the closing quote — the signature of a Rust
+      // lifetime mis-lexed as a string start, e.g. `Folder<(usize, &'ch
+      // str)>;`) may have swallowed closing delimiters. Replay them so an
+      // eaten `)` cannot leave parenDepth elevated forever, which would
+      // suppress virtual semicolons for the remainder of the file and let
+      // a later fn body absorb everything to EOF. Only CLOSERS are
+      // replayed (clamped at 0): they can only release suppression, never
+      // introduce it.
+      const body = token.value.replace(/^[rbfuRBFU@$]*/, '');
+      const quote = body[0];
+      if ((quote === "'" || quote === '"') &&
+          (body.length === 1 || body[body.length - 1] !== quote)) {
+        for (let k = 1; k < body.length; k++) {
+          if (body[k] === ')') parenDepth = Math.max(0, parenDepth - 1);
+          else if (body[k] === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+        }
+      }
+    }
 
     // Track JSX context
     if (token.value === '<' && i + 1 < tokens.length) {
