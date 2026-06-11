@@ -87,10 +87,11 @@ var libRsLocRE = regexp.MustCompile(`((?:[\w./~-]+/)?src/lib\.rs):(\d+)(?::(\d+)
 // .poly coordinates. It leads with one `<file>:<line>: <message>` header per
 // error whose primary span maps, followed by the rustc-rendered snippets
 // with every mappable `--> src/lib.rs:N` coordinate rewritten (unmappable
-// ones are kept and tagged as generated glue). Non-JSON stdout lines are
+// ones are kept and tagged as generated glue — naming the generated
+// boundary item when `unitSource` identifies one). Non-JSON stdout lines are
 // skipped; when no compiler errors parse at all (cargo manifest/network
 // failures), the raw human stderr is returned unchanged.
-func renderMappedCompileError(stdout, stderr string, smap *SourceMap, aliasLines int) string {
+func renderMappedCompileError(stdout, stderr string, smap *SourceMap, aliasLines int, unitSource string) string {
 	var headers []string
 	var blocks []string
 	for _, line := range strings.Split(stdout, "\n") {
@@ -109,7 +110,7 @@ func renderMappedCompileError(stdout, stderr string, smap *SourceMap, aliasLines
 		if d.Level != "error" || strings.HasPrefix(d.Message, "aborting due to") {
 			continue
 		}
-		headers = append(headers, mappedErrorHeader(d, smap, aliasLines))
+		headers = append(headers, mappedErrorHeader(d, smap, aliasLines, unitSource))
 		if d.Rendered != "" {
 			blocks = append(blocks, rewriteRenderedDiagnostic(d.Rendered, smap, aliasLines))
 		}
@@ -133,7 +134,7 @@ func renderMappedCompileError(stdout, stderr string, smap *SourceMap, aliasLines
 // `<poly_file>:<poly_line>: <message>` when the primary span maps, a
 // generated-glue note when it does not, and the bare message when the error
 // has no span in the unit at all.
-func mappedErrorHeader(d *rustcDiagnostic, smap *SourceMap, aliasLines int) string {
+func mappedErrorHeader(d *rustcDiagnostic, smap *SourceMap, aliasLines int, unitSource string) string {
 	for _, sp := range d.Spans {
 		if !sp.IsPrimary || !strings.HasSuffix(sp.FileName, "src/lib.rs") {
 			continue
@@ -141,9 +142,61 @@ func mappedErrorHeader(d *rustcDiagnostic, smap *SourceMap, aliasLines int) stri
 		if poly, ok := smap.MapUnitLine(sp.LineStart - aliasLines); ok {
 			return fmt.Sprintf("%s:%d: %s", smap.fileLabel(), poly, d.Message)
 		}
+		if note := glueContext(unitSource, sp.LineStart, smap, aliasLines); note != "" {
+			return fmt.Sprintf("%s (in generated glue at src/lib.rs:%d — %s)", d.Message, sp.LineStart, note)
+		}
 		return fmt.Sprintf("%s (in generated glue at src/lib.rs:%d)", d.Message, sp.LineStart)
 	}
 	return d.Message
+}
+
+// Generated boundary-glue item heads (docs/rust-boundary-generics.md): the
+// Tier-3 Dyn instantiation wrapper, the Tier-2 dispatcher and its probe
+// tokens, Tier-1 per-call-site stamps, and the owned-data export adapter.
+var glueItemRE = regexp.MustCompile(`^\s*(?:pub\s+)?(?:async\s+)?(?:fn\s+(__omnivm_\w+)|(?:struct|trait|impl(?:<\w+>)?)\s+.*\b__Omnivm(?:Probe|Hit|Miss)_(\w+))`)
+
+// glueContext names the generated boundary item enclosing an unmappable
+// glue line, so a Tier-1 stamp that fails the fn's bounds (a real type
+// error at the call site) reads as what it is instead of an anonymous glue
+// coordinate. `errLine` is 1-based into the FULL built source (alias lines
+// included). Verbatim (.poly-mapped) lines reset the context.
+func glueContext(unitSource string, errLine int, smap *SourceMap, aliasLines int) string {
+	if unitSource == "" || errLine < 1 {
+		return ""
+	}
+	lines := strings.Split(unitSource, "\n")
+	if errLine > len(lines) {
+		return ""
+	}
+	context := ""
+	for i := 1; i <= errLine; i++ {
+		if _, ok := smap.MapUnitLine(i - aliasLines); ok {
+			context = ""
+			continue
+		}
+		m := glueItemRE.FindStringSubmatch(lines[i-1])
+		if m == nil {
+			continue
+		}
+		switch name := m[1]; {
+		case m[2] != "":
+			context = fmt.Sprintf("the Tier-2 boundary dispatcher for fn '%s'", m[2])
+		case strings.HasPrefix(name, "__omnivm_dispatch_"):
+			context = fmt.Sprintf("the Tier-2 boundary dispatcher for fn '%s'", strings.TrimPrefix(name, "__omnivm_dispatch_"))
+		case strings.HasPrefix(name, "__omnivm_dyn_"):
+			context = fmt.Sprintf("the Dyn instantiation wrapper for fn '%s'", strings.TrimPrefix(name, "__omnivm_dyn_"))
+		case strings.HasPrefix(name, "__omnivm_export_"):
+			context = fmt.Sprintf("the owned-data export adapter for fn '%s'", strings.TrimPrefix(name, "__omnivm_export_"))
+		default:
+			if idx := strings.LastIndex(name, "__"); idx > len("__omnivm_") {
+				fn := name[len("__omnivm_"):idx]
+				context = fmt.Sprintf("the per-call-site stamp '%s' of fn '%s' — the instantiation at one call site fails these bounds; annotate or adjust that call", name, fn)
+			} else {
+				context = fmt.Sprintf("generated wrapper '%s'", name)
+			}
+		}
+	}
+	return context
 }
 
 // rewriteRenderedDiagnostic rewrites every `src/lib.rs:N[:C]` coordinate in a

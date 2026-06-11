@@ -573,7 +573,7 @@ serde_json = "1"
 		var stdout, stderr strings.Builder
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		if err := cmd.Run(); err != nil {
-			msg := renderMappedCompileError(stdout.String(), stderr.String(), smap, aliasLines)
+			msg := renderMappedCompileError(stdout.String(), stderr.String(), smap, aliasLines, source)
 			return fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(msg)))
 		}
 	} else if out, err := cmd.CombinedOutput(); err != nil {

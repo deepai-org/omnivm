@@ -6,6 +6,7 @@ rust-anyhow-thiserror-errors.poly pass panic_caught=True chain_structured=True
 rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True inbound_ok=True
 rust-axum-multi-serve.poly pass body=pong-from-rust
 rust-axum-router.poly pass status=ok checks=3
+rust-boundary-generics.poly pass a=[42] b=[rust] max=11 twice=42
 rust-channel-relay.poly pass moved=4
 rust-chrono-schedule.poly pass minutes=1800
 rust-go-peer-roundtrip.poly pass twice=20 combined=21

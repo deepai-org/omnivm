@@ -868,6 +868,8 @@ export interface RustItem {
     returnType?: string;
     /** True when the fn declares non-lifetime generic parameters. */
     typeGenerics?: boolean;
+    /** Set by codegen when an omitted return completed to impl Serialize. */
+    completedReturn?: boolean;
   }>;
   /** Names this item binds at module scope. */
   bindings: string[];

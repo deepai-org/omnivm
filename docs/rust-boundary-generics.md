@@ -1,8 +1,15 @@
 # Boundary Generics: Dispatch, Not Instantiation
 
-Status: design of record (2026-06-11). Builds on gradual typing
-(`docs/rust-compatibility.md`) and the lane architecture. Not yet
-implemented; staging at the end.
+Status: design of record (2026-06-11), IMPLEMENTED 2026-06-11. Builds on
+gradual typing (`docs/rust-compatibility.md`) and the lane architecture.
+Tier 1 = per-site wrappers (`__omnivm_<fn>__<typekey>`) + call-op rewrite;
+Tier 2 = autoref-probe tag dispatcher (single-type-param, arity ≤ 2,
+bare-`T` params); Tier 3 = `__omnivm_dyn_<fn>` under the original symbol
+when bounds ⊆ Dyn's vocabulary (dyn.rs); otherwise the rust-generic-export
+diagnostic names the blocking bounds. Gradual fns with unanimous call-site
+evidence still stamp the declaration directly (the body must typecheck
+concretely and the df lane is a declared-type property); per-site wrappers
+cover disagreeing sites through `Dyn::from`.
 
 ## The realization
 

@@ -1,0 +1,47 @@
+// Corpus: boundary generics — tiered dispatch (docs/rust-boundary-generics.md).
+//
+// Tier 1 (per-call-site stamping): echo_typed is generic and is called with
+// an int literal at one site and a string literal at another. Each site gets
+// its own monomorphizing wrapper (__omnivm_echo_typed__i64 / __string) and
+// its call op is rewritten — no cross-site agreement required, the generic
+// declaration stays byte-verbatim.
+//
+// Tier 3 (the Dyn instantiation): max_of is PartialOrd+Clone-bounded and
+// called with a python list — no literal evidence, so the call rides
+// max_of::<omnivm::Dyn> (Vec<T> → Vec<Dyn>) exported under the original
+// name, runtime-checked.
+//
+// Tier 2 (autoref-pruned lattice dispatcher): twice has a bound OUTSIDE the
+// Dyn vocabulary (Add<Output = T>) and its argument is a plain binding (no
+// evidence). The exported dispatcher reads the incoming serde tag and routes
+// to the i64 instantiation through a probe token whose by-value impl exists
+// only under the fn's bounds — rustc prunes the lattice, no trait solver.
+
+use std::fmt::Display;
+
+fn echo_typed<T: Display>(x: T) -> String {
+  format!("[{x}]")
+}
+
+fn max_of<T: PartialOrd + Clone>(items: Vec<T>) -> T {
+  let mut best = items[0].clone();
+  for it in items.iter() {
+    if *it > best { best = it.clone(); }
+  }
+  best
+}
+
+fn twice<T: std::ops::Add<Output = T> + Clone>(x: T) -> T {
+  x.clone() + x
+}
+
+# [python] the list payload and the no-evidence scalar
+nums = [int(x) for x in [3, 11, 7]]
+seed = int("21")
+
+const a = echo_typed(42)
+const b = echo_typed("rust")
+const m = max_of(nums)
+const t = twice(seed)
+
+print(f"a={a} b={b} max={m} twice={t}")

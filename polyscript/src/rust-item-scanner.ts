@@ -57,6 +57,34 @@ export interface RustFnSig {
    * are erased at the export boundary and never block monomorphization.
    */
   typeGenerics: boolean;
+  /**
+   * Set by the codegen gradual-typing completion when an omitted return
+   * type was completed to `-> impl omnivm::serde::Serialize`. Generated
+   * boundary wrappers must restate the same return clause.
+   */
+  completedReturn?: boolean;
+}
+
+/** One generic parameter of a Rust fn (`T: PartialOrd + Clone`). */
+export interface RustGenericParam {
+  name: string;
+  /** Raw bound texts, split on top-level `+` and trimmed. */
+  bounds: string[];
+  /** `const N: usize` parameters (small-domain dispatch only — no Dyn). */
+  isConst: boolean;
+}
+
+/**
+ * Textual, conservative view of a fn's generic parameter list and where
+ * clause — the input to the boundary-generics tiers (Tier 2 dispatcher,
+ * Tier 3 Dyn export). `opaque` is set whenever any segment failed to parse
+ * cleanly; callers must then fall back to the diagnostic.
+ */
+export interface RustFnGenerics {
+  params: RustGenericParam[];
+  /** Where-clause predicates (`where T: Display`), lifetimes skipped. */
+  wherePredicates: Array<{ target: string; bounds: string[] }>;
+  opaque: boolean;
 }
 
 export interface ScannedRustItem {
@@ -853,6 +881,188 @@ export function hasNonLifetimeGenerics(genericsText: string): boolean {
     const t = seg.trim();
     return t.length > 0 && !t.startsWith("'");
   });
+}
+
+/**
+ * Trivia-aware split of a type-level text on a top-level separator (`,` for
+ * generic-param lists and where clauses, `+` for bound lists). Tracks all
+ * delimiter kinds and skips `->` so `Fn(A) -> B` never miscounts.
+ */
+function splitTopLevel(text: string, sep: "," | "+"): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  let pos = 0;
+  while (pos < text.length) {
+    const step = stepToken(text, pos);
+    if (step.next !== -1) { pos = step.next; continue; }
+    const c = text[pos];
+    if (c === "-" && text[pos + 1] === ">") { pos += 2; continue; }
+    if (c === "<" || c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ">" || c === ")" || c === "]" || c === "}") { if (depth > 0) depth--; }
+    else if (c === sep && depth === 0) { parts.push(text.slice(start, pos)); start = pos + 1; }
+    pos++;
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** Index of the first depth-0 `:` that is not part of `::`, or -1. */
+function topLevelColonIndex(text: string): number {
+  let depth = 0;
+  let pos = 0;
+  while (pos < text.length) {
+    const step = stepToken(text, pos);
+    if (step.next !== -1) { pos = step.next; continue; }
+    const c = text[pos];
+    if (c === "<" || c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ">" || c === ")" || c === "]" || c === "}") { if (depth > 0) depth--; }
+    else if (c === ":" && depth === 0) {
+      if (text[pos + 1] === ":") { pos += 2; continue; }
+      return pos;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+/**
+ * Capture the where-clause text of a fn signature, scanning from one past
+ * the parameter list's `)` to the depth-0 body `{` (or `;`). Returns "" when
+ * there is no `where` keyword.
+ */
+function extractWhereClauseText(text: string, pos: number): string {
+  let angle = 0, paren = 0, bracket = 0;
+  while (pos < text.length) {
+    const out = { word: "" };
+    const step = stepToken(text, pos, out);
+    if (step.next !== -1) {
+      if (out.word === "where" && angle === 0 && paren === 0 && bracket === 0) {
+        const start = step.next;
+        let p = start;
+        let a = 0, pa = 0, br = 0;
+        while (p < text.length) {
+          const st = stepToken(text, p);
+          if (st.next !== -1) { p = st.next; continue; }
+          const ch = text[p];
+          if ((ch === "{" || ch === ";") && a === 0 && pa === 0 && br === 0) {
+            return text.slice(start, p);
+          }
+          if (ch === "-" && text[p + 1] === ">") { p += 2; continue; }
+          if (ch === "<") a++;
+          else if (ch === ">") { if (a > 0) a--; }
+          else if (ch === "(") pa++;
+          else if (ch === ")") pa--;
+          else if (ch === "[") br++;
+          else if (ch === "]") br--;
+          p++;
+        }
+        return text.slice(start);
+      }
+      pos = step.next;
+      continue;
+    }
+    const c = text[pos];
+    if ((c === "{" || c === ";") && angle === 0 && paren === 0 && bracket === 0) return "";
+    if (c === "-" && text[pos + 1] === ">") { pos += 2; continue; }
+    if (c === "<") angle++;
+    else if (c === ">") { if (angle > 0) angle--; }
+    else if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    pos++;
+  }
+  return "";
+}
+
+/** Parse the generic-parameter list and where clause anchored at `nameEnd`. */
+function scanFnGenerics(text: string, nameEnd: number): RustFnGenerics {
+  const result: RustFnGenerics = { params: [], wherePredicates: [], opaque: false };
+
+  let pos = nameEnd;
+  while (pos < text.length && /\s/.test(text[pos])) pos++;
+  let genericsInner = "";
+  if (text[pos] === "<") {
+    const start = pos + 1;
+    let angle = 1;
+    pos++;
+    while (pos < text.length && angle > 0) {
+      const step = stepToken(text, pos);
+      if (step.next !== -1) { pos = step.next; continue; }
+      const c = text[pos];
+      if (c === "-" && text[pos + 1] === ">") { pos += 2; continue; }
+      if (c === "<") angle++;
+      else if (c === ">") angle--;
+      pos++;
+    }
+    if (angle !== 0) return { params: [], wherePredicates: [], opaque: true };
+    genericsInner = text.slice(start, pos - 1);
+  }
+
+  for (const seg of splitTopLevel(genericsInner, ",")) {
+    const t = seg.trim();
+    if (!t || t.startsWith("'")) continue; // lifetimes erase at the boundary
+    const constM = /^const\s+([A-Za-z_]\w*)/.exec(t);
+    if (constM) { result.params.push({ name: constM[1], bounds: [], isConst: true }); continue; }
+    const m = /^([A-Za-z_]\w*)\s*(:\s*([\s\S]*))?$/.exec(t);
+    if (!m) { result.opaque = true; continue; }
+    result.params.push({
+      name: m[1],
+      bounds: splitTopLevel(m[3] ?? "", "+").map(b => b.trim()).filter(b => b.length > 0),
+      isConst: false,
+    });
+  }
+
+  const parenIdx = findParamListStart(text, nameEnd);
+  if (parenIdx === -1) return { ...result, opaque: true };
+  const { end: paramsEnd } = scanParamSegments(text, parenIdx);
+  if (paramsEnd === -1) return { ...result, opaque: true };
+
+  for (const seg of splitTopLevel(extractWhereClauseText(text, paramsEnd), ",")) {
+    const t = seg.trim();
+    if (!t || t.startsWith("'")) continue; // lifetime predicates constrain nothing here
+    const idx = topLevelColonIndex(t);
+    if (idx === -1) { result.opaque = true; continue; }
+    result.wherePredicates.push({
+      target: t.slice(0, idx).trim(),
+      bounds: splitTopLevel(t.slice(idx + 1), "+").map(b => b.trim()).filter(b => b.length > 0),
+    });
+  }
+  return result;
+}
+
+/**
+ * Locate the depth-0 `fn <fnName>` in a verbatim item slice and parse its
+ * generic-parameter list and where clause, textually and conservatively.
+ * Returns null when the fn cannot be found.
+ */
+export function extractRustFnGenerics(text: string, fnName: string): RustFnGenerics | null {
+  let pos = 0;
+  let brace = 0, paren = 0, bracket = 0;
+  while (pos < text.length) {
+    const out = { word: "" };
+    const step = stepToken(text, pos, out);
+    if (step.next !== -1) {
+      if (out.word === "fn" && brace === 0 && paren === 0 && bracket === 0) {
+        const nameMatch = /^\s*([A-Za-z_]\w*)/.exec(text.slice(step.next));
+        if (nameMatch && nameMatch[1] === fnName) {
+          return scanFnGenerics(text, step.next + nameMatch[0].length);
+        }
+      }
+      pos = step.next;
+      continue;
+    }
+    const c = text[pos];
+    if (c === "{") brace++;
+    else if (c === "}") brace--;
+    else if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    pos++;
+  }
+  return null;
 }
 
 /** Primary declared name of a non-fn item, when extractable. */

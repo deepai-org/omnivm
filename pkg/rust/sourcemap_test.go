@@ -54,7 +54,7 @@ func TestRenderMappedCompileError(t *testing.T) {
 		`{"reason":"compiler-message","message":{"message":"aborting due to 1 previous error","level":"error","spans":[],"rendered":""}}`,
 		`{"reason":"build-finished","success":false}`,
 	}, "\n")
-	out := renderMappedCompileError(stdout, "error: could not compile `omnivm-unit-u1234`", smap, 2)
+	out := renderMappedCompileError(stdout, "error: could not compile `omnivm-unit-u1234`", smap, 2, "")
 
 	if !strings.HasPrefix(out, "review.poly:15: mismatched types") {
 		t.Fatalf("missing mapped header, got:\n%s", out)
@@ -78,7 +78,7 @@ func TestRenderMappedCompileErrorGlueAndFallback(t *testing.T) {
 	stdout := `{"reason":"compiler-message","message":{"message":"cannot find function ` + "`missing`" + `","level":"error",` +
 		`"spans":[{"file_name":"units/uffff/src/lib.rs","line_start":9,"is_primary":true}],` +
 		`"rendered":"error[E0425]: cannot find function\n --> units/uffff/src/lib.rs:9:1\n"}}`
-	out := renderMappedCompileError(stdout, "", smap, 0)
+	out := renderMappedCompileError(stdout, "", smap, 0, "")
 	if !strings.Contains(out, "(in generated glue at src/lib.rs:9)") {
 		t.Fatalf("glue header note missing:\n%s", out)
 	}
@@ -87,8 +87,50 @@ func TestRenderMappedCompileErrorGlueAndFallback(t *testing.T) {
 	}
 
 	// No compiler messages at all (cargo-level failure): raw stderr wins.
-	fallback := renderMappedCompileError("not json at all\n", "error: failed to get `leftpad`", smap, 0)
+	fallback := renderMappedCompileError("not json at all\n", "error: failed to get `leftpad`", smap, 0, "")
 	if fallback != "error: failed to get `leftpad`" {
 		t.Fatalf("fallback = %q", fallback)
+	}
+}
+
+func TestGlueContextNamesBoundaryWrappers(t *testing.T) {
+	smap := &SourceMap{File: "app.poly", Entries: []*SourceMapEntry{
+		{UnitLine: 1, PolyLine: 3, Lines: 2},
+	}}
+	unitSource := strings.Join([]string{
+		"fn largest<T: std::hash::Hash>(a: T) -> T {", // unit line 1 (mapped)
+		"    a",                                       // 2 (mapped)
+		"",                                            // 3
+		"fn __omnivm_largest__f64(a: f64) -> f64 {", // 4: Tier-1 stamp
+		"    largest(a)",                            // 5: bound failure here
+		"}",                                         // 6
+		"fn __omnivm_dyn_largest(a: omnivm::Dyn) -> omnivm::Dyn {", // 7
+		"    largest(a)", // 8
+		"}",              // 9
+		"struct __OmnivmProbe_pick<T>(::std::marker::PhantomData<T>);", // 10
+		"fn noise() {}", // 11
+	}, "\n")
+
+	if got := glueContext(unitSource, 5, smap, 0); !strings.Contains(got, "per-call-site stamp '__omnivm_largest__f64' of fn 'largest'") {
+		t.Fatalf("tier-1 context = %q", got)
+	}
+	if got := glueContext(unitSource, 8, smap, 0); got != "the Dyn instantiation wrapper for fn 'largest'" {
+		t.Fatalf("tier-3 context = %q", got)
+	}
+	if got := glueContext(unitSource, 11, smap, 0); !strings.Contains(got, "Tier-2 boundary dispatcher for fn 'pick'") {
+		t.Fatalf("tier-2 context = %q", got)
+	}
+	// Verbatim (.poly-mapped) lines never report glue context.
+	if got := glueContext(unitSource, 2, smap, 0); got != "" {
+		t.Fatalf("mapped line context = %q", got)
+	}
+
+	// The header carries the note when the source identifies the wrapper.
+	stdout := `{"reason":"compiler-message","message":{"message":"the trait bound ` +
+		"`f64: Hash`" + ` is not satisfied","level":"error",` +
+		`"spans":[{"file_name":"units/uffff/src/lib.rs","line_start":5,"is_primary":true}],"rendered":""}}`
+	out := renderMappedCompileError(stdout, "", smap, 0, unitSource)
+	if !strings.Contains(out, "in generated glue at src/lib.rs:5 — the per-call-site stamp") {
+		t.Fatalf("header note missing:\n%s", out)
 	}
 }
