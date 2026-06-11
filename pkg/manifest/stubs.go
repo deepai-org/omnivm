@@ -405,6 +405,9 @@ type BridgeRequest struct {
 	Kind        string                 `json:"kind"`
 	Mode        string                 `json:"mode"`
 	Pending     bool                   `json:"pending,omitempty"` // stream_next: report open-empty channels as pending instead of done
+	MaxN        int                    `json:"max_n,omitempty"`   // stream_next: pull up to max_n values in one response ({"values":[...]} plural shape)
+	Runtime     string                 `json:"runtime,omitempty"` // call_ref: target runtime of the peer callable
+	Var         string                 `json:"var,omitempty"`     // call_ref: variable/registry name of the peer callable
 	Key         string                 `json:"key"`
 	Value       interface{}            `json:"value"`
 	Materialize bool                   `json:"materialize"`
@@ -429,6 +432,14 @@ func (e *Executor) HandleCall(code string) (result string, err error) {
 	if req.Op != "" {
 		return e.handleInternalBridgeOp(req.Op, req)
 	}
+	return e.dispatchBridgeFunc(req)
+}
+
+// dispatchBridgeFunc services the {func, args} bridge contract: Go-registered
+// functions first (Go plugins / Rust units), then manifest func_defs. This is
+// the same path runtime stubs take; the call_ref op routes Go-peer callables
+// through it too.
+func (e *Executor) dispatchBridgeFunc(req BridgeRequest) (result string, err error) {
 	req.Args = decodeRuntimeRefArgs(req.Args)
 
 	// Check Go function registry first (Go plugins)
@@ -1073,6 +1084,10 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 		if err != nil {
 			return "", err
 		}
+		e.streamNextServices.Add(1)
+		if req.MaxN > 1 {
+			return e.handleStreamNextBatch(id, req)
+		}
 		// Live consumers (Rust channel recv_async) distinguish "no value
 		// yet" from "exhausted": an open-but-empty channel is pending, not
 		// done — done would release the handle out from under them.
@@ -1099,6 +1114,8 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 			"done":  false,
 			"value": wrapped,
 		})
+	case "call_ref":
+		return e.handleCallRefOp(req)
 	case "stream_cancel":
 		id, err := bridgeHandleID(req.ID)
 		if err != nil {
@@ -1150,6 +1167,83 @@ func (e *Executor) handleInternalBridgeOp(op string, req BridgeRequest) (string,
 	default:
 		return "", fmt.Errorf("manifest HandleCall: unknown internal op %q", op)
 	}
+}
+
+// handleStreamNextBatch services stream_next with max_n > 1: up to max_n
+// values cross in one response as {"done":bool,"values":[...]} (plural).
+// Early stops:
+//   - open-but-empty channel with pending requested: {"pending":true} only
+//     when EMPTY-HANDED; with values in hand they are returned instead (the
+//     pending state resurfaces on the next pull),
+//   - stream exhaustion: "done":true rides WITH the final values,
+//   - error: propagated when empty-handed, otherwise the collected values
+//     are delivered and the (persistent) error resurfaces on the next pull.
+//
+// Requests without max_n never reach here — their wire shape is untouched.
+func (e *Executor) handleStreamNextBatch(id handles.ID, req BridgeRequest) (string, error) {
+	values := make([]interface{}, 0, req.MaxN)
+	for len(values) < req.MaxN {
+		if req.Pending {
+			if pending, isChan := e.chanRefOpenEmpty(id); isChan && pending {
+				if len(values) == 0 {
+					return marshalResult(map[string]interface{}{"done": false, "pending": true})
+				}
+				break
+			}
+		}
+		value, done, ok, err := e.handleStreamNext(id)
+		if err != nil {
+			if len(values) == 0 {
+				return "", err
+			}
+			break
+		}
+		if !ok {
+			return "", fmt.Errorf("manifest HandleCall: handle %d is not a stream", id)
+		}
+		if done {
+			return marshalResult(map[string]interface{}{"done": true, "values": values})
+		}
+		wrapped, err := e.bridgeStreamItemValue(id, value)
+		if err != nil {
+			if len(values) == 0 {
+				return "", err
+			}
+			break
+		}
+		values = append(values, wrapped)
+	}
+	return marshalResult(map[string]interface{}{"done": false, "values": values})
+}
+
+// handleCallRefOp services structured peer-callable invocations (Rust's
+// omnivm::Callback): {"op":"call_ref","runtime":...,"var":...,"args":[...]}.
+// The host resolves the callable and routes through the SAME invocation
+// machinery cross-runtime stubs already use — runtimeRefCall builds the one
+// canonical call expression per runtime with args marshalled by the capture
+// machinery, so the target never re-parses synthesized JSON source.
+func (e *Executor) handleCallRefOp(req BridgeRequest) (string, error) {
+	if req.Var == "" {
+		return "", fmt.Errorf("manifest HandleCall: call_ref missing var")
+	}
+	if req.Runtime == "go" || req.Runtime == "" {
+		// Go-peer callables (and manifest func_defs) resolve through the
+		// same registry path the {func,args} bridge contract uses.
+		return e.dispatchBridgeFunc(BridgeRequest{Func: req.Var, Args: req.Args})
+	}
+	if _, ok := e.runtimes[req.Runtime]; !ok {
+		return "", fmt.Errorf("manifest HandleCall: call_ref runtime %q not found", req.Runtime)
+	}
+	ref := RuntimeRef{Runtime: req.Runtime, VarName: req.Var, Callable: true, CallableKnown: true}
+	args := e.decodeHandleCallArgs(req.Runtime, req.Args)
+	value, ok, err := e.runtimeRefCall(0, ref, "", args, nil)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("manifest HandleCall: call_ref does not support runtime %q", req.Runtime)
+	}
+	return marshalResult(value)
 }
 
 func (e *Executor) decodeHandleCallArgs(targetRuntime string, args []interface{}) []interface{} {

@@ -98,23 +98,48 @@ func TestRustSpawnBlockingSyncFn(t *testing.T) {
 // TestRustCallbackFromPeer: a peer callable crosses into Rust as
 // omnivm::Callback (Box<dyn Fn> morally) and is invoked through the bridge —
 // including from async context, where the call hops (park exits first).
+// The dispatch is structured (the call_ref op): the host builds ONE canonical
+// invocation with native arg literals; the scripted runtime captures every
+// eval string and fails the test if any json.loads/JSON.parse-wrapped
+// synthesized source shows up (the old double-encode path).
 func TestRustCallbackFromPeer(t *testing.T) {
 	requireRust(t)
 	var invocations []string
+	vars := map[string]float64{}
 	js := &scriptedRuntime{name: "javascript", eval: func(code string) pkg.Result {
-		if !strings.HasPrefix(code, "score(") {
+		// The old double-encode path synthesized `score(...JSON.parse("..."))`
+		// (stub registration legitimately contains JSON.parse, so match the
+		// invocation shape, not the substring alone).
+		if strings.Contains(code, "score(...JSON.parse(") || strings.Contains(code, "json.loads") {
+			return pkg.Result{Err: fmt.Errorf("callback took the synthesized-source path: %.200q", code)}
+		}
+		// Canonical structured invocation: globalThis["<ref>"] = (globalThis["score"]).apply(undefined, [<args>]);
+		const applyMarker = `(globalThis["score"]).apply(undefined, `
+		if idx := strings.Index(code, applyMarker); idx >= 0 && strings.HasPrefix(code, `globalThis["`) {
+			invocations = append(invocations, code)
+			end := strings.Index(code, `"] = `)
+			if end < 0 {
+				return pkg.Result{Err: fmt.Errorf("unexpected invocation shape: %q", code)}
+			}
+			varName := code[len(`globalThis["`):end]
+			argsJSON := code[idx+len(applyMarker) : strings.LastIndex(code, ")")]
+			var args []float64
+			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+				return pkg.Result{Err: fmt.Errorf("bad structured args %q: %v", argsJSON, err)}
+			}
+			vars[varName] = args[0] * 10
 			return pkg.Result{}
 		}
-		invocations = append(invocations, code)
-		{
-			var args []float64
-			payload := code[strings.Index(code, "JSON.parse(")+12:]
-			payload = payload[:strings.Index(payload, `")`)]
-			if err := json.Unmarshal([]byte(strings.ReplaceAll(payload, `\"`, `"`)), &args); err != nil {
-				return pkg.Result{Err: fmt.Errorf("bad callback payload: %v", err)}
+		// Primitive snapshot of the invocation result.
+		const snapMarker = `var __v = (globalThis["`
+		if idx := strings.Index(code, snapMarker); idx >= 0 {
+			rest := code[idx+len(snapMarker):]
+			varName := rest[:strings.Index(rest, `"`)]
+			if value, known := vars[varName]; known {
+				return pkg.Result{Value: fmt.Sprintf(`{"primitive":true,"value":%g}`, value)}
 			}
-			return pkg.Result{Value: fmt.Sprintf("%g", args[0]*10)}
 		}
+		return pkg.Result{}
 	}}
 	e := NewExecutor(map[string]pkg.Runtime{"javascript": js})
 	e.setBinding("score", RuntimeRef{Runtime: "javascript", VarName: "score", Callable: true, CallableKnown: true})
@@ -143,6 +168,9 @@ async fn apply_twice(cb: omnivm::Callback, x: f64) -> f64 {
 	}
 	if len(invocations) != 2 {
 		t.Fatalf("callback invoked %d times: %v", len(invocations), invocations)
+	}
+	if !strings.Contains(invocations[0], "[2.5]") {
+		t.Fatalf("first invocation does not carry native arg literals: %q", invocations[0])
 	}
 }
 
@@ -375,6 +403,51 @@ async fn consumer(input: omnivm::Channel) -> i64 {
 	if !numEquals(sum, 10) {
 		t.Fatalf("backpressure: sum=%v, want 10 (values were dropped)", sum)
 	}
+}
+
+// TestRustChannelBatchedRecv: recv_async pulls in batches (max_n), so
+// draining 200 queued values costs a handful of stream_next services rather
+// than one bridge hop per value. The Rust consumer verifies strict ordering
+// (returns a negative sentinel on the first out-of-order value), and the
+// host-side service counter proves the hop reduction.
+func TestRustChannelBatchedRecv(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	ops := []*Op{{OpType: "chan", Action: "make", Bind: "feed", Size: 256}}
+	for i := 1; i <= 200; i++ {
+		ops = append(ops, &Op{OpType: "chan", Action: "send", Channel: "feed", Value: &ValueExpr{Kind: "literal", Value: i}})
+	}
+	ops = append(ops,
+		&Op{OpType: "func_def", Name: "drain_sum", BodyRuntime: "rust", Async: true,
+			Params: []*Param{{Name: "input"}}, Exports: []string{"drain_sum"},
+			Source: `
+async fn drain_sum(input: omnivm::Channel) -> i64 {
+    let mut sum = 0i64;
+    for expect in 1..=200i64 {
+        let value = input.recv_async().await.unwrap().unwrap().as_i64().unwrap_or(-1);
+        if value != expect {
+            return -expect; // order/loss sentinel: which receive went wrong
+        }
+        sum += value;
+    }
+    sum
+}
+`},
+		&Op{OpType: "eval", Runtime: "rust", Code: "drain_sum(feed)", Bind: "sum"},
+	)
+	before := e.streamNextServices.Load()
+	if err := e.Execute(&Manifest{Version: 1, Ops: ops}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	sum, _ := e.getBinding("sum")
+	if !numEquals(sum, 20100) {
+		t.Fatalf("drain_sum = %v, want 20100 (values lost or reordered)", sum)
+	}
+	hops := e.streamNextServices.Load() - before
+	if hops < 1 || hops >= 20 {
+		t.Fatalf("stream_next serviced %d times for 200 values, want batched (<20)", hops)
+	}
+	t.Logf("stream_next services for 200 values: %d (unbatched would be 200)", hops)
 }
 
 // TestRustAsyncStreamExport pulls a timer-paced futures Stream through the

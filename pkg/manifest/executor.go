@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
@@ -188,6 +189,9 @@ type Executor struct {
 	boundaryStatsMu   sync.Mutex
 	spawnWG           sync.WaitGroup
 	awaitFromDepth    int
+	// streamNextServices counts serviced stream_next bridge ops (each is one
+	// bridge hop); batched pulls (max_n) keep this far below the value count.
+	streamNextServices atomic.Int64
 }
 
 var pythonDirectCallExprRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
