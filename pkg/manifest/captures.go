@@ -780,6 +780,20 @@ class _OmniVMRuntimeError(RuntimeError):
         self._traceback = ""
         self._stack_frames = None
         self._cause_chain = []
+        try:
+            for __line in str(message).split("\n"):
+                __l = __line.strip()
+                if __l.lower().startswith("caused by:"):
+                    __body = __l[len("caused by:"):].strip()
+                    self._cause_chain.append({
+                        "runtime": "python",
+                        "type": "RuntimeError",
+                        "message": __body,
+                        "traceback": __body,
+                        "stack_frames": [],
+                    })
+        except Exception:
+            pass
         self.boundary_path = boundary_path
         self.original_error_handle = None
         self._details = _omnivm_copy_json_value(details)

@@ -18,6 +18,9 @@
 
 pub mod abi;
 pub mod cdata;
+/// `dyn` is a keyword, so the module gets an explicit path + a plain name.
+#[path = "dyn.rs"]
+pub mod dyn_value;
 pub mod envelope;
 pub mod error;
 pub mod interop;
@@ -30,6 +33,7 @@ mod export_macros;
 
 pub use error::OmniError;
 pub use cdata::Bytes;
+pub use dyn_value::{to_value, Dyn};
 pub use futures_core;
 pub use interop::{Callback, Channel};
 pub use objects::ObjectExport;

@@ -26,10 +26,12 @@ fn withdraw(account: String, balance: i64, amount: i64) -> Result<i64> {
 const remaining = withdraw("acct-9", 100, 30)
 
 caught = ""
+chain_text = ""
 try:
     withdraw("frozen-1", 100, 1)
 except RuntimeError as e:
     caught = e.message
+    chain_text = " | ".join(c["message"] for c in e.cause_chain)
 
 fn explode(tag: String) -> i64 {
   panic!("kaboom {tag}")
@@ -41,4 +43,4 @@ try:
 except RuntimeError as e:
     panic_caught = e.message
 
-print(f"remaining={remaining} caught_frozen={'frozen' in caught} panic_caught={'kaboom now' in panic_caught}")
+print(f"remaining={remaining} caught_rejected={'rejected' in caught} panic_caught={'kaboom now' in panic_caught} chain_structured={'frozen' in chain_text}")

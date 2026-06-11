@@ -358,9 +358,24 @@ impl<T: serde::Serialize, E: std::fmt::Display> ResultOutcome for OutcomeToken<R
         match self.0.take().expect("outcome token") {
             Ok(value) => serde_json::to_value(value)
                 .map_err(|e| OmniError::msg(format!("encode result: {e}"))),
-            // `{:#}` lets anyhow-style errors print their full cause chain;
-            // plain Display errors are unaffected.
-            Err(err) => Err(OmniError::msg(format!("{err:#}"))),
+            // anyhow-style errors print "msg" plainly and
+            // "msg: cause1: cause2" with `{:#}` — the delta reconstructs a
+            // structured cause chain generically (autoref specialization
+            // cannot fire here: E is a generic Display bound).
+            Err(err) => {
+                let plain = format!("{err}");
+                let alt = format!("{err:#}");
+                let chain: Vec<String> = if alt.len() > plain.len() && alt.starts_with(plain.as_str()) {
+                    alt[plain.len()..]
+                        .trim_start_matches(": ")
+                        .split(": ")
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Err(OmniError { message: plain, chain })
+            }
         }
     }
 }
