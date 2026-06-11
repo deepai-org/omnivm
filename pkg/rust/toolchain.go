@@ -410,6 +410,12 @@ func InferDependencies(source string) []string {
 		if builtinRoots[root] || localMods[root] || seen[root] {
 			continue
 		}
+		// `use Command::*;` / `use ParseError::EndOfStream;` import LOCAL
+		// type variants — crates.io package names are lowercase, so an
+		// uppercase-first root is never a crate (dogfood finding).
+		if root[0] >= 'A' && root[0] <= 'Z' {
+			continue
+		}
 		seen[root] = true
 		if line, ok := pinnedCrates[root]; ok {
 			if line != "" {

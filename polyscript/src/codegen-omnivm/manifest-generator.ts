@@ -3775,7 +3775,10 @@ export class ManifestCodeGenerator {
       pos = Math.max(pos, span.end);
     }
     if (pos < src.length) out += src.slice(pos);
-    return out;
+    // A fn NAME mentioned in a comment is not a reference: an export shim
+    // generated for it can demand impossible bounds (Deserialize on
+    // Arc<Shared>) and fail the whole unit build (dogfood finding).
+    return stripLineAndBlockComments(out);
   }
 
   /**
@@ -4841,4 +4844,29 @@ function adaptRustReturnType(returnText: string): AdaptedRustReturn {
     return { kind: "mapped", ownedType: "Option<String>", mapExpr: ".map(|v| v.to_string())" };
   }
   return { kind: "unadaptable", ownedType: raw, mapExpr: "" };
+}
+
+/** Removes line and block comments, string/char-literal aware. */
+function stripLineAndBlockComments(text: string): string {
+  let out = "";
+  let i = 0;
+  let mode: "code" | "line" | "block" | "dq" | "sq" | "bq" = "code";
+  while (i < text.length) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (mode === "code") {
+      if (c === "/" && next === "/") { mode = "line"; i += 2; continue; }
+      if (c === "/" && next === "*") { mode = "block"; i += 2; continue; }
+      if (c === '"') mode = "dq";
+      else if (c === "'") mode = "sq";
+      else if (c === "`") mode = "bq";
+      out += c; i++; continue;
+    }
+    if (mode === "line") { if (c === "\n") { mode = "code"; out += c; } i++; continue; }
+    if (mode === "block") { if (c === "*" && next === "/") { mode = "code"; i += 2; continue; } i++; continue; }
+    if (c === "\\") { out += c + (next ?? ""); i += 2; continue; }
+    if ((mode === "dq" && c === '"') || (mode === "sq" && c === "'") || (mode === "bq" && c === "`")) mode = "code";
+    out += c; i++; continue;
+  }
+  return out;
 }
