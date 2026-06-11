@@ -1184,13 +1184,25 @@ func (e *Executor) handleStreamNextBatch(id handles.ID, req BridgeRequest) (stri
 	// Rust-produced streams batch at the SOURCE: one object call moves up to
 	// max_n values (the rust `next` method accepts {"n": K}), instead of one
 	// envelope crossing per value through the generic loop below.
+	maxN := req.MaxN
 	if entry, err := e.handleEntry(id); err == nil {
 		if ref, isRust := entry.Value.(*RustStreamRef); isRust {
 			return e.rustStreamNextBatch(id, ref, req)
 		}
+		// Guest-runtime-backed streams (JS/python generators, ruby
+		// enumerators) run user code per pulled value: eager batch pulls
+		// would make per-value side effects and finally-block timing
+		// observable (a consumer that breaks after 2 values must not have
+		// driven the generator 64 steps). They stay one-value-per-envelope —
+		// still answered in the plural {"done","values"} shape the batched
+		// consumers decode.
+		switch entry.Value.(type) {
+		case RuntimeRef, *RuntimeRef:
+			maxN = 1
+		}
 	}
-	values := make([]interface{}, 0, req.MaxN)
-	for len(values) < req.MaxN {
+	values := make([]interface{}, 0, maxN)
+	for len(values) < maxN {
 		if req.Pending {
 			if pending, isChan := e.chanRefOpenEmpty(id); isChan && pending {
 				if len(values) == 0 {
