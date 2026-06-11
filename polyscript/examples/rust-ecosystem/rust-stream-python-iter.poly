@@ -1,0 +1,12 @@
+// Corpus (cursed concurrency): Python iterates lazily over a Rust-produced
+// stream through the universal stream_next/stream_cancel proxy protocol.
+
+fn squares(upto: i64) -> omnivm::objects::ObjectHandleRef {
+  omnivm::objects::export_stream((1..=upto).map(|i| i * i))
+}
+
+const ticker = squares(5)
+
+collected = [int(x) for x in ticker]
+
+print(f"squares={collected} count={len(collected)}")

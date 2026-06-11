@@ -672,6 +672,7 @@ function parseJSXChildren(host: JSXHost): AST.JSXChild[] {
   const children: AST.JSXChild[] = [];
 
   while (!host.isAtEnd()) {
+    const beforePos = host.current;
     if (host.check("<") && host.peekNext()?.value === "/") {
       break;
     }
@@ -707,6 +708,11 @@ function parseJSXChildren(host: JSXHost): AST.JSXChild[] {
       if (text) {
         children.push(text);
       }
+    }
+    if (host.current === beforePos) {
+      // No progress — not actually JSX content (e.g. a Rust qualified path
+      // `<A as B>::C` routed here). Bail instead of spinning forever.
+      break;
     }
   }
 

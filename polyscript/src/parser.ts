@@ -220,16 +220,33 @@ export class Parser extends ParserCursor {
         case "unsafe": {
           let j = k;
           while (value(j) === "async" || value(j) === "unsafe" || value(j) === "const") j++;
-          return value(j) === "fn" && isIdent(j + 1) ? { unconditional: false } : null;
+          if (value(j) === "fn" && isIdent(j + 1)) return { unconditional: false };
+          // `unsafe impl ...` / `unsafe trait ...` — Rust-only item heads.
+          // Without an anchor the union grammar silently parses them as
+          // expression statements (mis-slice when a where-clause follows).
+          if (value(k) === "unsafe" && value(k + 1) === "impl" &&
+              (isIdent(k + 2) || value(k + 2) === "<")) {
+            return { unconditional: false };
+          }
+          if (value(k) === "unsafe" && value(k + 1) === "trait" && isIdent(k + 2)) {
+            return { unconditional: false };
+          }
+          return null;
         }
         case "const": {
           if (value(k + 1) === "fn" && isIdent(k + 2)) return { unconditional: false };
-          // Rust module-level `const NAME: RustType = expr;` — unconditional
-          // only when the declared type carries a Rust-only signal, so TS
-          // `const x: number = 5` stays in the union grammar.
           if (isIdent(k + 1) && value(k + 2) === ":") {
-            const typeText = this.tokenTextBetween(i + k + 3, "=", 60);
-            if (typeText !== null && rustConstTypeSignal(typeText)) {
+            // `pub const NAME: ...` — `pub` is Rust-only syntax (TS has no
+            // pub), so the anchor is unconditional regardless of the type.
+            if (k > 0) return { unconditional: true };
+            // Bare `const NAME: Type =` — unconditional only when the
+            // declared type carries a Rust-only signal (or the initializer
+            // contains a `::` path outside strings), so TS
+            // `const x: number = 5` stays in the union grammar. The texts
+            // are taken from the RAW SOURCE: the union lexer mangles
+            // lifetimes (`&'static [...]` lexes as a string literal), so
+            // token values are unreliable in this position.
+            if (this.rawConstRustSignal(i + k + 2)) {
               return { unconditional: true };
             }
           }
@@ -241,7 +258,10 @@ export class Parser extends ParserCursor {
           return isIdent(j) && value(j + 1) === ":" ? { unconditional: true } : null;
         }
         case "use":
-          return isIdent(k + 1) ? { unconditional: false } : null;
+          // `use path::...;` and the prefix-less brace group `use { a::b,
+          // c::d };` (the union import grammar only knows the former).
+          return isIdent(k + 1) || value(k + 1) === "{"
+            ? { unconditional: false } : null;
         case "struct":
         case "enum":
         case "trait":
@@ -282,24 +302,90 @@ export class Parser extends ParserCursor {
     }
 
     const direct = anchorAt(0);
-    return direct ? { tokenIndex: i, ...direct } : null;
-  }
+    if (direct) return { tokenIndex: i, ...direct };
 
-  /**
-   * Raw source between token `from` and the first following token whose
-   * value is `until` (exclusive), or null when not found within `limit`.
-   */
-  private tokenTextBetween(from: number, until: string, limit: number): string | null {
-    const src = this.sourceText;
-    if (!src || !this.tokens[from]) return null;
-    for (let j = from; j < this.tokens.length && j - from < limit; j++) {
-      const t = this.tokens[j];
-      if (t.virtualSemi && j > from) return null; // statement ended first
-      if (t.value === until) {
-        return src.slice(this.tokens[from].start, t.start);
+    // Module-level macro invocation: `ident!` / `path::ident!` immediately
+    // followed by an opening delimiter (pin_project!{..}, cfg_if!{..},
+    // delegate_all!(..);). Token-level — string/comment content never gets
+    // here — and the first segment must be a plain Identifier, so union
+    // statement keywords (assert/print/...) stay in the union grammar. The
+    // anchor is unconditional but the scanner is strict (`()`/`[]` forms
+    // REQUIRE the trailing `;`), so expression-position macro calls such as
+    // `panic!("boom")` without a semicolon still fall back to union parsing.
+    if (t0.type === TokenType.Identifier) {
+      let j = 0;
+      while (isIdent(j) && value(j + 1) === "::") j += 2;
+      if (isIdent(j) && value(j + 1) === "!") {
+        const delim = value(j + 2);
+        if (delim === "{" || delim === "(" || delim === "[") {
+          return { tokenIndex: i, unconditional: true };
+        }
       }
     }
     return null;
+  }
+
+  /**
+   * Definite-Rust signal for a bare module-level `const NAME : Type = ...;`
+   * whose `:` is the token at `colonIndex`. True when the declared type
+   * carries a Rust-only signal (rustConstTypeSignal) or the initializer
+   * contains a `::` path outside string content (`StateID::ZERO`,
+   * `GeneralPurpose::new(...)`). Operates on the RAW SOURCE because the
+   * union lexer reads lifetimes (`&'static`) as string starts.
+   */
+  private rawConstRustSignal(colonIndex: number): boolean {
+    const src = this.sourceText;
+    const colon = this.tokens[colonIndex];
+    if (!src || !colon) return false;
+    const from = colon.start + 1;
+    const cap = Math.min(src.length, from + 600);
+    let depth = 0; // ([{ nesting — `[u64; 1]` array types contain `;`
+    let stripped = ""; // source text with string contents removed
+    let typeEnd = -1;
+    let p = from;
+    while (p < cap) {
+      const c = src[p];
+      if (c === '"') {
+        p++;
+        while (p < cap && src[p] !== '"') p += src[p] === "\\" ? 2 : 1;
+        p++;
+        stripped += " ";
+        continue;
+      }
+      if (c === "'") {
+        if (/[A-Za-z_]/.test(src[p + 1] || "") && src[p + 2] !== "'") {
+          // Lifetime ('static, 'a) — keep it visible for the type signal.
+          stripped += "'";
+          p++;
+          while (p < cap && /[A-Za-z0-9_]/.test(src[p])) { stripped += src[p]; p++; }
+          continue;
+        }
+        // Char literal or single-quoted string — skip its content so a
+        // TS `const sep: string = '::';` cannot fake a Rust path.
+        p++;
+        while (p < cap && src[p] !== "'") p += src[p] === "\\" ? 2 : 1;
+        p++;
+        stripped += " ";
+        continue;
+      }
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth > 0) depth--; }
+      else if (c === "=" && depth === 0 && typeEnd === -1) {
+        // `==`, `=>` never sit in type position; a bare `=` ends the type.
+        if (src[p + 1] !== "=" && src[p + 1] !== ">") {
+          typeEnd = stripped.length;
+          if (rustConstTypeSignal(stripped)) return true;
+        }
+      } else if (c === ";" && depth === 0) {
+        if (typeEnd === -1) return false; // no initializer — not a Rust const
+        return stripped.slice(typeEnd).includes("::");
+      } else if (c === "\n" && typeEnd === -1 && depth === 0) {
+        return false; // type position never spans a bare newline
+      }
+      stripped += c;
+      p++;
+    }
+    return false;
   }
 
   /**
@@ -314,14 +400,31 @@ export class Parser extends ParserCursor {
     node: AST.Decl | AST.Stmt,
     anchorToken: Token,
   ): boolean {
-    if (kind !== "impl" && kind !== "trait" && kind !== "struct" &&
-        kind !== "enum" && kind !== "union" && kind !== "mod") {
-      return true;
-    }
+    const braceKind = kind === "impl" || kind === "trait" || kind === "struct" ||
+        kind === "enum" || kind === "union" || kind === "mod";
+    if (!braceKind && kind !== "fn") return true;
     const src = this.sourceText;
     if (!src) return true;
     const scanned = scanRustItemAt(src, anchorToken.start);
     if (!scanned) return true; // scanner has no opinion — keep the union node
+
+    if (kind === "fn") {
+      // Poly-style fns (JSX/Python bodies) legitimately diverge from Rust
+      // brace counting, so fn extents are normally exempt. But when the fn
+      // SIGNATURE carries Rust-only syntax — a lifetime or a where clause —
+      // the union parse is unreliable (the union lexer reads `<'_>` as the
+      // start of a string literal and can swallow the rest of the line, so
+      // the union fn body silently absorbs the following items): require
+      // the extents to agree. The signature is taken from the anchor (past
+      // doc comments, whose apostrophes would false-positive) up to the
+      // body brace.
+      const anchorRel = scanned.anchorStart - scanned.start;
+      const bodyRel = scanned.text.indexOf("{", anchorRel);
+      const sig = scanned.text.slice(anchorRel, bodyRel === -1 ? undefined : bodyRel);
+      const rustOnlySig = /'(?:_|[A-Za-z]\w*)\b(?!')/.test(sig) || /\bwhere\b/.test(sig);
+      if (!rustOnlySig) return true;
+    }
+
     const lo = Math.min(scanned.end, node.span.end);
     const hi = Math.max(scanned.end, node.span.end);
     return /^[\s;]*$/.test(src.slice(lo, hi));

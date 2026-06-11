@@ -69,6 +69,13 @@ pub fn maybe_encode_dataframe(value: serde_json::Value) -> serde_json::Value {
 }
 
 pub fn encode_dataframe(mut df: DataFrame) -> Result<serde_json::Value, String> {
+    // Returned tables cross as C-Data pointer handoffs when the host has
+    // opted in (it consumes + releases them); IPC otherwise/on failure.
+    if std::env::var("OMNIVM_ARROW_CDATA_RETURN").as_deref() == Ok("1") {
+        if let Ok(marker) = crate::cdata::export_dataframe_cdata(df.clone()) {
+            return Ok(marker);
+        }
+    }
     let mut buf = Vec::new();
     IpcStreamWriter::new(&mut buf)
         .finish(&mut df)

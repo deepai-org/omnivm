@@ -111,7 +111,15 @@ struct StreamNextResult {
     #[serde(default)]
     done: bool,
     #[serde(default)]
+    pending: bool,
+    #[serde(default)]
     value: serde_json::Value,
+}
+
+enum Next {
+    Value(serde_json::Value),
+    Pending,
+    Done,
 }
 
 fn decode_bridge_result(raw: &str) -> Result<serde_json::Value, OmniError> {
@@ -124,8 +132,16 @@ fn decode_bridge_result(raw: &str) -> Result<serde_json::Value, OmniError> {
 }
 
 impl Channel {
-    fn next_request(&self) -> String {
-        format!("{{\"op\":\"stream_next\",\"id\":{},\"mode\":\"values\"}}", self.id)
+    fn next_request(&self, live: bool) -> String {
+        if live {
+            // Live consumption: open-but-empty is "pending", not "done".
+            format!(
+                "{{\"op\":\"stream_next\",\"id\":{},\"mode\":\"values\",\"pending\":true}}",
+                self.id
+            )
+        } else {
+            format!("{{\"op\":\"stream_next\",\"id\":{},\"mode\":\"values\"}}", self.id)
+        }
     }
 
     fn send_request(&self, value: &serde_json::Value) -> Result<String, OmniError> {
@@ -136,22 +152,42 @@ impl Channel {
         .map_err(|e| OmniError::msg(format!("channel send: {e}")))
     }
 
-    fn decode_next(raw: &str) -> Result<Option<serde_json::Value>, OmniError> {
+    fn decode_next(raw: &str) -> Result<Next, OmniError> {
         let result = decode_bridge_result(raw)?;
         let next: StreamNextResult = serde_json::from_value(result)
             .map_err(|e| OmniError::msg(format!("stream_next: {e}")))?;
-        Ok(if next.done { None } else { Some(next.value) })
+        Ok(if next.pending {
+            Next::Pending
+        } else if next.done {
+            Next::Done
+        } else {
+            Next::Value(next.value)
+        })
     }
 
-    /// Pulls the next value; `None` when the channel is closed and drained.
+    /// Non-blocking pull (snapshot semantics): `None` for both "closed and
+    /// drained" and "nothing queued right now".
     pub fn recv(&self) -> Result<Option<serde_json::Value>, OmniError> {
-        Self::decode_next(&crate::abi::bridge_call("__manifest", &self.next_request())?)
+        match Self::decode_next(&crate::abi::bridge_call("__manifest", &self.next_request(false))?)? {
+            Next::Value(v) => Ok(Some(v)),
+            _ => Ok(None),
+        }
     }
 
-    /// Async pull via the bridge hop; pending values arrive as other
-    /// runtimes feed the channel between re-parks.
+    /// Live async pull: waits cooperatively while the channel is open but
+    /// momentarily empty (other runtimes feed it between re-parks); `None`
+    /// only when the channel is closed and drained.
     pub async fn recv_async(&self) -> Result<Option<serde_json::Value>, OmniError> {
-        Self::decode_next(&crate::rt::bridge_call_async("__manifest", &self.next_request()).await?)
+        loop {
+            let raw = crate::rt::bridge_call_async("__manifest", &self.next_request(true)).await?;
+            match Self::decode_next(&raw)? {
+                Next::Value(v) => return Ok(Some(v)),
+                Next::Done => return Ok(None),
+                Next::Pending => {
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+            }
+        }
     }
 
     /// Non-blocking send through the manifest `send` builtin.

@@ -1,9 +1,12 @@
 package manifest
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/omnivm/omnivm/pkg/arrow"
 	"github.com/omnivm/omnivm/pkg/handles"
@@ -123,6 +126,12 @@ func (e *Executor) rustRuntime() (*rust.Runtime, error) {
 			return nil, err
 		}
 	}
+	// Returned DataFrames may cross as C-Data pointer handoffs: this host
+	// imports and releases them (adoptRustCData), so opt the crate in —
+	// unless the operator disabled the lane entirely.
+	if _, hasPy := e.runtimes["python"]; hasPy && os.Getenv("OMNIVM_ARROW_CDATA") != "0" {
+		os.Setenv("OMNIVM_ARROW_CDATA_RETURN", "1")
+	}
 	// Heartbeat-pump arm: while a Rust park holds the golden thread, the
 	// other reactors (libuv, asyncio) ride this between re-parks.
 	if rustRT.PumpOthers == nil {
@@ -144,11 +153,16 @@ func (e *Executor) rustRuntime() (*rust.Runtime, error) {
 			}
 		}
 	}
-	// Bridge: if the host already installed C pointers (OmniCall/OmniFree),
-	// keep them; otherwise route through the executor directly.
-	if rustRT.Support() != nil && !rustRT.Support().BridgeInstalled() && rustRT.BridgeFn == nil {
-		rustRT.BridgeFn = e.rustBridgeRouter
-		rustRT.SetBridgeCallback(0, 0)
+	// Bridge: if the host installed C pointers (OmniCall/OmniFree), keep
+	// them; otherwise route through THIS executor. The Go trampoline is
+	// process-global, so a previously-installed router (an earlier
+	// executor's, with its own handle table) must be refreshed — stale
+	// routing sends stream/handle ops to the wrong table.
+	if support := rustRT.Support(); support != nil && rustRT.BridgeFn == nil {
+		if !support.BridgeInstalled() || support.BridgeIsGo() {
+			rustRT.BridgeFn = e.rustBridgeRouter
+			rustRT.SetBridgeCallback(0, 0)
+		}
 	}
 	return rustRT, nil
 }
@@ -411,9 +425,104 @@ func (e *Executor) awaitRustFutureRef(ref *RustFutureRef, bind string) (interfac
 	return value, nil
 }
 
+var rustTableCounter uint64
+
+// adoptRustCData imports a returned C-Data record batch into Python (the
+// tabular consumer) as a polars frame and releases the exporter's shells —
+// always, including on failure (the Drop discipline frees never-imported
+// buffers). Returns a snapshot runtime ref.
+func (e *Executor) adoptRustCData(unit *rust.Unit, marker map[string]interface{}) (interface{}, error) {
+	bufferID, _ := marker["buffer_id"].(string)
+	if bufferID != "" {
+		defer unit.Call("OmniVMReleaseBuffer", bufferID)
+	}
+	schemaAddr, _ := marker["schema"].(string)
+	arrayAddr, _ := marker["array"].(string)
+	if schemaAddr == "" || arrayAddr == "" {
+		return nil, fmt.Errorf("rust cdata return: marker missing pointers")
+	}
+	pyRT, hasPy := e.runtimes["python"]
+	if !hasPy {
+		return nil, fmt.Errorf("rust cdata return: no python host to import into (set OMNIVM_ARROW_CDATA=0)")
+	}
+	name := fmt.Sprintf("__omnivm_table_%d", atomic.AddUint64(&rustTableCounter, 1))
+	setup := fmt.Sprintf(`
+import pyarrow as __omnivm_pa, polars as __omnivm_pl
+%s = __omnivm_pl.from_arrow(__omnivm_pa.RecordBatch._import_from_c(%s, __omnivm_pa.Schema._import_from_c(%s)))
+`, name, arrayAddr, schemaAddr)
+	if result := pyRT.Execute(setup); result.Err != nil {
+		return nil, fmt.Errorf("rust cdata return: import: %w", result.Err)
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot("python", name)
+	if err != nil {
+		return nil, fmt.Errorf("rust cdata return: snapshot: %w", err)
+	}
+	return ref, nil
+}
+
+// adoptRustBytes imports a pointer-lane byte buffer into Python as `bytes`
+// (one copy — owned python bytes) and releases the exporter's buffer.
+func (e *Executor) adoptRustBytes(unit *rust.Unit, marker map[string]interface{}) (interface{}, error) {
+	if b64, hasB64 := marker["b64"].(string); hasB64 {
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("rust bytes return: %w", err)
+		}
+		return data, nil
+	}
+	bufferID, _ := marker["buffer_id"].(string)
+	if bufferID != "" {
+		defer unit.Call("OmniVMReleaseBuffer", bufferID)
+	}
+	ptr, _ := marker["ptr"].(string)
+	length := int64(0)
+	switch v := marker["len"].(type) {
+	case float64:
+		length = int64(v)
+	case int64:
+		length = v
+	}
+	pyRT, hasPy := e.runtimes["python"]
+	if !hasPy || ptr == "" {
+		return nil, fmt.Errorf("rust bytes return: no python host to import into")
+	}
+	name := fmt.Sprintf("__omnivm_bytes_%d", atomic.AddUint64(&rustTableCounter, 1))
+	setup := fmt.Sprintf("%s = __import__(\"ctypes\").string_at(%s, %d)", name, ptr, length)
+	if result := pyRT.Execute(setup); result.Err != nil {
+		return nil, fmt.Errorf("rust bytes return: import: %w", result.Err)
+	}
+	ref, _, err := e.boundRuntimeRefSnapshot("python", name)
+	if err != nil {
+		return nil, fmt.Errorf("rust bytes return: snapshot: %w", err)
+	}
+	return ref, nil
+}
+
+func rustBytesMarker(value interface{}) (map[string]interface{}, bool) {
+	m, ok := value.(map[string]interface{})
+	if !ok || m["__omnivm_bytes__"] != true {
+		return nil, false
+	}
+	return m, true
+}
+
+func rustCDataMarker(value interface{}) (map[string]interface{}, bool) {
+	m, ok := value.(map[string]interface{})
+	if !ok || m["__omnivm_arrow_cdata__"] != true {
+		return nil, false
+	}
+	return m, true
+}
+
 // adaptRustValue post-processes decoded Rust results: stream proxies become
-// manifest stream handles consumable by every guest.
+// manifest stream handles, returned C-Data tables import into Python.
 func (e *Executor) adaptRustValue(rustRT *rust.Runtime, unit *rust.Unit, value interface{}) (interface{}, error) {
+	if marker, isCData := rustCDataMarker(value); isCData {
+		return e.adoptRustCData(unit, marker)
+	}
+	if marker, isBytes := rustBytesMarker(value); isBytes {
+		return e.adoptRustBytes(unit, marker)
+	}
 	proxy, ok := value.(*cSharedObjectProxy)
 	if !ok || proxy.Kind() != "stream" {
 		return value, nil

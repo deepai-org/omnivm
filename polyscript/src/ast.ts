@@ -849,7 +849,7 @@ export interface ExportSpecifier {
 export interface RustItem {
   kind: "RustItem";
   itemKind: "fn" | "struct" | "enum" | "union" | "trait" | "impl" | "mod"
-    | "use" | "static" | "const" | "type" | "macro" | "extern";
+    | "use" | "static" | "const" | "type" | "macro" | "macro-call" | "extern";
   /** Verbatim source slice, including preceding #[...] / /// lines. */
   text: string;
   /** Primary declared name, when extractable. */

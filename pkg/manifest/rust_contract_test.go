@@ -251,3 +251,82 @@ fn countdown(from: i64) -> omnivm::objects::ObjectHandleRef {
 		t.Fatalf("stream values = %#v", got)
 	}
 }
+
+// TestRustSpawnedChannelRelay replicates the cursed-concurrency corpus shape:
+// the Rust relay is SPAWNED first, the channel is fed afterwards, and the
+// await resolves the relay — the spawned task must see the post-spawn sends.
+func TestRustSpawnedChannelRelay(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "chan", Action: "make", Bind: "jobs", Size: 8},
+		{OpType: "chan", Action: "make", Bind: "results", Size: 8},
+		{
+			OpType: "func_def", Name: "relay_triple", BodyRuntime: "rust", Async: true,
+			Params:  []*Param{{Name: "input"}, {Name: "output"}},
+			Exports: []string{"relay_triple"},
+			Source: `
+async fn relay_triple(input: omnivm::Channel, output: omnivm::Channel) -> i64 {
+    let mut moved = 0i64;
+    while let Some(value) = input.recv_async().await.unwrap() {
+        let n = value.as_i64().unwrap_or(0);
+        output.send_async(n * 3).await.unwrap();
+        moved += 1;
+        if moved == 4 { break; }
+    }
+    moved
+}
+`,
+		},
+		{OpType: "spawn", Code: "relay_triple(jobs, results)", Bind: "job"},
+		{OpType: "chan", Action: "send", Channel: "jobs", Value: &ValueExpr{Kind: "literal", Value: 10}},
+		{OpType: "chan", Action: "send", Channel: "jobs", Value: &ValueExpr{Kind: "literal", Value: 20}},
+		{OpType: "chan", Action: "send", Channel: "jobs", Value: &ValueExpr{Kind: "literal", Value: 30}},
+		{OpType: "chan", Action: "send", Channel: "jobs", Value: &ValueExpr{Kind: "literal", Value: 40}},
+		{OpType: "await", From: &Op{OpType: "eval", Runtime: "go", Code: "job"}, Bind: "moved"},
+		{OpType: "chan", Action: "recv", Channel: "results", Bind: "r1"},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	moved, _ := e.getBinding("moved")
+	r1, _ := e.getBinding("r1")
+	if !numEquals(moved, 4) || !numEquals(r1, 30) {
+		t.Fatalf("relay: moved=%v r1=%v, want 4/30", moved, r1)
+	}
+}
+
+// TestRuntimeGlobalNotShadowedByStaleBinding pins the stale-binding fix: a
+// binding created by a runtime's own eval has a live global there; later
+// auto-injection must NOT re-inject the stale manifest snapshot over it
+// (runtime code may have mutated the global since).
+func TestRuntimeGlobalNotShadowedByStaleBinding(t *testing.T) {
+	var executed []string
+	py := &scriptedRuntime{name: "python", eval: func(code string) pkg.Result {
+		executed = append(executed, code)
+		return pkg.Result{Value: ""}
+	}}
+	e := NewExecutor(map[string]pkg.Runtime{"python": py})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "eval", Runtime: "python", Code: `""`, Bind: "caught"},
+		// Imagine runtime code mutated `caught` here (an except handler).
+		{OpType: "exec", Runtime: "python", Code: `print(caught)`},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	sawPrint := false
+	for _, code := range executed {
+		if strings.Contains(code, "print(caught)") {
+			sawPrint = true
+		}
+		// Capture-injection blobs are identifiable by the materializer
+		// wrapper; none may reassign caught over the live runtime global.
+		if strings.Contains(code, "materialize_capture") && strings.Contains(code, "caught") {
+			t.Fatalf("stale binding re-injected over the runtime global:\n%.300s", code)
+		}
+	}
+	if !sawPrint {
+		t.Fatalf("user code never executed: %q", executed)
+	}
+}

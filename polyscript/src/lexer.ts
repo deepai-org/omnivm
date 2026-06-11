@@ -1,7 +1,7 @@
 import { applyMASI } from './lexer-masi';
 import * as LS from './lex-state';
 import { LexerCursor } from './lexer-cursor';
-import { skipShebang, skipLineComment, skipBlockComment, skipHTMLComment } from './lexer-comments';
+import { skipShebang, skipLineComment, skipBlockComment, skipHTMLComment, trySkipMultilineRustAttribute } from './lexer-comments';
 import { scanPrefixedString, scanTemplateLiteral, scanNumber, scanHeredoc, scanRegex } from './lexer-literals';
 import { scanIdentifier, scanSigilIdentifier } from './lexer-identifiers';
 import { scanOperator, shouldBeRegex } from './lexer-operators';
@@ -62,8 +62,9 @@ export class Lexer extends LexerCursor {
   }
   
   tokenize(): Token[] {
-    // Skip shebang if present
-    if (this.source.startsWith('#!')) {
+    // Skip shebang if present. `#![...]` is a Rust inner attribute, not a
+    // shebang (real shebangs are `#!/usr/bin/...`).
+    if (this.source.startsWith('#!') && !this.source.startsWith('#![')) {
       skipShebang(this);
     }
 
@@ -106,9 +107,14 @@ export class Lexer extends LexerCursor {
       return;
     }
 
-    // Hash comments (Python/Ruby style)
+    // Hash comments (Python/Ruby style). Rust attributes (`#[...]` /
+    // `#![...]`) whose balanced bracket group spans multiple lines are
+    // consumed wholly so the continuation lines never leak into the token
+    // stream; single-line attributes are ordinary hash comments already.
     if (char === '#') {
-      skipLineComment(this);
+      if (!trySkipMultilineRustAttribute(this)) {
+        skipLineComment(this);
+      }
       return;
     }
 

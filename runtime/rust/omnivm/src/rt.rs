@@ -627,6 +627,8 @@ pub fn stats_json() -> String {
         "pending_futures": pending_future_count(),
         "pending_bridge_calls": PENDING_BRIDGE.lock().unwrap().len(),
         "live_objects": crate::objects::live_count(),
+        "live_cdata_shells": crate::cdata::live_shell_count(),
+        "live_byte_buffers": crate::cdata::live_byte_buffer_count(),
         "log_records_forwarded": crate::logging::records_forwarded(),
     })
     .to_string()
