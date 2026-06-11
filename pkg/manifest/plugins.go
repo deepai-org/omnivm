@@ -84,7 +84,7 @@ func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
 				deps := make(map[string]interface{})
 				for _, req := range op.Requires {
 					if fn, ok := e.goFuncs[req]; ok {
-						deps[req] = fn
+						deps[req] = e.adaptDepForPlugin(req, fn)
 					}
 				}
 				initFn(deps)
@@ -2358,4 +2358,42 @@ func goToolPath() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("go toolchain not found")
+}
+
+// adaptDepForPlugin matches a manifest function to the positional-arg shape
+// generated plugin stubs assert (func(interface{}, ...) interface{}). Rust
+// closures carry the func([]interface{}) (interface{}, error) shape; a
+// failed assertion would leave the stub's function var nil — and a nil call
+// inside a plugin dies as a raw SIGSEGV under the polyglot signal chain
+// instead of a catchable panic.
+func (e *Executor) adaptDepForPlugin(name string, fn interface{}) interface{} {
+	wrapped, isErrShape := fn.(func([]interface{}) (interface{}, error))
+	if !isErrShape {
+		return fn
+	}
+	arity := 1
+	if meta, known := e.rustFuncs[name]; known {
+		arity = meta.arity
+	}
+	call := func(args []interface{}) interface{} {
+		value, err := wrapped(args)
+		if err != nil {
+			panic(err)
+		}
+		return value
+	}
+	switch arity {
+	case 0:
+		return func() interface{} { return call(nil) }
+	case 1:
+		return func(a interface{}) interface{} { return call([]interface{}{a}) }
+	case 2:
+		return func(a, b interface{}) interface{} { return call([]interface{}{a, b}) }
+	case 3:
+		return func(a, b, c interface{}) interface{} { return call([]interface{}{a, b, c}) }
+	case 4:
+		return func(a, b, c, d interface{}) interface{} { return call([]interface{}{a, b, c, d}) }
+	default:
+		return fn
+	}
 }

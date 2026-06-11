@@ -213,20 +213,81 @@ func (tc *Toolchain) cargoEnv() []string {
 //     computed per build invocation — a narrower package selection would
 //     rebuild omnivm_rs with different feature sets (and symbol hashes) than
 //     the image prebuild. The prelude member pins the feature union.
+// supportSourceHash fingerprints the support crate by CONTENT (sources +
+// manifest + lockfile). Cargo's own mtime fingerprinting has proven
+// unreliable when sources are refreshed over a prebuilt image target dir
+// (observed: identical containers disagreeing, and the prelude rebuilding
+// against a stale omnivm_rs rlib), so freshness is decided here.
+func (tc *Toolchain) supportSourceHash() string {
+	h := sha256.New()
+	paths := []string{
+		filepath.Join(tc.WorkspaceDir, "Cargo.lock"),
+		filepath.Join(tc.CrateDir, "Cargo.toml"),
+	}
+	srcDir := filepath.Join(tc.CrateDir, "src")
+	if entries, err := os.ReadDir(srcDir); err == nil {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".rs") {
+				names = append(names, e.Name())
+			}
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			paths = append(paths, filepath.Join(srcDir, n))
+		}
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+		h.Write(data)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (tc *Toolchain) ensureSupportDylib() error {
 	dylib := filepath.Join(tc.TargetDir, "release", "libomnivm_rs.so")
+	stamp := filepath.Join(tc.TargetDir, ".omnivm-support-src-hash")
+	current := tc.supportSourceHash()
 	var out []byte
+	forced := false
 	err := tc.withBuildLock(func() error {
+		if old, readErr := os.ReadFile(stamp); readErr != nil || strings.TrimSpace(string(old)) != current {
+			// Content changed (or first build): force the recompile cargo's
+			// mtime fingerprinting sometimes misses.
+			forced = true
+			// `cargo clean -p` has proven unreliable here; removing the
+			// fingerprint dirs directly guarantees re-evaluation.
+			if matches, _ := filepath.Glob(filepath.Join(tc.TargetDir, "release", ".fingerprint", "omnivm_rs-*")); matches != nil {
+				for _, m := range matches {
+					os.RemoveAll(m)
+				}
+			}
+		}
 		cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
 		cmd.Dir = tc.WorkspaceDir
 		cmd.Env = tc.cargoEnv()
+		started := time.Now()
 		var buildErr error
 		out, buildErr = cmd.CombinedOutput()
+		fmt.Fprintf(os.Stderr, "[rust] support dylib build: forced=%v err=%v took=%s\n", forced, buildErr != nil, time.Since(started).Round(time.Millisecond))
+		if buildErr == nil && forced {
+			_ = os.WriteFile(stamp, []byte(current+"\n"), 0o644)
+		}
 		return buildErr
 	})
 	if err != nil {
-		// A read-only workspace with a prebuilt dylib is still usable.
+		// A read-only workspace with a prebuilt dylib is still usable — but
+		// say so loudly: a silently-stale dylib turns every content change
+		// into a phantom old-semantics bug.
 		if _, statErr := os.Stat(dylib); statErr == nil {
+			fmt.Fprintf(os.Stderr, "[rust] WARNING: support dylib rebuild failed; using prebuilt %s\n[rust] build error: %s\n",
+				dylib, strings.TrimSpace(string(out)))
 			tc.SupportDylib = dylib
 			return nil
 		}
@@ -316,6 +377,13 @@ func injectRuntimeAliases(source string) string {
 	if regexp.MustCompile("\\blog::").MatchString(source) && !strings.Contains(source, "use omnivm::log") {
 		aliases = append(aliases, "use omnivm::log;")
 	}
+	if strings.Contains(source, "futures_core::") && !strings.Contains(source, "use omnivm::futures_core") {
+		aliases = append(aliases, "use omnivm::futures_core;")
+	}
+	// `alloc` is a builtin root but not in the edition-2021 extern prelude.
+	if regexp.MustCompile(`\balloc::`).MatchString(source) && !strings.Contains(source, "extern crate alloc") {
+		aliases = append(aliases, "extern crate alloc;")
+	}
 	if len(aliases) == 0 {
 		return source
 	}
@@ -326,12 +394,20 @@ func injectRuntimeAliases(source string) string {
 // InferDependencies maps `use` statement crate roots to Cargo.toml dependency
 // lines, with the crates.io hyphen/underscore mapping and versions pinned by
 // the in-image table. Mirrors Go import inference.
+var localModRE = regexp.MustCompile(`(?m)^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
 func InferDependencies(source string) []string {
+	// Locally-declared modules are not crates: `mod private { ... }` +
+	// `use private::...` must not pin a crates.io package named "private".
+	localMods := map[string]bool{}
+	for _, match := range localModRE.FindAllStringSubmatch(source, -1) {
+		localMods[match[1]] = true
+	}
 	seen := map[string]bool{}
 	var deps []string
 	for _, match := range useRootRE.FindAllStringSubmatch(source, -1) {
 		root := match[1]
-		if builtinRoots[root] || seen[root] {
+		if builtinRoots[root] || localMods[root] || seen[root] {
 			continue
 		}
 		seen[root] = true
@@ -381,7 +457,18 @@ func sortedPinnedCrateNames() []string {
 // workspace lock and target dir, then the member dir is removed — the cached
 // artifact under /tmp/omnivm-plugins is what gets loaded.
 func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) {
-	source = injectRuntimeAliases(source)
+	return tc.BuildUnitMapped(source, exports, nil)
+}
+
+// BuildUnitMapped is BuildUnit plus an optional source map: when the unit
+// fails to compile and a map is present, rustc diagnostics are rewritten to
+// point at the original .poly coordinates instead of the generated lib.rs
+// (which the user has never seen). A nil/empty map keeps current behavior.
+func (tc *Toolchain) BuildUnitMapped(rawSource string, exports []string, smap *SourceMap) (string, error) {
+	source := injectRuntimeAliases(rawSource)
+	// Lines the alias injection prepended before the op's unit source; the
+	// source map's unit_line coordinates are relative to the op source.
+	aliasLines := strings.Count(source[:len(source)-len(rawSource)], "\n")
 	hash := tc.UnitCacheKey(source, exports)
 	soPath := filepath.Join(pluginCacheDir, "rust-"+hash+".so")
 	if _, err := os.Stat(soPath); err == nil {
@@ -406,7 +493,7 @@ func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) 
 		if _, statErr := os.Stat(soPath); statErr == nil {
 			return nil
 		}
-		return tc.buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath)
+		return tc.buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath, smap, aliasLines)
 	})
 	if err != nil {
 		return "", err
@@ -414,7 +501,7 @@ func (tc *Toolchain) BuildUnit(source string, exports []string) (string, error) 
 	return soPath, nil
 }
 
-func (tc *Toolchain) buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath string) error {
+func (tc *Toolchain) buildUnitLocked(source, unitName, pkgName, libName, memberDir, soPath string, smap *SourceMap, aliasLines int) error {
 	defer os.RemoveAll(memberDir)
 
 	deps := InferDependencies(source)
@@ -456,10 +543,26 @@ serde_json = "1"
 	// compiles the new unit only.
 	fmt.Fprintf(os.Stderr, "[rust] compiling unit %s (cold cache)...\n", unitName)
 	buildStart := time.Now()
-	cmd := exec.Command(tc.CargoBin, "build", "--release", "--workspace")
+	// With a source map, build with --message-format=json so failure
+	// diagnostics carry structured spans we can rewrite to .poly coordinates
+	// (the JSON goes to stdout and is discarded on success; cargo's own
+	// human noise stays on stderr). Without a map: current behavior.
+	mapped := smap != nil && len(smap.Entries) > 0
+	args := []string{"build", "--release", "--workspace"}
+	if mapped {
+		args = append(args, "--message-format=json")
+	}
+	cmd := exec.Command(tc.CargoBin, args...)
 	cmd.Dir = tc.WorkspaceDir
 	cmd.Env = tc.cargoEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if mapped {
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			msg := renderMappedCompileError(stdout.String(), stderr.String(), smap, aliasLines)
+			return fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(msg)))
+		}
+	} else if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(string(out))))
 	}
 	fmt.Fprintf(os.Stderr, "[rust] unit %s compiled in %s\n", unitName, time.Since(buildStart).Round(time.Millisecond))

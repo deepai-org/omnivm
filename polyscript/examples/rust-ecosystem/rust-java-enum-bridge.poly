@@ -1,0 +1,51 @@
+// Corpus (interop matrix): Rust tagged enums project into Java as tagged
+// maps (the design's claimed Java projection), and Java-built data crosses
+// into Rust structs through serde — both directions in one pipeline.
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+enum Grade {
+  Pass { score: f64 },
+  Fail { reason: String },
+}
+
+fn grade_scores(scores: Vec<f64>) -> Vec<Grade> {
+  scores.into_iter().map(|s| if s >= 0.6 {
+    Grade::Pass { score: s }
+  } else {
+    Grade::Fail { reason: format!("low:{s}") }
+  }).collect()
+}
+
+#[derive(Deserialize)]
+struct Order {
+  region: String,
+  amount: i64,
+}
+
+fn west_total(orders: Vec<Order>) -> i64 {
+  orders.iter().filter(|o| o.region == "west").map(|o| o.amount).sum()
+}
+
+// [java] builds the order book and serializes it with Gson
+const orders_json = new com.google.gson.Gson().toJson(java.util.List.of(
+  java.util.Map.of("region", "west", "amount", 32),
+  java.util.Map.of("region", "east", "amount", 18),
+  java.util.Map.of("region", "west", "amount", 8)))
+
+import json
+orders = json.loads(orders_json)
+
+// [rust] consumes the Java-built rows as serde structs
+const total = west_total(orders)
+
+// [rust -> java] tagged enums become Java maps; Gson re-serializes them,
+// proving Java received structured data (not opaque strings)
+const grades = grade_scores([0.95, 0.4])
+const grades_json = new com.google.gson.Gson().toJson(grades)
+
+passed = sum(1 for g in grades if g["kind"] == "Pass")
+
+print(f"west_total={total} passed={passed} java_sees_kinds={'Pass' in grades_json and 'Fail' in grades_json}")

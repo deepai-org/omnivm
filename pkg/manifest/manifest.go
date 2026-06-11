@@ -4,7 +4,11 @@
 // OmniVM dispatches to Python, JavaScript, Ruby, Java, and Go runtimes.
 package manifest
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/omnivm/omnivm/pkg/rust"
+)
 
 // Manifest is the top-level structure of a dispatch manifest.
 type Manifest struct {
@@ -116,6 +120,10 @@ type Op struct {
 	Source         string          `json:"source,omitempty"`
 	Exports        []string        `json:"exports,omitempty"`
 	Requires       []string        `json:"requires,omitempty"`
+	// rust func_def diagnostics: per-item mapping from unit source lines back
+	// to the originating .poly file (compile errors point at the .poly line).
+	SourceMap []*rust.SourceMapEntry `json:"source_map,omitempty"`
+	PolyFile  string                 `json:"poly_file,omitempty"`
 
 	// return
 	From  *Op        `json:"from,omitempty"`

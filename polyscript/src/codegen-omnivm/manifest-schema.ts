@@ -145,6 +145,20 @@ export const DISPATCH_MANIFEST_SCHEMA = {
         source: { type: "string" },
         exports: { type: "array", items: { type: "string" } },
         requires: { type: "array", items: { type: "string" } },
+        source_map: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["unit_line", "poly_line", "lines"],
+            properties: {
+              unit_line: { type: "number" },
+              poly_line: { type: "number" },
+              lines: { type: "number" },
+            },
+            additionalProperties: false,
+          },
+        },
+        poly_file: { type: "string" },
       },
       additionalProperties: false,
     },

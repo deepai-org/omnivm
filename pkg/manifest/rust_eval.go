@@ -144,6 +144,18 @@ func (e *Executor) resolveRustArg(expr string) (interface{}, error) {
 
 	// Bare identifier bound in the manifest scope.
 	root := identifierRoot(expr)
+	// Go peer functions cross as callable runtime refs (Rust wraps them as
+	// omnivm::Callback; invocations route through the go eval branch).
+	if root == expr {
+		if _, isGoFunc := e.goFuncs[root]; isGoFunc {
+			return encodeCSharedHandlePayloadValue(RuntimeRef{
+				Runtime:       "go",
+				VarName:       root,
+				Callable:      true,
+				CallableKnown: true,
+			}), nil
+		}
+	}
 	binding, bound := e.getBinding(root)
 	if root == expr && bound {
 		if ref, isRef := binding.(RuntimeRef); isRef {
@@ -282,7 +294,14 @@ def __omnivm_rust_arg(__omnivm_v):
 	case "javascript":
 		wrapped = "JSON.stringify(" + expr + ")"
 	case "ruby":
-		wrapped = "require 'json'; (" + expr + ").to_json"
+		// Ruby locals don't persist across Execute/Eval boundaries; bound
+		// values live as $globals. Alias the root back to a local first.
+		alias := ""
+		if root := identifierRoot(expr); root != "" && root != expr[:0] {
+			gref := runtimeVarRef("ruby", root)
+			alias = fmt.Sprintf("%s = %s if defined?(%s); ", root, gref, gref)
+		}
+		wrapped = "require 'json'; " + alias + "(" + expr + ").to_json"
 	default:
 		return nil, fmt.Errorf("cannot evaluate rust argument in runtime %q", rtName)
 	}

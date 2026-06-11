@@ -1,0 +1,43 @@
+// Corpus (interop matrix): one value pipeline through all six runtimes.
+// Python loads, JavaScript transforms, Java aggregates, Ruby tags, Go gates,
+// Rust computes — and Python prints the result.
+
+import json
+
+// [python] the source data
+readings = [3, 1, 4, 1, 5, 9, 2, 6]
+
+// [javascript] transform
+const scaled = readings.map(x => x * 10)
+
+const scaled_json = JSON.stringify(scaled)
+
+// [java] aggregate via the JDK
+const max_reading = new com.google.gson.Gson().fromJson(scaled_json.toString(), java.util.List.class).stream().mapToInt(v -> Double.valueOf(v.toString()).intValue()).max().getAsInt()
+
+// [ruby] tag with a => hash
+const tagged = { "max" => max_reading, "count" => scaled.length }
+
+// [go] gate (plugin args cross as interface{}; string comparisons are the
+// portable go-body idiom — see express-numpy-go-rate-limit)
+func gate(hint) {
+    if hint == "big" {
+        return "high"
+    }
+    return "low"
+}
+
+peak = [int(v) for v in [tagged["max"]]][0]
+const hint = "big" if peak > 50 else "small"
+
+const level = gate(hint)
+
+// [rust] compute
+fn checksum(values: Vec<i64>, level: String) -> String {
+  let total: i64 = values.iter().sum();
+  format!("{level}:{total}")
+}
+
+const stamp = checksum(scaled, level)
+
+print(f"stamp={stamp} max={peak} level={level} count={tagged['count']}")

@@ -1,0 +1,30 @@
+// Corpus (interop matrix): the two compiled peers call each other. A Go
+// function crosses into Rust as an omnivm::Callback (invoked over the async
+// bridge hop), and a Go function body calls a Rust-exported fn directly.
+
+func double(x) {
+    return x * 2
+}
+
+fn triple(n: i64) -> i64 {
+  n * 3
+}
+
+async fn apply_twice(f: omnivm::Callback, seed: i64) -> i64 {
+  let a: i64 = f.call_async(&[serde_json::json!(seed)]).await.unwrap().trim().parse().unwrap_or(0);
+  let b: i64 = f.call_async(&[serde_json::json!(a)]).await.unwrap().trim().parse().unwrap_or(0);
+  b
+}
+
+// rust calling go: the Go fn crosses as a callable
+const twice = await apply_twice(double, 5)
+
+// go calling rust: a Go body invokes the Rust export
+func combine(a) {
+    result := triple(a)
+    return result
+}
+
+const combined = combine(7)
+
+print(f"twice={twice} combined={int(combined)}")

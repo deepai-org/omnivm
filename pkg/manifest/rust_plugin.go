@@ -45,7 +45,13 @@ func (e *Executor) compileRustPlugin(op *Op) error {
 	if err != nil {
 		return err
 	}
-	soPath, err := tc.BuildUnit(source, exports)
+	var smap *rust.SourceMap
+	if len(op.SourceMap) > 0 {
+		// rustUnitSource only ever APPENDS glue after op.Source, so the op's
+		// unit_line coordinates stay valid for the completed unit.
+		smap = &rust.SourceMap{File: op.PolyFile, Entries: op.SourceMap}
+	}
+	soPath, err := tc.BuildUnitMapped(source, exports, smap)
 	if err != nil {
 		return fmt.Errorf("rust func_def %q: %w", op.Name, err)
 	}
@@ -177,6 +183,15 @@ func (e *Executor) rustBridgeRouter(rtName, code string) string {
 			return "ERR:" + err.Error()
 		}
 		return res
+	}
+	if rtName == "go" {
+		// Go-peer callables: evaluate registered-function invocation
+		// expressions (the same parser opEval's go branch uses).
+		value, err := e.evalGoCode(&Op{OpType: "eval", Runtime: "go", Code: code})
+		if err != nil {
+			return "ERR:" + err.Error()
+		}
+		return fmt.Sprintf("%v", value)
 	}
 	rt, ok := e.runtimes[rtName]
 	if !ok {

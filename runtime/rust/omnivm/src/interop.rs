@@ -60,6 +60,16 @@ impl Callback {
             "python" => format!("{}(*__import__(\"json\").loads({literal}))", self.var),
             "javascript" => format!("{}(...JSON.parse({literal}))", self.var),
             "ruby" => format!("(require \"json\"; {}(*JSON.parse({literal})))", self.var),
+            // Go peer functions: the host's go eval branch parses
+            // name(arg, ...) invocations of registered functions directly.
+            "go" => {
+                let args_src = args
+                    .iter()
+                    .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "null".into()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}({args_src})", self.var)
+            }
             other => return Err(OmniError::msg(format!("callback: unsupported runtime {other:?}"))),
         })
     }
@@ -122,6 +132,12 @@ enum Next {
     Done,
 }
 
+enum SendOutcome {
+    Sent,
+    Full,
+    Closed,
+}
+
 fn decode_bridge_result(raw: &str) -> Result<serde_json::Value, OmniError> {
     let parsed: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| OmniError::msg(format!("bridge result: {e}")))?;
@@ -144,12 +160,30 @@ impl Channel {
         }
     }
 
-    fn send_request(&self, value: &serde_json::Value) -> Result<String, OmniError> {
+    fn send_request(&self, value: &serde_json::Value, wait: bool) -> Result<String, OmniError> {
         serde_json::to_string(&serde_json::json!({
-            "func": "send",
+            "func": if wait { "send_wait" } else { "send" },
             "args": [self.descriptor, value],
         }))
         .map_err(|e| OmniError::msg(format!("channel send: {e}")))
+    }
+
+    fn decode_send(raw: &str) -> Result<SendOutcome, OmniError> {
+        let result = decode_bridge_result(raw)?;
+        // send_wait crosses status as a plain string (maps would become
+        // resource descriptors at the func-result boundary).
+        match result.as_str() {
+            Some("sent") => return Ok(SendOutcome::Sent),
+            Some("pending") => return Ok(SendOutcome::Full),
+            Some("closed") => return Ok(SendOutcome::Closed),
+            _ => {}
+        }
+        // Legacy `send` builtin: plain bool, false = closed-or-full.
+        Ok(if result.as_bool().unwrap_or(false) {
+            SendOutcome::Sent
+        } else {
+            SendOutcome::Closed
+        })
     }
 
     fn decode_next(raw: &str) -> Result<Next, OmniError> {
@@ -190,19 +224,35 @@ impl Channel {
         }
     }
 
-    /// Non-blocking send through the manifest `send` builtin.
+    /// Non-blocking send: errors honestly when the value did NOT enter the
+    /// channel (closed, or full in this non-waiting form).
     pub fn send(&self, value: impl serde::Serialize) -> Result<(), OmniError> {
         let value = serde_json::to_value(value)
             .map_err(|e| OmniError::msg(format!("channel send: {e}")))?;
-        crate::abi::bridge_call("__manifest", &self.send_request(&value)?)?;
-        Ok(())
+        let raw = crate::abi::bridge_call("__manifest", &self.send_request(&value, true)?)?;
+        match Self::decode_send(&raw)? {
+            SendOutcome::Sent => Ok(()),
+            SendOutcome::Full => Err(OmniError::msg("channel full (non-blocking send)")),
+            SendOutcome::Closed => Err(OmniError::msg("channel closed")),
+        }
     }
 
-    /// Async send via the bridge hop.
+    /// Async send with backpressure: waits cooperatively while the channel
+    /// is full (a consumer drains it between re-parks); errors only when the
+    /// channel is closed. Values are never silently dropped.
     pub async fn send_async(&self, value: impl serde::Serialize) -> Result<(), OmniError> {
         let value = serde_json::to_value(value)
             .map_err(|e| OmniError::msg(format!("channel send: {e}")))?;
-        crate::rt::bridge_call_async("__manifest", &self.send_request(&value)?).await?;
-        Ok(())
+        let request = self.send_request(&value, true)?;
+        loop {
+            let raw = crate::rt::bridge_call_async("__manifest", &request).await?;
+            match Self::decode_send(&raw)? {
+                SendOutcome::Sent => return Ok(()),
+                SendOutcome::Closed => return Err(OmniError::msg("channel closed")),
+                SendOutcome::Full => {
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+            }
+        }
     }
 }

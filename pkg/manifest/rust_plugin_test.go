@@ -207,3 +207,51 @@ func TestRustExecutorOwnerDispatchTarget(t *testing.T) {
 		t.Fatalf("multi executor must report supported, got %v", status["supported"])
 	}
 }
+
+// TestRustCompileErrorMapsToPolyLine: a func_def whose unit carries a source
+// map and a deliberate type error must fail with the ORIGINAL .poly
+// coordinates leading the message — never the raw generated lib.rs line the
+// user has never seen.
+func TestRustCompileErrorMapsToPolyLine(t *testing.T) {
+	requireRust(t)
+	// Mirrors a unit polyc assembles from a .poly where `use` sits on poly
+	// line 6 and the fn on poly line 13. The bad assignment is unit line 5
+	// (= entry 13 + offset 2) -> review.poly:15.
+	source := strings.Join([]string{
+		`use regex::Regex;`,
+		``,
+		`fn tokenize(text: String) -> Vec<String> {`,
+		`    let re = Regex::new(r"\w+").unwrap();`,
+		`    let n: i64 = "not a number";`,
+		`    re.find_iter(&text).map(|m| m.as_str().to_string()).collect()`,
+		`}`,
+	}, "\n")
+	m := &Manifest{Version: 1, Ops: []*Op{{
+		OpType:      "func_def",
+		Name:        "tokenize",
+		BodyRuntime: "rust",
+		Params:      []*Param{{Name: "text"}},
+		Exports:     []string{"tokenize"},
+		Source:      source,
+		PolyFile:    "review.poly",
+		SourceMap: []*rust.SourceMapEntry{
+			{UnitLine: 1, PolyLine: 6, Lines: 1},
+			{UnitLine: 3, PolyLine: 13, Lines: 5},
+		},
+	}}}
+	e := NewExecutor(map[string]pkg.Runtime{})
+	err := e.Execute(m)
+	if err == nil {
+		t.Fatal("expected a compile error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "review.poly:15") {
+		t.Fatalf("error does not lead with mapped .poly coordinates:\n%s", msg)
+	}
+	if strings.Contains(msg, "src/lib.rs:5") {
+		t.Fatalf("error still points at the raw lib.rs line:\n%s", msg)
+	}
+	if !strings.Contains(msg, "mismatched types") {
+		t.Fatalf("rustc message lost in mapping:\n%s", msg)
+	}
+}

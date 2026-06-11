@@ -491,7 +491,11 @@ func wrapJavaScriptExecLexicalScope(code string) string {
 func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 	// Go function call via goFuncs registry
 	if op.Func != "" && (op.Runtime == "go" || op.Runtime == "") {
-		return e.callGoFunc(op.Func, op.Args, op.Bind)
+		args := make([]interface{}, 0, len(op.Args))
+		for _, raw := range op.Args {
+			args = append(args, e.resolveGoCallArg(raw))
+		}
+		return e.callGoFunc(op.Func, args, op.Bind)
 	}
 
 	// runtime:"go" with code — parse as function call expression
@@ -2100,9 +2104,14 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 			} else {
 				// Try as binding reference
 				if val, ok := e.getBinding(part); ok {
-					// Unwrap RuntimeRef to get the actual value
+					// Unwrap RuntimeRef to get the actual value; refs whose
+					// snapshot is stale or unknown re-snapshot from the
+					// owner runtime (the global may have been mutated).
 					if ref, ok := val.(RuntimeRef); ok {
 						val = ref.Value
+						if _, fresh, err := e.boundRuntimeRefSnapshot(ref.Runtime, ref.VarName); err == nil {
+							val = fresh
+						}
 					}
 					args = append(args, val)
 				} else {
@@ -2115,6 +2124,34 @@ func (e *Executor) evalGoCode(op *Op) (interface{}, error) {
 	}
 
 	return e.callGoFunc(funcName, args, op.Bind)
+}
+
+// resolveGoCallArg resolves one go-call argument expression: numbers parse,
+// binding names resolve (refs re-snapshot from the owner runtime — the
+// global may have been mutated since binding), quoted literals unquote, and
+// non-string values pass through untouched.
+func (e *Executor) resolveGoCallArg(raw interface{}) interface{} {
+	part, isString := raw.(string)
+	if !isString {
+		return raw
+	}
+	part = strings.TrimSpace(part)
+	if f, err := strconv.ParseFloat(part, 64); err == nil {
+		if f == float64(int(f)) {
+			return int(f)
+		}
+		return f
+	}
+	if val, ok := e.getBinding(part); ok {
+		if ref, isRef := val.(RuntimeRef); isRef {
+			val = ref.Value
+			if _, fresh, err := e.boundRuntimeRefSnapshot(ref.Runtime, ref.VarName); err == nil {
+				val = fresh
+			}
+		}
+		return val
+	}
+	return strings.Trim(part, "\"'")
 }
 
 func (e *Executor) resolveGoSelectorConstant(expr string) (interface{}, bool) {

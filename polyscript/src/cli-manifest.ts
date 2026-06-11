@@ -83,7 +83,7 @@ function compileFile(inputPath: string, options: CLIOptions): string {
   const resolver = new RuntimeResolver();
   const annotated = resolver.resolve(ast, source);
   const gen = new ManifestCodeGenerator();
-  const manifest = gen.generate(annotated);
+  const manifest = gen.generate(annotated, { sourceFile: inputPath });
   if (manifest.diagnostics?.length) {
     console.error('Manifest diagnostics:');
     for (const diagnostic of manifest.diagnostics) {

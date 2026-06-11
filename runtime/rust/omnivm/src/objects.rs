@@ -161,6 +161,61 @@ where
     )
 }
 
+type BoxedValueStream =
+    std::sync::Mutex<std::pin::Pin<Box<dyn futures_core::Stream<Item = serde_json::Value> + Send>>>;
+
+/// Exports an async `Stream` as a stream proxy. Pulls block on the runtime
+/// (timers/IO progress) when called outside a drive; inside a drive a
+/// not-ready stream reports `pending` (live consumers retry, snapshot
+/// consumers stop) rather than deadlocking the golden thread.
+pub fn export_async_stream<S>(stream: S) -> ObjectHandleRef
+where
+    S: futures_core::Stream + Send + 'static,
+    S::Item: serde::Serialize,
+{
+    use futures_core::Stream;
+    let mapped = Box::pin(MapSerialize { inner: stream });
+    let boxed: std::pin::Pin<Box<dyn Stream<Item = serde_json::Value> + Send>> = mapped;
+    register(
+        ObjectExport::new("stream", std::sync::Mutex::new(boxed) as BoxedValueStream).method(
+            "next",
+            |cell: &BoxedValueStream, _args| {
+                let mut guard = cell.lock().unwrap();
+                match crate::rt::block_on_stream_next(guard.as_mut()) {
+                    Ok(Some(value)) => Ok(serde_json::json!({"done": false, "value": value})),
+                    Ok(None) => Ok(serde_json::json!({"done": true})),
+                    Err(crate::rt::StreamPollWouldBlock) => {
+                        Ok(serde_json::json!({"done": false, "pending": true}))
+                    }
+                }
+            },
+        ),
+    )
+}
+
+struct MapSerialize<S> {
+    inner: S,
+}
+
+impl<S> futures_core::Stream for MapSerialize<S>
+where
+    S: futures_core::Stream,
+    S::Item: serde::Serialize,
+{
+    type Item = serde_json::Value;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // SAFETY: structural projection of the only field.
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
+        inner.poll_next(cx).map(|opt| {
+            opt.map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
+        })
+    }
+}
+
 pub fn register(export: ObjectExport) -> ObjectHandleRef {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string();
     let kind = export.kind.clone();
