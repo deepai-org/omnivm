@@ -246,6 +246,60 @@ def __omnivm_arrow_ipc(__omnivm_df):
     return __sink.getvalue()
 
 __omnivm_cdata_registry = []
+__omnivm_bytes_exports = globals().setdefault("__omnivm_bytes_exports", {})
+
+def __omnivm_bytes_marker(__omnivm_v):
+    # Inbound bytes pointer lane (python -> rust): byte payloads cross as a
+    # pointer + length marker instead of base64/JSON. The keep-alive entry in
+    # __omnivm_bytes_exports pins the buffer until __omnivm_cdata_cleanup runs
+    # after the call (Rust copies into an owned Vec<u8> at argument-extraction
+    # time, inside the call).
+    import ctypes as __ct
+    __keep = [__omnivm_v]
+    __buf = None
+    if isinstance(__omnivm_v, bytes):
+        __buf = __omnivm_v
+    else:
+        __mv = __omnivm_v if isinstance(__omnivm_v, memoryview) else memoryview(__omnivm_v)
+        if not __mv.c_contiguous:
+            __mv = memoryview(bytes(__mv))
+        __keep.append(__mv)
+        if __mv.readonly:
+            # Read-only views over a whole bytes object reuse it directly;
+            # partial/exotic read-only views flatten with one copy.
+            if isinstance(__mv.obj, bytes) and __mv.nbytes == len(__mv.obj):
+                __buf = __mv.obj
+            else:
+                __buf = bytes(__mv)
+        else:
+            __buf = __mv
+    if isinstance(__buf, bytes):
+        __keep.append(__buf)
+        __n = len(__buf)
+        if __n == 0:
+            __addr = 0
+        else:
+            # Immutable bytes expose no writable buffer for ctypes.from_buffer;
+            # CPython's stable C-API returns the internal pointer, zero-copy.
+            __fn = __ct.pythonapi.PyBytes_AsString
+            __fn.restype = __ct.c_void_p
+            __fn.argtypes = [__ct.py_object]
+            __addr = int(__fn(__buf) or 0)
+    else:
+        __n = __buf.nbytes
+        if __n == 0:
+            __addr = 0
+        else:
+            __raw = (__ct.c_char * __n).from_buffer(__buf)
+            __keep.append(__raw)
+            __addr = __ct.addressof(__raw)
+    __omnivm_bytes_exports[id(__omnivm_v)] = __keep
+    return {
+        "__omnivm_bytes__": True,
+        "ptr": str(__addr),
+        "len": str(__n),
+        "buffer_id": str(id(__omnivm_v)),
+    }
 
 def __omnivm_arrow_cdata(__omnivm_df):
     # Arrow C Data pointer handoff (zero-copy): the importer takes the
@@ -266,17 +320,25 @@ def __omnivm_arrow_cdata(__omnivm_df):
     }
 
 def __omnivm_cdata_cleanup():
-    from pyarrow.cffi import ffi as __pf
     global __omnivm_cdata_registry
-    for __c_schema, __c_array in __omnivm_cdata_registry:
-        if __c_array.release != __pf.NULL:
-            __c_array.release(__c_array)
-        if __c_schema.release != __pf.NULL:
-            __c_schema.release(__c_schema)
+    __omnivm_bytes_exports.clear()
+    if __omnivm_cdata_registry:
+        from pyarrow.cffi import ffi as __pf
+        for __c_schema, __c_array in __omnivm_cdata_registry:
+            if __c_array.release != __pf.NULL:
+                __c_array.release(__c_array)
+            if __c_schema.release != __pf.NULL:
+                __c_schema.release(__c_schema)
     __omnivm_cdata_registry = []
 
 def __omnivm_rust_arg(__omnivm_v):
     import json as __json, os as __os
+    if isinstance(__omnivm_v, (bytes, bytearray, memoryview)):
+        try:
+            return __json.dumps(__omnivm_bytes_marker(__omnivm_v))
+        except Exception:
+            import base64 as __b64
+            return __json.dumps({"__omnivm_bytes__": True, "b64": __b64.b64encode(bytes(__omnivm_v)).decode()})
     if hasattr(__omnivm_v, "to_arrow") or hasattr(__omnivm_v, "to_parquet") or hasattr(__omnivm_v, "__arrow_c_stream__"):
         if __os.environ.get("OMNIVM_ARROW_CDATA", "1") != "0":
             try:

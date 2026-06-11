@@ -213,6 +213,45 @@ impl serde::Serialize for Bytes {
     }
 }
 
+/// Detects the inbound bytes marker and decodes it to owned data. Two wire
+/// forms: `{"__omnivm_bytes__": true, "ptr": "<addr>", "len": "<n>", ...}`
+/// (the pointer lane — one copy into an owned Vec, the producer's keep-alive
+/// is released after the call) and `{"__omnivm_bytes__": true, "b64": "..."}`
+/// (the producer's no-ctypes fallback).
+pub fn decode_bytes_marker(value: &serde_json::Value) -> Option<Result<Vec<u8>, String>> {
+    let obj = value.as_object()?;
+    if obj.get(BYTES_KEY) != Some(&serde_json::Value::Bool(true)) {
+        return None;
+    }
+    if let Some(b64) = obj.get("b64").and_then(|v| v.as_str()) {
+        use base64::Engine;
+        return Some(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| format!("bytes marker: base64: {e}")),
+        );
+    }
+    let parse = |key: &str| -> Option<u64> {
+        obj.get(key).and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+    };
+    let (Some(ptr), Some(len)) = (parse("ptr"), parse("len")) else {
+        return Some(Err("bytes marker missing ptr/len".to_string()));
+    };
+    if len == 0 {
+        return Some(Ok(Vec::new()));
+    }
+    if ptr == 0 {
+        return Some(Err(format!("bytes marker: null pointer with len {len}")));
+    }
+    Some(Ok(unsafe {
+        std::slice::from_raw_parts(ptr as *const u8, len as usize)
+    }
+    .to_vec()))
+}
+
 pub(crate) fn release_byte_buffer(id: u64) -> bool {
     BYTE_BUFFERS
         .lock()

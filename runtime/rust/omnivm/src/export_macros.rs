@@ -61,13 +61,17 @@ macro_rules! __omnivm_export_async_impl {
 }
 
 /// Per-argument extraction by declared kind: `df` params import Arrow
-/// markers directly (the C-Data pointer handoff stays zero-copy), `json`
-/// params go through serde. Codegen emits kinds from the fn's signature.
+/// markers directly (the C-Data pointer handoff stays zero-copy), `bytes`
+/// params (`Vec<u8>`-shaped) ride the bytes pointer lane, `json` params go
+/// through serde. Codegen emits kinds from the fn's signature.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __omnivm_arg_kind {
     (df, $args:expr, $idx:tt) => {
         $crate::abi::arg_dataframe($args, $idx)?
+    };
+    (bytes, $args:expr, $idx:tt) => {
+        $crate::abi::arg_bytes($args, $idx)?
     };
     (json, $args:expr, $idx:tt) => {
         $crate::abi::arg($args, $idx)?

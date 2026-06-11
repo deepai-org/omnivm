@@ -41,6 +41,14 @@ export interface RustFnSig {
   params: string[];
   /** Raw parameter type texts, parallel to `params` ("" when unknown). */
   paramTypes: string[];
+  /**
+   * Indices of parameters written as a bare identifier with NO `: Type`
+   * (`fn score(review)`). This is the gradual-typing superset: plain rustc
+   * rejects type-less params, so recording them never changes how valid
+   * Rust slices. Pattern params (`(a, b): (i64, i64)`) are NOT untyped —
+   * they carry a type and simply have no extractable name.
+   */
+  untypedParams: number[];
   /** Raw return type text after `->`, before `where`/`{` ("" when none). */
   returnType: string;
   /**
@@ -486,12 +494,15 @@ export function extractRustFnSignatures(text: string): RustFnSig[] {
               parenIdx === -1 ? { segments: [], end: -1 } : scanParamSegments(text, parenIdx);
             const params = segments.map((seg, i) => paramSegmentName(seg, i));
             const paramTypes = segments.map(seg => paramSegmentType(seg));
+            const untypedParams = segments
+              .map((seg, i) => (paramSegmentIsBare(seg) ? i : -1))
+              .filter(i => i !== -1);
             const returnType = paramsEnd === -1 ? "" : extractReturnTypeText(text, paramsEnd);
             const typeGenerics =
               parenIdx !== -1 && hasNonLifetimeGenerics(text.slice(nameEnd, parenIdx));
             sigs.push({
               name, async: isAsync, paramCount: params.length,
-              params, paramTypes, returnType, typeGenerics,
+              params, paramTypes, untypedParams, returnType, typeGenerics,
             });
           }
           lastWords = [];
@@ -543,16 +554,25 @@ function findParamListStart(text: string, pos: number): number {
  * inside `HashMap<String, i64>` or tuple types don't split. `end` is the
  * position one past the closing `)` (-1 when the list never closes).
  */
-function scanParamSegments(text: string, parenIdx: number): { segments: string[]; end: number } {
+function scanParamSegments(
+  text: string,
+  parenIdx: number,
+): { segments: string[]; spans: Array<{ start: number; end: number }>; end: number } {
   let pos = parenIdx + 1;
   let paren = 1, bracket = 0, brace = 0, angle = 0;
   let segStart = pos;
   let end = -1;
   const segments: string[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
 
   const pushSeg = (segEnd: number) => {
-    const seg = text.slice(segStart, segEnd).trim();
-    if (seg.length > 0) segments.push(seg);
+    const raw = text.slice(segStart, segEnd);
+    const seg = raw.trim();
+    if (seg.length > 0) {
+      segments.push(seg);
+      const lead = raw.length - raw.trimStart().length;
+      spans.push({ start: segStart + lead, end: segStart + lead + seg.length });
+    }
   };
 
   while (pos < text.length && paren > 0) {
@@ -576,7 +596,7 @@ function scanParamSegments(text: string, parenIdx: number): { segments: string[]
     pos++;
   }
 
-  return { segments, end };
+  return { segments, spans, end };
 }
 
 /** Best-effort parameter name from a raw `name: Type` segment. */
@@ -592,6 +612,141 @@ function paramSegmentName(seg: string, index: number): string {
 function paramSegmentType(seg: string): string {
   const named = /^(?:mut\s+)?[A-Za-z_]\w*\s*:\s*([\s\S]+)$/.exec(seg);
   return named ? named[1].trim() : "";
+}
+
+/** A bare-identifier parameter with no `: Type` — the gradual-typing slot. */
+function paramSegmentIsBare(seg: string): boolean {
+  return /^(?:mut\s+)?[A-Za-z_]\w*$/.test(seg);
+}
+
+/**
+ * Byte-offset facts the gradual-typing signature completion needs about the
+ * depth-0 `fn <fnName>` inside a verbatim item slice. All offsets are into
+ * `text`. The completion (manifest-generator) only ever INSERTS text at
+ * these offsets — never a newline — so item line counts (and therefore the
+ * unit source map) are preserved by construction.
+ */
+export interface RustFnCompletionScan {
+  /** Trimmed [start, end) offsets of each parameter segment. */
+  paramSpans: Array<{ start: number; end: number }>;
+  /** Indices of bare-identifier (type-less) parameters. */
+  untypedParams: number[];
+  /** Offset one past the closing `)` of the parameter list. */
+  paramsEnd: number;
+  /** True when the signature already declares a `->` return type. */
+  hasReturnType: boolean;
+  /**
+   * True when the fn has a `{...}` body whose last significant (non-trivia)
+   * character is not `;` — i.e. the body ends in a tail expression and the
+   * fn returns its value. False for statement-only and empty bodies.
+   */
+  bodyTailIsExpression: boolean;
+}
+
+/**
+ * Locate the depth-0 `fn <fnName>` in a verbatim item slice and report the
+ * spans the signature completion rewrites. Returns null when the fn can't
+ * be found or its parameter list never closes.
+ */
+export function scanRustFnCompletion(text: string, fnName: string): RustFnCompletionScan | null {
+  let pos = 0;
+  let brace = 0, paren = 0, bracket = 0;
+
+  while (pos < text.length) {
+    const out = { word: "" };
+    const step = stepToken(text, pos, out);
+    if (step.next !== -1) {
+      if (out.word === "fn" && brace === 0 && paren === 0 && bracket === 0) {
+        const nameMatch = /^\s*([A-Za-z_]\w*)/.exec(text.slice(step.next));
+        if (nameMatch && nameMatch[1] === fnName) {
+          const nameEnd = step.next + nameMatch[0].length;
+          const parenIdx = findParamListStart(text, nameEnd);
+          if (parenIdx === -1) return null;
+          const { segments, spans, end: paramsEnd } = scanParamSegments(text, parenIdx);
+          if (paramsEnd === -1) return null;
+          const untypedParams = segments
+            .map((seg, i) => (paramSegmentIsBare(seg) ? i : -1))
+            .filter(i => i !== -1);
+          const hasReturnType = extractReturnTypeText(text, paramsEnd) !== "";
+          return {
+            paramSpans: spans,
+            untypedParams,
+            paramsEnd,
+            hasReturnType,
+            bodyTailIsExpression: fnBodyTailIsExpression(text, paramsEnd),
+          };
+        }
+      }
+      pos = step.next;
+      continue;
+    }
+    const c = text[pos];
+    if (c === "{") brace++;
+    else if (c === "}") brace--;
+    else if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    pos++;
+  }
+  return null;
+}
+
+/**
+ * From one past the parameter list's `)`, find the fn body `{...}` and
+ * decide whether it ends in a tail expression: the last significant
+ * (non-trivia, non-whitespace) character before the closing `}` is not `;`.
+ * Empty and `;`-terminated (declaration-only) bodies report false.
+ */
+function fnBodyTailIsExpression(text: string, paramsEnd: number): boolean {
+  // Skip the return type / where clause to the depth-0 body `{`.
+  let pos = paramsEnd;
+  let angle = 0, paren = 0, bracket = 0;
+  while (pos < text.length) {
+    const step = stepToken(text, pos);
+    if (step.next !== -1) { pos = step.next; continue; }
+    const c = text[pos];
+    if (c === "{" && angle === 0 && paren === 0 && bracket === 0) break;
+    if (c === ";" && angle === 0 && paren === 0 && bracket === 0) return false; // bodyless fn
+    if (c === "-" && text[pos + 1] === ">") { pos += 2; continue; }
+    if (c === "<") angle++;
+    else if (c === ">") { if (angle > 0) angle--; }
+    else if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    pos++;
+  }
+  if (pos >= text.length) return false;
+
+  // Balanced scan of the body, remembering the last significant character.
+  const bodyOpen = pos;
+  let depth = 0;
+  let lastSig = -1;
+  while (pos < text.length) {
+    const step = stepToken(text, pos);
+    if (step.next !== -1) {
+      // Comments are trivia; strings/identifiers are significant content.
+      const c = text[pos];
+      const isComment = c === "/" && (text[pos + 1] === "/" || text[pos + 1] === "*");
+      if (!isComment) lastSig = step.next - 1;
+      pos = step.next;
+      continue;
+    }
+    const c = text[pos];
+    if (c === "{") { depth++; if (pos !== bodyOpen) lastSig = pos; pos++; continue; }
+    if (c === "}") {
+      depth--;
+      if (depth === 0) break; // body close — do not count it
+      lastSig = pos;
+      pos++;
+      continue;
+    }
+    if (!/\s/.test(c)) lastSig = pos;
+    pos++;
+  }
+  if (lastSig <= bodyOpen) return false; // empty body
+  return text[lastSig] !== ";";
 }
 
 /**

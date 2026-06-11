@@ -25,7 +25,7 @@ impl OmniError {
         }
         let mut out = self.message.clone();
         for cause in &self.chain {
-            out.push_str("\ncaused by: ");
+            out.push_str("\nCaused by: ");
             out.push_str(cause);
         }
         out
@@ -72,9 +72,24 @@ pub trait StdErrorToOmni {
     fn to_omni_error(self) -> OmniError;
 }
 
-impl<E: std::error::Error + 'static> StdErrorToOmni for ErrToken<E> {
+impl<E: std::error::Error + 'static> StdErrorToOmni for &ErrToken<E> {
     fn to_omni_error(self) -> OmniError {
         OmniError::from_std_error(&self.0)
+    }
+}
+
+/// anyhow::Error does not implement std::error::Error (deref trick) and
+/// coherence forbids a concrete StdErrorToOmni impl alongside the blanket
+/// one — so anyhow gets the HIGHEST autoref priority via its own trait:
+/// by-value beats &ErrToken (std-error) beats &&ErrToken (Display).
+pub trait AnyhowToOmni {
+    fn to_omni_error(self) -> OmniError;
+}
+
+impl AnyhowToOmni for ErrToken<anyhow::Error> {
+    fn to_omni_error(self) -> OmniError {
+        let chain: Vec<String> = self.0.chain().skip(1).map(|c| c.to_string()).collect();
+        OmniError { message: self.0.to_string(), chain }
     }
 }
 
@@ -82,7 +97,7 @@ pub trait DisplayToOmni {
     fn to_omni_error(self) -> OmniError;
 }
 
-impl<E: fmt::Display> DisplayToOmni for &ErrToken<E> {
+impl<E: fmt::Display> DisplayToOmni for &&ErrToken<E> {
     fn to_omni_error(self) -> OmniError {
         OmniError::msg(self.0.to_string())
     }

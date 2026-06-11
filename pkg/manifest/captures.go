@@ -18,6 +18,75 @@ type captureInjection struct {
 	setup            string
 	javaCaptureNames []string
 	err              error
+	// Dedup bookkeeping for the plain-value auto-inject lane: the bindings
+	// (with their versions at plan time) this setup covers. The caller calls
+	// commitCaptureInjection AFTER the setup executes successfully — a failed
+	// or never-executed injection must not mark versions as live.
+	targetRuntime string
+	plainInjected map[string]uint64
+}
+
+// plainCaptureDedupEligible reports whether a binding's auto-injection may be
+// skipped when its version is already live in the target runtime. Only the
+// plain-value copy lane qualifies: RuntimeRefs/streams/tables/proxied
+// containers and Arrow byte buffers keep their existing per-op handling, and
+// Java never qualifies because its captures are cleared after every op
+// (javaCleanupCode), so nothing persists in the runtime to dedup against.
+func plainCaptureDedupEligible(rtName string, val interface{}) bool {
+	if rtName == "java" {
+		return false
+	}
+	if _, ok := bulkCaptureViewForValue(val); ok {
+		return false
+	}
+	if shouldProxyLocalCapture(val) {
+		return false
+	}
+	return classifyLocalCaptureBoundary(val).Form == BoundaryCopy
+}
+
+// injectedVersionCurrent reports whether the binding's CURRENT version is the
+// one last injected into the runtime. Stale entries (popped scopes, rebinds)
+// fail this comparison because versions only ever advance.
+func (e *Executor) injectedVersionCurrent(rtName, name string, version uint64) bool {
+	if version == 0 {
+		return false
+	}
+	m := e.injectedVersions[rtName]
+	return m != nil && m[name] == version
+}
+
+// commitCaptureInjection records which binding versions an executed setup
+// made live in its target runtime. Call only after the setup ran successfully.
+func (e *Executor) commitCaptureInjection(injection captureInjection) {
+	if injection.targetRuntime == "" || len(injection.plainInjected) == 0 {
+		return
+	}
+	if e.injectedVersions == nil {
+		e.injectedVersions = make(map[string]map[string]uint64)
+	}
+	m := e.injectedVersions[injection.targetRuntime]
+	if m == nil {
+		m = make(map[string]uint64)
+		e.injectedVersions[injection.targetRuntime] = m
+	}
+	for name, version := range injection.plainInjected {
+		m[name] = version
+	}
+}
+
+// invalidateInjectedCaptures drops injected-version records for explicit
+// capture variable names: an explicit capture may bind a DIFFERENT manifest
+// binding under that name in the runtime, so the auto-inject record for the
+// name can no longer be trusted there.
+func (e *Executor) invalidateInjectedCaptures(rtName string, captures map[string]string) {
+	m := e.injectedVersions[rtName]
+	if m == nil {
+		return
+	}
+	for varName := range captures {
+		delete(m, varName)
+	}
 }
 
 func (e *Executor) findRuntimeGlobalCapture(name, targetRuntime string) (RuntimeRef, bool, error) {
@@ -133,6 +202,10 @@ func drainChannel(ch *ChanRef) []interface{} {
 // ImportRef values for the same runtime are skipped (module already in scope).
 // ImportRef values for a different runtime are skipped (can't transfer modules).
 func (e *Executor) wrapWithCaptures(rtName, code string, captures map[string]string) (string, error) {
+	// Explicit captures may rebind these names in the runtime (varName can map
+	// to a different manifest binding), so the auto-inject dedup records for
+	// them are no longer trustworthy.
+	e.invalidateInjectedCaptures(rtName, captures)
 	// Resolve capture values from the binding stack
 	resolved := make(map[string]string) // varname → JSON string
 	var aliasLines []string
@@ -380,13 +453,15 @@ func captureBindingExclusions(captures map[string]string) map[string]bool {
 
 func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[string]bool) captureInjection {
 	resolved := make(map[string]string)
+	plainInjected := make(map[string]uint64)
+	skipped := make(map[string]bool)
 	// Walk the scope stack top-down, collecting serializable bindings
 	for i := len(e.scopes) - 1; i >= 0; i-- {
 		for varName, val := range e.scopes[i] {
 			if exclude[varName] {
 				continue
 			}
-			if _, already := resolved[varName]; already {
+			if _, already := resolved[varName]; already || skipped[varName] {
 				continue // shadowed by higher scope
 			}
 			if _, ok := val.(*SpawnHandle); ok {
@@ -419,6 +494,27 @@ func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[strin
 			if e.bindingOrigins[varName] == rtName {
 				continue
 			}
+			// Unchanged plain values whose current version is already live in
+			// the target runtime skip re-injection (the dedup). The skip is
+			// per-binding-version: any rebind through the manifest (setBinding)
+			// bumps the version and re-injects. Runtime-side mutation of an
+			// injected copy is invisible here by design — copies are snapshots,
+			// and a runtime running arbitrary user code never invalidates
+			// other runtimes' copies.
+			if plainCaptureDedupEligible(rtName, val) {
+				version := e.bindingVersions[varName]
+				if e.injectedVersionCurrent(rtName, varName, version) {
+					skipped[varName] = true // outer same-name bindings stay shadowed
+					continue
+				}
+				jsonVal, err := e.marshalForCapture(val)
+				if err != nil {
+					continue
+				}
+				resolved[varName] = jsonVal
+				plainInjected[varName] = version
+				continue
+			}
 			jsonVal, err := e.marshalForCapture(val)
 			if err != nil {
 				continue
@@ -434,11 +530,11 @@ func (e *Executor) autoInjectScopePlanExcluding(rtName string, exclude map[strin
 	})
 	switch rtName {
 	case "python":
-		return captureInjection{setup: injectPythonCaptures(resolved)}
+		return captureInjection{setup: injectPythonCaptures(resolved), targetRuntime: rtName, plainInjected: plainInjected}
 	case "javascript":
-		return captureInjection{setup: injectJSCaptures(resolved)}
+		return captureInjection{setup: injectJSCaptures(resolved), targetRuntime: rtName, plainInjected: plainInjected}
 	case "ruby":
-		return captureInjection{setup: injectRubyCaptures(resolved)}
+		return captureInjection{setup: injectRubyCaptures(resolved), targetRuntime: rtName, plainInjected: plainInjected}
 	case "java":
 		return javaCaptureInjection(resolved)
 	default:
@@ -453,6 +549,9 @@ func (e *Executor) buildCaptureInjection(rtName string, captures map[string]stri
 }
 
 func (e *Executor) buildCaptureInjectionPlan(rtName string, captures map[string]string) captureInjection {
+	// Explicit captures may rebind these names in the runtime, invalidating
+	// the auto-inject dedup records for them.
+	e.invalidateInjectedCaptures(rtName, captures)
 	resolved := make(map[string]string)
 	var aliasLines []string
 	for varName, bindingName := range captures {
@@ -681,6 +780,20 @@ class _OmniVMRuntimeError(RuntimeError):
         self._traceback = ""
         self._stack_frames = None
         self._cause_chain = []
+        try:
+            for __line in str(message).split("\n"):
+                __l = __line.strip()
+                if __l.lower().startswith("caused by:"):
+                    __body = __l[len("caused by:"):].strip()
+                    self._cause_chain.append({
+                        "runtime": "python",
+                        "type": "RuntimeError",
+                        "message": __body,
+                        "traceback": __body,
+                        "stack_frames": [],
+                    })
+        except Exception:
+            pass
         self.boundary_path = boundary_path
         self.original_error_handle = None
         self._details = _omnivm_copy_json_value(details)

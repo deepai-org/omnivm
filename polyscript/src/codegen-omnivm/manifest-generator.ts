@@ -68,7 +68,7 @@ import { lowerType } from '../type-system/lowering';
 import * as C from '../type-system/canonical';
 import { lowerAnnotatedProgram } from './lowering';
 import { LoweredDefineFunc, LoweredManifestIR, LoweredManifestNode } from './lowering-ir';
-import { extractRustFnSignatures, attributePrefixStart } from '../rust-item-scanner';
+import { extractRustFnSignatures, attributePrefixStart, scanRustFnCompletion } from '../rust-item-scanner';
 
 /** Fn signature shape shared by raw-scanned RustItems and Rust FuncDecls. */
 type RustExportSig = AST.RustItem["fns"][number];
@@ -3469,6 +3469,12 @@ export class ManifestCodeGenerator {
     const unitSpans: Array<{ start: number; end: number }> = [];
     /** Top-level Rust fn signatures pending export-set analysis, decl order. */
     const pendingFns: Array<{ sig: RustExportSig; node: AST.Decl | AST.Stmt }> = [];
+    /** Fn unit pieces with their signatures — the gradual-typing completion
+     *  rewrites piece text in place before the unit is assembled. */
+    const fnSigsByPiece = new Map<RustUnitPiece, RustExportSig[]>();
+    /** Top-level nodes living inside the unit (fn items; absorbed items are
+     *  tracked separately) — excluded from the call-site evidence walk. */
+    const rustFnNodes = new Set<AST.Decl | AST.Stmt>();
 
     // Names usable inside the unit without crossing the bridge: use-import
     // bindings, Rust type names, and previously lowered statics.
@@ -3501,12 +3507,19 @@ export class ManifestCodeGenerator {
               absorbed.add(node);
               for (const bound of node.bindings) moduleBindings.add(bound);
               break;
-            case "fn":
+            case "fn": {
               // Not absorbed: emitCompiledBlock emits func_def ops for the
               // exported subset after the export-set analysis below.
-              fnItems.push({ text: node.text, polyOffset: node.span.start });
-              for (const sig of node.fns) pendingFns.push({ sig, node });
+              const piece: RustUnitPiece = { text: node.text, polyOffset: node.span.start };
+              fnItems.push(piece);
+              // Clone the signatures: the gradual-typing completion may
+              // stamp paramTypes, and the AST node must stay pristine.
+              const sigs = node.fns.map(fn => ({ ...fn })) as RustExportSig[];
+              fnSigsByPiece.set(piece, sigs);
+              rustFnNodes.add(node);
+              for (const sig of sigs) pendingFns.push({ sig, node });
               break;
+            }
             case "static":
             case "const":
               staticItems.push({ text: node.text, polyOffset: node.span.start });
@@ -3609,6 +3622,8 @@ export class ManifestCodeGenerator {
             paramCount: node.params.length,
             params: node.params.map(p => p.name.kind === "Identifier" ? p.name.name : "arg"),
           };
+          fnSigsByPiece.set(itemPiece, [sig]);
+          rustFnNodes.add(node);
           pendingFns.push({ sig, node });
           break;
         }
@@ -3641,6 +3656,19 @@ export class ManifestCodeGenerator {
           break;
       }
     }
+
+    // ── Gradual-typing completion ───────────────────────────────────
+    // Fn items with type-less params get a deterministic signature-only
+    // rewrite before the unit is assembled (bodies stay byte-verbatim, line
+    // counts are preserved). Runs before the export-set analysis so shims
+    // see the completed paramTypes.
+    this.completeGradualRustFns(
+      nodes,
+      pendingFns,
+      fnSigsByPiece,
+      new Set([...absorbed, ...rustFnNodes]),
+      useItems.some(piece => /\bpolars\b/.test(piece.text)),
+    );
 
     // ── Export-set analysis ─────────────────────────────────────────
     // A fn is exported only when its name is referenced OUTSIDE the unit:
@@ -3748,6 +3776,186 @@ export class ManifestCodeGenerator {
     }
     if (pos < src.length) out += src.slice(pos);
     return out;
+  }
+
+  /**
+   * Gradual typing: complete the signature of every Rust fn that declares
+   * type-less (bare-identifier) parameters. The completion is deterministic
+   * and signature-only — fn bodies stay byte-verbatim:
+   *
+   *   1. Each untyped parameter becomes `name: omnivm::Dyn`, unless every
+   *      call site outside the unit agrees on unambiguous evidence, in which
+   *      case the concrete type is stamped instead (integer literal → i64,
+   *      float literal → f64, string literal → String, bool literal → bool,
+   *      DataFrame-provenance binding → polars::prelude::DataFrame).
+   *   2. A missing return type on a GRADUAL fn (≥1 untyped param) whose body
+   *      ends in a tail expression completes to
+   *      `-> impl omnivm::serde::Serialize` (the export shim's serde path
+   *      envelopes whatever the tail expression yields). Statement-only and
+   *      empty bodies stay return-less — they really do return `()`.
+   *      Fns with NO untyped params are never touched: a return-less fn is
+   *      valid Rust (returns `()`), and valid Rust must pass through
+   *      byte-identical.
+   *
+   * Every insertion is newline-free and inside the signature, so item line
+   * counts — and therefore the unit source map — are preserved.
+   */
+  private completeGradualRustFns(
+    nodes: Array<AST.Decl | AST.Stmt>,
+    pendingFns: Array<{ sig: RustExportSig; node: AST.Decl | AST.Stmt }>,
+    fnSigsByPiece: Map<RustUnitPiece, RustExportSig[]>,
+    unitNodes: Set<AST.Decl | AST.Stmt>,
+    polarsInScope: boolean,
+  ): void {
+    const gradual = new Map<string, RustExportSig>();
+    for (const { sig } of pendingFns) {
+      if ((sig.untypedParams ?? []).length > 0) gradual.set(sig.name, sig);
+    }
+    if (gradual.size === 0) return;
+
+    const stamps = this.collectRustCallStamps(nodes, gradual, unitNodes, polarsInScope);
+
+    for (const [piece, sigs] of fnSigsByPiece) {
+      for (const sig of sigs) {
+        const untyped = sig.untypedParams ?? [];
+        if (untyped.length === 0) continue;
+        const scan = scanRustFnCompletion(piece.text, sig.name);
+        if (!scan || scan.paramSpans.length !== sig.paramCount) continue;
+
+        const fnStamps = stamps.get(sig.name);
+        const paramTypes = sig.paramTypes ?? (sig.paramTypes = sig.params.map(() => ""));
+        const inserts: Array<{ at: number; text: string }> = [];
+        for (const index of untyped) {
+          const span = scan.paramSpans[index];
+          if (!span) continue;
+          const stamped = fnStamps?.get(index);
+          inserts.push({ at: span.end, text: `: ${stamped ?? "omnivm::Dyn"}` });
+          paramTypes[index] = stamped ?? "Dyn";
+        }
+        if (!scan.hasReturnType && scan.bodyTailIsExpression) {
+          inserts.push({ at: scan.paramsEnd, text: " -> impl omnivm::serde::Serialize" });
+        }
+        inserts.sort((a, b) => b.at - a.at);
+        let text = piece.text;
+        for (const insert of inserts) {
+          text = text.slice(0, insert.at) + insert.text + text.slice(insert.at);
+        }
+        piece.text = text;
+      }
+    }
+  }
+
+  /**
+   * Call-site evidence for gradual Rust fns: walk every top-level node that
+   * is NOT part of the Rust unit, find calls to gradual fns by name, and
+   * classify the argument in each untyped slot. A type is stamped only when
+   * ALL call sites agree and none is unknown — anything else keeps Dyn.
+   * Returns fnName → paramIndex → completed Rust type text.
+   */
+  private collectRustCallStamps(
+    nodes: Array<AST.Decl | AST.Stmt>,
+    gradual: Map<string, RustExportSig>,
+    unitNodes: Set<AST.Decl | AST.Stmt>,
+    polarsInScope: boolean,
+  ): Map<string, Map<number, string>> {
+    // DataFrame provenance: top-level bindings initialized by a recognizable
+    // pandas/polars/pyarrow producer expression. Only used when the unit
+    // already references polars (otherwise the stamped type wouldn't
+    // resolve, and Dyn handles the serde projection fine).
+    const dfBindings = new Set<string>();
+    if (polarsInScope) {
+      const dfProducer =
+        /\b(?:pd|pandas|pl|polars)\s*\.\s*(?:DataFrame|read_\w+|from_\w+|scan_\w+)\s*\(|\bpa\s*\.\s*table\s*\(|\.to_pandas\s*\(\s*\)|\.to_polars\s*\(\s*\)/;
+      const noteBinding = (name: string, value: AST.Expr | undefined) => {
+        if (!value) return;
+        const code = this.sliceSource(value) ?? "";
+        if (dfProducer.test(code)) dfBindings.add(name);
+      };
+      for (const node of nodes) {
+        if ((node.kind === "ConstDecl" || node.kind === "VarDecl") && node.values) {
+          node.names.forEach((n, i) => noteBinding(n.name, node.values?.[i]));
+        } else if (node.kind === "ExprStmt" && node.expr.kind === "Assign" &&
+            node.expr.op === "=" && node.expr.left.kind === "Identifier") {
+          noteBinding(node.expr.left.name, node.expr.right);
+        }
+      }
+    }
+
+    // fnName → paramIndex → agreed type, or null once evidence conflicts.
+    const evidence = new Map<string, Map<number, string | null>>();
+    const note = (fn: string, index: number, type: string | undefined) => {
+      let slots = evidence.get(fn);
+      if (!slots) { slots = new Map(); evidence.set(fn, slots); }
+      const prev = slots.get(index);
+      if (type === undefined) { slots.set(index, null); return; }
+      if (prev === undefined) slots.set(index, type);
+      else if (prev !== type) slots.set(index, null);
+    };
+
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) {
+        for (const element of value) visit(element);
+        return;
+      }
+      const node = value as { kind?: string };
+      if (node.kind === "Call") {
+        const call = node as AST.Call;
+        if (call.callee.kind === "Identifier") {
+          const sig = gradual.get(call.callee.name);
+          if (sig) {
+            for (const index of sig.untypedParams ?? []) {
+              note(sig.name, index, this.rustArgEvidence(call.args[index], dfBindings));
+            }
+          }
+        }
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "span") continue;
+        visit(child);
+      }
+    };
+    for (const node of nodes) {
+      if (!unitNodes.has(node)) visit(node);
+    }
+
+    const stamps = new Map<string, Map<number, string>>();
+    for (const [fn, slots] of evidence) {
+      const agreed = new Map<number, string>();
+      for (const [index, type] of slots) {
+        if (type) agreed.set(index, type);
+      }
+      if (agreed.size > 0) stamps.set(fn, agreed);
+    }
+    return stamps;
+  }
+
+  /**
+   * Unambiguous type evidence for one argument expression at a gradual call
+   * site; undefined means unknown (keeps Dyn).
+   */
+  private rustArgEvidence(arg: AST.Expr | undefined, dfBindings: Set<string>): string | undefined {
+    if (!arg) return undefined;
+    switch (arg.kind) {
+      case "NumericLiteral": {
+        const raw = String(arg.raw);
+        if (/^0[xXoObB]/.test(raw)) return "i64"; // hex digits can look like e/E
+        return /[.eE]/.test(raw) ? "f64" : "i64";
+      }
+      case "StringLiteral":
+        return "String"; // interpolated strings still evaluate to strings
+      case "BooleanLiteral":
+        return "bool";
+      case "Unary":
+        if ((arg.op === "-" || arg.op === "+") && arg.argument.kind === "NumericLiteral") {
+          return this.rustArgEvidence(arg.argument, dfBindings);
+        }
+        return undefined;
+      case "Identifier":
+        return dfBindings.has(arg.name) ? "polars::prelude::DataFrame" : undefined;
+      default:
+        return undefined;
+    }
   }
 
   /**
@@ -4550,7 +4758,8 @@ interface AdaptedRustParam {
  */
 /**
  * Per-param extraction kinds for the export shim: `(df, json, ...)` when any
- * param is DataFrame-typed (zero-copy Arrow import), else null (arity form).
+ * param is DataFrame-typed (zero-copy Arrow import) or byte-buffer-typed
+ * (`Vec<u8>`/`&[u8]` ride the bytes pointer lane), else null (arity form).
  */
 /**
  * Scalar-shaped exports also get an omni_value_t typed entry: args/returns
@@ -4570,17 +4779,22 @@ function rustShimKinds(sig: RustExportSig): string | null {
   const paramTypes = sig.paramTypes ?? [];
   if (sig.paramCount === 0 || sig.paramCount > 4) return null;
   const kinds: string[] = [];
-  let sawDf = false;
+  let sawTypedKind = false;
   for (let i = 0; i < sig.paramCount; i++) {
     const t = stripRustLifetimes(paramTypes[i] ?? "").trim();
+    const compact = t.replace(/\s+/g, "");
     if (t === "DataFrame" || t === "polars::prelude::DataFrame" || t === "prelude::DataFrame") {
       kinds.push("df");
-      sawDf = true;
+      sawTypedKind = true;
+    } else if (compact === "Vec<u8>" || compact === "std::vec::Vec<u8>" || compact === "vec::Vec<u8>" ||
+               compact === "&[u8]") {
+      kinds.push("bytes");
+      sawTypedKind = true;
     } else {
       kinds.push("json");
     }
   }
-  return sawDf ? `(${kinds.join(", ")})` : null;
+  return sawTypedKind ? `(${kinds.join(", ")})` : null;
 }
 
 function adaptRustParamType(name: string, typeText: string): AdaptedRustParam {

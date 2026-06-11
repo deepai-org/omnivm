@@ -2,13 +2,14 @@
 # Ratcheted 2026-06-10 after the two-regime front end + export-set analysis
 # file expected-state [expected-stdout-substring]
 rust-all-six.poly pass stamp=high:310
-rust-anyhow-thiserror-errors.poly pass caught_frozen=True
-rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True
+rust-anyhow-thiserror-errors.poly pass panic_caught=True chain_structured=True
+rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True inbound_ok=True
 rust-axum-multi-serve.poly pass body=pong-from-rust
 rust-axum-router.poly pass status=ok checks=3
 rust-channel-relay.poly pass moved=4
 rust-chrono-schedule.poly pass minutes=1800
 rust-go-peer-roundtrip.poly pass twice=20 combined=21
+rust-gradual-typing.poly pass best=4.9 avg=4.133333333333334 scaled=42
 rust-itertools-windows.poly pass range=16
 rust-java-enum-bridge.poly pass java_sees_kinds=True
 rust-rayon-stats.poly pass buckets=

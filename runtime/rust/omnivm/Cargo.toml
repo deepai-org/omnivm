@@ -16,6 +16,7 @@ crate-type = ["dylib", "rlib"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-core = "0.3"
+anyhow = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
 # Arrow tabular interchange (the `table` lane): IPC + serde projection so
 # user fns take/return plain polars DataFrames across the boundary.

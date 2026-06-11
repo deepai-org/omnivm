@@ -842,7 +842,7 @@ describe("Example files: end-to-end pipeline", () => {
       const enrich = rustDefs.find((d) => d.name === "enrich");
       expect(enrich.async).toBe(true);
       expect(enrich.source).toContain("omnivm::export_async_fn!(OmniVMCall_enrich, enrich, 1);");
-      expect(enrich.source).toContain("omnivm::export_fn!(OmniVMCall_classify, classify, 1);");
+      expect(enrich.source).toContain("omnivm::export_fn!(OmniVMCall_classify, classify, (df));");
       expect(enrich.source).toContain('#[serde(tag = "type")]');
     });
 

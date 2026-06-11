@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg"
@@ -156,38 +157,50 @@ type FuncDef struct {
 
 // Executor runs manifest ops against a set of runtimes.
 type Executor struct {
-	runtimes          map[string]pkg.Runtime
-	defaultRuntime    string
-	scopes            []map[string]interface{}
-	handleTable       *handles.Table
-	handleScopes      []handles.ScopeID
-	funcs             map[string]*FuncDef
-	goFuncs           map[string]interface{}
-	goSourceFuncs     map[string]*goSourceFuncDef
-	rustFuncs         map[string]*rustFuncMeta
-	bindingOrigins    map[string]string // binding name -> runtime whose global is the source of truth
-	javaStubFuncs     map[string]*FuncDef
-	channels          map[string]*ChanRef
-	channelsMu        sync.RWMutex
-	spawns            []*SpawnHandle
-	spawnsMu          sync.Mutex
-	nextSpawnID       int
-	nextRuntimeRefID  int
-	resources         map[handles.ID]*ResourceRef
-	releasedResources map[handles.ID]*ResourceRef
-	tables            map[handles.ID]*TableRef
-	releasedTables    map[handles.ID]*TableRef
-	releasedStreams   map[handles.ID]releasedStreamRef
-	bridgeHandles     map[bridgeIdentity]handles.ID
-	jobs              map[int]*JobHandle
-	nextJobID         int
-	yieldCollectors   [][]interface{}        // stack of yield collectors for nested generators
-	bridgeOps         map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
-	boundaryWarnings  map[string]struct{}
-	boundaryStats     BoundaryStats
-	boundaryStatsMu   sync.Mutex
-	spawnWG           sync.WaitGroup
-	awaitFromDepth    int
+	runtimes       map[string]pkg.Runtime
+	defaultRuntime string
+	scopes         []map[string]interface{}
+	handleTable    *handles.Table
+	handleScopes   []handles.ScopeID
+	funcs          map[string]*FuncDef
+	goFuncs        map[string]interface{}
+	goSourceFuncs  map[string]*goSourceFuncDef
+	rustFuncs      map[string]*rustFuncMeta
+	bindingOrigins map[string]string // binding name -> runtime whose global is the source of truth
+	// Injection dedup for unchanged plain-value bindings: every setBinding
+	// bumps the binding's monotonic version, and per-runtime maps remember
+	// which version was last auto-injected. Auto-injection skips a binding
+	// whose current version is already live in the target runtime. Versions
+	// are never reset, so stale per-runtime entries (popped scopes, rebinds)
+	// are harmless: the version comparison fails and the value re-injects.
+	bindingVersions    map[string]uint64
+	nextBindingVersion uint64
+	injectedVersions   map[string]map[string]uint64 // runtime -> binding -> injected version
+	javaStubFuncs      map[string]*FuncDef
+	channels           map[string]*ChanRef
+	channelsMu         sync.RWMutex
+	spawns             []*SpawnHandle
+	spawnsMu           sync.Mutex
+	nextSpawnID        int
+	nextRuntimeRefID   int
+	resources          map[handles.ID]*ResourceRef
+	releasedResources  map[handles.ID]*ResourceRef
+	tables             map[handles.ID]*TableRef
+	releasedTables     map[handles.ID]*TableRef
+	releasedStreams    map[handles.ID]releasedStreamRef
+	bridgeHandles      map[bridgeIdentity]handles.ID
+	jobs               map[int]*JobHandle
+	nextJobID          int
+	yieldCollectors    [][]interface{}        // stack of yield collectors for nested generators
+	bridgeOps          map[string][]*BridgeOp // key: "binding|from|to" → bridge ops
+	boundaryWarnings   map[string]struct{}
+	boundaryStats      BoundaryStats
+	boundaryStatsMu    sync.Mutex
+	spawnWG            sync.WaitGroup
+	awaitFromDepth     int
+	// streamNextServices counts serviced stream_next bridge ops (each is one
+	// bridge hop); batched pulls (max_n) keep this far below the value count.
+	streamNextServices atomic.Int64
 }
 
 var pythonDirectCallExprRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
@@ -213,6 +226,8 @@ func NewExecutorWithHandles(runtimes map[string]pkg.Runtime, table *handles.Tabl
 		goSourceFuncs:     make(map[string]*goSourceFuncDef),
 		rustFuncs:         make(map[string]*rustFuncMeta),
 		bindingOrigins:    make(map[string]string),
+		bindingVersions:   make(map[string]uint64),
+		injectedVersions:  make(map[string]map[string]uint64),
 		javaStubFuncs:     make(map[string]*FuncDef),
 		channels:          make(map[string]*ChanRef),
 		resources:         make(map[handles.ID]*ResourceRef),
@@ -426,6 +441,7 @@ func (e *Executor) opExec(op *Op) (out interface{}, err error) {
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("exec auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
+		e.commitCaptureInjection(autoInjection)
 		defer func() {
 			if cleanupErr := e.runJavaCaptureCleanup(rt, autoInjection); cleanupErr != nil {
 				if err != nil {
@@ -525,6 +541,7 @@ func (e *Executor) opEval(op *Op) (out interface{}, err error) {
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("eval auto-inject [%s]: %w", rt.Name(), injectResult.Err)
 		}
+		e.commitCaptureInjection(autoInjection)
 		defer func() {
 			if cleanupErr := e.runJavaCaptureCleanup(rt, autoInjection, op.Bind); cleanupErr != nil {
 				if err != nil {
@@ -1965,6 +1982,7 @@ func (e *Executor) evalCondition(cond *CondExpr) (truthy bool, err error) {
 				if injectResult.Err != nil {
 					return false, fmt.Errorf("condition auto-inject [%s]: %w", rtName, injectResult.Err)
 				}
+				e.commitCaptureInjection(injection)
 				defer func() {
 					if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
 						if err != nil {
@@ -2784,7 +2802,14 @@ func (e *Executor) pushScope() {
 func (e *Executor) popScope() {
 	if len(e.scopes) > 1 {
 		_ = e.releaseLastHandleScope()
+		popped := e.scopes[len(e.scopes)-1]
 		e.scopes = e.scopes[:len(e.scopes)-1]
+		// Names bound in the popped scope may have shadowed outer bindings:
+		// bump their versions so any injected-copy record for the inner value
+		// is invalidated and the now-visible outer value re-injects.
+		for name := range popped {
+			e.bumpBindingVersion(name)
+		}
 	}
 }
 
@@ -2799,6 +2824,18 @@ func (e *Executor) getBinding(name string) (interface{}, bool) {
 
 func (e *Executor) setBinding(name string, val interface{}) {
 	e.scopes[len(e.scopes)-1][name] = val
+	e.bumpBindingVersion(name)
+}
+
+// bumpBindingVersion invalidates every runtime's injected copy of a binding
+// by advancing its monotonic version (rebinding and manifest-side mutation
+// both land here through setBinding).
+func (e *Executor) bumpBindingVersion(name string) {
+	if e.bindingVersions == nil {
+		e.bindingVersions = make(map[string]uint64)
+	}
+	e.nextBindingVersion++
+	e.bindingVersions[name] = e.nextBindingVersion
 }
 
 func (e *Executor) currentHandleScope() handles.ScopeID {
@@ -3208,6 +3245,7 @@ func (e *Executor) evalRuntimeIterable(rtName, expr string) (items []interface{}
 		if injectResult.Err != nil {
 			return nil, fmt.Errorf("evalRuntimeIterable auto-inject [%s]: %w", rtName, injectResult.Err)
 		}
+		e.commitCaptureInjection(injection)
 		defer func() {
 			if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
 				if err != nil {

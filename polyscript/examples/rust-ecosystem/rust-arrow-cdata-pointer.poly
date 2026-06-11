@@ -26,6 +26,14 @@ fn blob(n: i64) -> omnivm::Bytes {
   omnivm::Bytes((0..n).map(|i| (i % 251) as u8).collect())
 }
 
+fn digest(data: Vec<u8>) -> i64 {
+  let mut sum: i64 = 0;
+  for (i, b) in data.iter().enumerate() {
+    sum += (*b as i64) * ((i % 7) as i64 + 1);
+  }
+  sum + data.len() as i64
+}
+
 fn row_total(frame: DataFrame) -> f64 {
   frame
     .column("score")
@@ -48,4 +56,9 @@ const rust_out_addr = recorded_addr()
 
 const payload = blob(100000)
 
-print(f"pointer_identity={int(rust_addr) == py_addr} return_identity={int(rust_out_addr) == out_frame.get_column('v').to_arrow().buffers()[1].address} bytes_ok={len(payload) == 100000 and payload[0] == 0 and payload[99999] == 99999 % 251} total={total}")
+payload_in = bytes((i % 251) for i in range(100000))
+expected_in = sum(payload_in[i] * ((i % 7) + 1) for i in range(100000)) + 100000
+
+const digest_out = digest(payload_in)
+
+print(f"pointer_identity={int(rust_addr) == py_addr} return_identity={int(rust_out_addr) == out_frame.get_column('v').to_arrow().buffers()[1].address} bytes_ok={len(payload) == 100000 and payload[0] == 0 and payload[99999] == 99999 % 251} inbound_ok={int(digest_out) == expected_in} total={total}")

@@ -439,6 +439,14 @@ func enhanceCompileError(out string) string {
 	if strings.Contains(out, "error[E0432]") || strings.Contains(out, "error[E0433]") {
 		out += "\nhint: unresolved imports usually mean the crate is not in the pinned prelude; supported prelude crates: " + strings.Join(sortedPinnedCrateNames(), ", ")
 	}
+	// Gradual typing: a missing method/operator/index/trait-bound on
+	// omnivm::Dyn means the author is treating a dynamically typed parameter
+	// as a concrete native type.
+	if strings.Contains(out, "Dyn") &&
+		(strings.Contains(out, "error[E0599]") || strings.Contains(out, "error[E0369]") ||
+			strings.Contains(out, "error[E0608]") || strings.Contains(out, "error[E0277]")) {
+		out += "\nhint: this value is gradually typed (omnivm::Dyn) — annotate the parameter with a concrete type to use native methods"
+	}
 	return out
 }
 
