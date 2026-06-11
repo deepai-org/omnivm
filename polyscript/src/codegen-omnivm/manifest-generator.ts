@@ -4550,7 +4550,8 @@ interface AdaptedRustParam {
  */
 /**
  * Per-param extraction kinds for the export shim: `(df, json, ...)` when any
- * param is DataFrame-typed (zero-copy Arrow import), else null (arity form).
+ * param is DataFrame-typed (zero-copy Arrow import) or byte-buffer-typed
+ * (`Vec<u8>`/`&[u8]` ride the bytes pointer lane), else null (arity form).
  */
 /**
  * Scalar-shaped exports also get an omni_value_t typed entry: args/returns
@@ -4570,17 +4571,22 @@ function rustShimKinds(sig: RustExportSig): string | null {
   const paramTypes = sig.paramTypes ?? [];
   if (sig.paramCount === 0 || sig.paramCount > 4) return null;
   const kinds: string[] = [];
-  let sawDf = false;
+  let sawTypedKind = false;
   for (let i = 0; i < sig.paramCount; i++) {
     const t = stripRustLifetimes(paramTypes[i] ?? "").trim();
+    const compact = t.replace(/\s+/g, "");
     if (t === "DataFrame" || t === "polars::prelude::DataFrame" || t === "prelude::DataFrame") {
       kinds.push("df");
-      sawDf = true;
+      sawTypedKind = true;
+    } else if (compact === "Vec<u8>" || compact === "std::vec::Vec<u8>" || compact === "vec::Vec<u8>" ||
+               compact === "&[u8]") {
+      kinds.push("bytes");
+      sawTypedKind = true;
     } else {
       kinds.push("json");
     }
   }
-  return sawDf ? `(${kinds.join(", ")})` : null;
+  return sawTypedKind ? `(${kinds.join(", ")})` : null;
 }
 
 function adaptRustParamType(name: string, typeText: string): AdaptedRustParam {

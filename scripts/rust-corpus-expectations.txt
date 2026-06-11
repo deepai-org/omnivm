@@ -3,7 +3,7 @@
 # file expected-state [expected-stdout-substring]
 rust-all-six.poly pass stamp=high:310
 rust-anyhow-thiserror-errors.poly pass caught_frozen=True panic_caught=True
-rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True
+rust-arrow-cdata-pointer.poly pass return_identity=True bytes_ok=True inbound_ok=True
 rust-axum-multi-serve.poly pass body=pong-from-rust
 rust-axum-router.poly pass status=ok checks=3
 rust-channel-relay.poly pass moved=4

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/omnivm/omnivm/pkg/handles"
 	"github.com/omnivm/omnivm/pkg/rust"
@@ -22,14 +24,14 @@ type scriptedRuntime struct {
 	eval func(code string) pkg.Result
 }
 
-func (s *scriptedRuntime) Name() string                                          { return s.name }
-func (s *scriptedRuntime) Initialize() error                                     { return nil }
-func (s *scriptedRuntime) Execute(code string) pkg.Result                        { return s.eval(code) }
-func (s *scriptedRuntime) Eval(code string) pkg.Result                           { return s.eval(code) }
-func (s *scriptedRuntime) SetBridgeCallback(callPtr, freePtr uintptr)            {}
-func (s *scriptedRuntime) Pump()                                                 {}
-func (s *scriptedRuntime) Shutdown() error                                       { return nil }
-func (s *scriptedRuntime) ExecuteFile(string, []string, io.Reader) pkg.Result    { return pkg.Result{} }
+func (s *scriptedRuntime) Name() string                                       { return s.name }
+func (s *scriptedRuntime) Initialize() error                                  { return nil }
+func (s *scriptedRuntime) Execute(code string) pkg.Result                     { return s.eval(code) }
+func (s *scriptedRuntime) Eval(code string) pkg.Result                        { return s.eval(code) }
+func (s *scriptedRuntime) SetBridgeCallback(callPtr, freePtr uintptr)         {}
+func (s *scriptedRuntime) Pump()                                              {}
+func (s *scriptedRuntime) Shutdown() error                                    { return nil }
+func (s *scriptedRuntime) ExecuteFile(string, []string, io.Reader) pkg.Result { return pkg.Result{} }
 
 // TestRustSpawnHandleConcurrency: `go expr` on Rust async fns returns a real
 // spawn handle, and two spawned sleeps run concurrently on the one reactor —
@@ -561,5 +563,76 @@ omnivm::export_typed_fn!(OmniVMCallTyped_typed_join, typed_join, 2);
 	}
 	if rust.TypedCallCount != before+1 {
 		t.Fatalf("fallback should not increment typed count")
+	}
+}
+
+// TestRustBytesPointerLaneInbound: python byte payloads cross into Rust as a
+// pointer + length marker (no base64, no JSON number array). The python side
+// is scripted here: it returns exactly the marker __omnivm_rust_arg emits
+// for bytes/bytearray/memoryview, pointing at a Go-pinned buffer (pkg/manifest
+// tests carry no embedded python; the live-python proof is the corpus file
+// rust-arrow-cdata-pointer.poly). The hand-written-manifest fallbacks (JSON
+// number array, base64 string) decode through the same bytes-kind lane.
+func TestRustBytesPointerLaneInbound(t *testing.T) {
+	requireRust(t)
+	payload := make([]byte, 100*1024)
+	var want int64
+	for i := range payload {
+		payload[i] = byte(i % 251)
+		want += int64(payload[i]) * int64(i%7+1)
+	}
+	want += int64(len(payload))
+	marker := fmt.Sprintf(
+		`{"__omnivm_bytes__": true, "ptr": "%d", "len": "%d", "buffer_id": "1"}`,
+		uintptr(unsafe.Pointer(&payload[0])), len(payload),
+	)
+	py := &scriptedRuntime{name: "python", eval: func(code string) pkg.Result {
+		if strings.Contains(code, "__omnivm_rust_arg(big_payload)") {
+			return pkg.Result{Value: marker}
+		}
+		return pkg.Result{}
+	}}
+	e := NewExecutor(map[string]pkg.Runtime{"python": py})
+	if err := e.Execute(&Manifest{Version: 1, Ops: []*Op{
+		{OpType: "func_def", Name: "digest", BodyRuntime: "rust",
+			Params: []*Param{{Name: "data"}}, Exports: []string{"digest"},
+			Source: `
+fn digest(data: Vec<u8>) -> i64 {
+    let mut sum: i64 = 0;
+    for (i, b) in data.iter().enumerate() {
+        sum += (*b as i64) * ((i % 7) as i64 + 1);
+    }
+    sum + data.len() as i64
+}
+
+omnivm::export_fn!(OmniVMCall_digest, digest, (bytes));
+`},
+	}}); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	e.setBinding("big_payload", RuntimeRef{Runtime: "python", VarName: "big_payload"})
+	if err := e.Execute(&Manifest{Version: 1, Ops: []*Op{
+		{OpType: "eval", Runtime: "rust", Code: "digest(big_payload)", Bind: "out"},
+	}}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	goruntime.KeepAlive(payload)
+	out, _ := e.getBinding("out")
+	if !numEquals(out, float64(want)) {
+		t.Fatalf("digest over pointer lane = %v, want %d", out, want)
+	}
+
+	// Fallback forms: a JSON number array and a base64 string literal both
+	// decode as the byte payload [1, 2, 3] -> 1*1 + 2*2 + 3*3 + 3 = 17.
+	if err := e.Execute(&Manifest{Version: 1, Ops: []*Op{
+		{OpType: "eval", Runtime: "rust", Code: "digest([1, 2, 3])", Bind: "arr"},
+		{OpType: "eval", Runtime: "rust", Code: `digest("AQID")`, Bind: "b64"},
+	}}); err != nil {
+		t.Fatalf("fallback Execute: %v", err)
+	}
+	arr, _ := e.getBinding("arr")
+	b64, _ := e.getBinding("b64")
+	if !numEquals(arr, 17) || !numEquals(b64, 17) {
+		t.Fatalf("fallback lanes: array=%v base64=%v, want 17/17", arr, b64)
 	}
 }

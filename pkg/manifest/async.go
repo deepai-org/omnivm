@@ -505,6 +505,7 @@ func (e *Executor) startAsyncBranch(branch *Op, rtName, flagVar string, idx int)
 		if injectResult.Err != nil {
 			return fmt.Errorf("parallel auto-inject [%s]: %w", rtName, injectResult.Err)
 		}
+		e.commitCaptureInjection(injection)
 		defer func() {
 			if cleanupErr := e.runJavaCaptureCleanup(rt, injection); cleanupErr != nil {
 				if err != nil {

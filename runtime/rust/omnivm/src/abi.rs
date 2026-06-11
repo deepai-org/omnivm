@@ -265,8 +265,36 @@ pub fn arg<T: serde::de::DeserializeOwned>(args: &[serde_json::Value], index: us
         return serde_json::from_value(table_value)
             .map_err(|e| OmniError::msg(format!("argument {index} (arrow table): {e}")));
     }
+    if let Some(decoded) = crate::cdata::decode_bytes_marker(&value) {
+        // A bytes marker reaching a json-kind param (hand-written shim):
+        // lift to a serde byte array so `Vec<u8>`-shaped targets still work.
+        let bytes = decoded.map_err(OmniError::msg)?;
+        let lifted =
+            serde_json::Value::Array(bytes.into_iter().map(serde_json::Value::from).collect());
+        return serde_json::from_value(lifted)
+            .map_err(|e| OmniError::msg(format!("argument {index} (bytes): {e}")));
+    }
     serde_json::from_value(value)
         .map_err(|e| OmniError::msg(format!("argument {index}: {e}")))
+}
+
+/// Owned byte-payload extraction for `bytes`-kind params (`Vec<u8>`/`&[u8]`
+/// signatures): pointer markers copy once out of the producer's pinned
+/// buffer; base64 markers/strings and plain JSON number arrays decode too
+/// (hand-written manifests).
+pub fn arg_bytes(args: &[serde_json::Value], index: usize) -> Result<Vec<u8>, OmniError> {
+    let value = args.get(index).cloned().unwrap_or(serde_json::Value::Null);
+    if let Some(decoded) = crate::cdata::decode_bytes_marker(&value) {
+        return decoded.map_err(|e| OmniError::msg(format!("argument {index} (bytes): {e}")));
+    }
+    if let Some(text) = value.as_str() {
+        use base64::Engine;
+        return base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map_err(|e| OmniError::msg(format!("argument {index} (bytes): base64: {e}")));
+    }
+    serde_json::from_value(value)
+        .map_err(|e| OmniError::msg(format!("argument {index} (bytes): {e}")))
 }
 
 /// Direct DataFrame extraction for `df`-kind params: Arrow C-Data markers
