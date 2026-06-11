@@ -68,10 +68,33 @@ import { lowerType } from '../type-system/lowering';
 import * as C from '../type-system/canonical';
 import { lowerAnnotatedProgram } from './lowering';
 import { LoweredDefineFunc, LoweredManifestIR, LoweredManifestNode } from './lowering-ir';
-import { extractRustFnSignatures, attributePrefixStart, scanRustFnCompletion } from '../rust-item-scanner';
+import {
+  extractRustFnSignatures,
+  extractRustFnGenerics,
+  attributePrefixStart,
+  scanRustFnCompletion,
+  RustFnGenerics,
+} from '../rust-item-scanner';
 
 /** Fn signature shape shared by raw-scanned RustItems and Rust FuncDecls. */
 type RustExportSig = AST.RustItem["fns"][number];
+
+/** One foreign call site of a gradual/generic Rust fn with its evidence. */
+type RustCallSite = {
+  call: AST.Call;
+  name: string;
+  /** Per-argument-slot evidence (undefined = unknown, keeps the dynamic path). */
+  evidence: Array<string | undefined>;
+};
+
+/** Mutable state threaded through the boundary-generics glue generation. */
+type RustBoundaryState = {
+  shims: string[];
+  exports: string[];
+  siteRewrites: Array<{ original: string; replacement: string }>;
+  syntheticFns: Map<string, Array<{ name: string; params: string[]; async: boolean }>>;
+  wrapperNames: Set<string>;
+};
 
 type BindingKind = "value" | "channel" | "stream" | "resource" | "table" | "job_handle" | "spawn_handle" | "function";
 
@@ -141,6 +164,19 @@ export class ManifestCodeGenerator {
      * rewrite rustc diagnostics to .poly coordinates.
      */
     sourceMap: RustSourceMapEntry[];
+    /**
+     * Tier-1 per-call-site stamps: exact call source text → the same call
+     * retargeted at a generated concrete wrapper. Applied to every emitted
+     * `code` field after op generation (identical text implies identical
+     * evidence, so a global rewrite is consistent by construction).
+     */
+    siteRewrites: Array<{ original: string; replacement: string }>;
+    /**
+     * Generated boundary wrapper fns, keyed by the fn they wrap. Each gets
+     * a func_def op (emitted alongside its target's) so the host registers
+     * guest stubs and arity metadata for the wrapper export.
+     */
+    syntheticFns: Map<string, Array<{ name: string; params: string[]; async: boolean }>>;
   };
   /** The .poly file name source_map coordinates refer to, when known. */
   private sourceFile?: string;
@@ -182,6 +218,7 @@ export class ManifestCodeGenerator {
       ops.push(...this.emitBlock(block));
     }
     this.appendGoMainEntrypoint(annotated.program.body, ops);
+    this.applyRustSiteRewrites(ops);
 
     // Collect bridge ops and type summary from the checker
     const bridgeOps = this.typeChecker.getBridgeOps().map(b => this.toBridgeManifestOp(b));
@@ -3374,8 +3411,9 @@ export class ManifestCodeGenerator {
   private emitRustFuncDef(node: AST.FuncDecl): ManifestOp[] {
     const name = node.name.name;
     // Internal-only fns (and generic unexportables) live in the unit source
-    // verbatim but emit no func_def op.
-    if (this.rustUnit?.internalFns.has(name)) return [];
+    // verbatim but emit no func_def op — their Tier-1 site wrappers, when
+    // any exist, still do.
+    if (this.rustUnit?.internalFns.has(name)) return this.syntheticRustFuncDefs(name);
     this.recordBinding(name, OmniRuntime.Rust, "function");
 
     const params: ParamDef[] = node.params.map(p => ({
@@ -3395,7 +3433,7 @@ export class ManifestCodeGenerator {
         : { source: this.rustItemSource(node, node.async ? "async " : ""), exports: [name] }),
     };
 
-    return [funcDef];
+    return [funcDef, ...this.syntheticRustFuncDefs(name)];
   }
 
   /**
@@ -3427,8 +3465,12 @@ export class ManifestCodeGenerator {
     const ops: ManifestOp[] = [];
     for (const sig of node.fns) {
       // Internal-only fns (and generic unexportables) live in the unit
-      // source verbatim but emit no func_def op and no manifest binding.
-      if (this.rustUnit?.internalFns.has(sig.name)) continue;
+      // source verbatim but emit no func_def op and no manifest binding —
+      // their Tier-1 site wrappers, when any exist, still do.
+      if (this.rustUnit?.internalFns.has(sig.name)) {
+        ops.push(...this.syntheticRustFuncDefs(sig.name));
+        continue;
+      }
       this.recordBinding(sig.name, OmniRuntime.Rust, "function");
       const params: ParamDef[] = sig.params.map(name => ({ name }));
       const funcDef: FuncDefOp = {
@@ -3442,7 +3484,7 @@ export class ManifestCodeGenerator {
           ? this.rustUnitOpFields()
           : { source: node.text, exports: [sig.name] }),
       };
-      ops.push(funcDef);
+      ops.push(funcDef, ...this.syntheticRustFuncDefs(sig.name));
     }
     return ops;
   }
@@ -3657,18 +3699,31 @@ export class ManifestCodeGenerator {
       }
     }
 
+    // ── Call-site evidence ──────────────────────────────────────────
+    // One walk over every non-unit top-level node collects per-call-site
+    // argument evidence for each gradual or generic Rust fn. The gradual
+    // completion consumes the unanimous view (declaration stamps); Tier-1
+    // per-site stamping consumes the sites themselves.
+    const evidenceCandidates = new Map<string, RustExportSig>();
+    for (const { sig } of pendingFns) {
+      if (((sig.untypedParams ?? []).length > 0 || sig.typeGenerics) &&
+          !evidenceCandidates.has(sig.name)) {
+        evidenceCandidates.set(sig.name, sig);
+      }
+    }
+    const callSites = this.collectRustCallSites(
+      nodes,
+      evidenceCandidates,
+      new Set([...absorbed, ...rustFnNodes]),
+      useItems.some(piece => /\bpolars\b/.test(piece.text)),
+    );
+
     // ── Gradual-typing completion ───────────────────────────────────
     // Fn items with type-less params get a deterministic signature-only
     // rewrite before the unit is assembled (bodies stay byte-verbatim, line
     // counts are preserved). Runs before the export-set analysis so shims
     // see the completed paramTypes.
-    this.completeGradualRustFns(
-      nodes,
-      pendingFns,
-      fnSigsByPiece,
-      new Set([...absorbed, ...rustFnNodes]),
-      useItems.some(piece => /\bpolars\b/.test(piece.text)),
-    );
+    this.completeGradualRustFns(pendingFns, fnSigsByPiece, callSites);
 
     // ── Export-set analysis ─────────────────────────────────────────
     // A fn is exported only when its name is referenced OUTSIDE the unit:
@@ -3680,28 +3735,38 @@ export class ManifestCodeGenerator {
     // the unit are proven internal-only.
     const outsideText = this.maskedOutsideText(unitSpans);
     const internalFns = new Set<string>();
+    const boundary: RustBoundaryState = {
+      shims,
+      exports,
+      siteRewrites: [],
+      syntheticFns: new Map(),
+      wrapperNames: new Set(),
+    };
+    const pieceTextByFn = new Map<string, string>();
+    for (const [piece, sigs] of fnSigsByPiece) {
+      for (const sig of sigs) pieceTextByFn.set(sig.name, piece.text);
+    }
     for (const { sig, node } of pendingFns) {
       const referencedOutside = new RegExp(`\\b${sig.name}\\b`).test(outsideText);
       if (!referencedOutside) {
         internalFns.add(sig.name);
         continue;
       }
+      const fnSites = callSites.filter(site => site.name === sig.name);
       if (sig.typeGenerics) {
-        // A generic fn cannot be monomorphized behind a serde shim. Skip the
-        // shim AND the export so the unit still compiles — the call site
-        // fails at runtime with unknown-function, which is the accurate
-        // error.
-        this.addDiagnostic(
-          "warning",
-          "rust-generic-export",
-          `Rust fn '${sig.name}' is generic and cannot be exported; ` +
-            `call it through a concrete wrapper fn instead ` +
-            `(e.g. fn ${sig.name}_concrete(...) { ${sig.name}(...) })`,
-          node,
-        );
-        internalFns.add(sig.name);
+        // Boundary generics — tiered dispatch (docs/rust-boundary-generics.md):
+        // per-site stamps where evidence exists, a tag dispatcher or Dyn
+        // instantiation under the original symbol where possible, the
+        // diagnostic otherwise.
+        if (!this.emitRustGenericBoundary(sig, node, pieceTextByFn.get(sig.name) ?? "", fnSites, boundary)) {
+          internalFns.add(sig.name);
+        }
         continue;
       }
+      // Tier-1 per-site stamps for gradual fns whose declaration kept Dyn
+      // slots (conflicting/partial evidence) — additive; the Dyn export
+      // below stays the fallback for unevidenced sites.
+      this.emitRustGradualSiteWrappers(sig, fnSites, boundary);
       shims.push(this.rustExportShim(sig, node));
       exports.push(sig.name);
     }
@@ -3748,6 +3813,8 @@ export class ManifestCodeGenerator {
       absorbed,
       internalFns,
       sourceMap,
+      siteRewrites: boundary.siteRewrites,
+      syntheticFns: boundary.syntheticFns,
     };
   }
 
@@ -3775,12 +3842,10 @@ export class ManifestCodeGenerator {
       pos = Math.max(pos, span.end);
     }
     if (pos < src.length) out += src.slice(pos);
-    // TODO(dogfood finding 4): comment-only mentions of a fn name keep it
-    // exported, and a doomed shim can fail the unit build. Stripping
-    // comments here destabilizes files whose inter-item trivia (attribute
-    // fragments, banners) leaks into this text — fix the assembly
-    // interaction before re-enabling stripLineAndBlockComments(out).
-    return out;
+    // A fn NAME mentioned in a comment is not a reference: an export shim
+    // generated for it can demand impossible bounds (Deserialize on
+    // Arc<Shared>) and fail the whole unit build (dogfood finding 4).
+    return stripLineAndBlockComments(out);
   }
 
   /**
@@ -3806,11 +3871,9 @@ export class ManifestCodeGenerator {
    * counts — and therefore the unit source map — are preserved.
    */
   private completeGradualRustFns(
-    nodes: Array<AST.Decl | AST.Stmt>,
     pendingFns: Array<{ sig: RustExportSig; node: AST.Decl | AST.Stmt }>,
     fnSigsByPiece: Map<RustUnitPiece, RustExportSig[]>,
-    unitNodes: Set<AST.Decl | AST.Stmt>,
-    polarsInScope: boolean,
+    callSites: RustCallSite[],
   ): void {
     const gradual = new Map<string, RustExportSig>();
     for (const { sig } of pendingFns) {
@@ -3818,7 +3881,31 @@ export class ManifestCodeGenerator {
     }
     if (gradual.size === 0) return;
 
-    const stamps = this.collectRustCallStamps(nodes, gradual, unitNodes, polarsInScope);
+    // fnName → paramIndex → agreed type: stamped only when ALL call sites
+    // agree and none is unknown — anything else keeps Dyn (per-site Tier-1
+    // wrappers then cover the evidenced sites individually).
+    const evidence = new Map<string, Map<number, string | null>>();
+    for (const site of callSites) {
+      const sig = gradual.get(site.name);
+      if (!sig) continue;
+      let slots = evidence.get(site.name);
+      if (!slots) { slots = new Map(); evidence.set(site.name, slots); }
+      for (const index of sig.untypedParams ?? []) {
+        const type = site.evidence[index];
+        const prev = slots.get(index);
+        if (type === undefined) { slots.set(index, null); continue; }
+        if (prev === undefined) slots.set(index, type);
+        else if (prev !== type) slots.set(index, null);
+      }
+    }
+    const stamps = new Map<string, Map<number, string>>();
+    for (const [fn, slots] of evidence) {
+      const agreed = new Map<number, string>();
+      for (const [index, type] of slots) {
+        if (type) agreed.set(index, type);
+      }
+      if (agreed.size > 0) stamps.set(fn, agreed);
+    }
 
     for (const [piece, sigs] of fnSigsByPiece) {
       for (const sig of sigs) {
@@ -3839,6 +3926,7 @@ export class ManifestCodeGenerator {
         }
         if (!scan.hasReturnType && scan.bodyTailIsExpression) {
           inserts.push({ at: scan.paramsEnd, text: " -> impl omnivm::serde::Serialize" });
+          sig.completedReturn = true;
         }
         inserts.sort((a, b) => b.at - a.at);
         let text = piece.text;
@@ -3851,18 +3939,19 @@ export class ManifestCodeGenerator {
   }
 
   /**
-   * Call-site evidence for gradual Rust fns: walk every top-level node that
-   * is NOT part of the Rust unit, find calls to gradual fns by name, and
-   * classify the argument in each untyped slot. A type is stamped only when
-   * ALL call sites agree and none is unknown — anything else keeps Dyn.
-   * Returns fnName → paramIndex → completed Rust type text.
+   * Call-site evidence for gradual and generic Rust fns: walk every
+   * top-level node that is NOT part of the Rust unit, find calls to the
+   * candidate fns by name, and classify EVERY argument slot. Consumers
+   * decide what to do with the evidence (unanimous declaration stamping
+   * for gradual fns; Tier-1 per-site wrappers for both kinds).
    */
-  private collectRustCallStamps(
+  private collectRustCallSites(
     nodes: Array<AST.Decl | AST.Stmt>,
-    gradual: Map<string, RustExportSig>,
+    candidates: Map<string, RustExportSig>,
     unitNodes: Set<AST.Decl | AST.Stmt>,
     polarsInScope: boolean,
-  ): Map<string, Map<number, string>> {
+  ): RustCallSite[] {
+    if (candidates.size === 0) return [];
     // DataFrame provenance: top-level bindings initialized by a recognizable
     // pandas/polars/pyarrow producer expression. Only used when the unit
     // already references polars (otherwise the stamped type wouldn't
@@ -3886,17 +3975,7 @@ export class ManifestCodeGenerator {
       }
     }
 
-    // fnName → paramIndex → agreed type, or null once evidence conflicts.
-    const evidence = new Map<string, Map<number, string | null>>();
-    const note = (fn: string, index: number, type: string | undefined) => {
-      let slots = evidence.get(fn);
-      if (!slots) { slots = new Map(); evidence.set(fn, slots); }
-      const prev = slots.get(index);
-      if (type === undefined) { slots.set(index, null); return; }
-      if (prev === undefined) slots.set(index, type);
-      else if (prev !== type) slots.set(index, null);
-    };
-
+    const sites: RustCallSite[] = [];
     const visit = (value: unknown): void => {
       if (!value || typeof value !== "object") return;
       if (Array.isArray(value)) {
@@ -3907,11 +3986,13 @@ export class ManifestCodeGenerator {
       if (node.kind === "Call") {
         const call = node as AST.Call;
         if (call.callee.kind === "Identifier") {
-          const sig = gradual.get(call.callee.name);
+          const sig = candidates.get(call.callee.name);
           if (sig) {
-            for (const index of sig.untypedParams ?? []) {
-              note(sig.name, index, this.rustArgEvidence(call.args[index], dfBindings));
-            }
+            sites.push({
+              call,
+              name: sig.name,
+              evidence: call.args.map(arg => this.rustArgEvidence(arg, dfBindings)),
+            });
           }
         }
       }
@@ -3923,16 +4004,7 @@ export class ManifestCodeGenerator {
     for (const node of nodes) {
       if (!unitNodes.has(node)) visit(node);
     }
-
-    const stamps = new Map<string, Map<number, string>>();
-    for (const [fn, slots] of evidence) {
-      const agreed = new Map<number, string>();
-      for (const [index, type] of slots) {
-        if (type) agreed.set(index, type);
-      }
-      if (agreed.size > 0) stamps.set(fn, agreed);
-    }
-    return stamps;
+    return sites;
   }
 
   /**
@@ -3963,6 +4035,432 @@ export class ManifestCodeGenerator {
     }
   }
 
+  // ─── Boundary generics: tiered dispatch ──────────────────────────────
+  // docs/rust-boundary-generics.md. Resolution order per fn: per-site
+  // stamping (Tier 1, always additive) → tag dispatcher (Tier 2) → Dyn
+  // instantiation (Tier 3) → diagnostic. Each tier is observationally
+  // equivalent to the one below it — same semantics, different cost.
+
+  /**
+   * Tier 1 for GRADUAL fns whose declaration kept `omnivm::Dyn` slots
+   * (conflicting or partial call-site evidence): each foreign call site
+   * whose Dyn-slot arguments all carry unambiguous scalar evidence gets one
+   * concrete wrapper per distinct instantiation
+   * (`fn __omnivm_<fn>__<typekey>(..) { <fn>(omnivm::Dyn::from(..), ..) }`)
+   * and the call op is rewritten to target it. The declaration itself stays
+   * untouched — different sites may carry different stamps; unevidenced
+   * sites keep calling the Dyn export exactly as before. (Unanimous
+   * evidence still stamps the declaration directly — strictly better: the
+   * body typechecks concretely and the original export rides the typed
+   * lane — so wrappers only appear when sites disagree.)
+   */
+  private emitRustGradualSiteWrappers(
+    sig: RustExportSig,
+    fnSites: RustCallSite[],
+    boundary: RustBoundaryState,
+  ): void {
+    const paramTypes = sig.paramTypes ?? [];
+    const dynSlots = new Set((sig.untypedParams ?? []).filter(i => paramTypes[i] === "Dyn"));
+    if (dynSlots.size === 0 || sig.paramCount === 0 || sig.paramCount > 8) return;
+    for (const site of fnSites) {
+      if (site.call.args.length !== sig.paramCount) continue;
+      const effective: string[] = [];
+      const callArgs: string[] = [];
+      let ok = true;
+      for (let i = 0; i < sig.paramCount; i++) {
+        const name = sig.params[i];
+        if (!/^[A-Za-z_]\w*$/.test(name)) { ok = false; break; }
+        if (dynSlots.has(i)) {
+          const ev = site.evidence[i];
+          if (!ev || !RUST_SCALAR_EVIDENCE.has(ev)) { ok = false; break; }
+          effective.push(ev);
+          callArgs.push(`omnivm::Dyn::from(${name})`);
+        } else {
+          const declared = paramTypes[i] === "Dyn" ? "omnivm::Dyn" : (paramTypes[i] ?? "").trim();
+          if (!declared) { ok = false; break; }
+          effective.push(declared);
+          callArgs.push(name);
+        }
+      }
+      if (!ok) continue;
+      const returnClause = sig.returnType
+        ? ` -> ${sig.returnType}`
+        : (sig.completedReturn ? " -> impl omnivm::serde::Serialize" : "");
+      const wrapperName = `__omnivm_${sig.name}__${effective.map(rustTypeKey).join("_")}`;
+      this.registerRustSiteWrapper(sig, site, wrapperName, effective, callArgs, returnClause, boundary);
+    }
+  }
+
+  /**
+   * Tier 1 for GENERIC fns: a call site whose bare-`T` slots all carry
+   * unambiguous scalar evidence (consistent per generic ident) gets a
+   * monomorphizing wrapper — concrete arg types let rustc infer the
+   * instantiation, no turbofish needed. The generic declaration stays
+   * byte-verbatim. An instantiation that fails the fn's bounds is a real
+   * type error and surfaces as a unit compile error at .poly coordinates.
+   */
+  private emitRustGenericSiteWrappers(
+    sig: RustExportSig,
+    generics: RustFnGenerics,
+    fnSites: RustCallSite[],
+    boundary: RustBoundaryState,
+  ): void {
+    const idents = new Set(generics.params.filter(p => !p.isConst).map(p => p.name));
+    if (idents.size === 0 || sig.paramCount === 0 || sig.paramCount > 8) return;
+    const paramTypes = sig.paramTypes ?? [];
+    for (const site of fnSites) {
+      if (site.call.args.length !== sig.paramCount) continue;
+      const binding = new Map<string, string>();
+      const effective: string[] = [];
+      let ok = true;
+      for (let i = 0; i < sig.paramCount && ok; i++) {
+        // "Dyn" is the gradual completion's shorthand for omnivm::Dyn.
+        const declaredRaw = paramTypes[i] === "Dyn" ? "omnivm::Dyn" : (paramTypes[i] ?? "").trim();
+        const declared = stripRustLifetimes(declaredRaw);
+        if (!declared || !/^[A-Za-z_]\w*$/.test(sig.params[i])) { ok = false; break; }
+        if (idents.has(declared)) {
+          const ev = site.evidence[i];
+          if (!ev || !RUST_SCALAR_EVIDENCE.has(ev)) { ok = false; break; }
+          const prev = binding.get(declared);
+          if (prev && prev !== ev) { ok = false; break; }
+          binding.set(declared, ev);
+          effective.push(ev);
+        } else if ([...idents].some(g => new RegExp(`\\b${g}\\b`).test(declared))) {
+          ok = false; // T in a container position — literals carry no evidence
+        } else {
+          effective.push(declaredRaw);
+        }
+      }
+      if (!ok) continue;
+      if ([...idents].some(g => !binding.has(g))) continue; // underdetermined
+      let returnType = (sig.returnType ?? "").trim();
+      for (const [g, t] of binding) {
+        returnType = returnType.replace(new RegExp(`\\b${g}\\b`, "g"), t);
+      }
+      if (/\bimpl\b/.test(returnType)) continue; // opaque returns can't restate
+      const returnClause = returnType ? ` -> ${returnType}` : "";
+      const wrapperName = `__omnivm_${sig.name}__${effective.map(rustTypeKey).join("_")}`;
+      this.registerRustSiteWrapper(sig, site, wrapperName, effective, [...sig.params], returnClause, boundary);
+    }
+  }
+
+  /**
+   * Register one Tier-1 wrapper: glue fn + export shim + export symbol +
+   * synthetic func_def descriptor (first occurrence per instantiation), and
+   * the call-op rewrite for THIS site. Wrappers are generated glue: no
+   * source-map entries; the declaration is untouched so line counts hold.
+   */
+  private registerRustSiteWrapper(
+    sig: RustExportSig,
+    site: RustCallSite,
+    wrapperName: string,
+    paramTypes: string[],
+    callArgs: string[],
+    returnClause: string,
+    boundary: RustBoundaryState,
+  ): void {
+    const original = this.sliceSource(site.call);
+    if (!original) return;
+    const argsStart = site.call.callee.span.end - site.call.span.start;
+    if (argsStart <= 0 || argsStart >= original.length) return;
+    const replacement = wrapperName + original.slice(argsStart);
+
+    if (!boundary.wrapperNames.has(wrapperName)) {
+      boundary.wrapperNames.add(wrapperName);
+      const fnIntro = sig.async ? "async fn" : "fn";
+      const paramList = sig.params.map((n, i) => `${n}: ${paramTypes[i]}`).join(", ");
+      const body = `${sig.name}(${callArgs.join(", ")})${sig.async ? ".await" : ""}`;
+      const wrapperText = [
+        `${fnIntro} ${wrapperName}(${paramList})${returnClause} {`,
+        `    ${body}`,
+        `}`,
+      ].join("\n");
+      const wrapperSig: RustExportSig = {
+        name: wrapperName,
+        async: Boolean(sig.async),
+        paramCount: sig.paramCount,
+        params: [...sig.params],
+        paramTypes: [...paramTypes],
+        untypedParams: [],
+        returnType: returnClause.startsWith(" -> ") ? returnClause.slice(4) : "",
+        typeGenerics: false,
+      };
+      boundary.shims.push(wrapperText + "\n" + this.rustExportShim(wrapperSig, site.call));
+      boundary.exports.push(wrapperName);
+      const list = boundary.syntheticFns.get(sig.name) ?? [];
+      list.push({ name: wrapperName, params: [...sig.params], async: Boolean(sig.async) });
+      boundary.syntheticFns.set(sig.name, list);
+    }
+    boundary.siteRewrites.push({ original, replacement });
+  }
+
+  /**
+   * Boundary export for a GENERIC Rust fn referenced outside the unit.
+   * Returns true when the fn exports under its ORIGINAL symbol (Tier 2 or
+   * Tier 3); false emits the rust-generic-export warning naming the blocker
+   * and keeps the fn internal (Tier-1 wrappers, if any, still work).
+   */
+  private emitRustGenericBoundary(
+    sig: RustExportSig,
+    node: AST.Decl | AST.Stmt,
+    pieceText: string,
+    fnSites: RustCallSite[],
+    boundary: RustBoundaryState,
+  ): boolean {
+    const failure = (detail: string): false => {
+      this.addDiagnostic(
+        "warning",
+        "rust-generic-export",
+        `Rust fn '${sig.name}' is generic with bounds not satisfiable by the ` +
+          `dynamic fallback (${detail}); annotate the call site or add a ` +
+          `concrete wrapper (e.g. fn ${sig.name}_concrete(...) { ${sig.name}(...) })`,
+        node,
+      );
+      return false;
+    };
+
+    const generics = pieceText ? extractRustFnGenerics(pieceText, sig.name) : null;
+    if (!generics || generics.opaque) return failure("unparseable generic signature");
+    if (generics.params.some(p => p.isConst)) return failure("const generic parameters");
+    if (generics.params.length === 0) return failure("unparseable generic signature");
+
+    // Tier 1 first: evidenced call sites get zero-cost monomorphic stamps
+    // regardless of how (or whether) the original symbol exports.
+    this.emitRustGenericSiteWrappers(sig, generics, fnSites, boundary);
+
+    const idents = new Set(generics.params.map(p => p.name));
+    const boundsByIdent = new Map<string, string[]>();
+    for (const p of generics.params) boundsByIdent.set(p.name, [...p.bounds]);
+    let compoundPredicate: string | undefined;
+    for (const pred of generics.wherePredicates) {
+      const target = pred.target.replace(/\s+/g, "");
+      if (idents.has(target)) boundsByIdent.get(target)!.push(...pred.bounds);
+      else compoundPredicate = pred.target;
+    }
+
+    const paramTypes = sig.paramTypes ?? [];
+    if (sig.paramCount > 8) return failure("arity exceeds the export cap (8)");
+
+    // ── Tier 2: autoref-pruned lattice dispatcher ────────────────────
+    // Minimal shape: one type parameter, arity ≤ 2, every param a bare `T`,
+    // sync. The dispatcher switches on the incoming serde tags and routes
+    // through probe tokens whose by-value impl exists only under the fn's
+    // bounds — rustc prunes candidates, no trait solver needed. Tags
+    // outside the lattice (null/array/object) route through the Dyn probe;
+    // if Dyn fails the bounds too, the probe yields the per-candidate
+    // failure and the dispatcher panics with the structured TypeError
+    // (catchable, like the rest of the dynamic surface).
+    const soleIdent = generics.params.length === 1 ? generics.params[0].name : undefined;
+    if (
+      soleIdent !== undefined &&
+      compoundPredicate === undefined &&
+      !sig.async &&
+      sig.paramCount >= 1 && sig.paramCount <= 2 &&
+      paramTypes.length === sig.paramCount &&
+      paramTypes.every(t => stripRustLifetimes(t ?? "").trim() === soleIdent) &&
+      sig.params.every(n => /^[A-Za-z_]\w*$/.test(n)) &&
+      rustTier2ReturnOk(sig.returnType ?? "", soleIdent)
+    ) {
+      boundary.shims.push(this.rustTier2Dispatcher(sig, soleIdent, boundsByIdent.get(soleIdent)!));
+      boundary.exports.push(sig.name);
+      return true;
+    }
+
+    // ── Tier 3: the Dyn instantiation ────────────────────────────────
+    if (compoundPredicate !== undefined) {
+      return failure(`where-clause predicate on compound type '${compoundPredicate}'`);
+    }
+    const unrecognized = [...boundsByIdent.values()].flat().filter(b => !dynSatisfiesBound(b));
+    if (unrecognized.length > 0) return failure(unrecognized.join(", "));
+
+    const wrapperParams: string[] = [];
+    const callArgs: string[] = [];
+    for (let i = 0; i < sig.paramCount; i++) {
+      const name = sig.params[i];
+      if (!/^[A-Za-z_]\w*$/.test(name)) return failure("pattern parameters");
+      const declared = (paramTypes[i] ?? "").trim();
+      if (!declared) return failure(`parameter '${name}' has no extractable type`);
+      const mapping = mapGenericParamToDyn(declared, idents);
+      if (mapping.kind === "unsupported") {
+        return failure(`'${mapping.ident}' in unsupported position ${declared}`);
+      }
+      if (mapping.kind === "concrete") {
+        const adapted = adaptRustParamType(name, declared);
+        if (!adapted.ownedType) return failure(`parameter '${name}' type is not adaptable`);
+        wrapperParams.push(`${name}: ${adapted.ownedType}`);
+        callArgs.push(adapted.adapted ? `&${name}` : name);
+      } else {
+        wrapperParams.push(`${name}: ${mapping.ownedType}`);
+        callArgs.push(mapping.reborrow ? `&${name}` : name);
+      }
+    }
+    const ret = mapGenericReturnToDyn(sig.returnType ?? "", idents);
+    if ("error" in ret) return failure(ret.error);
+
+    const wrapperName = `__omnivm_dyn_${sig.name}`;
+    const fnIntro = sig.async ? "async fn" : "fn";
+    const retClause = ret.type ? ` -> ${ret.type}` : "";
+    const body = `${sig.name}(${callArgs.join(", ")})${sig.async ? ".await" : ""}${ret.mapExpr}`;
+    const macroName = sig.async ? "export_async_fn" : "export_fn";
+    boundary.shims.push([
+      `${fnIntro} ${wrapperName}(${wrapperParams.join(", ")})${retClause} {`,
+      `    ${body}`,
+      `}`,
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${wrapperName}, ${sig.paramCount});`,
+    ].join("\n"));
+    boundary.exports.push(sig.name);
+    return true;
+  }
+
+  /**
+   * Generate the Tier-2 dispatcher glue for one generic fn: probe token +
+   * Hit/Miss autoref traits (mirroring the crate's OutcomeToken/ErrToken
+   * discipline) + the tag-switching dispatcher, exported under the
+   * ORIGINAL symbol.
+   */
+  private rustTier2Dispatcher(sig: RustExportSig, ident: string, bounds: string[]): string {
+    const fn = sig.name;
+    const n = sig.paramCount;
+    const v = "omnivm::serde_json::Value";
+    const boundsClause = [
+      ...bounds,
+      "omnivm::serde::Serialize",
+      "omnivm::serde::de::DeserializeOwned",
+    ].join(" + ");
+    const probeSig =
+      `fn __omnivm_probe(self, __args: Vec<${v}>) -> Result<${v}, String>`;
+    const argDecls = Array.from({ length: n }, (_, i) =>
+      `        let __a${i}: ${ident} = omnivm::serde_json::from_value(__it.next().unwrap_or(${v}::Null))` +
+      `.map_err(|e| format!("argument ${i + 1} of '${fn}': {e}"))?;`).join("\n");
+    const callArgs = Array.from({ length: n }, (_, i) => `__a${i}`).join(", ");
+    const dispParams = Array.from({ length: n }, (_, i) => `__omnivm_a${i}: omnivm::Dyn`).join(", ");
+    const dispArgs = Array.from({ length: n }, (_, i) => `__omnivm_a${i}.0`).join(", ");
+    return [
+      `#[allow(non_camel_case_types, dead_code)]`,
+      `struct __OmnivmProbe_${fn}<${ident}>(::std::marker::PhantomData<${ident}>);`,
+      `#[allow(non_camel_case_types)]`,
+      `trait __OmnivmHit_${fn} { ${probeSig}; }`,
+      `impl<${ident}> __OmnivmHit_${fn} for __OmnivmProbe_${fn}<${ident}>`,
+      `where ${ident}: ${boundsClause} {`,
+      `    ${probeSig} {`,
+      `        let mut __it = __args.into_iter();`,
+      argDecls,
+      `        omnivm::serde_json::to_value(${fn}(${callArgs})).map_err(|e| e.to_string())`,
+      `    }`,
+      `}`,
+      `#[allow(non_camel_case_types)]`,
+      `trait __OmnivmMiss_${fn} { ${probeSig}; }`,
+      `impl<${ident}> __OmnivmMiss_${fn} for &__OmnivmProbe_${fn}<${ident}> {`,
+      `    fn __omnivm_probe(self, _args: Vec<${v}>) -> Result<${v}, String> {`,
+      `        Err(format!("candidate {} does not satisfy the declared bounds",`,
+      `            ::std::any::type_name::<${ident}>()))`,
+      `    }`,
+      `}`,
+      `fn __omnivm_dispatch_${fn}(${dispParams}) -> omnivm::Dyn {`,
+      `    let __args: Vec<${v}> = vec![${dispArgs}];`,
+      `    let __lattice = if __args.iter().all(|v| v.as_i64().is_some()) {`,
+      `        __OmnivmProbe_${fn}::<i64>(::std::marker::PhantomData).__omnivm_probe(__args.clone())`,
+      `    } else if __args.iter().all(|v| v.is_number()) {`,
+      `        __OmnivmProbe_${fn}::<f64>(::std::marker::PhantomData).__omnivm_probe(__args.clone())`,
+      `    } else if __args.iter().all(|v| v.is_boolean()) {`,
+      `        __OmnivmProbe_${fn}::<bool>(::std::marker::PhantomData).__omnivm_probe(__args.clone())`,
+      `    } else if __args.iter().all(|v| v.is_string()) {`,
+      `        __OmnivmProbe_${fn}::<String>(::std::marker::PhantomData).__omnivm_probe(__args.clone())`,
+      `    } else {`,
+      `        Err("no scalar candidate matches the argument tags".to_string())`,
+      `    };`,
+      `    match __lattice {`,
+      `        Ok(v) => omnivm::Dyn(v),`,
+      `        Err(__lattice_err) => {`,
+      `            match __OmnivmProbe_${fn}::<omnivm::Dyn>(::std::marker::PhantomData).__omnivm_probe(__args) {`,
+      `                Ok(v) => omnivm::Dyn(v),`,
+      `                Err(__dyn_err) => panic!(`,
+      `                    "TypeError: no boundary instantiation of '${fn}' accepts these arguments: {__lattice_err}; dynamic fallback (omnivm::Dyn): {__dyn_err}"`,
+      `                ),`,
+      `            }`,
+      `        }`,
+      `    }`,
+      `}`,
+      `omnivm::export_fn!(OmniVMCall_${fn}, __omnivm_dispatch_${fn}, ${n});`,
+    ].join("\n");
+  }
+
+  /**
+   * Emit func_def ops for the generated boundary wrappers of one fn (the
+   * host registers guest stubs + arity metadata from these). Consumed on
+   * first emission so a fn surfacing in multiple blocks never duplicates.
+   */
+  private syntheticRustFuncDefs(targetName: string): ManifestOp[] {
+    const list = this.rustUnit?.syntheticFns.get(targetName);
+    if (!list || list.length === 0) return [];
+    this.rustUnit!.syntheticFns.delete(targetName);
+    return list.map(s => {
+      this.recordBinding(s.name, OmniRuntime.Rust, "function");
+      const funcDef: FuncDefOp = {
+        op: "func_def",
+        name: s.name,
+        params: s.params.map(name => ({ name })),
+        body: [],
+        bodyRuntime: OmniRuntime.Rust,
+        ...(s.async ? { async: true } : {}),
+        ...this.rustUnitOpFields(),
+      };
+      return funcDef;
+    });
+  }
+
+  /**
+   * Tier-1 call-op rewriting: every emitted `code` field containing a
+   * stamped call site (matched by the site's exact source text, preceded by
+   * a non-identifier character) is retargeted at the per-site wrapper.
+   * Identical call text implies identical evidence, so the global textual
+   * rewrite is consistent by construction; reconstructed code that no
+   * longer matches its source slice simply keeps calling the original
+   * export — graceful degradation, never breakage. The Rust unit `source`
+   * is explicitly excluded: intra-unit calls are never rewritten.
+   */
+  private applyRustSiteRewrites(ops: ManifestOp[]): void {
+    const rewrites = this.rustUnit?.siteRewrites ?? [];
+    if (rewrites.length === 0) return;
+    const unique = new Map<string, string>();
+    for (const r of rewrites) {
+      if (r.original && r.original !== r.replacement) unique.set(r.original, r.replacement);
+    }
+    if (unique.size === 0) return;
+    // Outermost-first: rewriting an outer call only changes its callee
+    // prefix, so inner stamped calls still match afterwards.
+    const ordered = [...unique.entries()].sort((a, b) => b[0].length - a[0].length);
+    const rewriteText = (text: string): string => {
+      let out = text;
+      for (const [original, replacement] of ordered) {
+        let from = 0;
+        for (;;) {
+          const idx = out.indexOf(original, from);
+          if (idx === -1) break;
+          const prev = idx > 0 ? out[idx - 1] : "";
+          if (prev && /[A-Za-z0-9_$.]/.test(prev)) { from = idx + 1; continue; }
+          out = out.slice(0, idx) + replacement + out.slice(idx + original.length);
+          from = idx + replacement.length;
+        }
+      }
+      return out;
+    };
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) { value.forEach(walk); return; }
+      const obj = value as Record<string, unknown>;
+      for (const [key, child] of Object.entries(obj)) {
+        if (key === "source" || key === "source_map" || key === "sourceArtifact") continue;
+        if (key === "code" && typeof child === "string") {
+          obj[key] = rewriteText(child);
+        } else {
+          walk(child);
+        }
+      }
+    };
+    walk(ops);
+  }
+
   /**
    * Build the export shim for one exported Rust fn. When the signature has
    * borrowed params (`&str`, `&[T]`) — and, where applicable, a borrowed
@@ -3979,7 +4477,7 @@ export class ManifestCodeGenerator {
    * A return type with any OTHER borrow cannot be adapted: emit a warning
    * diagnostic and fall back to the direct shim (rustc reports the rest).
    */
-  private rustExportShim(sig: RustExportSig, node: AST.Decl | AST.Stmt): string {
+  private rustExportShim(sig: RustExportSig, node: { span?: AST.Span }): string {
     const macroName = sig.async ? "export_async_fn" : "export_fn";
     // DataFrame params use the typed-kind macro form so the Arrow C-Data
     // pointer handoff stays zero-copy (the json kind goes through serde).
@@ -4748,6 +5246,115 @@ function stripRustLifetimes(typeText: string): string {
   return typeText.replace(/'\w+\s*/g, "").replace(/\s+/g, " ").trim();
 }
 
+// ─── Boundary-generics helpers ────────────────────────────────────────
+
+/** Evidence types eligible for Tier-1 per-site wrappers (scalar literals). */
+const RUST_SCALAR_EVIDENCE = new Set(["i64", "f64", "bool", "String"]);
+
+/**
+ * The bound vocabulary `omnivm::Dyn` satisfies (runtime-dispatched impls in
+ * dyn.rs — failures are catchable Python-style panics at the moment of use).
+ * Send/Sync/'static hold structurally: Dyn is a newtype over
+ * serde_json::Value, which is Send + Sync + 'static.
+ */
+const RUST_DYN_BOUND_VOCABULARY = new Set([
+  "PartialOrd", "PartialEq", "Eq", "Ord", "Hash", "Clone", "Default",
+  "Display", "Debug", "FromStr", "Serialize", "DeserializeOwned",
+  "Send", "Sync", "Sized",
+]);
+
+/**
+ * Is one textual bound satisfied by `omnivm::Dyn`? TEXTUAL and conservative:
+ * path prefixes are stripped (std::fmt::Display → Display), only the exact
+ * vocabulary plus `Into<f64>`/`From<f64>` and `'static`/`?Sized` pass. ANY
+ * unrecognized bound keeps the fn on the diagnostic path.
+ */
+function dynSatisfiesBound(bound: string): boolean {
+  const raw = bound.trim();
+  if (raw === "'static") return true;
+  const t = raw.replace(/\s+/g, "");
+  if (t === "?Sized") return true;
+  const base = t.replace(/^(?:[A-Za-z_]\w*::)+/, "");
+  if (base === "Into<f64>" || base === "From<f64>") return true;
+  return RUST_DYN_BOUND_VOCABULARY.has(base);
+}
+
+/** Symbol-safe key for one concrete wrapper instantiation type. */
+function rustTypeKey(typeText: string): string {
+  const compact = stripRustLifetimes(typeText).replace(/\s+/g, "");
+  const named: Record<string, string> = { i64: "i64", f64: "f64", bool: "bool", String: "string" };
+  if (named[compact]) return named[compact];
+  const key = compact.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  return key || "t";
+}
+
+/**
+ * Map one generic-fn parameter type to its owned Dyn form for the Tier-3
+ * wrapper. Supported positions: bare `T`, `Vec<T>`, `Option<T>`, `&[T]`
+ * (owned as Vec, re-borrowed at the call). `T` nested anywhere else
+ * (HashMap<T, _> keys etc.) is unsupported → diagnostic.
+ */
+function mapGenericParamToDyn(typeText: string, idents: Set<string>):
+  | { kind: "mapped"; ownedType: string; reborrow: boolean }
+  | { kind: "concrete" }
+  | { kind: "unsupported"; ident: string } {
+  const t = stripRustLifetimes(typeText);
+  const mentioned = [...idents].filter(g => new RegExp(`\\b${g}\\b`).test(t));
+  if (mentioned.length === 0) return { kind: "concrete" };
+  const compact = t.replace(/\s+/g, "");
+  for (const g of mentioned) {
+    if (compact === g) return { kind: "mapped", ownedType: "omnivm::Dyn", reborrow: false };
+    if (compact === `Vec<${g}>`) return { kind: "mapped", ownedType: "Vec<omnivm::Dyn>", reborrow: false };
+    if (compact === `Option<${g}>`) return { kind: "mapped", ownedType: "Option<omnivm::Dyn>", reborrow: false };
+    if (compact === `&[${g}]`) return { kind: "mapped", ownedType: "Vec<omnivm::Dyn>", reborrow: true };
+  }
+  return { kind: "unsupported", ident: mentioned[0] };
+}
+
+/**
+ * Map a generic fn's return type for the Tier-3 wrapper: `T`/`Vec<T>`/
+ * `Option<T>` become their Dyn forms; concrete returns reuse the owned-data
+ * adaptation rules; anything else is a diagnostic.
+ */
+function mapGenericReturnToDyn(returnText: string, idents: Set<string>):
+  { type: string; mapExpr: string } | { error: string } {
+  const raw = returnText.trim();
+  if (!raw) return { type: "", mapExpr: "" };
+  const t = stripRustLifetimes(raw);
+  const mentioned = [...idents].filter(g => new RegExp(`\\b${g}\\b`).test(t));
+  if (mentioned.length === 0) {
+    if (/\bimpl\b/.test(t) && !/^impl\s+(?:omnivm\s*::\s*)?(?:serde\s*::\s*)?Serialize$/.test(t)) {
+      return { error: `opaque return type ${raw}` };
+    }
+    const adapted = adaptRustReturnType(raw);
+    if (adapted.kind === "unadaptable") return { error: `borrowed return type ${raw}` };
+    return { type: adapted.kind === "none" ? "" : adapted.ownedType, mapExpr: adapted.mapExpr };
+  }
+  const compact = t.replace(/\s+/g, "");
+  for (const g of mentioned) {
+    if (compact === g) return { type: "omnivm::Dyn", mapExpr: "" };
+    if (compact === `Vec<${g}>`) return { type: "Vec<omnivm::Dyn>", mapExpr: "" };
+    if (compact === `Option<${g}>`) return { type: "Option<omnivm::Dyn>", mapExpr: "" };
+  }
+  return { error: `'${mentioned[0]}' in unsupported return position ${raw}` };
+}
+
+/**
+ * Tier-2 return-type gate: the probe serializes the call result, so the
+ * return must be `()`/`T`/`Vec<T>`/`Option<T>` or a serializable scalar —
+ * anything else risks failing the whole unit compile and falls to Tier 3.
+ */
+function rustTier2ReturnOk(returnText: string, ident: string): boolean {
+  const compact = stripRustLifetimes(returnText).replace(/\s+/g, "");
+  return (
+    compact === "" ||
+    compact === ident ||
+    compact === `Vec<${ident}>` ||
+    compact === `Option<${ident}>` ||
+    ["i64", "f64", "bool", "String"].includes(compact)
+  );
+}
+
 interface AdaptedRustParam {
   name: string;
   /** Owned type text for the adapter signature ("" when unknown). */
@@ -4849,10 +5456,7 @@ function adaptRustReturnType(returnText: string): AdaptedRustReturn {
 }
 
 /** Removes line and block comments, string/char-literal aware. */
-// @ts-ignore retained for the TODO above (dogfood finding 4)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function stripLineAndBlockComments(text: string): string {
-
   let out = "";
   let i = 0;
   let mode: "code" | "line" | "block" | "dq" | "sq" | "bq" = "code";

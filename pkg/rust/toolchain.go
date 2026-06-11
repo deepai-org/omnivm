@@ -58,6 +58,10 @@ type Toolchain struct {
 	// LockHash is the SHA256 of the workspace Cargo.lock — part of the
 	// cache key so image upgrades reset the cache by design.
 	LockHash string
+	// supportHash is supportSourceHash() captured ONCE at init: unit builds
+	// mutate the live Cargo.lock (transient member edges), so re-reading it
+	// per key would cascade recompiles.
+	supportHash string
 
 	// buildMu serializes unit builds (cargo locks the target dir anyway;
 	// this keeps member churn in units/ orderly).
@@ -137,6 +141,7 @@ func initToolchain() (*Toolchain, error) {
 	}
 	sum := sha256.Sum256(lock)
 	tc.LockHash = hex.EncodeToString(sum[:])
+	tc.supportHash = tc.supportSourceHash()
 
 	return tc, nil
 }
@@ -250,6 +255,30 @@ func (tc *Toolchain) supportSourceHash() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// supportSourcesNewerThan reports whether any support-crate source file is
+// newer than the given artifact (the no-stamp freshness heuristic).
+func (tc *Toolchain) supportSourcesNewerThan(artifact string) bool {
+	st, err := os.Stat(artifact)
+	if err != nil {
+		return true
+	}
+	built := st.ModTime()
+	paths := []string{filepath.Join(tc.WorkspaceDir, "Cargo.lock"), filepath.Join(tc.CrateDir, "Cargo.toml")}
+	if entries, err := os.ReadDir(filepath.Join(tc.CrateDir, "src")); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				paths = append(paths, filepath.Join(tc.CrateDir, "src", e.Name()))
+			}
+		}
+	}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(built) {
+			return true
+		}
+	}
+	return false
+}
+
 func (tc *Toolchain) ensureSupportDylib() error {
 	dylib := filepath.Join(tc.TargetDir, "release", "libomnivm_rs.so")
 	stamp := filepath.Join(tc.TargetDir, ".omnivm-support-src-hash")
@@ -257,10 +286,18 @@ func (tc *Toolchain) ensureSupportDylib() error {
 	var out []byte
 	forced := false
 	err := tc.withBuildLock(func() error {
-		if old, readErr := os.ReadFile(stamp); readErr != nil || strings.TrimSpace(string(old)) != current {
-			// Content changed (or first build): force the recompile cargo's
-			// mtime fingerprinting sometimes misses.
+		old, readErr := os.ReadFile(stamp)
+		if readErr != nil {
+			// No stamp (image prebuild, fresh checkout): force only when
+			// sources are demonstrably newer than the built dylib —
+			// pristine images keep their fast path.
+			forced = tc.supportSourcesNewerThan(dylib)
+		} else if strings.TrimSpace(string(old)) != current {
+			// Content changed: force the recompile cargo's mtime
+			// fingerprinting sometimes misses over prebuilt target dirs.
 			forced = true
+		}
+		if forced {
 			// `cargo clean -p` has proven unreliable here; removing the
 			// fingerprint dirs directly guarantees re-evaluation.
 			if matches, _ := filepath.Glob(filepath.Join(tc.TargetDir, "release", ".fingerprint", "omnivm_rs-*")); matches != nil {
@@ -276,7 +313,7 @@ func (tc *Toolchain) ensureSupportDylib() error {
 		var buildErr error
 		out, buildErr = cmd.CombinedOutput()
 		fmt.Fprintf(os.Stderr, "[rust] support dylib build: forced=%v err=%v took=%s\n", forced, buildErr != nil, time.Since(started).Round(time.Millisecond))
-		if buildErr == nil && forced {
+		if buildErr == nil {
 			_ = os.WriteFile(stamp, []byte(current+"\n"), 0o644)
 		}
 		return buildErr
@@ -310,6 +347,11 @@ func (tc *Toolchain) UnitCacheKey(source string, exports []string) string {
 		fmt.Sprintf("abi:%d", ABIRev),
 		tc.RustcVersion,
 		tc.LockHash,
+		// Support-crate CONTENT: a unit .so links against omnivm_rs symbols,
+		// so a crate change must invalidate cached units (stale artifacts
+		// dlopen-fail with undefined symbols — found during the
+		// boundary-generics round). Captured at init: see supportHash.
+		tc.supportHash,
 		strings.Join(sorted, ","),
 		source,
 	}, "\x00")
@@ -573,7 +615,7 @@ serde_json = "1"
 		var stdout, stderr strings.Builder
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		if err := cmd.Run(); err != nil {
-			msg := renderMappedCompileError(stdout.String(), stderr.String(), smap, aliasLines)
+			msg := renderMappedCompileError(stdout.String(), stderr.String(), smap, aliasLines, source)
 			return fmt.Errorf("rust compilation failed:\n%s", enhanceCompileError(strings.TrimSpace(msg)))
 		}
 	} else if out, err := cmd.CombinedOutput(); err != nil {

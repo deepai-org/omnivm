@@ -362,6 +362,41 @@ describe('emitRustFuncDef', () => {
     const m = compileManifest('fn helper(a: i64) -> i64 {\n  a * 2\n}\nprint("done")');
     expect(m.ops.filter(op => op.op === 'func_def')).toEqual([]);
   });
+
+  // Dogfood finding 4 (docs/rust-dogfood.md): a fn NAME mentioned only in a
+  // comment outside the unit must NOT be exported — a doomed shim (serde on
+  // Arc<Shared>) fails the whole unit build.
+  test('a fn name mentioned ONLY in comments outside the unit stays internal', () => {
+    const m = compileManifest([
+      '// the background helper fn is spawned internally',
+      '/* helper does the heavy lifting */',
+      'fn helper(a: i64) -> i64 {',
+      '  a * 2',
+      '}',
+      'fn entry(a: i64) -> i64 {',
+      '  helper(a)',
+      '}',
+      'print(entry(21))',
+    ].join('\n'));
+    const defs = m.ops.filter(op => op.op === 'func_def') as FuncDefOp[];
+    expect(defs.map(d => d.name)).toEqual(['entry']);
+    expect(defs[0].exports).toEqual(['entry']);
+    expect(defs[0].source).toContain('fn helper'); // still in the unit verbatim
+    expect(defs[0].source).not.toContain('OmniVMCall_helper');
+  });
+
+  test('a comment mention does not shadow a REAL outside reference', () => {
+    const m = compileManifest([
+      '// helper is called below',
+      'fn helper(a: i64) -> i64 {',
+      '  a * 2',
+      '}',
+      'print(helper(21))',
+    ].join('\n'));
+    const defs = m.ops.filter(op => op.op === 'func_def') as FuncDefOp[];
+    expect(defs.map(d => d.name)).toEqual(['helper']);
+    expect(defs[0].exports).toEqual(['helper']);
+  });
 });
 
 describe('north-star example: rust-review-service.poly', () => {
@@ -737,6 +772,59 @@ describe('Tail-swallow regressions (sweep group 6)', () => {
     const items = ast.body.filter((n): n is AST.RustItem => n.kind === 'RustItem');
     expect(items).toHaveLength(1);
     expect(items[0].itemKind).toBe('use');
+  });
+
+  // rayon/str.rs: `Folder<(usize, &'ch str)>;` inside an opaque-scanned mod
+  // mis-lexes the lifetime as an unterminated string that SWALLOWS the
+  // closing `)`. MASI must replay closers hidden in unterminated string
+  // tokens — otherwise parenDepth stays elevated forever, virtual semis are
+  // suppressed for the rest of the file, and the next union-parsed fn
+  // absorbs everything to EOF (probe fn AND the print vanish).
+  test('lifetime in a tuple bound does not suppress vsemis for the rest of the file', () => {
+    const code = [
+      'mod private {',
+      '    pub trait Pattern: Sized {',
+      "        fn fold_match_indices<'ch, F>(&self, haystack: &'ch str, folder: F, base: usize) -> F",
+      '        where',
+      "            F: Folder<(usize, &'ch str)>;",
+      '    }',
+      '}',
+      'use self::private::Pattern;',
+      '',
+      '#[inline]',
+      'fn offset<T>(base: usize) -> impl Fn((usize, T)) -> (usize, T) {',
+      '    move |(i, x)| (base + i, x)',
+      '}',
+      '',
+      'fn probe() -> i64 { 42 }',
+      'print(probe())',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+    const fns = ast.body.filter(n => n.kind === 'FuncDecl') as AST.FuncDecl[];
+    expect(fns.map(f => f.name.name)).toEqual(['offset', 'probe']);
+  });
+
+  // csv-core/reader.rs: a multi-line while condition leaves the body `{`
+  // alone on the next line behind a virtual semi. The while parselet must
+  // look PAST vsemis before routing — Ruby-style while...end here used to
+  // spin parseKeywordBlock forever (sweep parse timeout).
+  test('while with a wrapped condition and Allman-style brace parses promptly', () => {
+    const code = [
+      'fn scan_and_copy(input: &[u8], nin: &mut usize, nout: &mut usize) {',
+      '    while *nin < input.len()',
+      '        && *nout < input.len()',
+      '    {',
+      '        *nin += 1;',
+      '        *nout += 1;',
+      '    }',
+      '}',
+      'print("done")',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
   });
 });
 

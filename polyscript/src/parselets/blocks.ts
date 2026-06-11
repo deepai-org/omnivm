@@ -690,7 +690,8 @@ export function parseKeywordBlock(host: BlockHost, keyword?: string): AST.Block 
       host.advance();
       continue;
     }
-    
+
+    const beforePos = host.current;
     try {
       const stmt = host.parseTopLevel();
       if (stmt) statements.push(stmt);
@@ -701,6 +702,11 @@ export function parseKeywordBlock(host: BlockHost, keyword?: string): AST.Block 
       } else {
         throw error;
       }
+    }
+    // Prevent infinite loop: parseTopLevel may return null (or recover)
+    // without consuming a token.
+    if (host.current === beforePos && !host.check(endKeyword)) {
+      host.advance();
     }
   }
   
