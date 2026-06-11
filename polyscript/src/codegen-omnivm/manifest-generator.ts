@@ -3773,7 +3773,9 @@ export class ManifestCodeGenerator {
     const kindList = rustShimKinds(sig);
     const arityOrKinds = kindList ?? `${sig.paramCount}`;
     const directShim =
-      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${sig.name}, ${arityOrKinds});`;
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${sig.name}, ${arityOrKinds});` +
+      rustTypedShim(sig, sig.name, (sig.paramTypes ?? []).map(t => stripRustLifetimes(t ?? "").trim()),
+        stripRustLifetimes(sig.returnType ?? "").trim());
 
     const paramTypes = sig.paramTypes ?? [];
     const params = sig.params.map((name, i) => adaptRustParamType(name, paramTypes[i] ?? ""));
@@ -3806,7 +3808,9 @@ export class ManifestCodeGenerator {
       `${fnIntro} ${adapterName}(${paramList})${retClause} {`,
       `    ${body}`,
       `}`,
-      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${adapterName}, ${rustShimKinds(sig) ?? sig.paramCount});`,
+      `omnivm::${macroName}!(OmniVMCall_${sig.name}, ${adapterName}, ${rustShimKinds(sig) ?? sig.paramCount});` +
+        rustTypedShim(sig, adapterName, params.map(p => p.ownedType),
+          ret.ownedType.length > 0 ? ret.ownedType : stripRustLifetimes(sig.returnType ?? "").trim()),
     ].join("\n");
   }
 
@@ -4548,6 +4552,20 @@ interface AdaptedRustParam {
  * Per-param extraction kinds for the export shim: `(df, json, ...)` when any
  * param is DataFrame-typed (zero-copy Arrow import), else null (arity form).
  */
+/**
+ * Scalar-shaped exports also get an omni_value_t typed entry: args/returns
+ * cross with no JSON text. Presence of the OmniVMCallTyped_ symbol is the
+ * host's capability signal.
+ */
+function rustTypedShim(sig: RustExportSig, target: string, paramTypes: string[], returnType: string): string {
+  if (sig.async || sig.typeGenerics) return "";
+  if (sig.paramCount > 3 || paramTypes.length !== sig.paramCount) return "";
+  const scalar = new Set(["i64", "f64", "bool", "String"]);
+  if (!paramTypes.every(t => scalar.has(t))) return "";
+  if (!scalar.has(returnType)) return "";
+  return `\nomnivm::export_typed_fn!(OmniVMCallTyped_${sig.name}, ${target}, ${sig.paramCount});`;
+}
+
 function rustShimKinds(sig: RustExportSig): string | null {
   const paramTypes = sig.paramTypes ?? [];
   if (sig.paramCount === 0 || sig.paramCount > 4) return null;

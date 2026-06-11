@@ -348,3 +348,135 @@ impl<T: serde::Serialize> PlainOutcome for &mut OutcomeToken<T> {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// omni_value_t typed lane: scalar-shaped exports also get a typed entry that
+// crosses without JSON text. Layout mirrors the host's omni_value_t
+// (pkg/javascript/v8_bridge.h). Strings are malloc-allocated; the receiver
+// frees (same contract as the envelope lane).
+// ---------------------------------------------------------------------------
+
+pub const OMNI_TAG_NULL: i64 = 0;
+pub const OMNI_TAG_BOOL: i64 = 1;
+pub const OMNI_TAG_I64: i64 = 2;
+pub const OMNI_TAG_F64: i64 = 3;
+pub const OMNI_TAG_STRING: i64 = 4;
+pub const OMNI_TAG_ERROR: i64 = 7;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OmniString {
+    pub ptr: *mut c_char,
+    pub len: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union OmniPayload {
+    pub i: i64,
+    pub f: f64,
+    pub s: OmniString,
+    pub r: u64,
+}
+
+#[repr(C)]
+pub struct OmniValue {
+    pub tag: i64,
+    pub v: OmniPayload,
+}
+
+impl OmniValue {
+    pub fn null() -> Self {
+        OmniValue { tag: OMNI_TAG_NULL, v: OmniPayload { i: 0 } }
+    }
+
+    pub fn string(text: &str) -> Self {
+        let buf = unsafe { malloc(text.len() + 1) } as *mut c_char;
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), buf as *mut u8, text.len());
+            *buf.add(text.len()) = 0;
+        }
+        OmniValue { tag: OMNI_TAG_STRING, v: OmniPayload { s: OmniString { ptr: buf, len: text.len() as i64 } } }
+    }
+
+    pub fn error(message: &str) -> Self {
+        let mut value = Self::string(message);
+        value.tag = OMNI_TAG_ERROR;
+        value
+    }
+}
+
+/// Conversion from a typed argument — the impl target is the EXPORTED FN'S
+/// declared parameter type, so inference is forward (never from the call).
+pub trait FromOmniValue: Sized {
+    fn from_omni(value: &OmniValue) -> Result<Self, String>;
+}
+
+impl FromOmniValue for i64 {
+    fn from_omni(value: &OmniValue) -> Result<Self, String> {
+        match value.tag {
+            OMNI_TAG_I64 => Ok(unsafe { value.v.i }),
+            OMNI_TAG_F64 => Ok(unsafe { value.v.f } as i64),
+            OMNI_TAG_BOOL => Ok(unsafe { value.v.i }),
+            _ => Err(format!("expected i64, got tag {}", value.tag)),
+        }
+    }
+}
+
+impl FromOmniValue for f64 {
+    fn from_omni(value: &OmniValue) -> Result<Self, String> {
+        match value.tag {
+            OMNI_TAG_F64 => Ok(unsafe { value.v.f }),
+            OMNI_TAG_I64 => Ok(unsafe { value.v.i } as f64),
+            _ => Err(format!("expected f64, got tag {}", value.tag)),
+        }
+    }
+}
+
+impl FromOmniValue for bool {
+    fn from_omni(value: &OmniValue) -> Result<Self, String> {
+        match value.tag {
+            OMNI_TAG_BOOL | OMNI_TAG_I64 => Ok(unsafe { value.v.i } != 0),
+            _ => Err(format!("expected bool, got tag {}", value.tag)),
+        }
+    }
+}
+
+impl FromOmniValue for String {
+    fn from_omni(value: &OmniValue) -> Result<Self, String> {
+        if value.tag != OMNI_TAG_STRING {
+            return Err(format!("expected string, got tag {}", value.tag));
+        }
+        let s = unsafe { value.v.s };
+        let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len as usize) };
+        String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())
+    }
+}
+
+pub trait ToOmniValue {
+    fn to_omni(self) -> OmniValue;
+}
+
+impl ToOmniValue for i64 {
+    fn to_omni(self) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_I64, v: OmniPayload { i: self } }
+    }
+}
+
+impl ToOmniValue for f64 {
+    fn to_omni(self) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_F64, v: OmniPayload { f: self } }
+    }
+}
+
+impl ToOmniValue for bool {
+    fn to_omni(self) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_BOOL, v: OmniPayload { i: self as i64 } }
+    }
+}
+
+impl ToOmniValue for String {
+    fn to_omni(self) -> OmniValue {
+        OmniValue::string(&self)
+    }
+}

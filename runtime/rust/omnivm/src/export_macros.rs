@@ -166,3 +166,73 @@ macro_rules! unit_abi_marker {
         }
     };
 }
+
+/// Typed fast-path export: a second `extern "C"` entry crossing scalar
+/// args/returns as omni_value_t (no JSON text). Codegen emits one only when
+/// the fn's declared signature is scalar-shaped — argument types are
+/// inferred FORWARD from the fn, never from the call site.
+#[macro_export]
+macro_rules! export_typed_fn {
+    ($sym:ident, $func:ident, 0) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(_args: *const $crate::abi::OmniValue, nargs: i32, out: *mut $crate::abi::OmniValue) -> i32 {
+            $crate::export_typed_fn!(@check nargs, 0, out);
+            $crate::export_typed_fn!(@call out, move || $func())
+        }
+    };
+    ($sym:ident, $func:ident, 1) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(args: *const $crate::abi::OmniValue, nargs: i32, out: *mut $crate::abi::OmniValue) -> i32 {
+            $crate::export_typed_fn!(@check nargs, 1, out);
+            let a0 = $crate::export_typed_fn!(@arg args, 0, out);
+            $crate::export_typed_fn!(@call out, move || $func(a0))
+        }
+    };
+    ($sym:ident, $func:ident, 2) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(args: *const $crate::abi::OmniValue, nargs: i32, out: *mut $crate::abi::OmniValue) -> i32 {
+            $crate::export_typed_fn!(@check nargs, 2, out);
+            let a0 = $crate::export_typed_fn!(@arg args, 0, out);
+            let a1 = $crate::export_typed_fn!(@arg args, 1, out);
+            $crate::export_typed_fn!(@call out, move || $func(a0, a1))
+        }
+    };
+    ($sym:ident, $func:ident, 3) => {
+        #[no_mangle]
+        pub extern "C" fn $sym(args: *const $crate::abi::OmniValue, nargs: i32, out: *mut $crate::abi::OmniValue) -> i32 {
+            $crate::export_typed_fn!(@check nargs, 3, out);
+            let a0 = $crate::export_typed_fn!(@arg args, 0, out);
+            let a1 = $crate::export_typed_fn!(@arg args, 1, out);
+            let a2 = $crate::export_typed_fn!(@arg args, 2, out);
+            $crate::export_typed_fn!(@call out, move || $func(a0, a1, a2))
+        }
+    };
+    (@check $nargs:ident, $want:expr, $out:ident) => {
+        if $nargs != $want {
+            unsafe { *$out = $crate::abi::OmniValue::error("typed call: arity mismatch") };
+            return 1;
+        }
+    };
+    (@arg $args:ident, $idx:expr, $out:ident) => {
+        match $crate::abi::FromOmniValue::from_omni(unsafe { &*$args.add($idx) }) {
+            Ok(v) => v,
+            Err(message) => {
+                unsafe { *$out = $crate::abi::OmniValue::error(&message) };
+                return 1;
+            }
+        }
+    };
+    (@call $out:ident, $thunk:expr) => {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe($thunk)) {
+            Ok(result) => {
+                unsafe { *$out = $crate::abi::ToOmniValue::to_omni(result) };
+                0
+            }
+            Err(payload) => {
+                let message = $crate::error::panic_message(payload);
+                unsafe { *$out = $crate::abi::OmniValue::error(&message) };
+                1
+            }
+        }
+    };
+}

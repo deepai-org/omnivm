@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/omnivm/omnivm/pkg/handles"
+	"github.com/omnivm/omnivm/pkg/rust"
 
 	"github.com/omnivm/omnivm/pkg"
 )
@@ -446,5 +447,46 @@ where F: FnMut() -> Option<i64> + Send + Unpin + 'static {
 	}
 	if len(got) != 3 || !numEquals(got[0], 1) || !numEquals(got[1], 4) || !numEquals(got[2], 9) {
 		t.Fatalf("stream values = %v, want [1 4 9]", got)
+	}
+}
+
+// TestRustTypedLane: scalar-shaped exports cross as omni_value_t (no JSON
+// text); the typed entry's presence is the capability signal, and mixed
+// shapes fall back to the envelope path.
+func TestRustTypedLane(t *testing.T) {
+	requireRust(t)
+	e := NewExecutor(map[string]pkg.Runtime{})
+	m := &Manifest{Version: 1, Ops: []*Op{
+		{OpType: "func_def", Name: "typed_join", BodyRuntime: "rust",
+			Params: []*Param{{Name: "label"}, {Name: "count"}}, Exports: []string{"typed_join"},
+			Source: `
+fn typed_join(label: String, count: i64) -> String {
+    format!("{label}:{}", count * 2)
+}
+omnivm::export_fn!(OmniVMCall_typed_join, typed_join, 2);
+omnivm::export_typed_fn!(OmniVMCallTyped_typed_join, typed_join, 2);
+`},
+	}}
+	if err := e.Execute(m); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	before := rust.TypedCallCount
+	value, err := e.goFuncs["typed_join"].(func([]interface{}) (interface{}, error))([]interface{}{"answer", int64(21)})
+	if err != nil {
+		t.Fatalf("typed call: %v", err)
+	}
+	if value != "answer:42" {
+		t.Fatalf("typed call = %v, want answer:42", value)
+	}
+	if rust.TypedCallCount != before+1 {
+		t.Fatalf("typed lane not taken (count %d -> %d)", before, rust.TypedCallCount)
+	}
+	// Non-scalar args fall back to the envelope path.
+	value, err = e.goFuncs["typed_join"].(func([]interface{}) (interface{}, error))([]interface{}{"answer", map[string]interface{}{"n": 1}})
+	if err == nil {
+		t.Logf("fallback returned %v", value)
+	}
+	if rust.TypedCallCount != before+1 {
+		t.Fatalf("fallback should not increment typed count")
 	}
 }
