@@ -310,6 +310,11 @@ func (tc *Toolchain) UnitCacheKey(source string, exports []string) string {
 		fmt.Sprintf("abi:%d", ABIRev),
 		tc.RustcVersion,
 		tc.LockHash,
+		// Support-crate CONTENT: a unit .so links against omnivm_rs symbols,
+		// so a crate change must invalidate cached units (stale artifacts
+		// dlopen-fail with undefined symbols — found during the
+		// boundary-generics round).
+		tc.supportSourceHash(),
 		strings.Join(sorted, ","),
 		source,
 	}, "\x00")
