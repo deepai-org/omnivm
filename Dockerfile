@@ -357,6 +357,13 @@ RUN go test -v -count=1 -timeout 600s ./pkg/rust/
 # runtime-fail/pass) ratcheted against scripts/rust-corpus-expectations.txt.
 RUN chmod +x scripts/test-rust-corpus.sh && bash scripts/test-rust-corpus.sh
 
+# Registry-wide Rust round-trip oracle sweep: every top-level item of every
+# pinned-crate source file (curated crate set) must survive byte-identical
+# through the full compile pipeline. Ratcheted against
+# scripts/rust-registry-sweep-expectations.txt (pass-rate floor + known-fail
+# list). polyscript/dist was built in the builder stage above.
+RUN cd polyscript && node scripts/rust-registry-sweep.js --ratchet /build/scripts/rust-registry-sweep-expectations.txt
+
 # Prefork fork-safety (the gunicorn posture): children initialize Rust
 # post-fork and run concurrent compile+dlopen round trips through libomnivm.
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \

@@ -197,10 +197,24 @@ export function scanHeredoc(h: ScanHost): boolean {
     delimiterCount++;
   }
 
+  const rollback = (): false => {
+    h.position = start + 2; // Position after <<
+    h.line = startLine;
+    h.column = startColumn + 2;
+    return false;
+  };
+
   if (delimiter === '') {
     // No delimiter found, treat as operator
-    h.position = start + 2; // Position after <<
-    return false;
+    return rollback();
+  }
+
+  // `<<Ident` immediately followed by `:` or `>` is never a heredoc — it is
+  // shifted/nested generics (Rust `Vec<<I::Item as Future>::Output>`).
+  // Bash heredoc delimiters are followed by whitespace, a newline, or
+  // redirections, never `:`/`>`.
+  if (h.peek() === ':' || h.peek() === '>') {
+    return rollback();
   }
 
   // Skip to next line
@@ -218,6 +232,7 @@ export function scanHeredoc(h: ScanHost): boolean {
   let currentLine = '';
   let linesRead = 0;
   const maxLines = 1000; // Safety limit
+  let found = false;
 
   while (!h.isAtEnd() && linesRead < maxLines) {
     const char = h.peek();
@@ -226,6 +241,7 @@ export function scanHeredoc(h: ScanHost): boolean {
       // Check if current line is the delimiter
       if (currentLine.trim() === delimiter) {
         // Found end delimiter
+        found = true;
         break;
       }
       // Add line to content
@@ -242,11 +258,20 @@ export function scanHeredoc(h: ScanHost): boolean {
   }
 
   // Check final line
-  if (currentLine.trim() === delimiter) {
+  if (!found && currentLine.trim() === delimiter) {
+    found = true;
     // Consume the delimiter line
     while (!h.isAtEnd() && h.peek() !== '\n') {
       h.advance();
     }
+  }
+
+  if (!found) {
+    // The terminator never appears, so this is NOT a heredoc (e.g. a `<<`
+    // shift followed by an uppercase identifier). Emitting the scanned text
+    // as a string would silently absorb every following statement — rewind
+    // and scan `<<` as an operator instead.
+    return rollback();
   }
 
   // Create the heredoc token

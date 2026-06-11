@@ -14,7 +14,12 @@ export function scanOperator(h: ScanHost, htmlTags: Set<string>): void {
   let value = h.source[start];
 
   // Handle JSX context detection for '<' and '>' per spec 10.6
-  if (value === '<') {
+  if (value === '<' && h.lastNonWSToken?.value === 'new') {
+    // `new<E>(...)` / `fn new<E>` — a generic parameter/argument list. The
+    // word `new` flags afterReturn (JS `new Expr`), but a JSX element can
+    // never directly follow `new`, while Rust `fn new<T>` is everywhere.
+    // Fall through to plain operator handling.
+  } else if (value === '<') {
     const nextChar = h.peek();
 
     if (nextChar === '/') {
@@ -59,15 +64,21 @@ export function scanOperator(h: ScanHost, htmlTags: Set<string>): void {
             let peekPos = posAfterGeneric;
             while (peekPos < h.source.length && h.source[peekPos] === ' ') peekPos++;
             const afterSpace = h.source[peekPos];
-            if (afterSpace && /[a-zA-Z_/>{]/.test(afterSpace)) {
+            if (afterSpace && /[a-zA-Z_/>{]/.test(afterSpace) &&
+                !/^as[ \t]/.test(h.source.slice(peekPos, peekPos + 3))) {
               h.addTokenEx(TokenType.JSXTagStart, '<', start, h.position, startLine, startColumn);
               LS.enterJSX(h.state);
               return;
             }
           }
-        } else if (charAfterIdentifier !== ',') {
+        } else if (charAfterIdentifier !== ',' &&
+                   !(charAfterIdentifier === ':' && h.source[posAfterIdentifier + 1] === ':') &&
+                   !/^[ \t]+as[ \t]/.test(h.source.slice(posAfterIdentifier, posAfterIdentifier + 12))) {
           // `<I,` is a generic parameter list (`fn new<I, S>`), never JSX —
-          // a JSX tag name is never directly followed by a comma.
+          // a JSX tag name is never directly followed by a comma. Likewise
+          // `<I::` is a Rust/C++ qualified path (`<I::Item as Future>`)
+          // and `<I as Trait>` is a Rust qualified path — never JSX tags
+          // (a JSX `as` ATTRIBUTE is spelled `as=`, not a bare `as `).
           h.addTokenEx(TokenType.JSXTagStart, '<', start, h.position, startLine, startColumn);
           LS.enterJSX(h.state);
           return;

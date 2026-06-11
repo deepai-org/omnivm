@@ -30,6 +30,7 @@ export type RustItemKind =
   | "const"
   | "type"
   | "macro"
+  | "macro-call"
   | "extern";
 
 export interface RustFnSig {
@@ -87,6 +88,13 @@ const RUST_PRIMITIVES = new Set([
 const PUB_RE = /^pub(?:\s*\((?:[^()]|\([^()]*\))*\))?\s+/;
 
 /**
+ * Module-level macro invocation head: `ident!` / `path::ident!` immediately
+ * followed by an opening delimiter (`{`, `(`, `[`). `macro_rules!` is
+ * classified separately (and first), so it never reaches this pattern.
+ */
+const MACRO_CALL_RE = /^[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*\s*!\s*[({[]/;
+
+/**
  * Classify the item anchored at `pos` (which must point at the first
  * character of the anchor keyword run, after any attributes). Returns null
  * when the text at pos does not start a recognizable Rust item.
@@ -109,30 +117,91 @@ export function classifyRustAnchor(source: string, pos: number): RustItemKind | 
   if (/^static\s+(?:mut\s+)?[A-Za-z_]\w*\s*:/.test(rest)) return "static";
   if (/^const\s+(?:mut\s+)?[A-Za-z_]\w*\s*:/.test(rest)) return "const";
   if (/^type\s+[A-Za-z_]\w*\s*(?:<[^\n]*>\s*)?=/.test(rest)) return "type";
+  if (/^unsafe\s+impl\b/.test(rest)) return "impl";
+  if (/^unsafe\s+trait\b/.test(rest)) return "trait";
+  if (MACRO_CALL_RE.test(rest)) return "macro-call";
   return null;
 }
 
 /**
+ * Skip the balanced `[...]` group of an attribute whose `#` is at `hashPos`
+ * (optionally followed by `!`). Trivia-aware (strings, chars, comments).
+ * Returns the offset one past the closing `]`, or -1.
+ */
+function skipAttrGroup(source: string, hashPos: number): number {
+  let p = hashPos + 1;
+  if (source[p] === "!") p++;
+  if (source[p] !== "[") return -1;
+  let depth = 0;
+  while (p < source.length) {
+    const step = stepToken(source, p);
+    if (step.next !== -1) { p = step.next; continue; }
+    if (source[p] === "[") depth++;
+    else if (source[p] === "]") { depth--; p++; if (depth === 0) return p; continue; }
+    p++;
+  }
+  return -1;
+}
+
+/**
+ * Walk backwards from the line-start offset `lineStart` over the contiguous
+ * run of OUTER attribute lines (`#[...]`, including multi-line balanced
+ * groups produced by rustfmt) and doc-comment lines (`///`). Returns the
+ * start offset of the run (== `lineStart` when there is none). Module-level
+ * inner attributes (`#![...]`) and inner docs (`//!`) never attach.
+ */
+export function attributePrefixStart(source: string, lineStart: number): number {
+  let start = lineStart;
+  outer: while (start > 0) {
+    const prevEnd = start - 1; // the `\n` before the current start
+    const prevStart = source.lastIndexOf("\n", prevEnd - 1) + 1;
+    const prevLine = source.slice(prevStart, prevEnd);
+    if (/^\s*#\[.*\]\s*$/.test(prevLine) || /^\s*\/\/\/(?:[^\n]*)?$/.test(prevLine)) {
+      start = prevStart;
+      continue;
+    }
+    // Multi-line attribute: the previous line closes a `#[ ... ]` group that
+    // opened on an earlier line. Find a candidate opener walking up, then
+    // validate by skipping the balanced group FORWARD (string-aware) and
+    // requiring it to end on the previous line with only whitespace after.
+    if (/\]\s*$/.test(prevLine) && !/^\s*#\[/.test(prevLine)) {
+      let candEnd = prevStart; // exclusive end of candidate line (at its \n... actually start of the line below)
+      for (let lines = 0; lines < 200 && candEnd > 0; lines++) {
+        const cEnd = candEnd - 1;
+        const cStart = source.lastIndexOf("\n", cEnd - 1) + 1;
+        const cLine = source.slice(cStart, cEnd);
+        const m = /^(\s*)#\[/.exec(cLine);
+        if (m) {
+          const hashPos = cStart + m[1].length;
+          const groupEnd = skipAttrGroup(source, hashPos);
+          if (groupEnd !== -1 && groupEnd > prevStart && groupEnd <= prevEnd &&
+              /^\s*$/.test(source.slice(groupEnd, prevEnd))) {
+            start = cStart;
+            continue outer;
+          }
+          break; // opener found but it doesn't close on prevLine — stop
+        }
+        if (/^\s*#!\[/.test(cLine)) break; // inner attribute — never attach
+        candEnd = cStart;
+      }
+      break;
+    }
+    break;
+  }
+  return start;
+}
+
+/**
  * Walk backwards from the anchor over directly preceding attribute lines
- * (`#[...]`) and doc-comment lines (`///`). Those belong to the item.
- * Module-level inner attributes (`#![...]`) and inner docs (`//!`) do NOT.
+ * (`#[...]`, including multi-line groups) and doc-comment lines (`///`).
+ * Those belong to the item. Module-level inner attributes (`#![...]`) and
+ * inner docs (`//!`) do NOT.
  */
 function itemStartWithPrefix(source: string, anchorPos: number): number {
   const lineStart = source.lastIndexOf("\n", anchorPos - 1) + 1;
   // Only attach previous lines when the anchor starts its own line.
   if (!/^\s*$/.test(source.slice(lineStart, anchorPos))) return anchorPos;
-
-  let start = lineStart;
-  while (start > 0) {
-    const prevEnd = start - 1;
-    const prevStart = source.lastIndexOf("\n", prevEnd - 1) + 1;
-    const prevLine = source.slice(prevStart, prevEnd);
-    if (/^\s*#\[.*\]\s*$/.test(prevLine) || /^\s*\/\/\/(?:[^\n]*)?$/.test(prevLine)) {
-      start = prevStart;
-    } else {
-      break;
-    }
-  }
+  const start = attributePrefixStart(source, lineStart);
   return start === lineStart ? anchorPos : start;
 }
 
@@ -177,8 +246,11 @@ function skipRawString(source: string, pos: number): number {
 function skipCharOrLifetime(source: string, pos: number): number {
   const next = source[pos + 1];
   if (next === "\\") {
-    // Escaped char literal: '\n', '\u{...}', '\\', ...
-    let p = pos + 2;
+    // Escaped char literal: '\n', '\u{...}', '\\', ... Start at the
+    // backslash so the escape pair is consumed as a unit — starting past it
+    // would misread the second char of '\\' (or '\'') as a new escape and
+    // swallow the closing quote, causing a runaway scan.
+    let p = pos + 1;
     while (p < source.length) {
       if (source[p] === "\\") { p += 2; continue; }
       if (source[p] === "'") return p + 1;
@@ -250,10 +322,78 @@ function stepToken(source: string, pos: number, outWord?: { word: string }): Tri
 }
 
 /**
+ * Find the end (exclusive) of one module-level macro invocation item
+ * (`ident! { ... }`, `path::ident!(...);`, `ident![...];`) whose macro path
+ * starts at `anchorPos`. Brace-delimited invocations end at the matching `}`
+ * (no semicolon); paren/bracket-delimited ones REQUIRE the trailing `;`
+ * directly after the balanced group (only trivia between) — exactly Rust's
+ * item-position macro invocation grammar. Returns -1 otherwise.
+ */
+function scanMacroCallEnd(source: string, anchorPos: number): number {
+  // Walk the macro path up to `!`.
+  let pos = anchorPos;
+  let bangSeen = false;
+  while (pos < source.length) {
+    const c = source[pos];
+    if (c === "!") { bangSeen = true; pos++; break; }
+    if (/\s/.test(c) || c === ":") { pos++; continue; }
+    const step = stepToken(source, pos);
+    if (step.next === -1) return -1; // not a macro path
+    pos = step.next;
+  }
+  if (!bangSeen) return -1;
+
+  // Opening delimiter (whitespace/comments allowed, nothing else).
+  while (pos < source.length) {
+    const c = source[pos];
+    if (/\s/.test(c)) { pos++; continue; }
+    if (c === "/" && (source[pos + 1] === "/" || source[pos + 1] === "*")) {
+      pos = stepToken(source, pos).next;
+      continue;
+    }
+    break;
+  }
+  const open = source[pos];
+  if (open !== "{" && open !== "(" && open !== "[") return -1;
+  const close = open === "{" ? "}" : open === "(" ? ")" : "]";
+
+  // Balanced-delimiter scan of the token tree (Rust guarantees balance).
+  let depth = 0;
+  while (pos < source.length) {
+    const step = stepToken(source, pos);
+    if (step.next !== -1) { pos = step.next; continue; }
+    const c = source[pos];
+    if (c === open) depth++;
+    else if (c === close) {
+      depth--;
+      pos++;
+      if (depth === 0) {
+        if (open === "{") return pos; // `}`-delimited: no semicolon
+        // `(`/`[`-delimited: require `;` right after the group (trivia ok).
+        while (pos < source.length) {
+          const t = source[pos];
+          if (/\s/.test(t)) { pos++; continue; }
+          if (t === "/" && (source[pos + 1] === "/" || source[pos + 1] === "*")) {
+            pos = stepToken(source, pos).next;
+            continue;
+          }
+          return t === ";" ? pos + 1 : -1;
+        }
+        return -1;
+      }
+      continue;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+/**
  * Find the end (exclusive) of one Rust item whose anchor keyword starts at
  * `anchorPos`. Returns -1 when no well-formed end is found.
  */
 function scanItemEnd(source: string, anchorPos: number, kind: RustItemKind): number {
+  if (kind === "macro-call") return scanMacroCallEnd(source, anchorPos);
   const semiOnly = SEMI_ONLY.has(kind);
   let pos = anchorPos;
   let brace = 0, paren = 0, bracket = 0;
@@ -646,7 +786,11 @@ export function scanTopLevelRustItems(source: string): ScannedRustItem[] {
  */
 export function rustConstTypeSignal(typeText: string): boolean {
   // `::` paths, lifetime refs (&'a str), &str/&[..]/&mut — Rust-only.
+  // A LEADING `&` is a Rust reference type: TS only uses `&` BETWEEN types
+  // (intersection `A & B`), never first. Raw pointers (`*mut T`/`*const T`)
+  // are likewise Rust-only.
   if (/::/.test(typeText) || /&\s*(?:'\w+|mut\b|str\b|\[)/.test(typeText)) return true;
+  if (/^\s*&/.test(typeText) || /^\s*\*\s*(?:mut|const)\b/.test(typeText)) return true;
   for (const word of typeText.split(/[^A-Za-z0-9_]+/)) {
     if (RUST_PRIMITIVES.has(word)) return true;
   }

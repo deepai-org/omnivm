@@ -67,7 +67,7 @@ import { lowerType } from '../type-system/lowering';
 import * as C from '../type-system/canonical';
 import { lowerAnnotatedProgram } from './lowering';
 import { LoweredDefineFunc, LoweredManifestIR, LoweredManifestNode } from './lowering-ir';
-import { extractRustFnSignatures } from '../rust-item-scanner';
+import { extractRustFnSignatures, attributePrefixStart } from '../rust-item-scanner';
 
 /** Fn signature shape shared by raw-scanned RustItems and Rust FuncDecls. */
 type RustExportSig = AST.RustItem["fns"][number];
@@ -3786,23 +3786,12 @@ export class ManifestCodeGenerator {
       text = prefix && !body.startsWith(prefix.trim()) ? prefix + body : body;
     }
 
-    // Walk back over immediately preceding attribute lines.
-    let lineStart = residueLineStart;
-    let attrStart = lineStart;
-    while (attrStart > 0) {
-      const prevEnd = attrStart - 1;
-      const prevStart = src.lastIndexOf("\n", prevEnd - 1) + 1;
-      const prevLine = src.slice(prevStart, prevEnd);
-      // Attribute lines AND doc-comment lines belong to the item (same rule
-      // as the raw item scanner's walk-back).
-      if (/^\s*#\[[^\n]*\]\s*$/.test(prevLine) || /^\s*\/\/\/(?:[^\n]*)?$/.test(prevLine)) {
-        attrStart = prevStart;
-      } else {
-        break;
-      }
-    }
-    if (attrStart < lineStart) {
-      return src.slice(attrStart, lineStart) + text;
+    // Walk back over immediately preceding attribute/doc lines (same rule —
+    // and same code — as the raw item scanner's walk-back, including
+    // multi-line attribute groups).
+    const attrStart = attributePrefixStart(src, residueLineStart);
+    if (attrStart < residueLineStart) {
+      return src.slice(attrStart, residueLineStart) + text;
     }
     return text;
   }

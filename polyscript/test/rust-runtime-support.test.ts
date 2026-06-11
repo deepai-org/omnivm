@@ -465,3 +465,277 @@ describe('north-star example: rust-review-service.poly', () => {
     expect(express).toBeDefined();
   });
 });
+
+// ─── Registry-sweep fixes: raw-scanned item anchors ─────────────────
+//
+// Each describe below pins one failure group from the Rust registry sweep
+// (scripts/rust-registry-sweep.js): macro-invocation items, module-level
+// attributes (inner + multi-line outer), lifetime-typed consts, unsafe impl
+// with where clauses, and pub consts of user-defined types.
+
+import { scanTopLevelRustItems } from '../src/rust-item-scanner';
+
+function rustItems(code: string): AST.RustItem[] {
+  const { ast, errors } = parseCode(code);
+  expect(errors).toEqual([]);
+  return ast.body.filter((n): n is AST.RustItem => n.kind === 'RustItem');
+}
+
+describe('Rust items inside macro invocations (sweep group 1)', () => {
+  test('pin_project! { ... } is one opaque macro-call item', () => {
+    const code = [
+      'pin_project! {',
+      '    /// A future which can be remotely short-circuited.',
+      '    #[derive(Debug, Clone)]',
+      '    pub struct Abortable<T> {',
+      '        #[pin]',
+      '        task: T,',
+      '    }',
+      '}',
+      'print("done")',
+    ].join('\n');
+    const items = rustItems(code);
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('macro-call');
+    expect(items[0].text).toContain('pub struct Abortable<T>');
+    // The struct must NOT leak into the union grammar.
+    const { ast } = parseCode(code);
+    expect(ast.body.map(n => n.kind)).toEqual(['RustItem', 'Echo']);
+  });
+
+  test('path-qualified cfg_if-style invocation with braces', () => {
+    const code = 'cfg_if::cfg_if! {\n    if #[cfg(unix)] {\n        fn imp() {}\n    }\n}\nprint("x")';
+    const items = rustItems(code);
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('macro-call');
+  });
+
+  test('paren-delimited invocation requires the trailing semicolon', () => {
+    const withSemi = rustItems('delegate_all!(\n    Flatten<F>(flatten::Flatten<F>)\n);\nprint("x")');
+    expect(withSemi).toHaveLength(1);
+    expect(withSemi[0].itemKind).toBe('macro-call');
+    expect(withSemi[0].text.endsWith(';')).toBe(true);
+
+    // No trailing `;` — not an item-position macro: stays in the union
+    // grammar (panic!("boom") keeps resolving as a Rust-affine Call).
+    const { ast } = parseCode('panic!("boom")');
+    expect(ast.body.some(n => n.kind === 'RustItem')).toBe(false);
+  });
+
+  test('macro-call items flow verbatim into the rust unit', () => {
+    const code = 'use pin_project_lite::pin_project;\n\npin_project! {\n    pub struct Fuse<Fut> {\n        #[pin]\n        inner: Option<Fut>,\n    }\n}\n\nfn poke() -> i64 { 1 }\n\nprint(poke())';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const resolver = new RuntimeResolver();
+    const annotated = resolver.resolve(ast, code);
+    const gen = new ManifestCodeGenerator();
+    gen.generate(annotated);
+    const unit = (gen as unknown as { rustUnit?: { source: string } }).rustUnit;
+    expect(unit).toBeDefined();
+    expect(unit!.source).toContain('pin_project! {');
+    expect(unit!.source).toContain('pub struct Fuse<Fut>');
+    // The scanner and the parser agree byte-for-byte.
+    const scanned = scanTopLevelRustItems(code.slice(0, code.indexOf('print(')));
+    expect(scanned.map(i => i.itemKind)).toEqual(['use', 'macro-call', 'fn']);
+    for (const item of scanned) {
+      expect(unit!.source).toContain(item.text);
+    }
+  });
+});
+
+describe('Module-level attributes as items (sweep group 2)', () => {
+  test('multi-line inner attribute #![doc(...)] is module trivia, not tokens', () => {
+    const code = [
+      '#![doc(test(',
+      '    no_crate_inject,',
+      '    attr(deny(warnings), allow(dead_code, unused_variables))',
+      '))]',
+      '#![no_std]',
+      '',
+      'fn imp() -> i64 { 1 }',
+      'print("done")',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    // The inner attributes vanish as module trivia; the fn parses normally
+    // (union FuncDecl or raw-scanned item) and the tail survives.
+    expect(ast.body).toHaveLength(2);
+    expect(['FuncDecl', 'RustItem']).toContain(ast.body[0].kind);
+    expect(ast.body[1].kind).toBe('Echo');
+  });
+
+  test('multi-line outer #[cfg_attr(...)] walks back onto the next item', () => {
+    const code = [
+      '#[derive(PartialEq, Eq, Copy, Clone, Debug)]',
+      '#[cfg_attr(',
+      '    any(feature = "rkyv", feature = "rkyv-16"),',
+      '    derive(Archive, Deserialize, Serialize)',
+      ')]',
+      'pub enum Month {',
+      '    January = 0,',
+      '}',
+      'print("done")',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+    // The raw scanner attaches BOTH attribute lines (incl. the multi-line
+    // group) to the enum item, so the verbatim slice keeps them.
+    const scanned = scanTopLevelRustItems(code.slice(0, code.indexOf('print(')));
+    expect(scanned).toHaveLength(1);
+    expect(scanned[0].itemKind).toBe('enum');
+    expect(scanned[0].text).toContain('#[cfg_attr(');
+    expect(scanned[0].text).toContain('#[derive(PartialEq, Eq, Copy, Clone, Debug)]');
+  });
+
+  test('attribute with a multi-line string argument is consumed wholly', () => {
+    const code = [
+      '#[deprecated = "',
+      'This macro has no effect.',
+      '"]',
+      '#[doc(hidden)]',
+      'macro_rules! noop { () => {}; }',
+      'print("done")',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const items = ast.body.filter((n): n is AST.RustItem => n.kind === 'RustItem');
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('macro');
+  });
+
+  test('python hash comments are untouched (single-line discipline)', () => {
+    const code = '# [TODO] revisit this\n# plain comment\nx = 1\nprint(x)';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body.some(n => n.kind === 'RustItem')).toBe(false);
+  });
+});
+
+describe('Lifetime in const type (sweep group 3)', () => {
+  test("const X: &'static [(char, char)] = ... is a raw-scanned const", () => {
+    const code = "pub const PAIRS: &'static [(char, char)] = &[('a', 'b'), ('c', 'd')];\nprint(\"done\")";
+    const items = rustItems(code);
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('const');
+    expect(items[0].name).toBe('PAIRS');
+    expect(items[0].text).toBe("pub const PAIRS: &'static [(char, char)] = &[('a', 'b'), ('c', 'd')];");
+  });
+
+  test('bare const with &Type reference type is Rust-only', () => {
+    const items = rustItems("const FRAGMENT: &AsciiSet = &CONTROLS.add(b' ');\nprint(\"x\")");
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('const');
+  });
+
+  test('bare const with ::-path initializer is Rust-only', () => {
+    const items = rustItems('const FINAL: StateID = StateID::ZERO;\nprint("x")');
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('const');
+  });
+
+  test('TS-style consts stay in the union grammar', () => {
+    for (const code of [
+      'const x: number = 5;',
+      'const greeting: string = "hello";',
+      "const sep: string = '::';",
+    ]) {
+      const { ast, errors } = parseCode(code);
+      expect(errors).toEqual([]);
+      expect(ast.body.some(n => n.kind === 'RustItem')).toBe(false);
+    }
+  });
+});
+
+describe('unsafe impl ... where ... {} (sweep group 4)', () => {
+  test('unsafe impl with a where clause is one opaque impl item', () => {
+    const code = 'unsafe impl Send for A where A: Sized {}\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const items = ast.body.filter((n): n is AST.RustItem => n.kind === 'RustItem');
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('impl');
+    expect(items[0].text).toBe('unsafe impl Send for A where A: Sized {}');
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+  });
+
+  test('unsafe trait declaration anchors too', () => {
+    const code = 'unsafe trait Zeroable {}\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const last = ast.body[ast.body.length - 1];
+    expect(last.kind).toBe('Echo');
+  });
+});
+
+describe('pub const with user-defined type (sweep group 5)', () => {
+  test('pub const NAME: UserType = ... is unconditionally Rust', () => {
+    const code = 'pub const STANDARD: Alphabet = Alphabet { chars: 0 };\nprint("done")';
+    const items = rustItems(code);
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('const');
+    expect(items[0].name).toBe('STANDARD');
+  });
+
+  test('pub(crate) const works the same', () => {
+    const items = rustItems('pub(crate) const USERINFO: AsciiSet = X;\nprint("x")');
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('const');
+  });
+});
+
+describe('Tail-swallow regressions (sweep group 6)', () => {
+  test('fn with lifetime in where clause does not absorb following items', () => {
+    const code = [
+      'pub fn lazy<F, R>(f: F) -> Lazy<F>',
+      'where',
+      "    F: FnOnce(&mut Context<'_>) -> R,",
+      '{',
+      '    assert_future::<R, _>(Lazy { f: Some(f) })',
+      '}',
+      '',
+      'print("done")',
+    ].join('\n');
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body.map(n => n.kind)).toEqual(['RustItem', 'Echo']);
+  });
+
+  test('nested generics << do not scan as a heredoc', () => {
+    const code = 'fn collect<I>(iter: I) -> Vec<<I as IntoIterator>::Item> {\n    iter.into_iter().collect()\n}\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+  });
+
+  test('bash heredocs still lex as one string', () => {
+    const code = 'cat <<EOF\nhello there\nEOF\necho done';
+    const tokens = new Lexer(code).tokenize();
+    const heredoc = tokens.find(t => String(t.value).startsWith('<<EOF'));
+    expect(heredoc).toBeDefined();
+    expect(String(heredoc!.value)).toContain('hello there');
+  });
+
+  test('fn new<E> generic does not open JSX mode', () => {
+    const code = 'impl Error {\n    pub fn new<E>(error: E) -> Self {\n        Error { e: error }\n    }\n}\n\nfn after() -> i64 { 2 }\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+  });
+
+  test('qualified path <A as B>::C in a body neither hangs nor swallows', () => {
+    const code = 'fn seeded() -> X {\n    let mut seed = <XorShiftRng as SeedableRng>::Seed::default();\n    seed\n}\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    expect(ast.body[ast.body.length - 1].kind).toBe('Echo');
+  });
+
+  test('prefix-less use group `use { ... };` is one use item', () => {
+    const code = 'use {\n    csv_core::{Reader as CoreReader},\n    serde_core::de::DeserializeOwned,\n};\nprint("done")';
+    const { ast, errors } = parseCode(code);
+    expect(errors).toEqual([]);
+    const items = ast.body.filter((n): n is AST.RustItem => n.kind === 'RustItem');
+    expect(items).toHaveLength(1);
+    expect(items[0].itemKind).toBe('use');
+  });
+});
