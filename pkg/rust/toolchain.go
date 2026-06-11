@@ -58,6 +58,10 @@ type Toolchain struct {
 	// LockHash is the SHA256 of the workspace Cargo.lock — part of the
 	// cache key so image upgrades reset the cache by design.
 	LockHash string
+	// supportHash is supportSourceHash() captured ONCE at init: unit builds
+	// mutate the live Cargo.lock (transient member edges), so re-reading it
+	// per key would cascade recompiles.
+	supportHash string
 
 	// buildMu serializes unit builds (cargo locks the target dir anyway;
 	// this keeps member churn in units/ orderly).
@@ -137,6 +141,7 @@ func initToolchain() (*Toolchain, error) {
 	}
 	sum := sha256.Sum256(lock)
 	tc.LockHash = hex.EncodeToString(sum[:])
+	tc.supportHash = tc.supportSourceHash()
 
 	return tc, nil
 }
@@ -345,8 +350,8 @@ func (tc *Toolchain) UnitCacheKey(source string, exports []string) string {
 		// Support-crate CONTENT: a unit .so links against omnivm_rs symbols,
 		// so a crate change must invalidate cached units (stale artifacts
 		// dlopen-fail with undefined symbols — found during the
-		// boundary-generics round).
-		tc.supportSourceHash(),
+		// boundary-generics round). Captured at init: see supportHash.
+		tc.supportHash,
 		strings.Join(sorted, ","),
 		source,
 	}, "\x00")
