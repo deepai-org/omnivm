@@ -535,8 +535,42 @@ pub fn json_to_omni(value: serde_json::Value) -> OmniValue {
     }
 }
 
+/// Human-readable tag name for boundary error messages (so a cross-kind
+/// rejection names the kind it actually received, not a bare integer).
+fn tag_name(tag: i64) -> &'static str {
+    match tag {
+        OMNI_TAG_NULL => "null",
+        OMNI_TAG_BOOL => "bool",
+        OMNI_TAG_I64 => "integer",
+        OMNI_TAG_F64 => "float",
+        OMNI_TAG_STRING => "string",
+        OMNI_TAG_ERROR => "error",
+        OMNI_TAG_JSON => "json",
+        _ => "unknown",
+    }
+}
+
 /// Conversion from a typed argument — the impl target is the EXPORTED FN'S
 /// declared parameter type, so inference is forward (never from the call).
+///
+/// # Boundary soundness guarantee
+///
+/// No silent type confusion at the boundary: a *lossless* coercion is
+/// performed automatically; a *lossy* or *cross-kind* conversion is a
+/// structured, catchable `Err(String)` — never a silent truncation or a
+/// silent reinterpretation across scalar kinds. Each `Err` here is turned
+/// into an `OmniValue::error` (rc=1) by the typed export shim
+/// (`export_typed_fn!`), so it surfaces as a normal catchable runtime error;
+/// the worker is never aborted.
+///
+/// The per-type policy:
+/// - [`i64`]: `I64` exact; `F64` ONLY when integral and in `i64` range
+///   (`2.0 -> 2`); fractional/out-of-range floats and any `bool` (cross-kind)
+///   are errors.
+/// - [`f64`]: `F64` exact, `I64` widened (both lossless). `bool` is cross-kind
+///   and rejected.
+/// - [`bool`]: `BOOL` only. An integer is NOT truthy-coerced (cross-kind).
+/// - [`String`]: `STRING` only.
 pub trait FromOmniValue: Sized {
     fn from_omni(value: &OmniValue) -> Result<Self, String>;
 }
@@ -545,9 +579,26 @@ impl FromOmniValue for i64 {
     fn from_omni(value: &OmniValue) -> Result<Self, String> {
         match value.tag {
             OMNI_TAG_I64 => Ok(unsafe { value.v.i }),
-            OMNI_TAG_F64 => Ok(unsafe { value.v.f } as i64),
-            OMNI_TAG_BOOL => Ok(unsafe { value.v.i }),
-            _ => Err(format!("expected i64, got tag {}", value.tag)),
+            // A float reaching an i64 param is accepted ONLY when it is an
+            // exact integer in range — `2.0 -> 2`. `2.7` (fractional) or
+            // `1e30` (out of range) are lossy and rejected, never truncated.
+            OMNI_TAG_F64 => {
+                let f = unsafe { value.v.f };
+                if f.fract() != 0.0 || !f.is_finite() {
+                    return Err(format!("expected integer, got fractional float {f}"));
+                }
+                // i64 range, exactly: 2^63 is not representable as i64 but
+                // rounds to exactly 9223372036854775808.0 as f64, so the
+                // upper bound is a strict `<`.
+                if f < -(2f64.powi(63)) || f >= 2f64.powi(63) {
+                    return Err(format!("expected integer, got out-of-range float {f}"));
+                }
+                Ok(f as i64)
+            }
+            // A bool is a different scalar kind; coercing it to 0/1 is exactly
+            // the silent confusion this boundary forbids.
+            OMNI_TAG_BOOL => Err("expected integer, got bool (cross-kind)".to_string()),
+            other => Err(format!("expected integer, got {}", tag_name(other))),
         }
     }
 }
@@ -556,8 +607,10 @@ impl FromOmniValue for f64 {
     fn from_omni(value: &OmniValue) -> Result<Self, String> {
         match value.tag {
             OMNI_TAG_F64 => Ok(unsafe { value.v.f }),
+            // i64 -> f64 widening is lossless for the manifest value space.
             OMNI_TAG_I64 => Ok(unsafe { value.v.i } as f64),
-            _ => Err(format!("expected f64, got tag {}", value.tag)),
+            OMNI_TAG_BOOL => Err("expected float, got bool (cross-kind)".to_string()),
+            other => Err(format!("expected float, got {}", tag_name(other))),
         }
     }
 }
@@ -565,8 +618,11 @@ impl FromOmniValue for f64 {
 impl FromOmniValue for bool {
     fn from_omni(value: &OmniValue) -> Result<Self, String> {
         match value.tag {
-            OMNI_TAG_BOOL | OMNI_TAG_I64 => Ok(unsafe { value.v.i } != 0),
-            _ => Err(format!("expected bool, got tag {}", value.tag)),
+            OMNI_TAG_BOOL => Ok(unsafe { value.v.i } != 0),
+            // An integer is NOT a bool; "any nonzero is true" is silent
+            // cross-kind confusion. Reject it structurally.
+            OMNI_TAG_I64 => Err("expected bool, got integer (cross-kind)".to_string()),
+            other => Err(format!("expected bool, got {}", tag_name(other))),
         }
     }
 }
@@ -574,7 +630,7 @@ impl FromOmniValue for bool {
 impl FromOmniValue for String {
     fn from_omni(value: &OmniValue) -> Result<Self, String> {
         if value.tag != OMNI_TAG_STRING {
-            return Err(format!("expected string, got tag {}", value.tag));
+            return Err(format!("expected string, got {}", tag_name(value.tag)));
         }
         let s = unsafe { value.v.s };
         let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len as usize) };
@@ -686,5 +742,75 @@ pub fn typed_bridge_call(
                 .unwrap_or_else(|| format!("typed bridge call failed (rc={rc})"));
             Some(Err(OmniError::msg(message)))
         }
+    }
+}
+
+#[cfg(test)]
+mod from_omni_tests {
+    //! The boundary-soundness contract for the typed scalar lane: lossless
+    //! coercions are automatic, lossy/cross-kind ones are catchable errors.
+    use super::*;
+
+    fn i64v(i: i64) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_I64, v: OmniPayload { i } }
+    }
+    fn f64v(f: f64) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_F64, v: OmniPayload { f } }
+    }
+    fn boolv(b: bool) -> OmniValue {
+        OmniValue { tag: OMNI_TAG_BOOL, v: OmniPayload { i: b as i64 } }
+    }
+
+    #[test]
+    fn i64_accepts_exact_int_and_integral_float() {
+        assert_eq!(i64::from_omni(&i64v(7)).unwrap(), 7);
+        assert_eq!(i64::from_omni(&f64v(2.0)).unwrap(), 2);
+        assert_eq!(i64::from_omni(&f64v(-3.0)).unwrap(), -3);
+        assert_eq!(i64::from_omni(&f64v(0.0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn i64_rejects_fractional_float_no_truncation() {
+        let err = i64::from_omni(&f64v(2.7)).unwrap_err();
+        assert!(err.contains("fractional"), "got: {err}");
+        assert!(err.contains("2.7"), "value should be named: {err}");
+    }
+
+    #[test]
+    fn i64_rejects_out_of_range_float() {
+        let err = i64::from_omni(&f64v(1e30)).unwrap_err();
+        assert!(err.contains("out-of-range"), "got: {err}");
+        // The i64::MAX+1 boundary is rejected (cannot round-trip).
+        assert!(i64::from_omni(&f64v(2f64.powi(63))).is_err());
+        assert!(i64::from_omni(&f64v(-1e30)).is_err());
+        // -2^63 is exactly i64::MIN and still converts (strict lower bound).
+        assert_eq!(i64::from_omni(&f64v(-(2f64.powi(63)))).unwrap(), i64::MIN);
+    }
+
+    #[test]
+    fn i64_rejects_bool_cross_kind() {
+        let err = i64::from_omni(&boolv(true)).unwrap_err();
+        assert!(err.contains("cross-kind"), "got: {err}");
+    }
+
+    #[test]
+    fn f64_accepts_float_and_widens_int() {
+        assert_eq!(f64::from_omni(&f64v(2.5)).unwrap(), 2.5);
+        assert_eq!(f64::from_omni(&i64v(7)).unwrap(), 7.0);
+        assert!(f64::from_omni(&boolv(true)).unwrap_err().contains("cross-kind"));
+    }
+
+    #[test]
+    fn bool_is_strict() {
+        assert!(bool::from_omni(&boolv(true)).unwrap());
+        assert!(!bool::from_omni(&boolv(false)).unwrap());
+        let err = bool::from_omni(&i64v(1)).unwrap_err();
+        assert!(err.contains("cross-kind"), "got: {err}");
+        assert!(bool::from_omni(&i64v(0)).is_err());
+    }
+
+    #[test]
+    fn string_is_strict() {
+        assert!(String::from_omni(&i64v(1)).unwrap_err().contains("expected string"));
     }
 }

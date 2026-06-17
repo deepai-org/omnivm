@@ -13,7 +13,8 @@
   },
   "bin": {
     "polyscript-transpile": "./dist/cli-transpile.js",
-    "polyc": "./dist/cli-manifest.js"
+    "polyc": "./dist/cli-manifest.js",
+    "polyc-stubs": "./dist/cli-stubs.js"
   },
   "keywords": ["polyscript", "language", "compiler"],
   "author": "",
