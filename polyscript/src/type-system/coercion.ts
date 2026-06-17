@@ -2,10 +2,35 @@
  * Cross-Runtime Coercion Rules
  *
  * Defines what happens when a value of type A crosses from runtime X to runtime Y.
- * Three outcomes:
- *   - Safe: no conversion needed (or lossless widening)
- *   - Coerce: conversion needed but always succeeds (e.g., i32 → f64)
- *   - Check: conversion that may fail at runtime (e.g., f64 → i32, narrowing)
+ *
+ * ── Compatibility lattice (ordered least→most severe) ──────────────────────
+ * The four levels form a total order; `worst(a, b)` picks the more severe one,
+ * and the BoundaryChecker maps them to diagnostics:
+ *
+ *   safe         — identical representation, no conversion, NEVER fails.
+ *                  (e.g. i64 → i64, bool → bool; lossless widenings that are
+ *                  also representation-preserving such as i64 → bigint.)
+ *                  → no diagnostic.
+ *
+ *   coerce       — a conversion is required but it ALWAYS succeeds; no data is
+ *                  lost. (e.g. small int → f64, int → string, T → Option<T>.)
+ *                  → no diagnostic (informational only).
+ *
+ *   check        — a LOSSY or fallible conversion: it may truncate, overflow,
+ *                  lose precision, or be null/error at runtime, so the runtime
+ *                  must guard it. (e.g. f64 → i64 truncates; bigint → i32 may
+ *                  overflow; large int → f64 loses precision; Option<T> → T may
+ *                  be null; string → int requires parsing.)
+ *                  → WARNING diagnostic.
+ *
+ *   incompatible — no meaningful conversion exists; a genuine type error.
+ *                  → ERROR diagnostic (stops the build).
+ *
+ * Soundness rule of thumb: lossless widenings are `safe`/`coerce`; every LOSSY
+ * numeric narrowing (float→int, wide→narrow int, bigint→fixed-width int) is
+ * `check`, never `safe`. The static `check` classification here only emits the
+ * warning + a runtime guard hint; enforcing the guard at runtime is the Rust
+ * runtime's job.
  *
  * Philosophy: structural at boundaries (duck typing for cross-runtime), nominal within.
  */

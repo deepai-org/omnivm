@@ -92,6 +92,17 @@ function compileFile(inputPath: string, options: CLIOptions): string {
         : '';
       console.error(`  ${diagnostic.severity}: ${loc}${diagnostic.message}`);
     }
+    // A genuine cross-language type mismatch ('error' severity) is a hard
+    // compile failure: stop the build with a non-zero exit, the same way
+    // parser errors do, instead of emitting a manifest for unsound code.
+    const errors = manifest.diagnostics.filter(d => d.severity === 'error');
+    if (errors.length > 0) {
+      console.error(
+        `\nCompilation failed: ${errors.length} cross-language type ` +
+        `${errors.length === 1 ? 'error' : 'errors'}.`,
+      );
+      process.exit(1);
+    }
   }
 
   return options.compact

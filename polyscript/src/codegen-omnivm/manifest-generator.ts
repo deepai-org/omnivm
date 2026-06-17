@@ -204,11 +204,16 @@ export class ManifestCodeGenerator {
     this.usingCounter = 0;
     this.goFuncDecls = this.indexGoFuncDecls(annotated.program.body);
     this.rustUnit = undefined;
+    // Declare typed bindings BEFORE collecting the Rust unit, so the gradual /
+    // generic call-site evidence walk inside collectRustUnit can read declared
+    // argument types (a typed Python `n: int` arg stamps the typed lane).
+    this.declareTypedBindingDeclarations(annotated.program.body);
     this.collectRustUnit(annotated.program.body);
     this.loweredIR = lowerAnnotatedProgram(annotated);
     this.loweredNodesBySource = this.indexLoweredNodes(this.loweredIR);
 
-    // Pass 1: Declare all typed bindings in the type checker
+    // Pass 1 (idempotent re-declare) + Pass 2: declare bindings, then check
+    // cross-runtime calls and surface boundary diagnostics.
     this.declareTypedBindings(annotated.program.body);
 
     const blocks = consolidateBlocks(annotated.program.body, this.affinityMap);
@@ -224,6 +229,12 @@ export class ManifestCodeGenerator {
     const bridgeOps = this.typeChecker.getBridgeOps().map(b => this.toBridgeManifestOp(b));
     const bridges = this.dedupeBridgeOps([...bridgeOps, ...this.explicitBridgeOps]);
     const summary = this.typeChecker.getSummary();
+
+    // Surface the cross-language boundary type diagnostics computed by the
+    // BoundaryChecker. Until now these were discarded — only the aggregate
+    // typeSummary counts reached the manifest. An 'incompatible' crossing
+    // becomes a hard error (non-zero exit via cli-manifest), 'check' a warning.
+    this.routeBoundaryDiagnostics();
 
     const manifest: DispatchManifest = {
       version: 1,
@@ -460,6 +471,42 @@ export class ManifestCodeGenerator {
     ].join("|");
   }
 
+  /**
+   * Route the cross-language type diagnostics computed by the BoundaryChecker
+   * into the manifest's diagnostics array, mapping the coercion lattice to
+   * compiler severities:
+   *   incompatible -> error   (a genuine cross-language type mismatch; the CLI
+   *                            exits non-zero, the way parser errors fail)
+   *   check        -> warning (a lossy/fallible crossing needing a runtime guard)
+   *   coerce       -> info    (a lossless conversion; surfaced for visibility)
+   *
+   * The BoundaryChecker's messages already name BOTH runtimes; here we attach
+   * the .poly location (span -> line/column) and a stable diagnostic code.
+   */
+  private routeBoundaryDiagnostics(): void {
+    const seen = new Set<string>();
+    for (const diag of this.typeChecker.getDiagnostics()) {
+      const compat = diag.crossing?.result?.compat;
+      const severity: ManifestDiagnostic["severity"] =
+        diag.severity === "error" || compat === "incompatible"
+          ? "error"
+          : diag.severity === "warning" || compat === "check"
+            ? "warning"
+            : "info";
+      const code =
+        severity === "error"
+          ? "boundary-type-mismatch"
+          : compat === "check"
+            ? "boundary-type-check"
+            : "boundary-type-coerce";
+      const span = diag.location;
+      const dedupeKey = `${code}|${diag.message}|${span ? `${span.start}-${span.end}` : "?"}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      this.addDiagnostic(severity, code, diag.message, span ? { span } : undefined);
+    }
+  }
+
   private addBoundaryDiagnostic(
     binding: string,
     sourceRuntime: OmniRuntime,
@@ -587,9 +634,23 @@ export class ManifestCodeGenerator {
   // ─── Type System Integration ─────────────────────────────────────
 
   /**
-   * Walk top-level declarations and register typed bindings with the BoundaryChecker.
+   * Pass 1 + Pass 2: register typed bindings, then check cross-runtime calls.
    */
   private declareTypedBindings(body: (AST.Decl | AST.Stmt | AST.Expr)[]): void {
+    this.declareTypedBindingDeclarations(body);
+
+    // Pass 2: Check cross-runtime function calls and variable assignments
+    this.checkCrossRuntimeCalls(body);
+  }
+
+  /**
+   * Pass 1 only: walk top-level declarations and register typed bindings with
+   * the BoundaryChecker. Split out so it can run BEFORE the Rust unit is
+   * collected — the gradual/generic call-site evidence walk consults these
+   * bindings' declared types (e.g. a Python `n: int` arg stamps the typed lane).
+   * Re-running it is harmless (binding registration is idempotent).
+   */
+  private declareTypedBindingDeclarations(body: (AST.Decl | AST.Stmt | AST.Expr)[]): void {
     // Pass 1: Register all typed declarations
     for (const node of body) {
       const aff = this.affinityMap.get(node);
@@ -652,9 +713,6 @@ export class ManifestCodeGenerator {
         }
       }
     }
-
-    // Pass 2: Check cross-runtime function calls and variable assignments
-    this.checkCrossRuntimeCalls(body);
   }
 
   /**
@@ -683,12 +741,19 @@ export class ManifestCodeGenerator {
       }
 
       // Check const/var declarations: const x: TargetType = crossRuntimeCall()
-      if ((node.kind === "ConstDecl" || node.kind === "VarDecl") && node.type) {
-        const targetType = lowerType(node.type, effectiveCallerRuntime as any);
-        const values = node.kind === "ConstDecl" ? node.values : node.values;
+      if (node.kind === "ConstDecl" || node.kind === "VarDecl") {
+        const targetType = node.type ? lowerType(node.type, effectiveCallerRuntime as any) : undefined;
+        const values = node.values;
         if (values) {
           for (const val of values) {
-            this.checkCallReturnType(val, effectiveCallerRuntime, targetType);
+            // Declared target type → check the call's RETURN type against it.
+            if (targetType) {
+              this.checkCallReturnType(val, effectiveCallerRuntime, targetType);
+            }
+            // Regardless of an annotation on the binding, check the ARGUMENT
+            // types of any cross-runtime call used as the initializer, so
+            // `const r = need_int(make_label())` is statically checked.
+            this.checkCallArgTypes(val, effectiveCallerRuntime);
           }
         }
       }
@@ -799,17 +864,27 @@ export class ManifestCodeGenerator {
   }
 
   /**
-   * If expr is a call to a cross-runtime function, check argument types.
+   * If expr is a call to a function, check argument types against its params.
+   *
+   * Note: we do NOT skip when the call's caller runtime equals the callee's —
+   * the ARGUMENTS may still originate from a third runtime (e.g. a Python
+   * `make_label()` passed into a Rust `need_int(x: i64)` inside a Rust-affine
+   * `const`). Each arg's true source runtime is resolved per-arg, and
+   * checkCrossing short-circuits to "safe" for any arg that is same-runtime.
    */
   private checkCallArgTypes(expr: AST.Expr, callerRuntime: string): void {
     if (expr.kind !== "Call" || expr.callee.kind !== "Identifier") return;
     const funcName = expr.callee.name;
     const binding = this.typeChecker.getBinding(funcName);
-    if (!binding || binding.runtime === callerRuntime) return;
-    if (binding.type.kind !== "func") return;
+    if (!binding || binding.type.kind !== "func") return;
 
     const funcType = binding.type as C.FuncType;
     this.checkCallArgTypesForFunc(expr, callerRuntime, funcType, binding.runtime);
+    // Recurse into nested call arguments so deeper cross-runtime calls are
+    // also checked (e.g. outer(inner(x))).
+    for (const arg of expr.args) {
+      if (arg.kind === "Call") this.checkCallArgTypes(arg, callerRuntime);
+    }
   }
 
   /**
@@ -827,15 +902,34 @@ export class ManifestCodeGenerator {
 
       // Try to resolve the argument's type
       let argType: C.CanonicalType = C.ANY;
+      // The runtime the arg value actually originates from. Defaults to the
+      // caller; a nested cross-runtime call overrides it to that callee's
+      // runtime so the crossing names BOTH runtimes correctly.
+      let argSourceRuntime: string = callerRuntime;
       if (arg.kind === "Identifier") {
         const argBinding = this.typeChecker.getBinding(arg.name);
-        if (argBinding) argType = argBinding.type;
+        if (argBinding) {
+          // Use the binding's effective (narrowed) type, but keep the LEXICAL
+          // source runtime (the caller's scope) — an identifier already lives in
+          // the caller, even if its value originally came from elsewhere.
+          argType = this.typeChecker.getEffectiveType(arg.name) || argBinding.type;
+        }
       } else if (arg.kind === "StringLiteral") {
         argType = C.STRING;
       } else if (arg.kind === "NumericLiteral") {
         argType = C.FLOAT64; // JS numbers are f64
       } else if (arg.kind === "BooleanLiteral") {
         argType = C.BOOL;
+      } else if (arg.kind === "Call" && (arg as AST.Call).callee.kind === "Identifier") {
+        // Nested call: use the callee's declared RETURN type, from its runtime,
+        // so `need_int(make_label())` checks make_label()'s str return against
+        // need_int's i64 param.
+        const callee = (arg as AST.Call).callee as AST.Identifier;
+        const calleeBinding = this.typeChecker.getBinding(callee.name);
+        if (calleeBinding && calleeBinding.type.kind === "func") {
+          argType = (calleeBinding.type as C.FuncType).returns;
+          argSourceRuntime = calleeBinding.runtime;
+        }
       } else if (arg.kind === "Lambda") {
         // Infer function type from lambda's typed params
         const lambda = arg as AST.Lambda;
@@ -849,7 +943,7 @@ export class ManifestCodeGenerator {
 
       if (argType.kind !== "any") {
         const argBindingName = `arg${i}:${call.callee.kind === "Identifier" ? call.callee.name : "?"}`;
-        this.typeChecker.declare(argBindingName, argType, callerRuntime as any);
+        this.typeChecker.declare(argBindingName, argType, argSourceRuntime as any);
         this.typeChecker.checkCrossing(
           argBindingName,
           targetRuntime as any,
@@ -4028,8 +4122,43 @@ export class ManifestCodeGenerator {
           return this.rustArgEvidence(arg.argument, dfBindings);
         }
         return undefined;
-      case "Identifier":
-        return dfBindings.has(arg.name) ? "polars::prelude::DataFrame" : undefined;
+      case "Identifier": {
+        // DataFrame provenance (literal producer) wins first — it is the most
+        // specific evidence and rides the zero-copy df lane.
+        if (dfBindings.has(arg.name)) return "polars::prelude::DataFrame";
+        // Otherwise, fall back to the binding's DECLARED type as recorded in the
+        // boundary checker's environment. A typed Python `n: int` / `reviews:
+        // list[Review]` arg thus rides the typed lane AND gets statically
+        // checked, instead of silently degrading to omnivm::Dyn.
+        const declared = this.typeChecker.getEffectiveType(arg.name);
+        return declared ? rustEvidenceFromCanonical(declared) : undefined;
+      }
+      case "Member": {
+        // `obj.field` — use the field's declared type when the receiver is a
+        // known struct binding and the field type is unambiguous.
+        const member = arg as AST.Member;
+        if (member.object.kind === "Identifier" && member.property.kind === "Identifier") {
+          const recv = this.typeChecker.getEffectiveType((member.object as AST.Identifier).name);
+          if (recv && recv.kind === "struct") {
+            const field = (recv as C.StructType).fields.find(
+              f => f.name === (member.property as AST.Identifier).name,
+            );
+            if (field) return rustEvidenceFromCanonical(field.type);
+          }
+        }
+        return undefined;
+      }
+      case "Call": {
+        // A call to a known function yields evidence from its return type.
+        const call = arg as AST.Call;
+        if (call.callee.kind === "Identifier") {
+          const fn = this.typeChecker.getEffectiveType((call.callee as AST.Identifier).name);
+          if (fn && fn.kind === "func") {
+            return rustEvidenceFromCanonical((fn as C.FuncType).returns);
+          }
+        }
+        return undefined;
+      }
       default:
         return undefined;
     }
@@ -5250,6 +5379,37 @@ function stripRustLifetimes(typeText: string): string {
 
 /** Evidence types eligible for Tier-1 per-site wrappers (scalar literals). */
 const RUST_SCALAR_EVIDENCE = new Set(["i64", "f64", "bool", "String"]);
+
+/**
+ * Map an unambiguous canonical type (a binding's DECLARED type from a Python /
+ * JS / Go / Java annotation, already lowered by lowering.ts) to a concrete Rust
+ * evidence type for a gradual/generic call site. Ambiguous, unknown, or
+ * container-without-clear-mapping types return undefined so the slot keeps
+ * `omnivm::Dyn` — preserving the gradual-typing Dyn fallback.
+ *
+ *   int (incl. python bigint, size "big") -> i64
+ *   float                                 -> f64
+ *   string                                -> String
+ *   bool                                  -> bool
+ *   struct named DataFrame                -> polars::prelude::DataFrame
+ *   everything else (any/array/map/option/union/func/other structs) -> Dyn
+ */
+function rustEvidenceFromCanonical(type: C.CanonicalType | undefined): string | undefined {
+  if (!type) return undefined;
+  switch (type.kind) {
+    case "int": return "i64";
+    case "float": return "f64";
+    case "string": return "String";
+    case "bool": return "bool";
+    case "struct": {
+      const name = (type as C.StructType).name;
+      if (name === "DataFrame") return "polars::prelude::DataFrame";
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
+}
 
 /**
  * The bound vocabulary `omnivm::Dyn` satisfies (runtime-dispatched impls in

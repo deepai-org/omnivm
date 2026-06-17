@@ -1094,25 +1094,43 @@ export class Parser extends ParserCursor {
         return this.parseShortDecl() as any;
       }
       // Python type-annotated assignment: name: Type = value
+      // (and bare value-less annotation: name: Type)
       if (this.check(":") && !this.check("::")) {
         const colonCheckpoint = this.current;
         this.advance(); // consume :
         try {
           const type = this.parseType();
+          const nameToken = this.tokens[checkpoint];
+          const name: AST.Identifier = {
+            kind: "Identifier",
+            name: nameToken.value,
+            span: this.createSpanFrom(nameToken)
+          };
           if (this.check("=")) {
             this.advance(); // consume =
             const value = this.parseExpression();
             this.consumeSemicolon();
-            const nameToken = this.tokens[checkpoint];
-            const name: AST.Identifier = {
-              kind: "Identifier",
-              name: nameToken.value,
-              span: this.createSpanFrom(nameToken)
-            };
             return {
               kind: "VarDecl",
               names: [name],
               values: [value],
+              type,
+              declType: type,
+              span: this.createSpan(checkpoint, this.current - 1)
+            } as any;
+          }
+          // Bare value-less Python annotation: `x: int`. Only capture it when the
+          // statement clearly ends here (semicolon / virtual newline / EOF / block
+          // close), so we never swallow `x: Foo ? a : b`, labeled forms, etc. The
+          // typed declaration (no initializer) lets the boundary checker see the
+          // declared type.
+          if (this.checkSemicolon() || this.check("}") ||
+              this.peek().type === TokenType.EOF) {
+            this.consumeSemicolon();
+            return {
+              kind: "VarDecl",
+              names: [name],
+              type,
               declType: type,
               span: this.createSpan(checkpoint, this.current - 1)
             } as any;
