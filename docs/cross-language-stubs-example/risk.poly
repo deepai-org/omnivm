@@ -1,0 +1,22 @@
+// A Python data team calls into a Rust risk-scoring kernel.
+//
+// `score_batch` is implemented in Rust — it takes a list of integer account
+// ids, a per-account weight, and a flag, and returns a list of float scores.
+// `lookup_tier` returns an Optional<String>. The Python code below CALLS these
+// Rust functions; the generated risk.pyi lets the team's existing mypy verify
+// those calls against the *Rust* signatures, even though no Python source for
+// these functions exists.
+
+fn score_batch(account_ids: Vec<i64>, weight: f64, normalize: bool) -> Vec<f64> {
+  account_ids.iter().map(|id| (*id as f64) * weight).collect()
+}
+
+fn lookup_tier(account_id: i64) -> Option<String> {
+  if account_id > 1000 { Some("gold".to_string()) } else { None }
+}
+
+// --- Python side: the real, correct call ---
+ids = [101, 202, 303]
+scores = score_batch(ids, 0.5, True)
+tier = lookup_tier(202)
+print(f"scores={scores} tier={tier}")
