@@ -23,6 +23,19 @@
 //! corpus. Annotate the parameter with a concrete type to leave the dynamic
 //! regime and use native methods.
 //!
+//! # No silent type confusion (numeric coercion policy)
+//!
+//! The same boundary guarantee the typed ABI lane enforces (see
+//! [`crate::abi::FromOmniValue`]) holds for `Dyn`'s scalar accessors: a
+//! *lossless* coercion happens automatically; a *lossy* numeric conversion is
+//! a loud, catchable `TypeError`-style panic, NEVER a silent truncation.
+//! Concretely, extracting an `i64` from a float (`as_i64`, `try_as_i64`,
+//! `From<Dyn> for i64`) accepts only an *integral* float in `i64` range
+//! (`2.0 -> 2`); a fractional float (`2.7`) or an out-of-range one panics
+//! `TypeError: cannot losslessly convert float <v> to int`. Widening an int
+//! to a float and a bool to a number stay lossless and automatic. Reach for
+//! the `try_as_*` accessors when failure should not panic.
+//!
 //! # Tier-3 boundary generics: the bound vocabulary
 //!
 //! `Dyn` is the always-works instantiation target for boundary generics
@@ -203,17 +216,41 @@ impl Dyn {
         }
     }
 
+    /// Non-panicking int view. An exact int passes through; a `bool` widens
+    /// (`True` -> 1). A float converts ONLY when it is integral and in `i64`
+    /// range — a fractional or out-of-range float yields `None` rather than a
+    /// silently truncated value (the boundary "no silent type confusion"
+    /// rule; see the module docs). Use [`Dyn::as_f64`] / `try_as_f64` to read
+    /// a float as a float.
     pub fn try_as_i64(&self) -> Option<i64> {
         match &self.0 {
-            Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+            Value::Number(n) => match n.as_i64() {
+                Some(i) => Some(i),
+                // u64-only values overflow i64: not representable, so None.
+                None if n.as_u64().is_some() => None,
+                None => n.as_f64().and_then(float_to_exact_i64),
+            },
             Value::Bool(b) => Some(*b as i64),
             _ => None,
         }
     }
 
+    /// Coerce-or-panic int accessor. Mirrors [`Dyn::try_as_i64`]: exact ints
+    /// and bools and integral in-range floats convert; a fractional or
+    /// out-of-range float panics with the lossless-conversion message rather
+    /// than truncating; a non-number panics `TypeError: expected int`.
     pub fn as_i64(&self) -> i64 {
-        self.try_as_i64()
-            .unwrap_or_else(|| panic!("TypeError: expected int, got '{}'", self.type_name()))
+        if let Some(i) = self.try_as_i64() {
+            return i;
+        }
+        // A number that did not convert is specifically a lossy float — name
+        // it loudly so the failure is never mistaken for a missing field.
+        if let Value::Number(n) = &self.0 {
+            if let Some(f) = n.as_f64() {
+                panic!("TypeError: cannot losslessly convert float {f} to int");
+            }
+        }
+        panic!("TypeError: expected int, got '{}'", self.type_name())
     }
 
     pub fn try_as_f64(&self) -> Option<f64> {
@@ -341,9 +378,11 @@ impl From<Dyn> for f64 {
 }
 
 impl From<Dyn> for i64 {
-    /// Coerce-or-panic, same as [`Dyn::as_i64`]: ints pass through, floats
-    /// truncate, bools widen (`True` → 1); anything else panics
-    /// `TypeError: expected int, got '...'`.
+    /// Coerce-or-panic, same as [`Dyn::as_i64`]: ints pass through, bools
+    /// widen (`True` → 1), and an integral in-range float converts losslessly
+    /// (`2.0` → 2). A fractional or out-of-range float panics
+    /// `TypeError: cannot losslessly convert float <v> to int` rather than
+    /// truncating; a non-number panics `TypeError: expected int, got '...'`.
     fn from(value: Dyn) -> i64 {
         value.as_i64()
     }
@@ -869,6 +908,22 @@ impl PartialOrd for Dyn {
 // (`None` → every comparison false). Numerically distinct number
 // comparisons and string comparisons are unchanged.
 
+/// Lossless float -> i64: `Some` only when `f` is integral and in `i64`
+/// range. `2.0 -> 2`; `2.7`, `1e30`, `NaN`, `±inf` -> `None`. Shared by the
+/// `i64` accessors and the `From<Dyn>` conversion so the policy is identical
+/// to the typed ABI lane (`abi::FromOmniValue for i64`).
+fn float_to_exact_i64(f: f64) -> Option<i64> {
+    if !f.is_finite() || f.fract() != 0.0 {
+        return None;
+    }
+    // 2^63 rounds to exactly 9223372036854775808.0 as f64 and is NOT a valid
+    // i64, so the upper bound is strict.
+    if f < -(2f64.powi(63)) || f >= 2f64.powi(63) {
+        return None;
+    }
+    Some(f as i64)
+}
+
 /// Exact integer view of a serde number (i64 and u64 both widen to i128);
 /// `None` means the number is a float.
 fn int_val(n: &serde_json::Number) -> Option<i128> {
@@ -1162,7 +1217,10 @@ mod tests {
         // Happy paths mirror the as_* accessors exactly.
         assert_eq!(f64::from(Dyn::from(2i64)), 2.0); // int coerces
         assert_eq!(f64::from(Dyn::from(true)), 1.0); // bool widens
-        assert_eq!(i64::from(Dyn::from(2.9)), 2); // float truncates
+        // No silent type confusion: an integral float converts losslessly,
+        // but a fractional one is a loud error (the old impl truncated 2.9->2,
+        // which asserted the silent-truncation BUG; that behavior is gone).
+        assert_eq!(i64::from(Dyn::from(2.0)), 2); // integral float is lossless
         assert_eq!(i64::from(Dyn::from(false)), 0);
         assert!(bool::from(Dyn::from(true)));
         assert_eq!(String::from(Dyn::from("hi")), "hi");
@@ -1188,6 +1246,33 @@ mod tests {
             String::from(Dyn::from(1.5));
         });
         assert!(err.contains("TypeError: expected str, got 'float'"), "got: {err}");
+        // No silent truncation: a fractional/out-of-range float is a loud,
+        // catchable panic — NOT a truncated int.
+        let err = panics(|| {
+            i64::from(Dyn::from(2.7));
+        });
+        assert!(
+            err.contains("cannot losslessly convert float 2.7 to int"),
+            "got: {err}"
+        );
+        let err = panics(|| {
+            i64::from(Dyn::from(1e30));
+        });
+        assert!(err.contains("cannot losslessly convert float"), "got: {err}");
+    }
+
+    #[test]
+    fn try_as_i64_lossless_float_policy() {
+        // Lossless conversions succeed; lossy ones are None (never truncated).
+        assert_eq!(Dyn::from(2.0).try_as_i64(), Some(2));
+        assert_eq!(Dyn::from(-3.0).try_as_i64(), Some(-3));
+        assert_eq!(Dyn::from(7i64).try_as_i64(), Some(7));
+        assert_eq!(Dyn::from(true).try_as_i64(), Some(1));
+        assert_eq!(Dyn::from(2.7).try_as_i64(), None); // fractional
+        assert_eq!(Dyn::from(1e30).try_as_i64(), None); // out of range
+        assert_eq!(Dyn::from("x").try_as_i64(), None); // non-number
+        // as_i64 of an integral float is the lossless value.
+        assert_eq!(Dyn::from(42.0).as_i64(), 42);
     }
 
     #[test]
