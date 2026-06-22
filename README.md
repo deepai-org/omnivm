@@ -255,6 +255,44 @@ if omnivm.worker_tainted():
 
 In c-shared mode there is no Go-owned background dispatcher thread. Direct calls cooperatively pump async runtimes on the pinned CPython worker thread, so Node/libuv timers such as `setTimeout()` advance on subsequent `omnivm.call()` / `omnivm.execute()` boundaries without violating CPython thread-state ownership.
 
+### Async / gevent: cooperative manifest execution
+
+A blocking `.poly`/manifest run holds the one OmniVM thread (the "Golden Thread") for its whole duration. Under an async or gevent worker that would freeze the event loop / hub and stall every other in-flight request in that worker. OmniVM can instead run a manifest **cooperatively**: the work is driven step-by-step and the host scheduler is given control between guest operations — while **every guest eval still runs on the single Golden Thread, and no new OS threads are created**.
+
+```python
+import omnivm
+
+# gevent worker: invisible — a normal synchronous call auto-cooperates when the
+# gevent monkeypatch is active, so the hub keeps serving other greenlets.
+result = omnivm.run_manifest("feature.poly.json")
+
+# asyncio / ASGI worker: await it; the event loop stays responsive.
+result = await omnivm.run_manifest_async("feature.poly.json")
+
+# Opt out (raw, always blocking):
+result = omnivm.run_manifest_blocking("feature.poly.json")
+```
+
+Measured on a manifest that does ~1s of cross-runtime work: a concurrent background task gets **0 ticks** during a blocking call (loop/hub frozen) versus **130–155 ticks** during a cooperative call, with no slowdown. See `make test-cooperative`.
+
+**Cooperative goroutine join.** A `.poly` that spawns a pure-Go goroutine (`go work()`) runs that goroutine **in parallel on a real OS thread** while the host stays responsive across the `wait()` join — true parallelism for Go-native work, plus a responsive worker.
+
+**Limitation:** a manifest that drives OmniVM's *internal* asyncio (Python `async`/`await`) can't run under a *running* asyncio loop — Python forbids nesting `asyncio.run()` on one thread — so those fall back to blocking under `run_manifest_async`. gevent is unaffected. (Rust async is already safe: its bridge calls drain to the Golden Thread.)
+
+### Calling guest callbacks from Go (auto-marshal)
+
+A `.poly` Go function can invoke a callback owned by another language. The callback always runs on the Golden Thread, so it never breaks a non-thread-safe app's single-threaded assumptions:
+
+```python
+# add_one is a JavaScript (or Python) function passed into a Go function:
+#   function add_one(x) { return x + 1 }
+#   func apply(cb, n) { return cb(n) }   // Go invokes the guest callback
+```
+
+When the Go function runs on the Golden Thread the callback is invoked inline. When it runs **inside a spawned goroutine**, the callback invocation is **auto-marshaled** back to the Golden Thread and serviced by a time-free *pumping-wait* — so it works without deadlock and **without any hardcoded timeout** (the pumping-wait structurally prevents the cyclic deadlock rather than detecting it). Works in both the c-shared (`libomnivm`) and in-process (`manifest-runner`) plugin modes. See `make test-go-callbacks`.
+
+The one rule worth knowing: a goroutine should *produce* Go-native work and let the Golden Thread *consume* it; a guest callback fired from a goroutine is marshaled (correct, slightly slower), while pure-Go goroutine work runs truly in parallel.
+
 ### Observability
 
 Thread-local call timing for Django middleware:
