@@ -305,6 +305,30 @@ func (d *Dispatcher) PumpOnce(timeout time.Duration) bool {
 	}
 }
 
+// PumpUntil services queued tasks on the current (Golden) thread until done is
+// closed, then returns. It blocks on the next task or done — no busy-wait, no
+// timeout. This is the time-free pumping-wait: a Golden-Thread wait on a foreign
+// thread (e.g. wait() on a goroutine that calls a guest callback) pumps marshaled
+// calls instead of blocking the only thread that can service them. MUST be called
+// on the Golden Thread.
+func (d *Dispatcher) PumpUntil(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		select {
+		case <-done:
+			return
+		case t := <-d.fastChan:
+			d.executeTask(t)
+		case t := <-d.taskChan:
+			d.executeTask(t)
+		}
+	}
+}
+
 // RunAsyncFast dispatches fn to the high-priority channel and returns
 // a channel that will receive the result.
 func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncResult {

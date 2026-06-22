@@ -365,7 +365,7 @@ func (e *Executor) registerChannelBuiltins() {
 				}
 				return value
 			}
-			return waitSpawnValue(arg)
+			return e.waitSpawnValue(arg)
 		}
 		if len(args) == 1 {
 			return resolveOne(args[0])
@@ -406,23 +406,23 @@ func (e *Executor) spawnCount() int {
 
 func (e *Executor) waitSpawns(args []interface{}) interface{} {
 	if len(args) == 0 {
-		e.spawnWG.Wait()
+		e.pumpWaitWG(&e.spawnWG)
 		return e.spawnCount()
 	}
 	if len(args) == 1 {
-		return waitSpawnValue(args[0])
+		return e.waitSpawnValue(args[0])
 	}
 	results := make([]interface{}, 0, len(args))
 	for _, arg := range args {
-		results = append(results, waitSpawnValue(arg))
+		results = append(results, e.waitSpawnValue(arg))
 	}
 	return results
 }
 
-func waitSpawnValue(arg interface{}) interface{} {
+func (e *Executor) waitSpawnValue(arg interface{}) interface{} {
 	switch v := arg.(type) {
 	case *SpawnHandle:
-		<-v.done
+		e.pumpWaitDone(v.done)
 		if v.err != nil {
 			return nil
 		}
@@ -430,12 +430,36 @@ func waitSpawnValue(arg interface{}) interface{} {
 	case []interface{}:
 		results := make([]interface{}, 0, len(v))
 		for _, item := range v {
-			results = append(results, waitSpawnValue(item))
+			results = append(results, e.waitSpawnValue(item))
 		}
 		return results
 	default:
 		return nil
 	}
+}
+
+// pumpWaitDone blocks until done is closed. In blocking mode (no cooperative
+// host driver) on the Golden Thread it PUMPS the dispatcher while waiting, so a
+// spawned goroutine that calls a guest callback (auto-marshaled to the Golden
+// Thread) is serviced rather than deadlocking. In cooperative mode the host
+// driver services those marshaled calls, so we just block.
+func (e *Executor) pumpWaitDone(done <-chan struct{}) {
+	if e.submitCtx == nil && hostDispatcher != nil {
+		hostDispatcher.PumpUntil(done)
+		return
+	}
+	<-done
+}
+
+// pumpWaitWG is pumpWaitDone for a WaitGroup (the no-arg global join).
+func (e *Executor) pumpWaitWG(wg *sync.WaitGroup) {
+	if e.submitCtx == nil && hostDispatcher != nil {
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		hostDispatcher.PumpUntil(done)
+		return
+	}
+	wg.Wait()
 }
 
 func (e *Executor) channelFromArg(arg interface{}) (*ChanRef, bool) {
@@ -672,7 +696,14 @@ func (e *Executor) opSpawn(op *Op) (interface{}, error) {
 			part = strings.TrimSpace(part)
 			if val, ok := e.getBinding(part); ok {
 				if ref, ok := val.(RuntimeRef); ok {
-					args = append(args, ref.Value)
+					// Keep the ref for callables/objects so normalizeGoArgs builds
+					// a proxy the spawned Go func can invoke; only unwrap plain
+					// primitive values (ref.Value is nil for a guest function).
+					if runtimeRefNeedsProxy(ref) {
+						args = append(args, ref)
+					} else {
+						args = append(args, ref.Value)
+					}
 				} else {
 					args = append(args, val)
 				}

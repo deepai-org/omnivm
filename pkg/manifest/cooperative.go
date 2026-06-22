@@ -1,7 +1,6 @@
 package manifest
 
 import (
-	"sync/atomic"
 	"time"
 
 	"github.com/omnivm/omnivm/pkg"
@@ -21,6 +20,14 @@ import (
 // orchestration goroutine never touches a guest runtime itself; it only blocks
 // on the dispatcher waiting for the host to service each marshaled call.
 
+// hostDispatcher is the process dispatcher (set by the host). Used by the
+// pumping-wait: a blocking-mode Golden-Thread wait on a goroutine pumps marshaled
+// guest-callback calls instead of blocking the only thread that can service them.
+var hostDispatcher *dispatcher.Dispatcher
+
+// SetHostDispatcher records the process dispatcher for pumping-waits.
+func SetHostDispatcher(d *dispatcher.Dispatcher) { hostDispatcher = d }
+
 // Pump step status codes (returned by CoopJob.Step).
 const (
 	PumpStatusDone    = 0 // the run finished; fetch the result
@@ -28,26 +35,44 @@ const (
 	PumpStatusWaiting = 2 // (reserved) guest is waiting on I/O; host may park
 )
 
+// goldenThreadID / currentThreadID identify the Golden Thread so marshaling can
+// detect "am I already on the Golden Thread?" — the single check that makes both
+// cooperative marshaling and auto-marshal reentrancy-safe. Set by the host.
+var goldenThreadID int64
+var currentThreadID func() int64
+
+// SetHostThreadID records the Golden Thread id and a current-OS-thread-id probe.
+func SetHostThreadID(golden int64, current func() int64) {
+	goldenThreadID = golden
+	currentThreadID = current
+}
+
+// onGoldenThread reports whether the caller is currently executing on the Golden
+// Thread. When the host hasn't wired thread info, it conservatively returns true
+// (run inline) — never marshal blindly.
+func onGoldenThread() bool {
+	if currentThreadID == nil || goldenThreadID == 0 {
+		return true
+	}
+	return currentThreadID() == goldenThreadID
+}
+
 // submitContext is shared by every marshaling runtime wrapper in one cooperative
-// run. onHost is true while a marshaled call is running on the Golden Thread, so
-// a nested bridge callback (guest code that re-enters the manifest) runs its
-// guest calls directly instead of re-marshaling — re-marshaling would deadlock
-// because RunOnMain from the Golden Thread has no servicer.
+// run.
 type submitContext struct {
-	disp   *dispatcher.Dispatcher
-	onHost atomic.Bool
+	disp *dispatcher.Dispatcher
 }
 
 // hostRun runs fn on the Golden Thread. If already on the Golden Thread (a nested
-// call within a marshaled op), it runs fn inline.
+// call within a marshaled op, or an auto-marshaled bridge call), it runs fn
+// inline — re-marshaling from the Golden Thread would deadlock (the servicer is
+// busy running the current task).
 func (s *submitContext) hostRun(fn func()) {
-	if s.onHost.Load() {
+	if onGoldenThread() {
 		fn()
 		return
 	}
 	_ = s.disp.RunOnMain(func() error {
-		s.onHost.Store(true)
-		defer s.onHost.Store(false)
 		fn()
 		return nil
 	})

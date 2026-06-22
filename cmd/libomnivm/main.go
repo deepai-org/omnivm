@@ -312,6 +312,12 @@ func OmniInit(cList *C.char) *C.char {
 	eng.SetupBridge(callPtr, freePtr)
 	// Give c-shared Go plugins a path to call guest callbacks via the bridge.
 	manifest.SetHostCSharedBridge(unsafe.Pointer(callPtr))
+	// Let blocking-mode Golden-Thread waits pump the dispatcher so auto-marshaled
+	// guest-callback calls from spawned goroutines are serviced (no deadlock).
+	manifest.SetHostDispatcher(eng.Disp)
+	// Thread identity for marshal reentrancy: a call already on the Golden Thread
+	// runs inline; only foreign-thread calls marshal.
+	manifest.SetHostThreadID(eng.GoldenThreadID, func() int64 { return int64(C.get_thread_id()) })
 
 	// Buffer bridge
 	bufGetPtr := uintptr(C.get_omni_buf_get_ptr())
@@ -369,6 +375,27 @@ func callRuntime(rtName, code string) (string, error) {
 		return "", fmt.Errorf("not initialized — call OmniInit first")
 	}
 	threadID := int64(C.get_thread_id())
+	// Auto-marshal: a call from a foreign OS thread (e.g. a guest callback invoked
+	// from a spawned Go goroutine) is routed onto the Golden Thread via the
+	// dispatcher instead of being rejected. A Golden-Thread pumping-wait (or the
+	// cooperative host driver) services it; the wait-for-graph guards against
+	// cyclic deadlock. Calls already on the Golden Thread run inline.
+	if eng != nil && eng.Disp != nil && eng.GoldenThreadID != 0 && threadID != eng.GoldenThreadID {
+		var res string
+		var rerr error
+		runErr := eng.Disp.RunOnMain(func() error {
+			res, rerr = callRuntimeOnGolden(rtName, code, eng.GoldenThreadID)
+			return nil
+		})
+		if runErr != nil {
+			return "", runErr
+		}
+		return res, rerr
+	}
+	return callRuntimeOnGolden(rtName, code, threadID)
+}
+
+func callRuntimeOnGolden(rtName, code string, threadID int64) (string, error) {
 	done, err := beginRuntimeExternalCall("call", threadID)
 	if err != nil {
 		return "", err
