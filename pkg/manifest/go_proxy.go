@@ -74,6 +74,16 @@ func (p *GoHandleProxy) ID() handles.ID {
 	return p.id
 }
 
+// HandleID returns the handle id as a plain uint64. In-process Go plugins (a
+// separate package that can't name handles.ID) use this via an interface to
+// invoke a callback proxy through the manifest bridge.
+func (p *GoHandleProxy) HandleID() uint64 {
+	if p == nil {
+		return 0
+	}
+	return uint64(p.id)
+}
+
 // Kind returns the descriptor kind, such as resource, table, or job.
 func (p *GoHandleProxy) Kind() string {
 	if p == nil {

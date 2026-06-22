@@ -380,6 +380,12 @@ func main() {
 	disp.RegisterPumpCallback("javascript", jsRuntime.Pump)
 	disp.RegisterPumpCallback("python", pyRuntime.Pump)
 
+	// Enable Go->guest callbacks + auto-marshal: a call already on the Golden
+	// Thread runs inline; one from a spawned goroutine marshals via the dispatcher
+	// and is serviced by the Golden-Thread pumping-wait.
+	manifest.SetHostThreadID(goldenThreadID, func() int64 { return int64(C.get_thread_id()) })
+	manifest.SetHostDispatcher(disp)
+
 	// Handle SIGINT/SIGTERM for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

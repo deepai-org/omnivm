@@ -74,6 +74,14 @@ func (e *Executor) compileGoPlugin(op *Op) (interface{}, error) {
 			return nil, fmt.Errorf("go plugin open: %w", err)
 		}
 		loadedPlugins[soPath] = plug
+
+		// Install the manifest bridge so the plugin can invoke guest callbacks.
+		// Absent (plugin without callbacks) → skipped.
+		if setSym, err := plug.Lookup("OmniSetBridge"); err == nil {
+			if setFn, ok := setSym.(func(func(string, string) string)); ok {
+				setFn(e.goPluginBridge)
+			}
+		}
 	}
 
 	// If the plugin has an Init function and requires dependencies, call it
@@ -2414,6 +2422,14 @@ func compilePlugin(source, outputPath string) error {
 	srcPath := filepath.Join(tmpDir, "plugin.go")
 	if err := os.WriteFile(srcPath, []byte(source), 0o644); err != nil {
 		return err
+	}
+
+	// If the source invokes a guest callback, compile in the bridge shim that
+	// defines __omnivm_invoke + OmniSetBridge.
+	if pluginBridgeShimNeeded(source) {
+		if err := os.WriteFile(filepath.Join(tmpDir, "omnivm_bridge.go"), []byte(goInProcessBridgeShim), 0o644); err != nil {
+			return err
+		}
 	}
 
 	// Write go.mod — each plugin needs a unique module name
