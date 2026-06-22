@@ -1,0 +1,22 @@
+// Auto-marshal proof: a Go goroutine invokes a guest (JavaScript) callback.
+//
+// `go_invoke` is Go-owned and runs on a real goroutine (off the Golden Thread).
+// It calls `cb`, a JavaScript function — a guest callback. Today that crosses
+// into a thread-affine runtime from a foreign thread and fails/UB. With
+// auto-marshal it should transparently run the callback on the Golden Thread
+// (the waiting `wait()` services it) and return the result.
+//
+// js_double(21) -> 42
+
+function js_double(x) {
+  return x * 2
+}
+
+func go_invoke(cb, n) {
+  return cb(n)
+}
+
+const job = go go_invoke(js_double, 21)
+const result = wait(job)
+
+print(f"auto-marshal callback result={result}")

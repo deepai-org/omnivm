@@ -1,0 +1,16 @@
+// (a1) A Go function invokes a guest (JavaScript) callback, called DIRECTLY
+// (on the Golden Thread). Today `cb(n)` compiles to invalid Go and silently
+// returns None; target is to lower it to a host-bridge handle_call so it returns
+// js_double(21) -> 42.
+
+function js_double(x) {
+  return x * 2
+}
+
+func go_invoke(cb, n) {
+  return cb(n)
+}
+
+const result = go_invoke(js_double, 21)
+
+print(f"go guest callback direct result={result}")
