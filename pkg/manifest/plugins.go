@@ -149,6 +149,7 @@ func (e *Executor) compileGoCSharedPlugin(op *Op) error {
 		if err != nil {
 			return fmt.Errorf("go c-shared plugin open: %w", err)
 		}
+		installCSharedGoBridge(handle)
 		loadedCSharedPlugins[soPath] = handle
 	}
 
@@ -448,6 +449,13 @@ func goCSharedWrapperSource(exports []string) string {
 /*
 #include <stdlib.h>
 #include <string.h>
+
+// Host bridge: the host installs a pointer to OmniCall(runtime, code) so plugin
+// code can invoke guest callbacks (and other runtimes) via the manifest bridge.
+typedef char* (*omnivm_host_bridge_fn)(char*, char*);
+static char* __omnivm_call_host_bridge(void* fn, char* runtime, char* code) {
+	return ((omnivm_host_bridge_fn)fn)(runtime, code);
+}
 */
 import "C"
 
@@ -466,6 +474,101 @@ import (
 	"sync/atomic"
 	"unsafe"
 )
+
+// __omnivm_host_bridge holds the host's OmniCall function pointer, installed via
+// OmniSetBridge after the plugin is loaded. nil until installed.
+var __omnivm_host_bridge unsafe.Pointer
+
+//export OmniSetBridge
+func OmniSetBridge(fn unsafe.Pointer) {
+	__omnivm_host_bridge = fn
+}
+
+// __omnivm_bridge_call sends a request to the host bridge and returns the raw
+// reply ("OK:<json>" / "ERR:<msg>").
+func __omnivm_bridge_call(runtime, code string) (string, error) {
+	if __omnivm_host_bridge == nil {
+		return "", errors.New("omnivm: host bridge not installed")
+	}
+	cRuntime := C.CString(runtime)
+	defer C.free(unsafe.Pointer(cRuntime))
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+	res := C.__omnivm_call_host_bridge(__omnivm_host_bridge, cRuntime, cCode)
+	if res == nil {
+		return "", errors.New("omnivm: host bridge returned null")
+	}
+	out := C.GoString(res)
+	C.free(unsafe.Pointer(res))
+	return out, nil
+}
+
+// __omnivm_invoke calls a guest callback that was passed to this Go function as a
+// parameter. The callback arrives as its handle descriptor; we invoke it on the
+// host via a handle_call bridge op and decode the result. Cross-thread safety
+// (calls from spawned goroutines) is handled host-side by auto-marshal.
+func __omnivm_invoke(fn interface{}, args ...interface{}) interface{} {
+	desc, ok := fn.(map[string]interface{})
+	if !ok {
+		panic(fmt.Sprintf("omnivm: value of type %T is not callable", fn))
+	}
+	rawID, hasID := desc["id"]
+	if !hasID {
+		panic("omnivm: callable value has no handle id")
+	}
+	var id uint64
+	switch v := rawID.(type) {
+	case float64:
+		id = uint64(v)
+	case float32:
+		id = uint64(v)
+	case int:
+		id = uint64(v)
+	case int32:
+		id = uint64(v)
+	case int64:
+		id = uint64(v)
+	case uint:
+		id = uint64(v)
+	case uint32:
+		id = uint64(v)
+	case uint64:
+		id = v
+	case json.Number:
+		n, _ := v.Int64()
+		id = uint64(n)
+	default:
+		panic(fmt.Sprintf("omnivm: callable handle id has unexpected type %T", rawID))
+	}
+	if args == nil {
+		args = []interface{}{}
+	}
+	reqJSON, err := json.Marshal(map[string]interface{}{
+		"op": "handle_call", "id": id, "key": "", "args": args,
+	})
+	if err != nil {
+		panic(err)
+	}
+	reply, err := __omnivm_bridge_call("__manifest", string(reqJSON))
+	if err != nil {
+		panic(err)
+	}
+	if strings.HasPrefix(reply, "ERR:") {
+		panic(errors.New(reply[4:]))
+	}
+	reply = strings.TrimPrefix(reply, "OK:")
+	var env struct {
+		Value interface{} ` + "`json:\"value\"`" + `
+	}
+	if err := json.Unmarshal([]byte(reply), &env); err == nil {
+		return env.Value
+	}
+	var raw interface{}
+	if json.Unmarshal([]byte(reply), &raw) == nil {
+		return raw
+	}
+	return reply
+}
 
 type __omnivmEnvelope struct {
 	OK    bool        ` + "`json:\"ok\"`" + `

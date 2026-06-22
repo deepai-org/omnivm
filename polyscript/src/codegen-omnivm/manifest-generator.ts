@@ -4910,6 +4910,15 @@ export class ManifestCodeGenerator {
           return `make(chan interface{}, ${args[0]})`;
         }
 
+        // Calling a parameter invokes a guest callback passed across the
+        // boundary. A Go `interface{}` value can't be called directly, so route
+        // it through the generated __omnivm_invoke helper, which invokes the
+        // callable on the host via the manifest bridge (handle_call). Off-thread
+        // (goroutine) calls are auto-marshaled to the Golden Thread host-side.
+        if (expr.callee.kind === "Identifier" && params.has(expr.callee.name)) {
+          return `__omnivm_invoke(${[callee, ...args].join(", ")})`;
+        }
+
         return `${callee}(${args.join(", ")})`;
       }
       case "NewExpr": {

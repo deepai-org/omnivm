@@ -21,6 +21,11 @@ static const char* omnivm_manifest_dlerror(void) {
 static char* omnivm_manifest_call_cshared_go(void* fn, const char* args_json) {
 	return ((omnivm_cshared_go_func)fn)((char*)args_json);
 }
+
+typedef void (*omnivm_cshared_set_bridge_fn)(void*);
+static void omnivm_manifest_set_cshared_bridge(void* setfn, void* bridgeptr) {
+	((omnivm_cshared_set_bridge_fn)setfn)(bridgeptr);
+}
 */
 import "C"
 
@@ -98,6 +103,32 @@ func newCSharedObjectProxy(handle cSharedPluginHandle, objectID, kind string) *c
 		kind:     kind,
 		state:    &cSharedObjectState{},
 	}
+}
+
+// hostCSharedBridgePtr is the host's OmniCall function pointer, installed into
+// each c-shared plugin so plugin code can invoke guest callbacks via the manifest
+// bridge. Set once by the host (cmd/libomnivm) during init; nil in environments
+// without a host bridge (plugin callback invocation then errors clearly).
+var hostCSharedBridgePtr unsafe.Pointer
+
+// SetHostCSharedBridge records the host bridge function pointer (OmniCall) used
+// to give c-shared Go plugins a path to call back into the host.
+func SetHostCSharedBridge(ptr unsafe.Pointer) { hostCSharedBridgePtr = ptr }
+
+// installCSharedGoBridge hands the host bridge pointer to a freshly loaded plugin
+// via its OmniSetBridge export. A plugin compiled before this ABI (no
+// OmniSetBridge symbol) is left untouched.
+func installCSharedGoBridge(handle cSharedPluginHandle) {
+	if hostCSharedBridgePtr == nil {
+		return
+	}
+	cName := C.CString("OmniSetBridge")
+	defer C.free(unsafe.Pointer(cName))
+	setfn := C.omnivm_manifest_dlsym(unsafe.Pointer(uintptr(handle)), cName)
+	if setfn == nil {
+		return
+	}
+	C.omnivm_manifest_set_cshared_bridge(setfn, hostCSharedBridgePtr)
 }
 
 func openCSharedGoPlugin(path string) (cSharedPluginHandle, error) {

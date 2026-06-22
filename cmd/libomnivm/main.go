@@ -310,6 +310,8 @@ func OmniInit(cList *C.char) *C.char {
 	callPtr := uintptr(C.get_omni_call_ptr())
 	freePtr := uintptr(C.get_omni_free_ptr())
 	eng.SetupBridge(callPtr, freePtr)
+	// Give c-shared Go plugins a path to call guest callbacks via the bridge.
+	manifest.SetHostCSharedBridge(unsafe.Pointer(callPtr))
 
 	// Buffer bridge
 	bufGetPtr := uintptr(C.get_omni_buf_get_ptr())
