@@ -1,4 +1,4 @@
-.PHONY: build polyscript-deps polyscript-build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-polyscript test-poly-libomnivm-smoke test-cooperative test-all run clean
+.PHONY: build polyscript-deps polyscript-build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-polyscript test-poly-libomnivm-smoke test-cooperative test-go-callbacks test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -66,6 +66,12 @@ test-cooperative: build
 	  -e LD_LIBRARY_PATH=/usr/local/lib \
 	  $(IMAGE_NAME):$(IMAGE_TAG) /build/scripts/test-cooperative-boundary.sh
 
+# Go -> guest callbacks + auto-marshal (direct + goroutine).
+test-go-callbacks: build
+	docker run --rm --entrypoint bash \
+	  -e LD_LIBRARY_PATH=/usr/local/lib \
+	  $(IMAGE_NAME):$(IMAGE_TAG) /build/scripts/test-go-callbacks.sh
+
 # Run manifest tests in quick mode (skip Express/pastebin)
 test-manifests-quick: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh --quick
@@ -79,7 +85,7 @@ test: test-all
 
 # Run everything: local unit checks, Docker unit/integration tests, smoke tests,
 # CLI/stress/manifest suites, CPython-hosted libomnivm, and in-repo PolyScript examples.
-test-all: test-local test-python test-polyscript test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-cooperative
+test-all: test-local test-python test-polyscript test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-cooperative test-go-callbacks
 
 # Start the REPL
 run: build

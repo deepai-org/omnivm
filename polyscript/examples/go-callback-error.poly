@@ -1,0 +1,5 @@
+// edge: the guest callback raises; the error must surface (not hang/crash).
+function js_boom(x) { throw new Error("callback boom") }
+func go_inv(cb, n) { return cb(n) }
+const r = go_inv(js_boom, 1)
+print(f"should not reach {r}")

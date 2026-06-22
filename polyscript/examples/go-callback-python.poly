@@ -1,0 +1,8 @@
+// edge: a Go function invokes a PYTHON callback (direct + spawned).
+def py_triple(x):
+    return x * 3
+func go_inv(cb, n) { return cb(n) }
+const direct = go_inv(py_triple, 5)
+const job = go go_inv(py_triple, 7)
+const spawned = wait(job)
+print(f"python callback direct={direct} spawned={spawned}")

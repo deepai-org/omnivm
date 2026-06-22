@@ -1,0 +1,8 @@
+// edge: multiple concurrent goroutines each invoke a guest callback; join all.
+function js_double(x) { return x * 2 }
+func go_inv(cb, n) { return cb(n) }
+const a = go go_inv(js_double, 10)
+const b = go go_inv(js_double, 20)
+const c = go go_inv(js_double, 30)
+const r = wait(a, b, c)
+print(f"multi callbacks {r}")

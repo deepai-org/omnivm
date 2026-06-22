@@ -1,0 +1,8 @@
+def py_add(x):
+    return x + 100
+
+function js_via_py(x) { return py_add(x) }
+func go_inv(cb, n) { return cb(n) }
+const r = go go_inv(js_via_py, 5)
+const out = wait(r)
+print(f"nested cross-runtime callback {out}")

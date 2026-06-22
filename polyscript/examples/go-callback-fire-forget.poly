@@ -1,0 +1,6 @@
+// edge: spawn a goroutine that invokes a callback but is NOT awaited; the run
+// ends. Must not hang the process.
+function js_note(x) { return x }
+func go_ff(cb) { return cb(99) }
+go go_ff(js_note)
+print("fire-and-forget submitted")

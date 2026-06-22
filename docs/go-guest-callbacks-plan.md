@@ -78,6 +78,28 @@ callable arrives at `normalizeGoArg` as a `*GoHandleProxy{kind:"callable", id:N}
   author's own deadlock), as designed.
 - Proof: a deliberately cyclic in-model `.poly` flagged instantly.
 
+## Outcome (implemented)
+
+- **a1 (done):** `cb(args)` on a callable param lowers to `__omnivm_invoke` →
+  host bridge `handle_call`. New bidirectional c-shared bridge ABI (OmniSetBridge
+  installs the host OmniCall pointer). Works on the Golden Thread.
+- **a2 (done):** a bridge call from a foreign thread (spawned goroutine) is
+  auto-marshaled onto the Golden Thread (`callRuntime` → `Disp.RunOnMain`) and
+  serviced by a Golden-Thread **pumping-wait** (`dispatcher.PumpUntil`, no
+  timeout). Reentrancy keyed on the real Golden-Thread id, so nested/marshaled
+  guest calls run inline (fixes the cooperative-mode double-marshal). Works in
+  blocking **and** gevent/asyncio cooperative modes.
+- **a3 (done, by prevention not detection):** the pumping-wait breaks the
+  hold-and-wait condition, so in-model deadlocks **cannot form** — no wait-for
+  graph and no timeout are needed. A detector would be dead code for in-model
+  cases and can't observe out-of-model (opaque guest) blocking, which is the
+  author's own deadlock (hangs like any). Validated by the edge suite
+  (`scripts/test-go-callbacks.sh`, `make test-go-callbacks`): direct, auto-marshal,
+  Python + JS callbacks, nested cross-runtime (goroutine→JS→Python=105),
+  concurrent goroutines, error propagation, and fire-and-forget (immediate +
+  slow) all pass without hang. Leaked fire-and-forget goroutines get a clean
+  dispatcher-shutdown error rather than blocking.
+
 ## Scope note
 
 a1 is a net-new bidirectional cgo bridge ABI for c-shared plugins (host C

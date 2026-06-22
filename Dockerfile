@@ -229,6 +229,7 @@ COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
 COPY test/fixtures/prisma/ test/fixtures/prisma/
 COPY test/cooperative/ test/cooperative/
+COPY test/go-callbacks/ test/go-callbacks/
 RUN chmod +x scripts/python3-polyscript scripts/run-manifest-libomnivm.py && \
     ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript && \
     ln -sf /build/scripts/run-manifest-libomnivm.py /usr/local/bin/run-manifest-libomnivm.py
@@ -418,6 +419,13 @@ RUN python3 -m pytest pyomnivm/test_omnivm.py -q
 RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
     export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
     bash scripts/test-cooperative-boundary.sh
+
+# Go -> guest callbacks + auto-marshal: a .poly Go function invokes a guest
+# callback, directly (Golden Thread) and from a spawned goroutine (auto-marshaled
+# to the Golden Thread via a pumping-wait; no deadlock, no timeout).
+RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
+    export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
+    bash scripts/test-go-callbacks.sh
 
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)
