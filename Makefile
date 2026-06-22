@@ -1,4 +1,4 @@
-.PHONY: build polyscript-deps polyscript-build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-polyscript test-poly-libomnivm-smoke test-all run clean
+.PHONY: build polyscript-deps polyscript-build test test-local test-python test-unit test-docker test-cli test-manifests test-libomnivm-manifests test-libomnivm-stress test-polyscript test-poly-libomnivm-smoke test-cooperative test-all run clean
 
 IMAGE_NAME := omnivm
 IMAGE_TAG := latest
@@ -59,6 +59,13 @@ test-libomnivm-stress: build
 test-poly-libomnivm-smoke: build polyscript-build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-poly-libomnivm-smoke.sh
 
+# Cooperative-boundary proof: asyncio + gevent hosts stay responsive while a
+# manifest runs (vs. starvation on the blocking path), all on the Golden Thread.
+test-cooperative: build
+	docker run --rm --entrypoint bash \
+	  -e LD_LIBRARY_PATH=/usr/local/lib \
+	  $(IMAGE_NAME):$(IMAGE_TAG) /build/scripts/test-cooperative-boundary.sh
+
 # Run manifest tests in quick mode (skip Express/pastebin)
 test-manifests-quick: build
 	@OMNIVM_IMAGE=$(IMAGE_NAME):$(IMAGE_TAG) ./scripts/test-manifests.sh --quick
@@ -72,7 +79,7 @@ test: test-all
 
 # Run everything: local unit checks, Docker unit/integration tests, smoke tests,
 # CLI/stress/manifest suites, CPython-hosted libomnivm, and in-repo PolyScript examples.
-test-all: test-local test-python test-polyscript test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke
+test-all: test-local test-python test-polyscript test-unit test-docker test-cli test-stress test-manifests test-libomnivm-manifests test-libomnivm-stress test-poly-libomnivm-smoke test-cooperative
 
 # Start the REPL
 run: build

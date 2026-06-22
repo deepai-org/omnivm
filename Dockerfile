@@ -124,6 +124,7 @@ RUN python3.14 -m venv /opt/omnivm-python && \
       httpx \
       aiohttp \
       requests \
+      gevent \
       pytest
 ENV PYTHONPATH="/opt/omnivm-python/lib/python3.14/site-packages:${PYTHONPATH}"
 RUN cd /usr/local/lib && npm install \
@@ -227,6 +228,7 @@ COPY runtime/java/ runtime/java/
 COPY pyomnivm/ pyomnivm/
 COPY integration_test.go ./
 COPY test/fixtures/prisma/ test/fixtures/prisma/
+COPY test/cooperative/ test/cooperative/
 RUN chmod +x scripts/python3-polyscript scripts/run-manifest-libomnivm.py && \
     ln -sf /build/scripts/python3-polyscript /usr/local/bin/python3-polyscript && \
     ln -sf /build/scripts/run-manifest-libomnivm.py /usr/local/bin/run-manifest-libomnivm.py
@@ -408,6 +410,14 @@ RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
 # Python package unit tests (pyomnivm — pure Python, no libomnivm.so needed)
 RUN python3 -m unittest discover -s pyomnivm -p 'test_*.py' -v
 RUN python3 -m pytest pyomnivm/test_omnivm.py -q
+
+# Cooperative-boundary proof: under both a real asyncio loop and gevent
+# monkeypatch, a manifest runs without freezing the host scheduler (blocking
+# baseline starves it; cooperative keeps it responsive) — every guest eval still
+# on the Golden Thread, no new OS threads.
+RUN LIBJVM_DIR=$(find /usr/lib/jvm -name "libjvm.so" -printf "%h" -quit) && \
+    export LD_LIBRARY_PATH="${LIBJVM_DIR}:/usr/local/lib:${LD_LIBRARY_PATH}" && \
+    bash scripts/test-cooperative-boundary.sh
 
 # ============================================================
 # Stage 3: Runtime image (full JDK for javax.tools.JavaCompiler)

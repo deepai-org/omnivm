@@ -713,6 +713,14 @@ def _load_lib():
             lib.OmniManifestCall.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
             lib.OmniManifestCall.restype = ctypes.c_void_p
 
+        if hasattr(lib, "OmniManifestRunSubmit"):
+            lib.OmniManifestRunSubmit.argtypes = [ctypes.c_char_p]
+            lib.OmniManifestRunSubmit.restype = ctypes.c_void_p
+            lib.OmniManifestRunStep.argtypes = [ctypes.c_long, ctypes.c_int]
+            lib.OmniManifestRunStep.restype = ctypes.c_int
+            lib.OmniManifestRunResult.argtypes = [ctypes.c_long]
+            lib.OmniManifestRunResult.restype = ctypes.c_void_p
+
         lib.OmniBufGet.argtypes = [
             ctypes.c_char_p,
             ctypes.POINTER(_OmniBuffer),
@@ -1161,8 +1169,171 @@ def run_manifest(path):
     """
     if _lib is None:
         raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    # Under gevent, cooperate automatically so the hub is not frozen — invisible
+    # to callers (still a normal synchronous call). asyncio hosts that need to
+    # keep their loop responsive use the awaitable run_manifest_async(); a plain
+    # synchronous call here cannot yield to a running loop, so it stays blocking.
+    if _gevent_patched() and _cooperative_supported(path):
+        return run_manifest_cooperative(path)
     result = _lib.OmniRunManifestFile(os.fsencode(path))
     return _check_result(result)
+
+
+def run_manifest_blocking(path):
+    """
+    Run a manifest synchronously, never cooperating with a host scheduler.
+
+    This is the raw single-call path; it blocks the calling thread (and any host
+    asyncio loop / gevent hub on it) for the full duration. ``run_manifest`` is
+    the cooperative-by-default entry; use this only to opt out or for baselines.
+    """
+    if _lib is None:
+        raise RuntimeError("omnivm not initialized — call init_runtimes() first")
+    result = _lib.OmniRunManifestFile(os.fsencode(path))
+    return _check_result(result)
+
+
+# Cooperative manifest run: pump-step status codes (mirror pkg/manifest).
+_PUMP_STATUS_DONE = 0
+_PUMP_STATUS_MORE = 1
+_PUMP_STATUS_WAITING = 2
+
+
+def _gevent_patched():
+    """True if gevent.monkey.patch_all() has cooperativized this process."""
+    try:
+        from gevent import monkey
+    except Exception:
+        return False
+    try:
+        return bool(monkey.is_module_patched("socket")) or bool(
+            monkey.is_module_patched("thread")
+        )
+    except Exception:
+        return False
+
+
+def _cooperative_supported(path):
+    """
+    True if cooperative (host-driven) execution is available for this manifest.
+
+    Cooperative runs marshal guest calls to the Golden Thread for python/js/
+    ruby/java. `go` is fine: Go functions run on goroutines (real threads) and
+    need no marshaling, so a manifest that spawns goroutines is cooperative —
+    its pure-Go work runs in parallel while the host stays responsive. Only
+    `rust` (tokio thread-affinity + concrete-type assertions) falls back to
+    blocking.
+    """
+    if _lib is None or not hasattr(_lib, "OmniManifestRunSubmit"):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    found = set()
+
+    def _walk(value):
+        if isinstance(value, dict):
+            rt = value.get("runtime")
+            if isinstance(rt, str):
+                found.add(rt)
+            for child in value.values():
+                _walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                _walk(child)
+
+    _walk(data)
+    return "rust" not in found
+
+
+def _manifest_uses_async(path):
+    """
+    Heuristic: does this manifest drive OmniVM's internal async machinery?
+
+    Under a *running asyncio loop* (run_manifest_async), OmniVM's internal async
+    operations cannot start a nested event loop on the same thread, so such
+    manifests fall back to the blocking path. gevent has no host asyncio loop and
+    runs them cooperatively without issue.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return True  # be conservative
+    return '"async"' in text or '"isAsync"' in text or '"await"' in text
+
+
+def _coop_submit(path):
+    res = _lib.OmniManifestRunSubmit(os.fsencode(path))
+    return int(_check_result(res))
+
+
+def _coop_result(job):
+    return _check_result(_lib.OmniManifestRunResult(job))
+
+
+def run_manifest_cooperative(path, step_timeout_ms=0):
+    """
+    Run a manifest cooperatively under gevent (or any greenlet hub).
+
+    The run is driven step-by-step on the Golden Thread; between guest calls this
+    yields to the hub (``gevent.sleep(0)``) so other greenlets keep running. Every
+    guest eval still executes on the single Golden Thread. Falls back to the
+    blocking path when cooperative execution is unavailable for this manifest.
+    """
+    if not _cooperative_supported(path):
+        return run_manifest_blocking(path)
+    import gevent
+
+    job = _coop_submit(path)
+    idle = 0
+    while True:
+        status = _lib.OmniManifestRunStep(job, step_timeout_ms)
+        if status == _PUMP_STATUS_DONE:
+            break
+        if status == _PUMP_STATUS_MORE:
+            idle = 0
+            gevent.sleep(0)  # serviced a guest call; keep pumping promptly
+        else:
+            # No guest work ready: re-poll fast a few times (work likely
+            # imminent), then back off so we don't spin while genuinely idle.
+            idle += 1
+            gevent.sleep(0 if idle < 4 else 0.001)
+    return _coop_result(job)
+
+
+async def run_manifest_async(path, step_timeout_ms=0):
+    """
+    Run a manifest cooperatively inside a running asyncio event loop.
+
+    Awaitable: between guest calls it ``await``s the loop so other tasks keep
+    running, while every guest eval stays on the Golden Thread. Falls back to a
+    blocking run when cooperative execution is unavailable for this manifest.
+    """
+    import asyncio
+
+    # Manifests that drive OmniVM's internal asyncio cannot run cooperatively
+    # under a running host loop (nested-loop restriction); run them blocking.
+    if not _cooperative_supported(path) or _manifest_uses_async(path):
+        return run_manifest_blocking(path)
+
+    job = _coop_submit(path)
+    idle = 0
+    while True:
+        status = _lib.OmniManifestRunStep(job, step_timeout_ms)
+        if status == _PUMP_STATUS_DONE:
+            break
+        if status == _PUMP_STATUS_MORE:
+            idle = 0
+            await asyncio.sleep(0)  # serviced a guest call; keep pumping promptly
+        else:
+            # No guest work ready: re-poll fast a few times (work likely
+            # imminent), then back off so we don't spin while genuinely idle.
+            idle += 1
+            await asyncio.sleep(0 if idle < 4 else 0.001)
+    return _coop_result(job)
 
 
 def load_manifest_module(module_id, path):

@@ -1,0 +1,19 @@
+// Cooperative goroutine-join proof.
+//
+// A pure-Go goroutine does ~800ms of work on a real OS thread, in parallel with
+// the Golden Thread. The .poly then wait()s for it. Under a cooperative host
+// (asyncio loop / gevent hub), the host must stay responsive during the join —
+// the wait yields while the goroutine runs on its own thread — and the result
+// comes back. The blocking baseline freezes the host for the whole 800ms.
+
+import time
+
+func slow_go() {
+  time.Sleep(800 * time.Millisecond)
+  return 800
+}
+
+const job = go slow_go()
+const result = wait(job)
+
+print(f"cooperative goroutine join result={result}")

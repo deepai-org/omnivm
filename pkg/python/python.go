@@ -4057,15 +4057,38 @@ static int interrupt_pipe[2] = {-1, -1};
 static void omnivm_py_setup_interrupt(void) {
     if (interrupt_pipe[0] >= 0 && interrupt_pipe[1] >= 0) return;
     if (pipe(interrupt_pipe) != 0) return;
-    char code[512];
+    // The watcher must be a REAL OS thread doing a REAL blocking read. Under
+    // gevent.monkey.patch_all(), threading.Thread becomes a greenlet and os.read
+    // becomes cooperative, which turns this daemon into a hub-bound greenlet and
+    // deadlocks init. Resolve gevent-original primitives when present so the
+    // watcher stays a native thread regardless of host monkeypatching.
+    char code[2048];
     snprintf(code, sizeof(code),
-        "import threading, os, _thread\n"
+        "import os, _thread\n"
+        "_omni_read = os.read\n"
+        "_omni_start = _thread.start_new_thread\n"
+        "_omni_interrupt = _thread.interrupt_main\n"
+        "try:\n"
+        "    from gevent.monkey import get_original as _omni_orig\n"
+        "    _omni_read = _omni_orig('os', 'read')\n"
+        "    _omni_start = _omni_orig('_thread', 'start_new_thread')\n"
+        "    try:\n"
+        "        _omni_interrupt = _omni_orig('_thread', 'interrupt_main')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "except Exception:\n"
+        "    pass\n"
         "def _omnivm_interrupt_watcher():\n"
         "    while True:\n"
-        "        os.read(%d, 1)\n"
-        "        _thread.interrupt_main()\n"
-        "_t = threading.Thread(target=_omnivm_interrupt_watcher, daemon=True)\n"
-        "_t.start()\n",
+        "        try:\n"
+        "            _omni_read(%d, 1)\n"
+        "        except Exception:\n"
+        "            return\n"
+        "        try:\n"
+        "            _omni_interrupt()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "_omni_start(_omnivm_interrupt_watcher, ())\n",
         interrupt_pipe[0]);
     PyRun_SimpleString(code);
 }

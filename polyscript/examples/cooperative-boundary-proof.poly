@@ -1,0 +1,19 @@
+// Cooperative-boundary proof workload.
+//
+// A top-level loop drives many cross-runtime boundary ops. The manifest executor
+// dispatches each iteration's op separately (pumping between ops), so a host
+// asyncio loop / gevent hub can interleave its own work between ops while OmniVM
+// keeps every guest eval on the single Golden Thread.
+//
+// total = sum((i % 7) + 1 for i in range(N)); for N=70 -> 280.
+
+def py_step(acc, i):
+    return acc + (i % 7) + 1
+
+const indices = Array.from({length: 70}, (_, i) => i)
+
+total = 0
+for i in indices:
+    total = py_step(total, i)
+
+print(f"cooperative workload total={total}")

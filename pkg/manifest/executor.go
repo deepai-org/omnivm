@@ -167,6 +167,9 @@ type Executor struct {
 	goSourceFuncs  map[string]*goSourceFuncDef
 	rustFuncs      map[string]*rustFuncMeta
 	bindingOrigins map[string]string // binding name -> runtime whose global is the source of truth
+	// submitCtx is non-nil during a cooperative (host-driven) run; it marshals
+	// deferred per-op work to the Golden Thread. See cooperative.go.
+	submitCtx *submitContext
 	// Injection dedup for unchanged plain-value bindings: every setBinding
 	// bumps the binding's monotonic version, and per-runtime maps remember
 	// which version was last auto-injected. Auto-injection skips a binding
@@ -320,12 +323,23 @@ func (e *Executor) executeOps(ops []*Op) (interface{}, error) {
 }
 
 func (e *Executor) drainPostOpDeferredWork() error {
+	// In a cooperative run, marshal the whole drain (Pump + arrow + finalizer
+	// releases) to the Golden Thread as one step, so none of it touches a guest
+	// runtime off-thread. This also forms a per-op yield point for the host.
+	if e.submitCtx != nil {
+		e.submitCtx.hostRun(func() { e.drainPostOpDeferredWorkInner() })
+		return nil
+	}
+	e.drainPostOpDeferredWorkInner()
+	return nil
+}
+
+func (e *Executor) drainPostOpDeferredWorkInner() {
 	for _, rt := range e.runtimes {
 		rt.Pump()
 	}
 	arrow.GlobalStore().DrainDeferred()
 	_ = e.ensureHandleTable().DrainFinalizerReleases(0)
-	return nil
 }
 
 // executeOp dispatches a single op by type.

@@ -147,6 +147,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -799,6 +800,114 @@ func OmniRunManifestFile(cPath *C.char) *C.char {
 	}
 
 	return C.CString("OK")
+}
+
+// ---- Cooperative (host-driven) manifest run -------------------------------
+//
+// OmniManifestRunSubmit starts a manifest run that cooperates with the host's
+// scheduler (asyncio loop / gevent hub) instead of blocking it. The host then
+// calls OmniManifestRunStep repeatedly on the Golden Thread — each step services
+// one marshaled guest call — yielding to its own scheduler between steps, and
+// finally OmniManifestRunResult to collect the result. All guest evals still run
+// on the Golden Thread; only the orchestration runs on a goroutine.
+
+type coopRun struct {
+	job            *manifest.CoopJob
+	executor       *manifest.Executor
+	prevExecutor   *manifest.Executor
+	prevGoFallback bool
+	threadID       int64
+}
+
+var coopRuns = make(map[int64]*coopRun)
+var coopRunsMu sync.Mutex
+var coopRunCounter int64
+
+//export OmniManifestRunSubmit
+func OmniManifestRunSubmit(cPath *C.char) *C.char {
+	if !initialized {
+		return C.CString("ERR:not initialized — call OmniInit first")
+	}
+	threadID := int64(C.get_thread_id())
+	if threadID != eng.GoldenThreadID {
+		return C.CString("ERR:cooperative manifest run must be submitted from the host (Golden) thread")
+	}
+
+	path := C.GoString(cPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return C.CString("ERR:read manifest: " + err.Error())
+	}
+	m, err := manifest.ParseManifest(data)
+	if err != nil {
+		return C.CString("ERR:parse manifest: " + err.Error())
+	}
+
+	executor := manifest.NewExecutorWithHandles(eng.Runtimes, eng.Handles)
+
+	// Mirror the blocking path's global executor wiring so bridge callbacks
+	// resolve "__manifest" to this run. Held until OmniManifestRunResult.
+	manifestExecutionMu.Lock()
+	run := &coopRun{
+		executor:       executor,
+		prevExecutor:   manifestExecutor,
+		prevGoFallback: manifest.UseGoSourceFallback,
+		threadID:       threadID,
+	}
+	manifestExecutor = executor
+	manifest.UseGoSourceFallback = true
+
+	run.job = executor.ExecuteCooperative(m, eng.Disp)
+	id := atomic.AddInt64(&coopRunCounter, 1)
+	coopRunsMu.Lock()
+	coopRuns[id] = run
+	coopRunsMu.Unlock()
+
+	return C.CString("OK:" + strconv.FormatInt(id, 10))
+}
+
+//export OmniManifestRunStep
+func OmniManifestRunStep(jobID C.long, timeoutMS C.int) C.int {
+	coopRunsMu.Lock()
+	run := coopRuns[int64(jobID)]
+	coopRunsMu.Unlock()
+	if run == nil {
+		return -2 // unknown job
+	}
+	if int64(C.get_thread_id()) != eng.GoldenThreadID {
+		return -3 // must step on the Golden Thread
+	}
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	return C.int(run.job.Step(timeout))
+}
+
+//export OmniManifestRunResult
+func OmniManifestRunResult(jobID C.long) *C.char {
+	coopRunsMu.Lock()
+	run := coopRuns[int64(jobID)]
+	delete(coopRuns, int64(jobID))
+	coopRunsMu.Unlock()
+	if run == nil {
+		return C.CString("ERR:unknown cooperative job")
+	}
+
+	result, err := run.job.Result()
+
+	// Restore global executor wiring and release the run lock.
+	recordExecutorBoundaryStats(run.executor)
+	lastBoundaryStats.Store(loadBoundaryStats())
+	manifestExecutor = run.prevExecutor
+	manifest.UseGoSourceFallback = run.prevGoFallback
+	drainFinalizerReleasesOnHostBoundary(run.threadID)
+	manifestExecutionMu.Unlock()
+
+	if err != nil {
+		return C.CString("ERR:" + bridgeErrorPayload(err))
+	}
+	if result == "" {
+		result = "OK"
+	}
+	return C.CString("OK:" + result)
 }
 
 //export OmniLoadManifestModule

@@ -262,6 +262,49 @@ func (d *Dispatcher) RunOnMainFast(fn func() error) error {
 	}
 }
 
+// PumpOnce services at most one queued task (fast channel first), blocking up to
+// timeout for one to arrive. It returns true if a task was executed. Unlike
+// Run(), it does NOT pump runtime event loops — the caller drives that.
+//
+// This is the host-driven counterpart to Run(): in c-shared/libomnivm mode the
+// Golden Thread is owned by the embedding host (e.g. a Python asyncio loop or
+// gevent hub), not by Run(). The host calls PumpOnce on the Golden Thread to
+// service one marshaled guest call per cooperative step, yielding to its own
+// scheduler between steps. MUST be called on the Golden Thread.
+func (d *Dispatcher) PumpOnce(timeout time.Duration) bool {
+	// Fast channel has priority and is checked without blocking first.
+	select {
+	case t := <-d.fastChan:
+		d.executeTask(t)
+		return true
+	default:
+	}
+	if timeout <= 0 {
+		select {
+		case t := <-d.fastChan:
+			d.executeTask(t)
+			return true
+		case t := <-d.taskChan:
+			d.executeTask(t)
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case t := <-d.fastChan:
+		d.executeTask(t)
+		return true
+	case t := <-d.taskChan:
+		d.executeTask(t)
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 // RunAsyncFast dispatches fn to the high-priority channel and returns
 // a channel that will receive the result.
 func (d *Dispatcher) RunAsyncFast(fn func() (interface{}, error)) <-chan AsyncResult {
